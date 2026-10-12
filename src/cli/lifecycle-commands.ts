@@ -19,6 +19,7 @@ import {createOidcIdentityProvider} from
   "../identity/oidc-identity-provider.js";
 import {createWorkOsHostedAuthentication} from
   "../identity/workos-hosted-authentication.js";
+import {KeycloakDirectory} from "../identity/keycloak-directory.js";
 import {
   checkCompactIntegrity,
   checkExternalStorageIntegrity,
@@ -86,6 +87,10 @@ interface CleanupStagingOptions extends LifecycleOptions {
   readonly once: boolean;
 }
 
+interface SyncDirectoryOptions extends LifecycleOptions {
+  readonly once: boolean;
+}
+
 /** Values injected from the release entrypoint into lifecycle commands. */
 export interface LifecycleCommandOptions {
   readonly build: ProductBuildInformation;
@@ -132,6 +137,55 @@ function configureMaintenance(program: Command): void {
         );
         console.log(JSON.stringify(report, null, 2));
         if (report.failed > 0) process.exitCode = 2;
+      } finally {
+        await runtime.close();
+      }
+    });
+  maintenance
+    .command("sync-directory")
+    .description(
+      "Make installation members match the OIDC issuer's directory groups.",
+    )
+    .requiredOption("--once", "run one complete pass and exit")
+    .addOption(modeOption())
+    .addOption(dataOption())
+    .addOption(hostOption())
+    .addOption(portOption())
+    .action(async (options: SyncDirectoryOptions) => {
+      const configuration = await lifecycleConfiguration(options);
+      assertAtMostOneBrowserLoginProvider(process.env);
+      const oidc = await loadOidcConfiguration({
+        ...process.env,
+        ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL:
+          configuration.bootstrapAdministratorEmail,
+        ARTIFACT_SERVER_ORIGIN: configuration.applicationOrigin,
+      });
+      const groupRoles = oidc?.groupRoles ?? null;
+      const directorySettings = oidc?.directory ?? null;
+      if (oidc === null || groupRoles === null || directorySettings === null) {
+        throw new Error(
+          "maintenance sync-directory requires OIDC group roles (ARTIFACT_SERVER_OIDC_MEMBER_GROUPS or ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS) and the ARTIFACT_SERVER_OIDC_DIRECTORY_* settings.",
+        );
+      }
+      const directory = new KeycloakDirectory({
+        adminBaseUrl: directorySettings.adminBaseUrl,
+        clientId: directorySettings.clientId,
+        clientSecret: directorySettings.clientSecret,
+        issuer: oidc.issuer,
+      });
+      const runtime = configuration.deploymentMode === "compact"
+        ? await createLocalRuntime({
+          ...compactMaintenanceConfig(configuration),
+          groupRolePolicy: groupRoles,
+        })
+        : await createExternalStorageRuntime({
+          ...externalMaintenanceConfig(configuration),
+          groupRolePolicy: groupRoles,
+        });
+      try {
+        console.log(JSON.stringify(
+          await runtime.syncDirectory(directory, groupRoles),
+        ));
       } finally {
         await runtime.close();
       }
@@ -543,6 +597,7 @@ async function summarizeConfiguration(
     configuration,
     workOs === null ? "oidc" : "workos",
     oidc?.groupRoles ?? null,
+    oidc?.directory ?? null,
   );
 }
 

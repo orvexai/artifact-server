@@ -209,6 +209,23 @@ export interface AdmitMemberCommand {
   readonly role: MembershipRole;
 }
 
+/** One person a member directory says should be an active member. */
+export interface DirectoryMemberEntry {
+  readonly displayName: string;
+  /** Already normalized with {@link normalizeMemberEmail}. */
+  readonly email: string;
+  readonly role: MembershipRole;
+}
+
+/** What one directory reconciliation changed. */
+export interface DirectoryReconciliation {
+  readonly admitted: number;
+  readonly deactivated: number;
+  readonly reactivated: number;
+  readonly roleChanged: number;
+  readonly unchanged: number;
+}
+
 export interface IssueApiKeyCommand {
   readonly capabilities: readonly PrincipalCapability[];
   readonly expiresAt: string;
@@ -301,6 +318,18 @@ export interface InstallationAccessOperations {
   /** Issue a session for the stable administrator of a local-owner process. */
   readonly loginAsLocalOwner: () => Effect.Effect<
     IssuedApplicationSession,
+    IdentityConflict | IdentityRepositoryFailure
+  >;
+  /**
+   * Make the installation's human members exactly the given directory entries:
+   * admit, restore, or re-role each entry, and deactivate every other active
+   * member. Only an installation with issuer group roles may do this, and an
+   * empty entry list is refused so a failed read can never empty it.
+   */
+  readonly reconcileDirectoryMembers: (
+    entries: readonly DirectoryMemberEntry[],
+  ) => Effect.Effect<
+    DirectoryReconciliation,
     IdentityConflict | IdentityRepositoryFailure
   >;
   readonly revokeApiKey: (
@@ -470,6 +499,117 @@ function makeInstallationAccessService(
   });
 
   /**
+   * Deactivate one member the issuer no longer admits. Deactivation keeps a
+   * last administrator in place; the issuer has already taken that role away,
+   * so demote before deactivating.
+   */
+  const deactivateRemovedMember = Effect.fn(
+    "InstallationAccessService.deactivateRemovedMember",
+  )(function*(member: InstallationMember, now: string) {
+    if (member.role !== membershipRoles.member) {
+      yield* dependencies.repository.setMemberRole(
+        dependencies.installationId,
+        member.id,
+        membershipRoles.member,
+        now,
+      );
+    }
+    yield* dependencies.repository.deactivateMember(
+      dependencies.installationId,
+      member.id,
+      now,
+    );
+  });
+
+  const reconcileDirectoryMembers = Effect.fn(
+    "InstallationAccessService.reconcileDirectoryMembers",
+  )(function*(entries: readonly DirectoryMemberEntry[]) {
+    if (groupRolePolicy === null) {
+      return yield* Effect.fail(new IdentityConflict({
+        message: "Directory sync requires issuer group roles.",
+      }));
+    }
+    if (entries.length === 0) {
+      return yield* Effect.fail(new IdentityConflict({
+        message: "Directory sync refuses an empty directory.",
+      }));
+    }
+    const desired = new Map<string, DirectoryMemberEntry>();
+    for (const entry of entries) {
+      if (normalizeMemberEmail(entry.email) !== entry.email) {
+        return yield* Effect.fail(new IdentityConflict({
+          message: "Directory entries must carry normalized email addresses.",
+        }));
+      }
+      desired.set(entry.email, entry);
+    }
+    const now = dependencies.clock.now().toISOString();
+    const members = yield* dependencies.repository.listMembers(
+      dependencies.installationId,
+    );
+    const byEmail = new Map(members.map((member) => [member.email, member]));
+    let admitted = 0;
+    let reactivated = 0;
+    let roleChanged = 0;
+    let unchanged = 0;
+    // Admissions and promotions first, so removals never run ahead of them.
+    for (const entry of [...desired.values()].toSorted((left, right) =>
+      left.email.localeCompare(right.email)
+    )) {
+      const member = byEmail.get(entry.email);
+      if (member === undefined) {
+        yield* dependencies.repository.admitMember({
+          createdAt: now,
+          displayName: entry.displayName,
+          email: entry.email,
+          id: dependencies.ids.memberId(),
+          installationId: dependencies.installationId,
+          role: entry.role,
+        });
+        admitted += 1;
+      } else if (member.status !== memberStatuses.active) {
+        yield* dependencies.repository.setMemberRole(
+          dependencies.installationId,
+          member.id,
+          entry.role,
+          now,
+        );
+        reactivated += 1;
+      } else if (member.role !== entry.role) {
+        yield* dependencies.repository.setMemberRole(
+          dependencies.installationId,
+          member.id,
+          entry.role,
+          now,
+        );
+        roleChanged += 1;
+      } else {
+        unchanged += 1;
+      }
+    }
+    let deactivated = 0;
+    for (const member of members) {
+      if (member.status !== memberStatuses.active || desired.has(member.email)) {
+        continue;
+      }
+      yield* deactivateRemovedMember(member, now);
+      deactivated += 1;
+    }
+    if (roleChanged + deactivated > 0) clearAuthenticationCaches();
+    const reconciliation: DirectoryReconciliation = {
+      admitted,
+      deactivated,
+      reactivated,
+      roleChanged,
+      unchanged,
+    };
+    return reconciliation;
+  }, Effect.catchTag("IdentityNotFound", () =>
+    Effect.fail(new IdentityConflict({
+      message: "A member changed while the directory was applied.",
+    }))));
+
+  /**
    * Make the member's state match the role its issuer groups grant: admit or
    * restore it, change its role, or deactivate it and refuse admission.
    */
@@ -485,21 +625,7 @@ function makeInstallationAccessService(
     const now = dependencies.clock.now().toISOString();
     if (role === null) {
       if (member !== null) {
-        // Deactivation keeps a last administrator in place; the issuer has
-        // already taken that role away, so demote before deactivating.
-        if (member.role !== membershipRoles.member) {
-          yield* dependencies.repository.setMemberRole(
-            dependencies.installationId,
-            member.id,
-            membershipRoles.member,
-            now,
-          );
-        }
-        yield* dependencies.repository.deactivateMember(
-          dependencies.installationId,
-          member.id,
-          now,
-        );
+        yield* deactivateRemovedMember(member, now);
         clearAuthenticationCaches();
       }
       return yield* Effect.fail(new IdentityAdmissionDenied({
@@ -885,6 +1011,7 @@ function makeInstallationAccessService(
     listApiKeys,
     listMembers,
     loginWithLocalBrowserToken,
+    reconcileDirectoryMembers,
     revokeApiKey,
     revokeSession,
     rotateApiKey,
@@ -921,13 +1048,19 @@ function invalidApiKey(): Effect.Effect<never, AuthenticationRequired> {
   }));
 }
 
+/** The stored form of one member email, or null when it is not an address. */
+export function normalizeMemberEmail(value: string): string | null {
+  const normalized = value.trim().toLocaleLowerCase("en-US");
+  return normalized.length < 3 || normalized.length > 320 ||
+      !normalized.includes("@")
+    ? null
+    : normalized;
+}
+
 const normalizeEmail = Effect.fn("InstallationAccessService.normalizeEmail")(
   function*(value: string): Effect.fn.Return<string, IdentityConflict> {
-    const normalized = value.trim().toLocaleLowerCase("en-US");
-    if (
-      normalized.length < 3 || normalized.length > 320 ||
-      !normalized.includes("@")
-    ) {
+    const normalized = normalizeMemberEmail(value);
+    if (normalized === null) {
       return yield* new IdentityConflict({
         message: "A valid email address is required.",
       });

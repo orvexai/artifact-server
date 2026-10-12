@@ -161,6 +161,36 @@ chart rejects them without an OIDC issuer and client, a claim name without a
 group list, and group names containing commas. See the deployment guide for the
 issuer side.
 
+With Keycloak, a directory sync can also admit group members before they ever
+sign in, and deactivate leavers without waiting for them to return. Set
+`identity.oidcDirectoryClientId` to a confidential client with service accounts
+on, and `secret.keys.oidcDirectoryClientSecret` to the Secret key holding its
+client secret. `identity.oidcDirectoryProvider` defaults to `keycloak`, the only
+provider. The chart then adds the `<release>-sync-directory` CronJob, which runs
+`maintenance sync-directory --once` on `directorySync.schedule` (every ten
+minutes by default) with `concurrencyPolicy: Forbid`, and counts one more
+Postgres connection against `configuration.postgresConnectionBudget`. The chart
+rejects directory values without the OIDC issuer, client, and group lists, and a
+client ID without its secret key.
+
+```yaml
+identity:
+  oidcIssuer: https://idp.example.com/realms/main
+  oidcClientId: artifact-server
+  oidcMemberGroups: [artifact-users]
+  oidcAdministratorGroups: [artifact-admins]
+  oidcDirectoryClientId: artifact-server-directory
+secret:
+  keys:
+    oidcDirectoryClientSecret: oidc-directory-client-secret
+configuration:
+  postgresConnectionBudget: 23
+```
+
+Every pod sets `enableServiceLinks: false`. A release named `artifact-server`
+would otherwise receive `ARTIFACT_SERVER_PORT=tcp://...` from its own Service,
+which the server reads as its listening port.
+
 One installation has one browser-login provider. The chart rejects values that
 configure neither provider or configure WorkOS and OIDC together.
 

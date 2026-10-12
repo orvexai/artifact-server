@@ -9,6 +9,11 @@ import type {InteractiveIdentityProvider} from "../application/interactive-login
 import type {Clock} from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
 import type {GroupRolePolicy} from "../core/group-role-policy.js";
+import type {
+  DirectorySyncReport,
+  MemberDirectory,
+} from "../application/directory-sync.js";
+import {runDirectorySyncPass} from "../lifecycle/directory-sync.js";
 import {SystemClock, SystemIdGenerator} from "../core/system.js";
 import {createHttpApp} from "../http/create-http-app.js";
 import type {
@@ -102,6 +107,11 @@ export interface ExternalStorageRuntime {
   readonly app: ReturnType<typeof createHttpApp>;
   cleanupStaging(limit: number): Promise<ExpiredStagingCleanupReport>;
   close(): Promise<void>;
+  /** Make the members match one directory under the given group roles. */
+  syncDirectory(
+    directory: MemberDirectory,
+    policy: GroupRolePolicy,
+  ): Promise<DirectorySyncReport>;
 }
 
 /** Connect external providers, validate migrations, verify readiness, and build the app. */
@@ -262,6 +272,8 @@ export async function createExternalStorageRuntime(
         ? appDependencies
         : {...appDependencies, runtimeLifecycle: config.runtimeLifecycle}),
       cleanupStaging: (limit) => runStagingCleanupPass(readyRuntime, limit),
+      syncDirectory: (directory, policy) =>
+        runDirectorySyncPass(readyRuntime, directory, policy),
       close: async () => {
         if (closeCleanupSchedule !== null) await closeCleanupSchedule();
         if (gitHistoryWorker !== null) await gitHistoryWorker.close();

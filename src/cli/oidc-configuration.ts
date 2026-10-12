@@ -6,6 +6,7 @@ import {
   type OidcGroupRoles,
 } from "../identity/oidc-groups-claim.js";
 import {defaultOidcScopes} from "../identity/oidc-identity-provider.js";
+import {keycloakAdminBaseUrl} from "../identity/keycloak-directory.js";
 import {requireOidcIssuer} from "../identity/oidc-issuer.js";
 import {
   loadOptionalCredential,
@@ -17,6 +18,8 @@ const oidcEnvironmentSchema = z.object({
   ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL: z.email().optional(),
   ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_CLIENT_ID: z.string().min(1).optional(),
+  ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID: z.string().min(1).optional(),
+  ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_GROUPS_CLAIM: z.string().trim().min(1).optional(),
   ARTIFACT_SERVER_OIDC_ISSUER: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: z.string().min(1).optional(),
@@ -24,12 +27,23 @@ const oidcEnvironmentSchema = z.object({
   ARTIFACT_SERVER_ORIGIN: z.url().optional(),
 });
 
+/** A directory that lists group members before they ever sign in. */
+export interface OidcDirectoryConfiguration {
+  /** Admin REST base derived from the realm issuer. */
+  readonly adminBaseUrl: string;
+  readonly clientId: string;
+  readonly clientSecret: Redacted.Redacted;
+  readonly provider: "keycloak";
+}
+
 /** Complete optional generic OIDC browser-login configuration. */
 export interface OidcConfiguration {
   readonly applicationOrigin: string;
   readonly bootstrapAdministratorEmail: string;
   readonly clientId: string;
   readonly clientSecret: Redacted.Redacted | null;
+  /** Directory sync settings; null when the directory is not synced. */
+  readonly directory: OidcDirectoryConfiguration | null;
   /** Issuer groups that admit people and set their role; null keeps it manual. */
   readonly groupRoles: OidcGroupRoles | null;
   readonly issuer: string;
@@ -46,8 +60,16 @@ export async function loadOidcConfiguration(
     "ARTIFACT_SERVER_OIDC_CLIENT_SECRET",
     Schema.NonEmptyString,
   ));
+  const directorySecret = await runCliEffect(loadOptionalCredential(
+    environment,
+    "ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET",
+    Schema.NonEmptyString,
+  ));
   if (
     clientSecret === null &&
+    directorySecret === null &&
+    parsed.ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID === undefined &&
+    parsed.ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_CLIENT_ID === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_ISSUER === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_SCOPES === undefined &&
@@ -68,6 +90,11 @@ export async function loadOidcConfiguration(
       "Generic OIDC authentication requires ARTIFACT_SERVER_ORIGIN, ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL, ARTIFACT_SERVER_OIDC_ISSUER, and ARTIFACT_SERVER_OIDC_CLIENT_ID. ARTIFACT_SERVER_OIDC_CLIENT_SECRET or ARTIFACT_SERVER_OIDC_CLIENT_SECRET_FILE and ARTIFACT_SERVER_OIDC_SCOPES are optional.",
     );
   }
+  const issuer = requireOidcIssuer(
+    requireString(parsed.ARTIFACT_SERVER_OIDC_ISSUER),
+    "ARTIFACT_SERVER_OIDC_ISSUER",
+  );
+  const groupRoles = oidcGroupRoles(parsed);
   return {
     applicationOrigin: requireString(parsed.ARTIFACT_SERVER_ORIGIN),
     bootstrapAdministratorEmail: requireString(
@@ -75,11 +102,14 @@ export async function loadOidcConfiguration(
     ),
     clientId: requireString(parsed.ARTIFACT_SERVER_OIDC_CLIENT_ID),
     clientSecret: credentialOrNull(clientSecret),
-    groupRoles: oidcGroupRoles(parsed),
-    issuer: requireOidcIssuer(
-      requireString(parsed.ARTIFACT_SERVER_OIDC_ISSUER),
-      "ARTIFACT_SERVER_OIDC_ISSUER",
+    directory: oidcDirectory(
+      parsed,
+      credentialOrNull(directorySecret),
+      issuer,
+      groupRoles,
     ),
+    groupRoles,
+    issuer,
     scopes: parsed.ARTIFACT_SERVER_OIDC_SCOPES ?? defaultOidcScopes,
   };
 }
@@ -139,6 +169,42 @@ function oidcGroupRoles(
     claim: parsed.ARTIFACT_SERVER_OIDC_GROUPS_CLAIM ?? defaultOidcGroupsClaim,
     memberGroups,
   };
+}
+
+/** Read the opt-in directory sync, which only group roles can give meaning. */
+function oidcDirectory(
+  parsed: z.infer<typeof oidcEnvironmentSchema>,
+  clientSecret: Redacted.Redacted | null,
+  issuer: string,
+  groupRoles: OidcGroupRoles | null,
+): OidcDirectoryConfiguration | null {
+  const provider = parsed.ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER;
+  const clientId = parsed.ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID;
+  if (provider === undefined && clientId === undefined && clientSecret === null) {
+    return null;
+  }
+  if (groupRoles === null) {
+    throw new Error(
+      "The ARTIFACT_SERVER_OIDC_DIRECTORY_* settings require ARTIFACT_SERVER_OIDC_MEMBER_GROUPS or ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS.",
+    );
+  }
+  if (provider === undefined || clientId === undefined || clientSecret === null) {
+    throw new Error(
+      "Directory sync requires ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER, ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID, and ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET or ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET_FILE.",
+    );
+  }
+  if (provider !== "keycloak") {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER supports only keycloak.",
+    );
+  }
+  const adminBaseUrl = keycloakAdminBaseUrl(issuer);
+  if (adminBaseUrl === null) {
+    throw new Error(
+      "Keycloak directory sync requires ARTIFACT_SERVER_OIDC_ISSUER in the form <base>/realms/<realm>.",
+    );
+  }
+  return {adminBaseUrl, clientId, clientSecret, provider};
 }
 
 /** Split one comma-separated list of exact, case-sensitive group names. */

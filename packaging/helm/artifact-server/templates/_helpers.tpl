@@ -82,6 +82,15 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- if and (ne $oidcGroupsClaim "") (not $hasOidcGroups) -}}
 {{- fail "identity.oidcGroupsClaim requires identity.oidcMemberGroups or identity.oidcAdministratorGroups" -}}
 {{- end -}}
+{{- $oidcDirectoryClientId := default "" .Values.identity.oidcDirectoryClientId -}}
+{{- $oidcDirectorySecret := default "" .Values.secret.keys.oidcDirectoryClientSecret -}}
+{{- $hasOidcDirectory := or (ne $oidcDirectoryClientId "") (ne $oidcDirectorySecret "") (ne (default "" .Values.identity.oidcDirectoryProvider) "") -}}
+{{- if and $hasOidcDirectory (or (not $hasOidcIssuer) (not $hasOidcGroups)) -}}
+{{- fail "identity.oidcDirectoryProvider, identity.oidcDirectoryClientId, and secret.keys.oidcDirectoryClientSecret require identity.oidcClientId, identity.oidcIssuer, and identity.oidcMemberGroups or identity.oidcAdministratorGroups" -}}
+{{- end -}}
+{{- if and $hasOidcDirectory (or (eq $oidcDirectoryClientId "") (eq $oidcDirectorySecret "")) -}}
+{{- fail "identity.oidcDirectoryClientId and secret.keys.oidcDirectoryClientSecret must be configured together" -}}
+{{- end -}}
 {{- if and $hasOidcIssuer $hasWorkosIssuer -}}
 {{- fail "one installation has one browser-login provider: configure the identity.workos values or the identity.oidc values, not both" -}}
 {{- end -}}
@@ -94,9 +103,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 {{- $migrationConnections := ternary 1 0 .Values.migration.enabled -}}
 {{- $cleanupConnections := ternary 1 0 .Values.cleanup.enabled -}}
-{{- $requiredConnections := add (mul (int .Values.replicaCount) (int .Values.configuration.postgresPoolSize)) $migrationConnections $cleanupConnections -}}
+{{- $directorySyncConnections := ternary 1 0 (ne $oidcDirectoryClientId "") -}}
+{{- $requiredConnections := add (mul (int .Values.replicaCount) (int .Values.configuration.postgresPoolSize)) $migrationConnections $cleanupConnections $directorySyncConnections -}}
 {{- if lt (int .Values.configuration.postgresConnectionBudget) $requiredConnections -}}
-{{- fail (printf "configuration.postgresConnectionBudget must be at least %d for %d replicas and the enabled migration and cleanup Jobs" $requiredConnections (int .Values.replicaCount)) -}}
+{{- fail (printf "configuration.postgresConnectionBudget must be at least %d for %d replicas and the enabled migration, cleanup, and directory sync Jobs" $requiredConnections (int .Values.replicaCount)) -}}
 {{- end -}}
 {{- range $key := keys .Values.podLabels -}}
 {{- if or (hasPrefix "app.kubernetes.io/" $key) (hasPrefix "helm.sh/" $key) (hasPrefix "artifactserver.com/" $key) -}}
@@ -144,6 +154,15 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 - key: {{ .Values.secret.keys.oidcClientSecret | quote }}
   path: oidc-client-secret
 {{- end }}
+{{- if .Values.secret.keys.oidcDirectoryClientSecret }}
+- key: {{ .Values.secret.keys.oidcDirectoryClientSecret | quote }}
+  path: oidc-directory-client-secret
+{{- end }}
+{{- end -}}
+
+{{/* Non-empty when the Keycloak directory sync CronJob should exist. */}}
+{{- define "artifact-server.directorySyncEnabled" -}}
+{{- if .Values.identity.oidcDirectoryClientId -}}true{{- end -}}
 {{- end -}}
 
 {{- define "artifact-server.runtimeEnvironment" -}}
@@ -217,6 +236,14 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- if .Values.identity.oidcAdministratorGroups }}
 - name: ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS
   value: {{ join "," .Values.identity.oidcAdministratorGroups | quote }}
+{{- end }}
+{{- if .Values.identity.oidcDirectoryClientId }}
+- name: ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER
+  value: {{ default "keycloak" .Values.identity.oidcDirectoryProvider | quote }}
+- name: ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID
+  value: {{ .Values.identity.oidcDirectoryClientId | quote }}
+- name: ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET_FILE
+  value: /run/secrets/artifact-server/oidc-directory-client-secret
 {{- end }}
 {{- end }}
 {{- if .Values.identity.workosClientId }}

@@ -150,6 +150,8 @@ export interface RuntimeConfigurationSummary {
   };
   readonly installationId: string;
   readonly interactiveIdentityProvider: "local" | "oidc" | "workos";
+  /** Present only when an OIDC directory sync is configured. */
+  readonly oidcDirectory?: OidcDirectorySummary;
   /** Present only when generic OIDC group roles are configured. */
   readonly oidcGroupRoles?: OidcGroupRolesSummary;
   readonly objectStorageProvider: "filesystem" | ObjectStorageProviderKind;
@@ -499,25 +501,45 @@ export interface OidcGroupRolesSummary {
   readonly memberGroups: readonly string[];
 }
 
+/** The credential-free part of one OIDC directory sync configuration. */
+export interface OidcDirectorySummary {
+  readonly adminBaseUrl: string;
+  readonly clientId: string;
+  readonly provider: string;
+}
+
 /** Render the safe, stable subset of one parsed runtime configuration. */
 export function summarizeRuntimeConfiguration(
   configuration: CompactRuntimeConfiguration | ExternalStorageRuntimeConfiguration,
   interactiveIdentityProvider: "local" | "oidc" | "workos" = "local",
   oidcGroupRoles: OidcGroupRolesSummary | null = null,
+  oidcDirectory: OidcDirectorySummary | null = null,
 ): RuntimeConfigurationSummary {
-  const summary = runtimeConfigurationSummary(
+  let summary = runtimeConfigurationSummary(
     configuration,
     interactiveIdentityProvider,
   );
-  if (oidcGroupRoles === null) return summary;
-  return {
-    ...summary,
-    oidcGroupRoles: {
-      administratorGroups: oidcGroupRoles.administratorGroups,
-      claim: oidcGroupRoles.claim,
-      memberGroups: oidcGroupRoles.memberGroups,
-    },
-  };
+  if (oidcGroupRoles !== null) {
+    summary = {
+      ...summary,
+      oidcGroupRoles: {
+        administratorGroups: oidcGroupRoles.administratorGroups,
+        claim: oidcGroupRoles.claim,
+        memberGroups: oidcGroupRoles.memberGroups,
+      },
+    };
+  }
+  if (oidcDirectory !== null) {
+    summary = {
+      ...summary,
+      oidcDirectory: {
+        adminBaseUrl: oidcDirectory.adminBaseUrl,
+        clientId: oidcDirectory.clientId,
+        provider: oidcDirectory.provider,
+      },
+    };
+  }
+  return summary;
 }
 
 function runtimeConfigurationSummary(

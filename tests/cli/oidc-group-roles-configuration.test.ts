@@ -1,8 +1,9 @@
 import {spawn} from "node:child_process";
-import {mkdtemp, rm} from "node:fs/promises";
+import {mkdtemp, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
+import {Redacted} from "effect";
 import {afterAll, beforeAll, describe, expect, test} from "vitest";
 import {z} from "zod";
 
@@ -107,6 +108,63 @@ describe("generic OIDC group-role configuration", () => {
     })).rejects.toThrow(
       "ARTIFACT_SERVER_OIDC_MEMBER_GROUPS must name at least one group.",
     );
+  });
+
+  test("directory sync settings parse with a file secret and derive the admin base", async () => {
+    const secretFile = path.join(compactDirectory, "directory-secret");
+    await writeFile(secretFile, "directory-secret-value\n");
+    const configuration = await loadOidcConfiguration({
+      ...completeOidc,
+      ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID: "artifact-server-directory",
+      ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET_FILE: secretFile,
+      ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: "keycloak",
+      ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: "artifact-users",
+    });
+    expect(configuration?.directory).toMatchObject({
+      adminBaseUrl: "https://idp.example.test/admin/realms/main",
+      clientId: "artifact-server-directory",
+      provider: "keycloak",
+    });
+    const secret = configuration?.directory?.clientSecret;
+    expect(secret === undefined ? null : Redacted.value(secret))
+      .toBe("directory-secret-value");
+    expect((await loadOidcConfiguration(completeOidc))?.directory).toBeNull();
+  });
+
+  test("directory sync needs group roles, every setting, Keycloak, and a realm issuer", async () => {
+    const directory = {
+      ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID: "artifact-server-directory",
+      ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET: "directory-secret-value",
+      ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: "keycloak",
+    };
+    await expect(loadOidcConfiguration({...completeOidc, ...directory}))
+      .rejects.toThrow(
+        "The ARTIFACT_SERVER_OIDC_DIRECTORY_* settings require ARTIFACT_SERVER_OIDC_MEMBER_GROUPS or ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS.",
+      );
+    const grouped = {
+      ...completeOidc,
+      ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS: "artifact-admins",
+    };
+    await expect(loadOidcConfiguration({
+      ...grouped,
+      ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID: "artifact-server-directory",
+      ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: "keycloak",
+    })).rejects.toThrow("Directory sync requires ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER");
+    await expect(loadOidcConfiguration({
+      ...grouped,
+      ...directory,
+      ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: "okta",
+    })).rejects.toThrow("supports only keycloak");
+    await expect(loadOidcConfiguration({
+      ...grouped,
+      ...directory,
+      ARTIFACT_SERVER_OIDC_ISSUER: "https://idp.example.test/oauth2/default",
+    })).rejects.toThrow("<base>/realms/<realm>");
+    await expect(loadOidcConfiguration({
+      ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL: administratorEmail,
+      ARTIFACT_SERVER_ORIGIN: "https://artifacts.example.test",
+      ...directory,
+    })).rejects.toThrow("Generic OIDC authentication requires");
   });
 
   test("the configuration summary reports group roles only when they are configured", async () => {

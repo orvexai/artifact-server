@@ -152,6 +152,66 @@ In Keycloak:
 `artifactserver config check` reports the active policy under
 `configuration.oidcGroupRoles`.
 
+### Sync members from a Keycloak directory
+
+Group roles act when someone signs in. To have members exist before their first
+sign-in, and to remove leavers without waiting for them to come back, also sync
+the Keycloak directory:
+
+```sh
+artifactserver maintenance sync-directory --once --mode external-storage
+```
+
+One pass reads every configured group completely, then makes the installation's
+human members match it:
+
+- each enabled user with a verified email in an administrator group becomes an
+  administrator, and in a member group a member;
+- missing people are admitted, deactivated ones are restored, and roles are
+  changed where they differ;
+- every other active member is deactivated, which ends their sessions and
+  revokes their personal API keys. Service API keys are not touched.
+
+The pass reads the whole directory before it writes anything. A configured group
+that does not exist, a token or HTTP error, a failed page, or a directory with
+no eligible user stops the pass with a non-zero exit and changes nothing. A
+successful pass prints one JSON line:
+`{"groups":2,"directoryUsers":40,"admitted":1,"reactivated":0,"roleChanged":0,"deactivated":0,"unchanged":39,"skipped":0}`.
+Display names come from first and last name, else the username, else the email;
+an existing member keeps its display name. Synced members bind to their OIDC
+subject at their first sign-in, by verified email, exactly as other members do.
+
+| Setting | Helm value | Meaning |
+| --- | --- | --- |
+| `ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER` | `identity.oidcDirectoryProvider` | `keycloak`, the only provider. The chart defaults it. |
+| `ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID` | `identity.oidcDirectoryClientId` | The confidential client the sync authenticates as. |
+| `ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET` or `_FILE` | `secret.keys.oidcDirectoryClientSecret` | Its client secret. |
+
+These settings require the group lists above, and the issuer must have the form
+`<base>/realms/<realm>`; the admin API is then `<base>/admin/realms/<realm>`.
+The sync obtains a token with the client-credentials grant at the issuer's
+discovered token endpoint.
+
+In Keycloak, create a separate client for the sync:
+
+1. Create an OpenID Connect client such as `artifact-server-directory` with
+   **Client authentication** on and **Service accounts roles** on. Turn off the
+   standard and direct-access flows; it never signs anyone in.
+2. Under **Service account roles**, assign only the `realm-management` client
+   roles `view-users` and `query-groups`.
+3. Store the client secret in the Kubernetes Secret and name its key in
+   `secret.keys.oidcDirectoryClientSecret`.
+
+The configured groups are looked up by exact name among top-level groups.
+
+The Helm chart enables the `<release>-sync-directory` CronJob as soon as
+`identity.oidcDirectoryClientId` is set. It runs every ten minutes by default
+(`directorySync.schedule`), never overlaps itself, and uses the same image,
+service account, security context, environment, and Secret mounts as the
+staging cleanup. It holds one Postgres connection while it runs, so raise
+`configuration.postgresConnectionBudget` by one. `config check` reports the
+directory under `configuration.oidcDirectory`.
+
 ## Back up the installation
 
 Back up metadata and artifact files as one coordinated recovery set. Use the procedure in the selected deployment guide.
