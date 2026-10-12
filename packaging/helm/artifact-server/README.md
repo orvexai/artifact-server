@@ -141,6 +141,26 @@ who obtained it. Such a token must name `configuration.applicationOrigin`
 followed by `/mcp` in `aud`, which the provider produces from an audience mapper
 or an RFC 8707 resource indicator.
 
+Access can also follow the issuer's groups instead of manual admission. Set
+`identity.oidcMemberGroups`, `identity.oidcAdministratorGroups`, or both to
+lists of exact group names, and `identity.oidcGroupsClaim` when the claim is not
+called `groups`:
+
+```yaml
+identity:
+  oidcClientId: artifact-server
+  oidcIssuer: https://idp.example.com/realms/main
+  oidcMemberGroups: [artifact-users]
+  oidcAdministratorGroups: [artifact-admins]
+```
+
+Every sign-in and every MCP token then admits the person with the role their
+groups grant, changes that role when the groups change, and deactivates the
+member when no listed group remains. The values are unset by default, and the
+chart rejects them without an OIDC issuer and client, a claim name without a
+group list, and group names containing commas. See the deployment guide for the
+issuer side.
+
 One installation has one browser-login provider. The chart rejects values that
 configure neither provider or configure WorkOS and OIDC together.
 

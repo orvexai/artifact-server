@@ -132,7 +132,18 @@
         "workosIssuer": {"type": "string"},
         "oidcClientId": {"type": "string"},
         "oidcIssuer": {"type": "string"},
-        "oidcScopes": {"type": "string"}
+        "oidcScopes": {"type": "string"},
+        "oidcGroupsClaim": {"type": "string"},
+        "oidcMemberGroups": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[^,]*[^,\\s][^,]*$"}
+        },
+        "oidcAdministratorGroups": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[^,]*[^,\\s][^,]*$"}
+        }
       }
     },
     "serviceAccount": {

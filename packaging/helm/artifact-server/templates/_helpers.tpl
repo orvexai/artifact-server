@@ -74,6 +74,14 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- if and (not $hasOidcIssuer) (or (ne .Values.identity.oidcScopes "") (ne .Values.secret.keys.oidcClientSecret "")) -}}
 {{- fail "identity.oidcScopes and secret.keys.oidcClientSecret require identity.oidcClientId and identity.oidcIssuer" -}}
 {{- end -}}
+{{- $oidcGroupsClaim := default "" .Values.identity.oidcGroupsClaim -}}
+{{- $hasOidcGroups := or (gt (len (default (list) .Values.identity.oidcMemberGroups)) 0) (gt (len (default (list) .Values.identity.oidcAdministratorGroups)) 0) -}}
+{{- if and (not $hasOidcIssuer) (or $hasOidcGroups (ne $oidcGroupsClaim "")) -}}
+{{- fail "identity.oidcGroupsClaim, identity.oidcMemberGroups, and identity.oidcAdministratorGroups require identity.oidcClientId and identity.oidcIssuer" -}}
+{{- end -}}
+{{- if and (ne $oidcGroupsClaim "") (not $hasOidcGroups) -}}
+{{- fail "identity.oidcGroupsClaim requires identity.oidcMemberGroups or identity.oidcAdministratorGroups" -}}
+{{- end -}}
 {{- if and $hasOidcIssuer $hasWorkosIssuer -}}
 {{- fail "one installation has one browser-login provider: configure the identity.workos values or the identity.oidc values, not both" -}}
 {{- end -}}
@@ -197,6 +205,18 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- if .Values.identity.oidcScopes }}
 - name: ARTIFACT_SERVER_OIDC_SCOPES
   value: {{ .Values.identity.oidcScopes | quote }}
+{{- end }}
+{{- if .Values.identity.oidcGroupsClaim }}
+- name: ARTIFACT_SERVER_OIDC_GROUPS_CLAIM
+  value: {{ .Values.identity.oidcGroupsClaim | quote }}
+{{- end }}
+{{- if .Values.identity.oidcMemberGroups }}
+- name: ARTIFACT_SERVER_OIDC_MEMBER_GROUPS
+  value: {{ join "," .Values.identity.oidcMemberGroups | quote }}
+{{- end }}
+{{- if .Values.identity.oidcAdministratorGroups }}
+- name: ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS
+  value: {{ join "," .Values.identity.oidcAdministratorGroups | quote }}
 {{- end }}
 {{- end }}
 {{- if .Values.identity.workosClientId }}

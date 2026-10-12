@@ -429,7 +429,10 @@ async function startCompactServer(
 
 type OidcServerAuthentication =
   | OidcHostedAuthentication
-  | Pick<OidcHostedAuthentication, "interactiveIdentityProvider">;
+  | Pick<
+    OidcHostedAuthentication,
+    "groupRolePolicy" | "interactiveIdentityProvider"
+  >;
 
 /** MCP OAuth needs the issuer at startup; browser login must survive it being down. */
 async function oidcAuthenticationOrBrowserOnly(
@@ -442,7 +445,10 @@ async function oidcAuthenticationOrBrowserOnly(
     process.stderr.write(
       `OIDC configuration warning (discovery_failed): MCP OAuth stays off for ${oidc.issuer}: ${reason}\n`,
     );
-    return {interactiveIdentityProvider: createOidcIdentityProvider(oidc)};
+    return {
+      groupRolePolicy: oidc.groupRoles,
+      interactiveIdentityProvider: createOidcIdentityProvider(oidc),
+    };
   }
 }
 
@@ -536,6 +542,7 @@ async function summarizeConfiguration(
   return summarizeRuntimeConfiguration(
     configuration,
     workOs === null ? "oidc" : "workos",
+    oidc?.groupRoles ?? null,
   );
 }
 

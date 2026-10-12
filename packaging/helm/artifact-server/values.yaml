@@ -44,6 +44,12 @@ identity:
   oidcClientId: ""
   oidcIssuer: ""
   oidcScopes: ""
+  # Opt-in issuer group roles, unset by default so admission stays manual.
+  # Either list admits people from the issuer's groups claim and sets their
+  # role on every sign-in. Group names match exactly.
+  # oidcGroupsClaim: groups
+  # oidcMemberGroups: [artifact-users]
+  # oidcAdministratorGroups: [artifact-admins]
 
 serviceAccount:
   create: true
