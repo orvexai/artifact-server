@@ -27,11 +27,14 @@ spec:
     - name: source
       volumeClaimTemplate:
         spec:
+          # cephfs: an ext4 block volume has lost+found, which git-clone
+          # refuses as a non-empty destination.
           accessModes:
-            - ReadWriteOnce
+            - ReadWriteMany
           resources:
             requests:
               storage: 5Gi
+          storageClassName: rook-cephfs
     - name: dockerconfig
       secret:
         secretName: tekton-harbor-credentials
