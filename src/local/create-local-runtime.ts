@@ -11,6 +11,11 @@ import type { InteractiveIdentityProvider } from "../application/interactive-log
 import type { Clock } from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
 import type {GroupRolePolicy} from "../core/group-role-policy.js";
+import type {
+  DirectorySyncReport,
+  MemberDirectory,
+} from "../application/directory-sync.js";
+import {runDirectorySyncPass} from "../lifecycle/directory-sync.js";
 import { SystemClock, SystemIdGenerator } from "../core/system.js";
 import { createHttpApp } from "../http/create-http-app.js";
 import type {
@@ -121,6 +126,11 @@ export interface LocalRuntime {
   readonly app: ReturnType<typeof createHttpApp>;
   cleanupStaging(limit: number): Promise<ExpiredStagingCleanupReport>;
   close(): Promise<void>;
+  /** Make the members match one directory under the given group roles. */
+  syncDirectory(
+    directory: MemberDirectory,
+    policy: GroupRolePolicy,
+  ): Promise<DirectorySyncReport>;
 }
 
 export async function createLocalRuntime(
@@ -335,6 +345,8 @@ export async function createLocalRuntime(
     return {
       app,
       cleanupStaging: (limit) => runStagingCleanupPass(applicationRuntime, limit),
+      syncDirectory: (directory, policy) =>
+        runDirectorySyncPass(applicationRuntime, directory, policy),
       close: async () => {
         if (closeCleanupSchedule !== null) await closeCleanupSchedule();
         if (gitHistoryWorker !== null) await gitHistoryWorker.close();
