@@ -10,6 +10,7 @@ import type {
 import type { InteractiveIdentityProvider } from "../application/interactive-login.js";
 import type { Clock } from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
+import type {GroupRolePolicy} from "../core/group-role-policy.js";
 import { SystemClock, SystemIdGenerator } from "../core/system.js";
 import { createHttpApp } from "../http/create-http-app.js";
 import type {
@@ -94,6 +95,8 @@ export interface LocalRuntimeConfig {
   readonly externalMcpBearerVerifier?: BearerCredentialVerifier;
   readonly externalMcpOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly gitHistory?: NodeGitHistoryConfiguration;
+  /** Issuer groups that admit people and set their role, when configured. */
+  readonly groupRolePolicy?: GroupRolePolicy | null;
   /** Optional provider seam for real-boundary tests; production composes REST. */
   readonly gitHistoryHealthProbe?: GitHistoryProviderHealthProbe;
   /** Complete provider seam for conformance tests; production composes REST and Git. */
@@ -223,6 +226,7 @@ export async function createLocalRuntime(
     externalApiBearerVerifier: config.externalApiBearerVerifier ?? null,
     externalMcpBearerVerifier: config.externalMcpBearerVerifier ?? null,
     externalMcpOAuthVerifier: config.externalMcpOAuthVerifier ?? null,
+    groupRolePolicy: config.groupRolePolicy ?? null,
     ids: new SystemIdGenerator(),
     identityRepository,
     installationId,

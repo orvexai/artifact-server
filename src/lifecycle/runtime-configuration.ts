@@ -150,6 +150,8 @@ export interface RuntimeConfigurationSummary {
   };
   readonly installationId: string;
   readonly interactiveIdentityProvider: "local" | "oidc" | "workos";
+  /** Present only when generic OIDC group roles are configured. */
+  readonly oidcGroupRoles?: OidcGroupRolesSummary;
   readonly objectStorageProvider: "filesystem" | ObjectStorageProviderKind;
   readonly port: number;
   readonly readinessWithdrawalMilliseconds: number;
@@ -490,10 +492,37 @@ const parseS3ObjectStorage = Effect.fn("parseS3ObjectStorage")(
   },
 );
 
+/** Generic OIDC group roles as the configuration summary reports them. */
+export interface OidcGroupRolesSummary {
+  readonly administratorGroups: readonly string[];
+  readonly claim: string;
+  readonly memberGroups: readonly string[];
+}
+
 /** Render the safe, stable subset of one parsed runtime configuration. */
 export function summarizeRuntimeConfiguration(
   configuration: CompactRuntimeConfiguration | ExternalStorageRuntimeConfiguration,
   interactiveIdentityProvider: "local" | "oidc" | "workos" = "local",
+  oidcGroupRoles: OidcGroupRolesSummary | null = null,
+): RuntimeConfigurationSummary {
+  const summary = runtimeConfigurationSummary(
+    configuration,
+    interactiveIdentityProvider,
+  );
+  if (oidcGroupRoles === null) return summary;
+  return {
+    ...summary,
+    oidcGroupRoles: {
+      administratorGroups: oidcGroupRoles.administratorGroups,
+      claim: oidcGroupRoles.claim,
+      memberGroups: oidcGroupRoles.memberGroups,
+    },
+  };
+}
+
+function runtimeConfigurationSummary(
+  configuration: CompactRuntimeConfiguration | ExternalStorageRuntimeConfiguration,
+  interactiveIdentityProvider: "local" | "oidc" | "workos",
 ): RuntimeConfigurationSummary {
   if (configuration.deploymentMode === "compact") {
     return {

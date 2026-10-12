@@ -1,6 +1,10 @@
 import {type Redacted, Schema} from "effect";
 import {z} from "zod";
 
+import {
+  defaultOidcGroupsClaim,
+  type OidcGroupRoles,
+} from "../identity/oidc-groups-claim.js";
 import {defaultOidcScopes} from "../identity/oidc-identity-provider.js";
 import {requireOidcIssuer} from "../identity/oidc-issuer.js";
 import {
@@ -11,8 +15,11 @@ import {runCliEffect} from "./run-cli-effect.js";
 
 const oidcEnvironmentSchema = z.object({
   ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL: z.email().optional(),
+  ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_CLIENT_ID: z.string().min(1).optional(),
+  ARTIFACT_SERVER_OIDC_GROUPS_CLAIM: z.string().trim().min(1).optional(),
   ARTIFACT_SERVER_OIDC_ISSUER: z.string().min(1).optional(),
+  ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_SCOPES: z.string().min(1).optional(),
   ARTIFACT_SERVER_ORIGIN: z.url().optional(),
 });
@@ -23,6 +30,8 @@ export interface OidcConfiguration {
   readonly bootstrapAdministratorEmail: string;
   readonly clientId: string;
   readonly clientSecret: Redacted.Redacted | null;
+  /** Issuer groups that admit people and set their role; null keeps it manual. */
+  readonly groupRoles: OidcGroupRoles | null;
   readonly issuer: string;
   readonly scopes: string;
 }
@@ -41,7 +50,10 @@ export async function loadOidcConfiguration(
     clientSecret === null &&
     parsed.ARTIFACT_SERVER_OIDC_CLIENT_ID === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_ISSUER === undefined &&
-    parsed.ARTIFACT_SERVER_OIDC_SCOPES === undefined
+    parsed.ARTIFACT_SERVER_OIDC_SCOPES === undefined &&
+    parsed.ARTIFACT_SERVER_OIDC_GROUPS_CLAIM === undefined &&
+    parsed.ARTIFACT_SERVER_OIDC_MEMBER_GROUPS === undefined &&
+    parsed.ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS === undefined
   ) {
     return null;
   }
@@ -63,6 +75,7 @@ export async function loadOidcConfiguration(
     ),
     clientId: requireString(parsed.ARTIFACT_SERVER_OIDC_CLIENT_ID),
     clientSecret: credentialOrNull(clientSecret),
+    groupRoles: oidcGroupRoles(parsed),
     issuer: requireOidcIssuer(
       requireString(parsed.ARTIFACT_SERVER_OIDC_ISSUER),
       "ARTIFACT_SERVER_OIDC_ISSUER",
@@ -99,6 +112,45 @@ function hasBrowserLoginVariable(
   return Object.entries(environment).some(([name, value]) =>
     name.startsWith(prefix) && value !== undefined && value.trim() !== ""
   );
+}
+
+/** Read the opt-in group roles; with no group list set, admission stays manual. */
+function oidcGroupRoles(
+  parsed: z.infer<typeof oidcEnvironmentSchema>,
+): OidcGroupRoles | null {
+  const memberGroups = groupNames(
+    "ARTIFACT_SERVER_OIDC_MEMBER_GROUPS",
+    parsed.ARTIFACT_SERVER_OIDC_MEMBER_GROUPS,
+  );
+  const administratorGroups = groupNames(
+    "ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS",
+    parsed.ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS,
+  );
+  if (memberGroups.length === 0 && administratorGroups.length === 0) {
+    if (parsed.ARTIFACT_SERVER_OIDC_GROUPS_CLAIM !== undefined) {
+      throw new Error(
+        "ARTIFACT_SERVER_OIDC_GROUPS_CLAIM requires ARTIFACT_SERVER_OIDC_MEMBER_GROUPS or ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS.",
+      );
+    }
+    return null;
+  }
+  return {
+    administratorGroups,
+    claim: parsed.ARTIFACT_SERVER_OIDC_GROUPS_CLAIM ?? defaultOidcGroupsClaim,
+    memberGroups,
+  };
+}
+
+/** Split one comma-separated list of exact, case-sensitive group names. */
+function groupNames(name: string, value: string | undefined): readonly string[] {
+  if (value === undefined) return [];
+  const groups = [...new Set(
+    value.split(",").map((group) => group.trim()).filter((group) => group !== ""),
+  )];
+  if (groups.length === 0) {
+    throw new Error(`${name} must name at least one group.`);
+  }
+  return groups;
 }
 
 function credentialOrNull(value: LoadedSecret | null): Redacted.Redacted | null {

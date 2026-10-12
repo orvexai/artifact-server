@@ -32,6 +32,10 @@ import {
   type StoredManagedApiKey,
 } from "../core/installation-identity.js";
 import {
+  type GroupRolePolicy,
+  groupMembershipRole,
+} from "../core/group-role-policy.js";
+import {
   isHumanAdministrator,
   membershipRoles,
   principalCapabilities,
@@ -147,6 +151,15 @@ export interface InstallationIdentityRepository {
     ManagedApiKey,
     IdentityConflict | IdentityNotFound | IdentityRepositoryFailure
   >;
+  readonly setMemberRole: (
+    installationId: string,
+    memberId: string,
+    role: MembershipRole,
+    updatedAt: string,
+  ) => Effect.Effect<
+    InstallationMember,
+    IdentityNotFound | IdentityRepositoryFailure
+  >;
 }
 
 export interface IdentitySecretProvider {
@@ -172,6 +185,12 @@ export interface InstallationAccessDependencies {
   readonly authenticationCache?: AuthenticationCachePolicy | null;
   readonly bootstrapAdministratorEmail: string;
   readonly clock: {readonly now: () => Date};
+  /**
+   * Issuer groups that admit external identities and set their role. When
+   * present it replaces manual admission and the bootstrap-email rule for
+   * external identities; omit it or pass `null` to keep both.
+   */
+  readonly groupRolePolicy?: GroupRolePolicy | null;
   readonly ids: IdentityIdProvider;
   readonly installationId: string;
   readonly localBootstrapCredential: Redacted.Redacted | null;
@@ -220,6 +239,10 @@ export interface InstallationAccessOperations {
     Principal,
     IdentityAdmissionDenied | IdentityConflict | IdentityRepositoryFailure
   >;
+  /**
+   * Recognize an already-bound external subject without its profile. Answers
+   * null under an issuer group policy, whose groups must be read every time.
+   */
   readonly authenticateExternalSubject: (
     provider: string,
     subject: string,
@@ -327,6 +350,13 @@ function makeInstallationAccessService(
     : new AuthenticationCache<Principal>(cachePolicy);
   const cacheKey = (digest: string): string =>
     `${dependencies.installationId}:${digest}`;
+  // Session entries are keyed by token digest, not member, so the rare
+  // membership mutations clear the whole cache instead of indexing it.
+  const clearAuthenticationCaches = (): void => {
+    sessionCache?.clear();
+    apiKeyCache?.clear();
+  };
+  const groupRolePolicy = dependencies.groupRolePolicy ?? null;
 
   const issueSession = Effect.fn(
     "InstallationAccessService.issueSession",
@@ -439,6 +469,81 @@ function makeInstallationAccessService(
     return yield* issueSession(member);
   });
 
+  /**
+   * Make the member's state match the role its issuer groups grant: admit or
+   * restore it, change its role, or deactivate it and refuse admission.
+   */
+  const applyGroupRole = Effect.fn(
+    "InstallationAccessService.applyGroupRole",
+  )(function*(
+    policy: GroupRolePolicy,
+    identity: ExternalIdentity,
+    email: string,
+    member: InstallationMember | null,
+  ) {
+    const role = groupMembershipRole(policy, identity.groups);
+    const now = dependencies.clock.now().toISOString();
+    if (role === null) {
+      if (member !== null) {
+        // Deactivation keeps a last administrator in place; the issuer has
+        // already taken that role away, so demote before deactivating.
+        if (member.role !== membershipRoles.member) {
+          yield* dependencies.repository.setMemberRole(
+            dependencies.installationId,
+            member.id,
+            membershipRoles.member,
+            now,
+          );
+        }
+        yield* dependencies.repository.deactivateMember(
+          dependencies.installationId,
+          member.id,
+          now,
+        );
+        clearAuthenticationCaches();
+      }
+      return yield* Effect.fail(new IdentityAdmissionDenied({
+        message: "This person is not in a group admitted to the Artifact Server.",
+      }));
+    }
+    if (member !== null) {
+      if (member.role === role) return member;
+      const changed = yield* dependencies.repository.setMemberRole(
+        dependencies.installationId,
+        member.id,
+        role,
+        now,
+      );
+      clearAuthenticationCaches();
+      return changed;
+    }
+    // A member deactivated earlier keeps its email, so restore that member
+    // rather than admitting a second one under the same address.
+    const members = yield* dependencies.repository.listMembers(
+      dependencies.installationId,
+    );
+    const previous = members.find((candidate) => candidate.email === email);
+    if (previous !== undefined) {
+      return yield* dependencies.repository.setMemberRole(
+        dependencies.installationId,
+        previous.id,
+        role,
+        now,
+      );
+    }
+    return yield* dependencies.repository.admitMember({
+      createdAt: now,
+      displayName: identity.displayName,
+      email,
+      id: dependencies.ids.memberId(),
+      installationId: dependencies.installationId,
+      role,
+    });
+  }, Effect.catchTag("IdentityNotFound", () =>
+    Effect.fail(new IdentityConflict({
+      message: "The member changed while its groups were applied.",
+    }))));
+
   const resolveExternalMember = Effect.fn(
     "InstallationAccessService.resolveExternalMember",
   )(function*(identity: ExternalIdentity) {
@@ -459,7 +564,14 @@ function makeInstallationAccessService(
         email,
       );
     }
-    if (member === null) {
+    if (groupRolePolicy !== null) {
+      member = yield* applyGroupRole(
+        groupRolePolicy,
+        identity,
+        email,
+        member,
+      );
+    } else if (member === null) {
       const hasMembers = yield* dependencies.repository.hasMembers(
         dependencies.installationId,
       );
@@ -502,6 +614,7 @@ function makeInstallationAccessService(
   const authenticateExternalSubject = Effect.fn(
     "InstallationAccessService.authenticateExternalSubject",
   )(function*(provider: string, subject: string) {
+    if (groupRolePolicy !== null) return null;
     const member = yield* dependencies.repository.findActiveMemberByExternalIdentity(
       dependencies.installationId,
       provider,
@@ -636,10 +749,7 @@ function makeInstallationAccessService(
       memberId,
       dependencies.clock.now().toISOString(),
     );
-    // Session entries are keyed by token digest, not member, so this rare
-    // administrative mutation clears the whole cache instead of indexing it.
-    sessionCache?.clear();
-    apiKeyCache?.clear();
+    clearAuthenticationCaches();
     return member;
   });
 
