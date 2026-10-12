@@ -1,0 +1,114 @@
+---
+# Auto-build on push to `orvex`, the app side of MyIDP's shared CI.
+#
+# A standalone Tekton `Trigger` (NOT an EventListener). The platform's global
+# webhook listener (github-webhook-listener in tekton-pipelines) discovers any
+# Trigger there labelled `ci.my-idp/discover: "true"`. No per-repo
+# EventListener, webhook, ingress, RBAC or secret lives here.
+#
+# Flow: push to orvex -> org GitHub webhook -> platform listener -> this Trigger
+#       (filters repo + branch) -> artifact-server-build-template -> PipelineRun.
+#
+# Deployment stays digest-pinned and GitOps-only: take the run's IMAGE_DIGEST
+# result and set image.digest in orvexai/my-idp
+# platform/apps/artifact-server/values.yaml.
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: artifact-server-build-template
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/part-of: artifact-server-fork
+spec:
+  params:
+    - name: git-url
+      description: Clone URL (from the push payload)
+      default: https://github.com/orvexai/artifact-server.git
+    - name: git-revision
+      description: Commit SHA to build (from the push payload)
+      default: orvex
+    - name: image-tag
+      description: Image tag, orvex-<first 12 hex of the commit>
+      default: orvex
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        generateName: artifact-server-build-
+        namespace: tekton-pipelines
+        labels:
+          app.kubernetes.io/name: artifact-server-build
+          tekton.dev/pipeline: artifact-server-build
+      spec:
+        pipelineRef:
+          name: artifact-server-build
+        params:
+          - name: repo-url
+            value: $(tt.params.git-url)
+          - name: revision
+            value: $(tt.params.git-revision)
+          - name: image-tag
+            value: $(tt.params.image-tag)
+        taskRunTemplate:
+          serviceAccountName: tekton-smoke-test-builder
+          podTemplate:
+            securityContext:
+              fsGroup: 1000
+        workspaces:
+          - name: source
+            volumeClaimTemplate:
+              spec:
+                accessModes:
+                  - ReadWriteOnce
+                resources:
+                  requests:
+                    storage: 5Gi
+          - name: dockerconfig
+            secret:
+              secretName: tekton-harbor-credentials
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: Trigger
+metadata:
+  name: artifact-server-build-orvex
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/part-of: artifact-server-fork
+    # Opt in to discovery by the platform github-webhook-listener.
+    ci.my-idp/discover: "true"
+spec:
+  interceptors:
+    # Validate the shared webhook HMAC and only accept push events.
+    - ref:
+        name: github
+        kind: ClusterInterceptor
+      params:
+        - name: secretRef
+          value:
+            secretName: github-webhook-secret
+            secretKey: secret
+        - name: eventTypes
+          value: ["push"]
+    - ref:
+        name: cel
+        kind: ClusterInterceptor
+      params:
+        # Only pushes to the orvex branch of this fork.
+        - name: filter
+          value: "body.repository.full_name == 'orvexai/artifact-server' && body.ref == 'refs/heads/orvex'"
+        - name: overlays
+          value:
+            # Populate extensions.git-branch for the platform binding.
+            - key: git-branch
+              expression: "body.ref.replace('refs/heads/', '').replace('/', '-')"
+            - key: image-tag
+              expression: "'orvex-' + body.after.truncate(12)"
+  bindings:
+    # Platform-wide binding: extracts git-url and git-revision.
+    - ref: github-push-defaults
+      kind: ClusterTriggerBinding
+    - kind: TriggerBinding
+      name: image-tag
+      value: $(extensions.image-tag)
+  template:
+    ref: artifact-server-build-template

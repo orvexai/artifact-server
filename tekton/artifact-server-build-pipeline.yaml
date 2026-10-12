@@ -1,0 +1,119 @@
+---
+# Tekton Pipeline: build the Artifact Server OCI image from this fork and push it.
+#
+#   git-clone (orvexai/artifact-server @ revision) -> buildah packaging/oci/Dockerfile -> push
+#
+# Output: repos-direct.eu-central-1.myidp.cloud/artifact-server/artifact-server:<image-tag>
+# The pushed digest is the IMAGE_DIGEST result; MyIDP pins that digest in
+# platform/apps/artifact-server/values.yaml (orvexai/my-idp).
+#
+# Modeled on the orvexai/teleport fork's teleport-build. Reuses the
+# cluster-resident `git-clone` and `buildah-with-args` Tasks in tekton-pipelines.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: artifact-server-build
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: artifact-server-build-pipeline
+    app.kubernetes.io/component: ci-cd
+    app.kubernetes.io/part-of: artifact-server-fork
+spec:
+  description: |
+    Build and push the Artifact Server image (packaging/oci/Dockerfile) from the
+    orvexai/artifact-server fork for MyIDP.
+
+  params:
+    - name: repo-url
+      type: string
+      description: Git repository URL
+      default: https://github.com/orvexai/artifact-server.git
+
+    - name: revision
+      type: string
+      description: Git revision (branch, tag, or commit SHA)
+      default: orvex
+
+    - name: image-registry
+      type: string
+      description: Container registry (push target). repos-direct bypasses the
+        Cloudflare proxy, which 500s on chunked uploads from inside the cluster.
+      default: repos-direct.eu-central-1.myidp.cloud
+
+    - name: image-namespace
+      type: string
+      description: Harbor project
+      default: artifact-server
+
+    - name: image-tag
+      type: string
+      description: Image tag
+      default: orvex
+
+    - name: image-version
+      type: string
+      description: org.opencontainers.image.version label. Keep in step with
+        package.json "version" when rebasing onto a new upstream release.
+      default: "0.1.2"
+
+  workspaces:
+    - name: source
+      description: Workspace for source code (also the buildah build context)
+
+    - name: dockerconfig
+      description: Docker registry credentials
+
+  results:
+    - name: IMAGE_DIGEST
+      description: Digest of the pushed image
+      value: $(tasks.build-and-push.results.IMAGE_DIGEST)
+    - name: IMAGE_URL
+      description: Image reference that was pushed
+      value: $(tasks.build-and-push.results.IMAGE_URL)
+
+  tasks:
+    - name: clone-repo
+      taskRef:
+        kind: Task
+        name: git-clone
+      workspaces:
+        - name: output
+          workspace: source
+      params:
+        - name: url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.revision)
+
+    - name: build-and-push
+      runAfter:
+        - clone-repo
+      taskRef:
+        kind: Task
+        name: buildah-with-args
+      workspaces:
+        - name: source
+          workspace: source
+        - name: dockerconfig
+          workspace: dockerconfig
+      params:
+        - name: IMAGE
+          value: "$(params.image-registry)/$(params.image-namespace)/artifact-server:$(params.image-tag)"
+        - name: DOCKERFILE
+          value: "packaging/oci/Dockerfile"
+        - name: CONTEXT
+          value: "."
+        - name: BUILD_ARG_1
+          # Same node image digest as upstream's Dockerfile default, pulled
+          # through the Harbor Docker Hub cache instead of docker.io.
+          value: "NODE_IMAGE=repos.eu-central-1.myidp.cloud/dockerhub-cache/library/node:24.12.0-bookworm-slim@sha256:7326fb2dbdce998edd72140946851be64ef4a643e8715e138ca467e8e9d92c99"
+        - name: BUILD_ARG_2
+          value: "IMAGE_REVISION=$(tasks.clone-repo.results.commit)"
+        - name: BUILD_ARG_3
+          value: "IMAGE_SOURCE=$(params.repo-url)"
+        - name: BUILD_ARG_4
+          value: "IMAGE_VERSION=$(params.image-version)"
+        - name: TLS_VERIFY
+          # repos-direct serves a cert the buildah container's CA bundle doesn't
+          # trust; the push stays on the cluster network so we trust it implicitly.
+          value: "false"
