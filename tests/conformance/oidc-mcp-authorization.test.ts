@@ -349,7 +349,7 @@ describe("generic OIDC MCP authorization", () => {
       issueToken({idToken: true}))).rejects.toThrow("ID token is not");
   });
 
-  test("an OIDC access token uploads and publishes the files of its own MCP upload plan", async () => {
+  test("an OIDC MCP upload URL uploads once without exposing the access token", async () => {
     const token = await issueToken({});
     const bytes = new TextEncoder().encode("<!doctype html><title>oidc</title>\n");
     const plan = await callTool(token, "artifact_create_upload", {
@@ -358,9 +358,11 @@ describe("generic OIDC MCP authorization", () => {
     }, uploadPlanSchema);
 
     const [file] = plan.files;
-    expect(file?.authorization.credential).toBe("reuse_the_mcp_bearer_credential");
-    const uploaded = await putPlanFile(plan.files[0]?.uploadUrl, token, bytes);
+    expect(file?.authorization).toBe("short_lived_single_use_upload_url");
+    const uploaded = await putPlanFile(plan.files[0]?.uploadUrl, bytes);
     expect(uploaded.status).toBe(200);
+    const replayed = await putPlanFile(plan.files[0]?.uploadUrl, bytes);
+    expect([400, 404, 409, 410]).toContain(replayed.status);
 
     const published = await callTool(token, "artifact_commit_upload", {
       idempotencyKey: `oidc-upload-${crypto.randomUUID()}`,
@@ -370,7 +372,7 @@ describe("generic OIDC MCP authorization", () => {
     expect(published.links.review).toContain("/review");
   });
 
-  test("an OIDC access token opens no other API route, no other principal's upload, and no wrong resource", async () => {
+  test("an OIDC access token cannot open other API routes or the ordinary upload endpoint", async () => {
     const token = await issueToken({});
     const bytes = new TextEncoder().encode("hostile\n");
     const declared = {
@@ -378,8 +380,8 @@ describe("generic OIDC MCP authorization", () => {
       files: [declaredFile("index.html", "text/plain", bytes)],
     };
 
-    // Only the staged-file write takes the MCP credential; the rest of the
-    // API keeps its own contract.
+    // The short-lived upload URL is the only unauthenticated write capability;
+    // the rest of the API keeps its API-credential contract.
     const keys = await fetch(`${server.baseUrl}/api/v1/api-keys`, {
       headers: {Authorization: `Bearer ${token}`},
     });
@@ -391,30 +393,6 @@ describe("generic OIDC MCP authorization", () => {
     });
     expect(restCreate.status).toBe(401);
 
-    // Another principal's upload stays closed to this person.
-    const foreign = await callTool(
-      installation.apiToken,
-      "artifact_create_upload",
-      declared,
-      uploadPlanSchema,
-    );
-    const crossed = await putPlanFile(foreign.files[0]?.uploadUrl, token, bytes);
-    expect(crossed.ok).toBe(false);
-    expect([401, 403, 404]).toContain(crossed.status);
-
-    // Tokens /mcp refuses are refused here too.
-    const own = await callTool(token, "artifact_create_upload", declared, uploadPlanSchema);
-    const hostileTokens = await Promise.all([
-      issueToken({audience: "artifact-server"}),
-      issueToken({audience: "https://attacker.example/mcp"}),
-      issueToken({idToken: true}),
-      issueToken({expiresAt: Math.floor(Date.now() / 1_000) - 60}),
-    ]);
-    const hostileResponses = await Promise.all(hostileTokens.map((hostile) =>
-      putPlanFile(own.files[0]?.uploadUrl, hostile, bytes)
-    ));
-    expect(hostileResponses.map((response) => response.status))
-      .toEqual([401, 401, 401, 401]);
   });
 
   async function callTool<Output>(
@@ -462,14 +440,12 @@ describe("generic OIDC MCP authorization", () => {
   /** PUT to the plan's URL path on this test server, whatever its origin. */
   function putPlanFile(
     uploadUrl: string | undefined,
-    token: string,
     bytes: Uint8Array,
   ): Promise<Response> {
     if (uploadUrl === undefined) throw new Error("The upload plan has no file.");
     const planned = new URL(uploadUrl);
     return fetch(new URL(`${planned.pathname}${planned.search}`, server.baseUrl), {
       body: Buffer.from(bytes),
-      headers: {Authorization: `Bearer ${token}`},
       method: "PUT",
     });
   }
@@ -705,7 +681,7 @@ const publishedVersionSchema = z.object({
 
 const uploadPlanSchema = z.object({
   files: z.array(z.object({
-    authorization: z.object({credential: z.string()}).loose(),
+    authorization: z.literal("short_lived_single_use_upload_url"),
     uploadUrl: z.string(),
   }).loose()).min(1),
   uploadId: z.string(),

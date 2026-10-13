@@ -2400,6 +2400,29 @@ export class SqliteArtifactRepository implements
     );
   }
 
+  findStagedUploadByFileCapability(
+    uploadId: string,
+    storageToken: string,
+  ): Promise<StagedUpload | null> {
+    return Promise.resolve().then(() => {
+      const owner = z.object({
+        principalId: z.string(),
+        projectId: z.string(),
+      }).nullable().parse(this.#database.prepare(`
+        SELECT upload.project_id AS projectId,
+          upload.principal_id AS principalId
+        FROM staged_uploads AS upload
+        JOIN staged_upload_files AS file ON file.upload_id = upload.id
+        WHERE upload.id = ? AND file.storage_token = ?
+      `).get(uploadId, storageToken) ?? null);
+      return owner === null ? null : this.#readStagedUploadOrNull(
+        owner.projectId,
+        uploadId,
+        owner.principalId,
+      );
+    });
+  }
+
   listExpiredStagedUploads(
     expiredBefore: string,
     limit: number,
@@ -2464,6 +2487,7 @@ export class SqliteArtifactRepository implements
              SET uploaded_at = ?
              WHERE upload_id = ?
                AND storage_token = ?
+               AND uploaded_at IS NULL
                AND EXISTS (
                  SELECT 1 FROM staged_uploads u
                  WHERE u.id = staged_upload_files.upload_id
@@ -2499,6 +2523,13 @@ export class SqliteArtifactRepository implements
           }
           if (upload.expiresAt <= uploadedAt) {
             throw new UploadExpired({message: "The staged upload has expired."});
+          }
+          if (upload.files.some((file) =>
+            file.storageToken === storageToken && file.uploadedAt !== null
+          )) {
+            throw new UploadFileNotFound({
+              message: "The staged upload file capability has already been used.",
+            });
           }
           throw new UploadFileNotFound({
             message: "The staged upload file does not exist.",

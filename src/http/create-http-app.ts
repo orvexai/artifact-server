@@ -799,6 +799,12 @@ export function createHttpApp(
 
   app.use("/api/*", async (context, next) => {
     const authorization = context.req.header("authorization");
+    if (
+      authorization === undefined &&
+      isMcpUploadCapabilityRequest(context)
+    ) {
+      return next();
+    }
     if (authorization !== undefined) {
       const parsed = bearerSchema.safeParse(authorization);
       if (!parsed.success) {
@@ -2224,6 +2230,34 @@ export function createHttpApp(
       uploadId: upload.id,
     });
   });
+
+  app.put(
+    "/api/v1/mcp-uploads/:uploadId/files/:storageToken",
+    async (context) => {
+      const upload = await runHttpApplicationEffect(
+        context,
+        dependencies,
+        StagedUploadService.use((stagedUploads) =>
+          stagedUploads.uploadFileWithCapability({
+            body: context.req.raw.body ?? emptyByteStream(),
+            storageToken: context.req.param("storageToken"),
+            uploadId: context.req.param("uploadId"),
+          })
+        ),
+      );
+      const file = upload.files.find(
+        (candidate) => candidate.storageToken === context.req.param("storageToken"),
+      );
+      if (file === undefined) {
+        throw new Error("A staged file disappeared after it was marked as uploaded.");
+      }
+      return context.json({
+        path: file.entry.path,
+        status: "verified" as const,
+        uploadId: upload.id,
+      });
+    },
+  );
 
   app.post(
     "/api/v1/uploads/:uploadId/commit",
@@ -4103,9 +4137,17 @@ function redirectToReview(
 }
 
 const stagedUploadFilePath = /^\/api\/v1\/uploads\/[^/]+\/files\/[^/]+$/u;
+const mcpUploadCapabilityPath =
+  /^\/api\/v1\/mcp-uploads\/[^/]+\/files\/[^/]+$/u;
 
 /** Whether this request writes one file of a staged upload plan. */
 function isStagedUploadFileRequest(context: Context): boolean {
   return context.req.method === "PUT"
     && stagedUploadFilePath.test(context.req.path);
+}
+
+/** Whether this request presents a scoped MCP upload URL capability. */
+function isMcpUploadCapabilityRequest(context: Context): boolean {
+  return context.req.method === "PUT"
+    && mcpUploadCapabilityPath.test(context.req.path);
 }
