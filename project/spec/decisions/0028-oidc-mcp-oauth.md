@@ -103,6 +103,12 @@ failure instead of blaming the credential.
 
 ### Discovery runs at startup, and a down issuer only turns MCP OAuth off
 
+> **Superseded** by [0029: OIDC discovery retries, and an undiscovered issuer
+> holds readiness](0029-oidc-discovery-retry-and-readiness.md). A transient
+> discovery failure is now retried in the background and holds `/ready` at
+> 503 until OAuth turns on without a restart; only a contradictory discovery
+> document keeps the behavior described below.
+
 The protected-resource document cannot be served without the discovery
 document, so it is read once at startup, like the WorkOS path reads its
 authorization-server metadata. Unlike that path, a discovery failure is not

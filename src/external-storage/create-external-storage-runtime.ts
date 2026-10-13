@@ -18,6 +18,7 @@ import {SystemClock, SystemIdGenerator} from "../core/system.js";
 import {createHttpApp} from "../http/create-http-app.js";
 import type {
   ApiOAuthResourceConfiguration,
+  DiscoveredOAuthResources,
   HttpAppDependencies,
   McpOAuthResourceConfiguration,
 } from "../http/create-http-app.js";
@@ -81,6 +82,8 @@ export interface ExternalStorageRuntimeConfig {
   readonly completedRequestLogSampleRate?: number;
   readonly contentDomain: string;
   readonly databaseUrl: Redacted.Redacted;
+  /** OIDC OAuth that turns on when the issuer is discovered, instead of the static resources. */
+  readonly discoveredOAuth?: DiscoveredOAuthResources;
   readonly externalApiBearerVerifier?: BearerCredentialVerifier;
   readonly externalApiOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly externalMcpBearerVerifier?: BearerCredentialVerifier;
@@ -270,6 +273,12 @@ export async function createExternalStorageRuntime(
       appDependencies = {
         ...appDependencies,
         mcpOAuthResource: config.mcpOAuthResource,
+      };
+    }
+    if (config.discoveredOAuth !== undefined) {
+      appDependencies = {
+        ...appDependencies,
+        discoveredOAuth: config.discoveredOAuth,
       };
     }
     const closeCleanupSchedule = stagingCleanupPolicy.schedule === "background"

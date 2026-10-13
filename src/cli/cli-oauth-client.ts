@@ -284,21 +284,32 @@ export const refreshCliOAuthCredential = Effect.fn("CliOAuth.refresh")(
     });
     return yield* Effect.tryPromise({
       try: async () => {
-        const result = await auth(provider, {
-          resourceMetadataUrl: protectedResourceMetadataUrl(origin),
-          scope: cliScope,
-          serverUrl: new URL("/api", origin),
-        });
-        if (result !== "AUTHORIZED") {
-          throw new Error("OAuth refresh requires a new login.");
+        try {
+          const result = await auth(provider, {
+            resourceMetadataUrl: protectedResourceMetadataUrl(origin),
+            scope: cliScope,
+            serverUrl: new URL("/api", origin),
+          });
+          if (result !== "AUTHORIZED") {
+            throw new Error("OAuth refresh requires a new login.");
+          }
+        } catch (cause) {
+          // A server still discovering its issuer cannot renew anything yet,
+          // and a new login would fail the same way: say so, and keep the grant.
+          if (await oauthTemporarilyUnavailable(origin)) {
+            throw temporarilyUnavailableError();
+          }
+          throw cause;
         }
         return provider.storedCredential();
       },
-      catch: () => new CliAuthenticationError({
-        message:
-          "The Artifact Server browser grant could not be renewed. Run artifactserver auth login again.",
-        reason: "credential_revoked",
-      }),
+      catch: (cause) => cause instanceof CliAuthenticationError
+        ? cause
+        : new CliAuthenticationError({
+          message:
+            "The Artifact Server browser grant could not be renewed. Run artifactserver auth login again.",
+          reason: "credential_revoked",
+        }),
     });
   },
 );
@@ -341,6 +352,28 @@ export const revokeCliOAuthCredential = Effect.fn("CliOAuth.revoke")(
     });
   },
 );
+
+/** Report whether the API metadata answers 503: OAuth exists but is not up yet. */
+async function oauthTemporarilyUnavailable(origin: string): Promise<boolean> {
+  try {
+    const response = await fetch(protectedResourceMetadataUrl(origin), {
+      headers: {Accept: "application/json"},
+      signal: AbortSignal.timeout(10_000),
+    });
+    await response.body?.cancel();
+    return response.status === 503;
+  } catch {
+    return false;
+  }
+}
+
+function temporarilyUnavailableError(): CliAuthenticationError {
+  return new CliAuthenticationError({
+    message:
+      "This Artifact Server has not connected to its identity provider yet, so browser authorization is temporarily unavailable. Try again shortly.",
+    reason: "server_unavailable",
+  });
+}
 
 /** Exact RFC 9728 path for the Artifact Server HTTP API resource. */
 export function protectedResourceMetadataUrl(origin: string): URL {
@@ -528,6 +561,7 @@ function verifyProtectedResourceMetadata(
           reason: "browser_authorization_unavailable",
         });
       }
+      if (response.status === 503) throw temporarilyUnavailableError();
       if (!response.ok) throw new Error("metadata request failed");
       const metadata = protectedResourceMetadataSchema.parse(await response.json());
       if (

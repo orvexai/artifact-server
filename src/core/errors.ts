@@ -18,6 +18,7 @@ export const errorCodes = {
   identityConflict: "IDENTITY_CONFLICT",
   identityNotFound: "IDENTITY_NOT_FOUND",
   identityProviderFailure: "IDENTITY_PROVIDER_FAILURE",
+  identityProviderUnavailable: "IDENTITY_PROVIDER_UNAVAILABLE",
   interactiveLoginUnavailable: "INTERACTIVE_LOGIN_UNAVAILABLE",
   invalidComment: "INVALID_COMMENT",
   invalidDispatch: "INVALID_DISPATCH",

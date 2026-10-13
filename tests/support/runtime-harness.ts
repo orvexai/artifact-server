@@ -23,6 +23,7 @@ import type {GitHistoryProvider} from
   "../../src/git-history/git-history-mirror.js";
 import type {
   ApiOAuthResourceConfiguration,
+  DiscoveredOAuthResources,
   McpOAuthResourceConfiguration,
 } from "../../src/http/create-http-app.js";
 import type {Clock} from "../../src/core/ports.js";
@@ -91,6 +92,7 @@ export async function startTestServer(
     readonly clock?: Clock;
     readonly completedRequestLogSampleRate?: number;
     readonly developmentProxyCredential?: string;
+    readonly discoveredOAuth?: DiscoveredOAuthResources;
     readonly externalApiBearerVerifier?: BearerCredentialVerifier;
     readonly externalApiOAuthVerifier?: ExternalMcpBearerVerifier;
     readonly externalMcpBearerVerifier?: BearerCredentialVerifier;
@@ -132,6 +134,9 @@ export async function startTestServer(
   }
   if (options.apiOAuthResource !== undefined) {
     config = {...config, apiOAuthResource: options.apiOAuthResource};
+  }
+  if (options.discoveredOAuth !== undefined) {
+    config = {...config, discoveredOAuth: options.discoveredOAuth};
   }
   if (options.externalApiBearerVerifier !== undefined) {
     config = {
