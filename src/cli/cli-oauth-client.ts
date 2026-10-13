@@ -1,4 +1,5 @@
 import {spawn} from "node:child_process";
+import {createInterface} from "node:readline/promises";
 import {randomBytes} from "node:crypto";
 import {createServer, type Server} from "node:http";
 import path from "node:path";
@@ -56,15 +57,39 @@ export const loginWithBrowserOAuth = Effect.fn("CliOAuth.login")(
     origin: string,
     environment: NodeJS.ProcessEnv = process.env,
   ): Effect.fn.Return<CliOAuthLoginResult, CliAuthenticationError> {
+    return yield* loginWithOAuth(origin, false, environment);
+  },
+);
+
+/** Complete OAuth login on a headless host by accepting a pasted redirect code. */
+export const loginWithHeadlessOAuth = Effect.fn("CliOAuth.loginHeadless")(
+  function*(
+    origin: string,
+    environment: NodeJS.ProcessEnv = process.env,
+  ): Effect.fn.Return<CliOAuthLoginResult, CliAuthenticationError> {
+    return yield* loginWithOAuth(origin, true, environment);
+  },
+);
+
+function loginWithOAuth(
+  origin: string,
+  headless: boolean,
+  environment: NodeJS.ProcessEnv,
+): Effect.Effect<CliOAuthLoginResult, CliAuthenticationError> {
+  return Effect.gen(function*() {
     const resource = new URL("/api", origin);
     const metadataUrl = protectedResourceMetadataUrl(origin);
     yield* verifyProtectedResourceMetadata(resource, metadataUrl);
     const state = randomBytes(32).toString("base64url");
     const callback = yield* openLoopbackCallback(state);
+    // Headless login consumes a pasted redirect, so nobody awaits the loopback
+    // listener's promise. Observe a timeout or stray callback rejection anyway.
+    if (headless) void callback.result.catch(() => undefined);
     const provider = new ArtifactServerOAuthProvider({
       environment,
       redirectUrl: callback.redirectUrl,
       state,
+      headless,
     });
     const result = yield* Effect.tryPromise({
       try: async () => {
@@ -77,7 +102,10 @@ export const loginWithBrowserOAuth = Effect.fn("CliOAuth.login")(
           if (started !== "REDIRECT") {
             throw new Error("OAuth login did not require browser authorization.");
           }
-          const query = await callback.result;
+          const query = headless
+            ? parseHeadlessCallbackPaste(await promptForHeadlessCallback(), state)
+            : await callback.result;
+          if (query.state !== state) throw new Error("The OAuth callback state was invalid.");
           const completed = query.iss === undefined
             ? await auth(provider, {
               authorizationCode: query.code,
@@ -103,14 +131,41 @@ export const loginWithBrowserOAuth = Effect.fn("CliOAuth.login")(
       catch: (cause) => cause instanceof CliAuthenticationError
         ? cause
         : new CliAuthenticationError({
-          message:
-            "Browser authorization did not complete. Check the server's OAuth configuration and run auth login again.",
+          message: headless
+            ? "Headless OAuth authorization did not complete. Check the pasted code and server OAuth configuration, then run auth login again."
+            : "Browser authorization did not complete. Check the server's OAuth configuration and run auth login again.",
           reason: "oauth_failed",
         }),
     });
     return {credential: result};
-  },
-);
+  });
+}
+
+export function parseHeadlessCallbackPaste(value: string, expectedState: string): z.infer<typeof callbackQuerySchema> {
+  const pasted = value.trim();
+  if (!pasted) throw new Error("Paste the authorization code or redirect URL.");
+  if (!pasted.includes("://")) {
+    return callbackQuerySchema.parse({code: pasted, state: expectedState});
+  }
+  const url = new URL(pasted);
+  if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
+    || url.pathname !== "/oauth/callback") {
+    throw new Error("Paste the full loopback OAuth redirect URL or its authorization code.");
+  }
+  const parsed = callbackQuerySchema.parse(Object.fromEntries(url.searchParams));
+  if (parsed.state !== expectedState) throw new Error("The OAuth callback state was invalid.");
+  return parsed;
+}
+
+async function promptForHeadlessCallback(): Promise<string> {
+  process.stderr.write("Paste the authorization code or the full redirect URL: ");
+  const terminal = createInterface({input: process.stdin, output: process.stderr});
+  try {
+    return await terminal.question("");
+  } finally {
+    terminal.close();
+  }
+}
 
 /** Refresh an OAuth profile without opening a browser. */
 export const refreshCliOAuthCredential = Effect.fn("CliOAuth.refresh")(
@@ -200,6 +255,7 @@ interface OAuthProviderOptions {
   readonly environment: NodeJS.ProcessEnv;
   readonly redirectUrl: string;
   readonly rejectBrowserRedirect?: boolean;
+  readonly headless?: boolean;
   readonly state: string;
   readonly stored?: Extract<StoredCliCredential, {readonly kind: "oauth"}>;
 }
@@ -209,6 +265,7 @@ class ArtifactServerOAuthProvider implements OAuthClientProvider {
   readonly redirectUrl: string;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #rejectBrowserRedirect: boolean;
+  readonly #headless: boolean;
   readonly #state: string;
   #clientInformation: StoredOAuthClientInformation | undefined;
   #codeVerifier: string | undefined;
@@ -219,6 +276,7 @@ class ArtifactServerOAuthProvider implements OAuthClientProvider {
   constructor(options: OAuthProviderOptions) {
     this.#environment = options.environment;
     this.#rejectBrowserRedirect = options.rejectBrowserRedirect ?? false;
+    this.#headless = options.headless ?? false;
     this.#state = options.state;
     this.redirectUrl = options.redirectUrl;
     this.#clientInformation = options.stored?.clientInformation;
@@ -272,6 +330,14 @@ class ArtifactServerOAuthProvider implements OAuthClientProvider {
   redirectToAuthorization(url: URL): Promise<void> {
     if (this.#rejectBrowserRedirect) {
       return Promise.reject(new Error("A new browser login is required."));
+    }
+    if (this.#headless) {
+      process.stderr.write(`
+Open this authorization URL on a machine with a browser:
+${url}
+
+`);
+      return Promise.resolve();
     }
     return openSystemBrowser(url, this.#environment);
   }
