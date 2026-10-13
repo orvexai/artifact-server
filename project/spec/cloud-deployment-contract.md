@@ -206,6 +206,7 @@ the application fail at startup.
 | `ARTIFACT_SERVER_WORKOS_API_KEY_FILE` or `ARTIFACT_SERVER_WORKOS_API_KEY` | Hosted login only; provider secret reference |
 | `ARTIFACT_SERVER_OIDC_ISSUER` | Generic OIDC login only; exact issuer URL, HTTPS with no query or fragment |
 | `ARTIFACT_SERVER_OIDC_API_RESOURCE` | Optional API OAuth resource/audience URL; defaults to `<ARTIFACT_SERVER_ORIGIN>/api` |
+| `ARTIFACT_SERVER_OIDC_API_JWKS_URI` | Optional API verifier JWKS override; HTTPS, except HTTP for a local OIDC issuer (`localhost`, `127.0.0.1`, or `::1`) |
 | `ARTIFACT_SERVER_OIDC_CLIENT_ID` | Generic OIDC login only; registered client for this installation |
 | `ARTIFACT_SERVER_OIDC_CLIENT_SECRET_FILE` or `ARTIFACT_SERVER_OIDC_CLIENT_SECRET` | Generic OIDC login only; optional provider secret reference, omitted for a public PKCE client |
 | `ARTIFACT_SERVER_OIDC_SCOPES` | Generic OIDC login only; defaults to `openid email profile` |

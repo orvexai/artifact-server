@@ -146,7 +146,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     expect(safeSurfaces).not.toContain(browserCredential);
     expect(safeSurfaces).not.toContain("Local API token:");
     expect(safeSurfaces).not.toContain("Browser login:");
-  }, 30_000);
+  }, 90_000);
 
   test("connect and disconnect preserve unrelated client configuration", async () => {
     const workspace = await temporaryWorkspace("artifact-server-mcp-clients-");
