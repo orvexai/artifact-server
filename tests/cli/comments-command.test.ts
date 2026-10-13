@@ -67,7 +67,13 @@ describe("listArtifactComments", () => {
       }
       return new Response(JSON.stringify({
         replies: [{
-          author: {displayName: "Reviewer"},
+          author: {
+            actor: {clientId: "artifact-server", kind: "mcp-client"},
+            authorizedByPrincipalId: null,
+            displayName: "MCP client artifact-server for Reviewer",
+            principalId: "human-reviewer-1",
+            principalKind: "human",
+          },
           body: "Please clarify this step.",
           createdAt: "2026-10-13T00:01:00.000Z",
           id: "reply-1",
@@ -91,6 +97,20 @@ describe("listArtifactComments", () => {
     expect(items[0]?.replies?.map((reply) => reply.body)).toEqual([
       "Please clarify this step.",
     ]);
+    expect(items[0]?.author).toEqual({
+      actor: {clientId: "artifact-server", kind: "mcp-client"},
+      authorizedByPrincipalId: null,
+      displayName: "MCP client artifact-server for Reviewer",
+      principalId: "human-reviewer-1",
+      principalKind: "human",
+    });
+    expect(items[0]?.replies?.[0]?.author).toEqual({
+      actor: {clientId: "artifact-server", kind: "mcp-client"},
+      authorizedByPrincipalId: null,
+      displayName: "MCP client artifact-server for Reviewer",
+      principalId: "human-reviewer-1",
+      principalKind: "human",
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });
@@ -98,7 +118,13 @@ describe("listArtifactComments", () => {
 function thread(id: string) {
   return {
     artifactId: "artifact/one",
-    author: {displayName: "Reviewer"},
+    author: {
+      actor: {clientId: "artifact-server", kind: "mcp-client"},
+      authorizedByPrincipalId: null,
+      displayName: "MCP client artifact-server for Reviewer",
+      principalId: "human-reviewer-1",
+      principalKind: "human",
+    },
     body: `Feedback ${id}`,
     createdAt: "2026-10-13T00:00:00.000Z",
     id,
