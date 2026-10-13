@@ -63,7 +63,8 @@ export interface McpHttpAdapterDependencies {
   readonly gitHistory: GitHistoryCapabilityReader;
   readonly linkedArtifacts?: boolean;
   readonly mode: ArtifactMcpServerDependencies["mode"];
-  readonly oauthResource: string | null;
+  /** The OAuth protected resource in force for this request, if any. */
+  readonly oauthResource: () => string | null;
 }
 
 /** Stateless MCP HTTP adapter mounted by every Artifact Server deployment. */
@@ -126,11 +127,12 @@ export function createMcpHttpAdapter(
             authenticateToken(dependencies, token, requestId),
         },
       };
-      if (dependencies.oauthResource !== null) {
+      const oauthResource = dependencies.oauthResource();
+      if (oauthResource !== null) {
         bearerOptions = {
           ...bearerOptions,
           resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(
-            new URL(dependencies.oauthResource),
+            new URL(oauthResource),
           ),
         };
       }

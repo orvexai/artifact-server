@@ -11,12 +11,11 @@ import {
   startExternalStorageServer,
   type ExternalStorageServerConfig,
 } from "../external-storage/start-external-storage-server.js";
+import type {DiscoveryEvent} from "../identity/discovery-retry.js";
 import {
-  createOidcHostedAuthentication,
-  type OidcHostedAuthentication,
+  startOidcHostedAuthentication,
+  type StartedOidcHostedAuthentication,
 } from "../identity/oidc-hosted-authentication.js";
-import {createOidcIdentityProvider} from
-  "../identity/oidc-identity-provider.js";
 import {createWorkOsHostedAuthentication} from
   "../identity/workos-hosted-authentication.js";
 import {KeycloakDirectory} from "../identity/keycloak-directory.js";
@@ -369,7 +368,7 @@ function configureExternalStorageStart(
         : await createWorkOsHostedAuthentication(workOs);
       const oidcAuthentication = oidc === null
         ? null
-        : await oidcAuthenticationOrBrowserOnly(oidc);
+        : await startOidcAuthentication(oidc);
       const browserAccess = hostedAuthentication !== null
         ? privateTeamBrowserAccess(browserLoginKinds.workOs)
         : oidc !== null
@@ -404,7 +403,7 @@ function configureExternalStorageStart(
       if (oidcAuthentication !== null) {
         serverConfig = {
           ...serverConfig,
-          ...oidcAuthentication,
+          ...oidcServerAuthentication(oidcAuthentication),
         };
       }
       const server = await startExternalStorageServer(serverConfig);
@@ -414,7 +413,10 @@ function configureExternalStorageStart(
       console.log(
         `Artifact Server (external-storage): http://${displayHostname}:${server.port}`,
       );
-      await waitForProcessSignal(() => server.close());
+      await waitForProcessSignal(async () => {
+        oidcAuthentication?.close();
+        await server.close();
+      });
     });
 }
 
@@ -441,7 +443,7 @@ async function startCompactServer(
     : await createWorkOsHostedAuthentication(workOs);
   const oidcAuthentication = oidc === null
     ? null
-    : await oidcAuthenticationOrBrowserOnly(oidc);
+    : await startOidcAuthentication(oidc);
   const browserAccess = hostedAuthentication !== null
     ? privateTeamBrowserAccess(browserLoginKinds.workOs)
     : oidc !== null
@@ -477,35 +479,67 @@ async function startCompactServer(
   if (oidcAuthentication !== null) {
     serverConfig = {
       ...serverConfig,
-      ...oidcAuthentication,
+      ...oidcServerAuthentication(oidcAuthentication),
     };
   }
-  return startLocalServer(serverConfig);
+  const server = await startLocalServer(serverConfig);
+  return {
+    hostname: server.hostname,
+    port: server.port,
+    close: async () => {
+      oidcAuthentication?.close();
+      await server.close();
+    },
+  };
 }
 
-type OidcServerAuthentication =
-  | OidcHostedAuthentication
-  | Pick<
-    OidcHostedAuthentication,
-    "groupRolePolicy" | "interactiveIdentityProvider"
-  >;
-
-/** MCP OAuth needs the issuer at startup; browser login must survive it being down. */
-async function oidcAuthenticationOrBrowserOnly(
+/**
+ * Start OIDC authentication whose OAuth follows issuer discovery.
+ *
+ * An issuer that is down at startup no longer turns MCP and API OAuth off for
+ * the life of the process: discovery keeps retrying with capped backoff, the
+ * process reports not ready meanwhile, and OAuth turns on without a restart.
+ * Only a discovery document that contradicts the configuration leaves OAuth
+ * off, as before, and that is reported as a configuration error.
+ */
+function startOidcAuthentication(
   oidc: OidcConfiguration,
-): Promise<OidcServerAuthentication> {
-  try {
-    return await createOidcHostedAuthentication(oidc);
-  } catch (cause) {
-    const reason = cause instanceof Error ? cause.message : "the request failed";
-    process.stderr.write(
-      `OIDC configuration warning (discovery_failed): MCP OAuth stays off for ${oidc.issuer}: ${reason}\n`,
-    );
-    return {
-      groupRolePolicy: oidc.groupRoles,
-      interactiveIdentityProvider: createOidcIdentityProvider(oidc),
-    };
+): Promise<StartedOidcHostedAuthentication> {
+  return startOidcHostedAuthentication(oidc, {
+    onEvent: (event) => {
+      process.stderr.write(oidcDiscoveryMessage(oidc.issuer, event));
+    },
+  });
+}
+
+function oidcServerAuthentication(
+  started: StartedOidcHostedAuthentication,
+): Omit<StartedOidcHostedAuthentication, "close"> {
+  return {
+    discoveredOAuth: started.discoveredOAuth,
+    externalApiOAuthVerifier: started.externalApiOAuthVerifier,
+    externalMcpOAuthVerifier: started.externalMcpOAuthVerifier,
+    groupRolePolicy: started.groupRolePolicy,
+    interactiveIdentityProvider: started.interactiveIdentityProvider,
+  };
+}
+
+/** One operator-facing stderr line per discovery transition. */
+function oidcDiscoveryMessage(
+  issuer: string,
+  event: DiscoveryEvent,
+): string {
+  if (event.kind === "retrying") {
+    return `OIDC configuration warning (discovery_failed): API and MCP OAuth are waiting for ${issuer}: ${event.reason} Retrying in ${
+      Math.max(1, Math.round(event.retryInMilliseconds / 1_000))
+    }s (failure ${event.failures}); /ready reports not ready and OAuth requests answer 503 until discovery succeeds.\n`;
   }
+  if (event.kind === "recovered") {
+    return `OIDC discovery succeeded for ${issuer} after ${event.failures} failed attempt${
+      event.failures === 1 ? "" : "s"
+    }: API OAuth, MCP OAuth, and protected-resource metadata are on.\n`;
+  }
+  return `OIDC configuration error (discovery_misconfigured): MCP OAuth stays off for ${issuer}: ${event.reason} This is not retried; correct the issuer configuration and restart. Browser login and API keys keep working.\n`;
 }
 
 async function lifecycleConfiguration(
