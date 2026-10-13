@@ -1101,12 +1101,12 @@ export function createArtifactMcpServer(
             z.object({
               afterLineCount: z.number().int().nonnegative(),
               beforeLineCount: z.number().int().nonnegative(),
-              change: z.object({
+              changes: z.array(z.object({
                 after: z.array(z.string()),
                 afterStartLine: z.number().int().nonnegative(),
                 before: z.array(z.string()),
                 beforeStartLine: z.number().int().nonnegative(),
-              }).strict().nullable(),
+              }).strict()),
               kind: z.literal("text"),
             }).strict(),
             z.object({
