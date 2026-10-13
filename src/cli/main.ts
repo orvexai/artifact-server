@@ -63,6 +63,9 @@ const program = new Command()
   .name("artifactserver")
   .description("Run Artifact Server.")
   .version(packageMetadata.version)
+  // Root options apply only before the subcommand, so a subcommand's own
+  // `--version <id>` (comments list) is not taken as the CLI version flag.
+  .enablePositionalOptions()
   .showHelpAfterError();
 
 const defaultUserDataDirectory = path.join(homedir(), ".artifact-server");
