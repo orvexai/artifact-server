@@ -25,7 +25,9 @@ import {
 } from "./cli-profile-credential.js";
 
 const cliScope = "artifactserver";
+const cliOAuthClientId = "artifact-server";
 const callbackTimeoutMilliseconds = 5 * 60 * 1_000;
+const cliOAuthCallbackPort = 45678;
 const protectedResourceMetadataSchema = z.object({
   authorization_servers: z.array(z.url()).min(1),
   bearer_methods_supported: z.array(z.string()).optional(),
@@ -79,7 +81,7 @@ function loginWithOAuth(
   return Effect.gen(function*() {
     const resource = new URL("/api", origin);
     const metadataUrl = protectedResourceMetadataUrl(origin);
-    yield* verifyProtectedResourceMetadata(resource, metadataUrl);
+    const issuer = yield* verifyProtectedResourceMetadata(resource, metadataUrl);
     const state = randomBytes(32).toString("base64url");
     const callback = yield* openLoopbackCallback(state);
     // Headless login consumes a pasted redirect, so nobody awaits the loopback
@@ -87,6 +89,7 @@ function loginWithOAuth(
     if (headless) void callback.result.catch(() => undefined);
     const provider = new ArtifactServerOAuthProvider({
       environment,
+      issuer,
       redirectUrl: callback.redirectUrl,
       state,
       headless,
@@ -253,6 +256,7 @@ export function protectedResourceMetadataUrl(origin: string): URL {
 
 interface OAuthProviderOptions {
   readonly environment: NodeJS.ProcessEnv;
+  readonly issuer?: string;
   readonly redirectUrl: string;
   readonly rejectBrowserRedirect?: boolean;
   readonly headless?: boolean;
@@ -279,7 +283,20 @@ class ArtifactServerOAuthProvider implements OAuthClientProvider {
     this.#headless = options.headless ?? false;
     this.#state = options.state;
     this.redirectUrl = options.redirectUrl;
-    this.#clientInformation = options.stored?.clientInformation;
+    const storedClientInformation = options.stored?.clientInformation;
+    if (storedClientInformation !== undefined) {
+      this.#clientInformation = storedClientInformation;
+    } else {
+      const clientInformation: StoredOAuthClientInformation = {
+        client_id: cliOAuthClientId,
+        redirect_uris: [this.redirectUrl],
+        token_endpoint_auth_method: "none",
+      };
+      if (options.issuer !== undefined) {
+        clientInformation.issuer = options.issuer;
+      }
+      this.#clientInformation = clientInformation;
+    }
     this.#tokens = options.stored?.tokens;
     this.#tokensSavedAt = options.stored?.tokensSavedAt;
   }
@@ -390,7 +407,7 @@ ${url}
 function verifyProtectedResourceMetadata(
   resource: URL,
   metadataUrl: URL,
-): Effect.Effect<void, CliAuthenticationError> {
+): Effect.Effect<string, CliAuthenticationError> {
   return Effect.tryPromise({
     try: async () => {
       const response = await fetch(metadataUrl, {
@@ -412,6 +429,11 @@ function verifyProtectedResourceMetadata(
       ) {
         throw new Error("metadata resource or scope mismatch");
       }
+      const issuer = metadata.authorization_servers[0];
+      if (issuer === undefined) {
+        throw new Error("The Artifact Server omitted its authorization server.");
+      }
+      return issuer;
     },
     catch: (cause) => cause instanceof CliAuthenticationError
       ? cause
@@ -497,7 +519,7 @@ async function createLoopbackCallback(
 function listenLoopback(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
+    server.listen(cliOAuthCallbackPort, "127.0.0.1", resolve);
   });
 }
 

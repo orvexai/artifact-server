@@ -400,6 +400,7 @@ describe("authenticated CLI profiles and remote publication", () => {
         ["auth", "logout", "first", "--profile-data", profileData],
         {
           ...environment,
+          ARTIFACT_SERVER_CREDENTIAL_STORE: "keyring",
           ARTIFACT_SERVER_CREDENTIAL_HELPER: path.join(
             temporaryDirectory,
             "missing-helper",
@@ -453,9 +454,12 @@ describe("authenticated CLI profiles and remote publication", () => {
       expect(oauth.observations).toMatchObject({
         authorizationCount: 1,
         codeExchangeCount: 1,
-        registrationCount: 1,
+        lastClientId: "artifact-server",
+        registrationCount: 0,
       });
       expect(oauth.observations.pkceVerified).toBe(true);
+      expect(oauth.observations.lastRedirectUri)
+        .toBe("http://127.0.0.1:45678/oauth/callback");
       expect(login.stdout).not.toContain("oauth-access-one");
       expect(login.stdout).not.toContain("oauth-refresh-one");
 
@@ -729,6 +733,8 @@ interface OAuthFixtureObservations {
   authorizationCount: number;
   codeExchangeCount: number;
   lastSessionBearer: string | null;
+  lastClientId: string | null;
+  lastRedirectUri: string | null;
   pkceVerified: boolean;
   refreshCount: number;
   registrationCount: number;
@@ -749,6 +755,8 @@ async function startOAuthFixture(): Promise<OAuthFixture> {
     authorizationCount: 0,
     codeExchangeCount: 0,
     lastSessionBearer: null,
+    lastClientId: null,
+    lastRedirectUri: null,
     pkceVerified: false,
     refreshCount: 0,
     registrationCount: 0,
@@ -794,6 +802,7 @@ async function startOAuthFixture(): Promise<OAuthFixture> {
       const registration = z.object({
         redirect_uris: z.array(z.url()).min(1),
       }).passthrough().parse(JSON.parse(await readTextBody(request)));
+      observations.lastRedirectUri = registration.redirect_uris[0] ?? null;
       sendJson(response, 201, {
         client_id: "artifactserver-cli-test-client",
         redirect_uris: registration.redirect_uris,
@@ -805,6 +814,8 @@ async function startOAuthFixture(): Promise<OAuthFixture> {
       observations.authorizationCount += 1;
       codeChallenge = target.searchParams.get("code_challenge");
       expectedRedirect = target.searchParams.get("redirect_uri");
+      observations.lastRedirectUri = expectedRedirect;
+      observations.lastClientId = target.searchParams.get("client_id");
       const state = target.searchParams.get("state");
       if (
         codeChallenge === null
