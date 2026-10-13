@@ -109,9 +109,29 @@ Cloud deployments pass these API OAuth settings as environment variables:
 | `ARTIFACT_SERVER_OIDC_API_RESOURCE` | Optional API audience URL; defaults to `<ARTIFACT_SERVER_ORIGIN>/api`. |
 | `ARTIFACT_SERVER_OIDC_API_JWKS_URI` | Optional API verifier JWKS override. It must use HTTPS; plain HTTP is allowed only for a local OIDC issuer (`localhost`, `127.0.0.1`, or `::1`). |
 
-The server reads the issuer's discovery document once at startup. If the issuer
-cannot be reached then, the server logs a warning and starts with browser login
-and API keys only. MCP OAuth stays off until the next restart.
+The server reads the issuer's discovery document at startup. If the issuer cannot
+be reached, times out, or answers with an error or an unreadable document, the
+server still starts, logs `discovery_failed`, and keeps retrying in the
+background, starting at one second and backing off with jitter to thirty, as
+well as whenever a request needs OAuth. Until discovery succeeds:
+
+- `/ready` answers `503` with `components.identity` reporting
+  `{"oauth": "discovering", "status": "unavailable"}`, so a rolling update
+  waits instead of finishing onto replicas without OAuth; `/health` stays `200`;
+- both protected-resource documents, `/.well-known/oauth-authorization-server`,
+  `/mcp`, and OAuth bearers on `/api/` answer `503` with `Retry-After`;
+- API keys and browser sessions keep working.
+
+API OAuth, MCP OAuth, and the metadata documents then turn on in the running
+process, without a restart, and the server logs that discovery succeeded. If
+every replica restarts while the issuer is down, none becomes ready until it
+returns.
+
+A discovery document that contradicts the configuration is different: another
+`issuer`, no authorization code flow, no S256 PKCE, or an endpoint that is not
+HTTPS. The server logs `discovery_misconfigured`, keeps MCP and API OAuth off,
+stays ready with `components.identity.oauth` set to `misconfigured`, and does
+not retry. Correct the issuer configuration and restart.
 
 ### Manage access with issuer groups
 

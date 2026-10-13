@@ -23,6 +23,15 @@ const discoveryDocumentSchema = z.looseObject({
   userinfo_endpoint: z.string().min(1).optional(),
 });
 
+/**
+ * A discovery document that was fetched and read, but contradicts what this
+ * installation requires. Retrying cannot help until the issuer is reconfigured,
+ * unlike an outage, a timeout, or an unreadable answer.
+ */
+export class OidcDiscoveryMisconfiguration extends Error {
+  override readonly name = "OidcDiscoveryMisconfiguration";
+}
+
 /** Authorization-server contract one OIDC issuer offers to MCP clients. */
 export interface OidcAuthorizationServer {
   readonly jwksUri: string;
@@ -35,29 +44,58 @@ export interface OidcOAuthMetadataOptions {
   readonly timeoutMilliseconds?: number;
 }
 
-/** Fetch and validate the OIDC authorization-server contract at startup. */
+/**
+ * Fetch and validate the OIDC authorization-server contract.
+ *
+ * A contradiction in a document that was read throws
+ * {@link OidcDiscoveryMisconfiguration}; every other failure is an ordinary
+ * error a caller may retry.
+ */
 export async function loadOidcAuthorizationServer(
   issuer: string,
   options: OidcOAuthMetadataOptions = {},
 ): Promise<OidcAuthorizationServer> {
   const exactIssuer = requireOidcIssuer(issuer, "The OIDC issuer");
-  const response = await (options.fetch ?? globalThis.fetch)(
-    `${exactIssuer}${openIdConfigurationPath}`,
-    {
-      headers: {Accept: "application/json"},
-      // Never follow discovery off the validated issuer origin.
-      redirect: "manual",
-      signal: AbortSignal.timeout(
-        options.timeoutMilliseconds ?? defaultTimeoutMilliseconds,
-      ),
-    },
-  );
+  const timeoutMilliseconds = options.timeoutMilliseconds ??
+    defaultTimeoutMilliseconds;
+  let response: Response;
+  try {
+    response = await (options.fetch ?? globalThis.fetch)(
+      `${exactIssuer}${openIdConfigurationPath}`,
+      {
+        headers: {Accept: "application/json"},
+        // Never follow discovery off the validated issuer origin.
+        redirect: "manual",
+        signal: AbortSignal.timeout(timeoutMilliseconds),
+      },
+    );
+  } catch (cause) {
+    throw new Error(discoveryRequestFailure(cause, timeoutMilliseconds), {
+      cause,
+    });
+  }
   if (!response.ok) {
     throw new Error(`OIDC discovery returned HTTP ${response.status}.`);
   }
-  const document = discoveryDocumentSchema.parse(await response.json());
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (cause) {
+    throw new Error("OIDC discovery returned a document that is not JSON.", {
+      cause,
+    });
+  }
+  const parsed = discoveryDocumentSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new Error(
+      "OIDC discovery returned a document without the required issuer, endpoints, and response types.",
+    );
+  }
+  const document = parsed.data;
   if (normalizeOidcIssuer(document.issuer) !== exactIssuer) {
-    throw new Error("OIDC discovery returned a different issuer.");
+    throw new OidcDiscoveryMisconfiguration(
+      "OIDC discovery returned a different issuer.",
+    );
   }
   const allowLocalHttp = isLocalOidcIssuer(exactIssuer);
   const authorizationEndpoint = requireEndpoint(
@@ -91,12 +129,14 @@ export async function loadOidcAuthorizationServer(
     allowLocalHttp,
   );
   if (!document.response_types_supported.includes("code")) {
-    throw new Error(
+    throw new OidcDiscoveryMisconfiguration(
       "OIDC discovery does not support authorization code login.",
     );
   }
   if (!document.code_challenge_methods_supported?.includes("S256")) {
-    throw new Error("OIDC discovery does not advertise S256 PKCE.");
+    throw new OidcDiscoveryMisconfiguration(
+      "OIDC discovery does not advertise S256 PKCE.",
+    );
   }
   let metadata: OAuthMetadata = {
     ...document,
@@ -131,7 +171,25 @@ function requireEndpoint(
 ): string {
   const endpoint = normalizeOidcEndpoint(value, allowLocalHttp);
   if (endpoint === null) {
-    throw new Error(`The OIDC ${name} must be an HTTPS URL.`);
+    throw new OidcDiscoveryMisconfiguration(
+      `The OIDC ${name} must be an HTTPS URL.`,
+    );
   }
   return endpoint;
+}
+
+function discoveryRequestFailure(
+  cause: unknown,
+  timeoutMilliseconds: number,
+): string {
+  if (
+    cause instanceof Error &&
+    (cause.name === "TimeoutError" || cause.name === "AbortError")
+  ) {
+    return `OIDC discovery did not answer within ${
+      timeoutMilliseconds / 1_000
+    } seconds.`;
+  }
+  const reason = cause instanceof Error ? cause.message : "the request failed";
+  return `OIDC discovery could not reach the issuer: ${reason}.`;
 }

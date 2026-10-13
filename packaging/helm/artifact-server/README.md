@@ -141,6 +141,13 @@ who obtained it. Such a token must name `configuration.applicationOrigin`
 followed by `/mcp` in `aud`, which the provider produces from an audience mapper
 or an RFC 8707 resource indicator.
 
+The readiness probe uses `/ready`, which stays `503` while the issuer's
+discovery document cannot be read, and the liveness and startup probes use
+`/health`, which does not depend on the issuer. A rollout during an issuer
+outage therefore waits on the first new pod while the existing pods keep
+serving, and continues by itself once discovery succeeds; the new pods retry
+discovery in the background and need no restart.
+
 Access can also follow the issuer's groups instead of manual admission. Set
 `identity.oidcMemberGroups`, `identity.oidcAdministratorGroups`, or both to
 lists of exact group names, and `identity.oidcGroupsClaim` when the claim is not

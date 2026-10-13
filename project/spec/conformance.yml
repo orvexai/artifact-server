@@ -1710,6 +1710,20 @@ requirements:
     depends_on: [AUTH-001, AUTH-023, AUTH-025]
     evidence: []
 
+  - id: AUTH-029
+    kind: behavior
+    behavior: A configured generic OIDC issuer that cannot be discovered keeps the process alive but not ready, answers its OAuth endpoints as temporarily unavailable rather than unconfigured, and keeps retrying discovery with capped, jittered backoff and single-flight on-demand attempts until API OAuth, MCP OAuth, and the OAuth metadata documents turn on in the same process; a discovery document that contradicts the configuration is reported once, leaves OAuth off with the process ready, and is not retried.
+    owner: authorization
+    source: {file: decisions/0029-oidc-discovery-retry-and-readiness.md, anchor: decision}
+    acceptance:
+      behavior: {id: AUTH-029-B, description: "Start the server while the issuer answers discovery with 503; /health stays 200, /ready answers 503 with an unavailable identity component, the protected-resource and authorization-server documents and OAuth bearers on /api and /mcp answer 503 with Retry-After while managed keys keep working, and after the issuer recovers background discovery makes /ready 200 and the same process serves the metadata and accepts the access tokens it refused."}
+      failure: {id: AUTH-029-F, description: "An unreadable discovery answer never makes the process ready or makes its OAuth endpoints answer as unconfigured, a burst of requests during an outage reaches the issuer with one discovery attempt, and a document naming another issuer is reported as misconfigured, stays ready with OAuth off and no resource_metadata challenge, and is never retried."}
+    deployments: [single_server, kubernetes]
+    status: implementing
+    proof_gap: The local conformance suite proves outage-then-recovery readiness, metadata, bearer, burst, CLI refresh, and misconfiguration behavior against the Node runtime and a real HTTP fake issuer, and unit tests prove the backoff bounds and failure classification. No recorded evidence report carries these IDs yet, and a Kubernetes rolling update held at readiness by an unavailable issuer and completed after its recovery remains unproved.
+    depends_on: [AUTH-021, AUTH-025, MCP-013, OPS-001]
+    evidence: []
+
   - id: SEC-001
     kind: security
     behavior: Published websites are treated as untrusted arbitrary browser JavaScript.
