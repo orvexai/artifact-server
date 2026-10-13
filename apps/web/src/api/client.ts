@@ -332,6 +332,19 @@ export interface ArtifactComparison {
   readonly unchangedCount: number;
 }
 
+/**
+ * One contiguous replacement region of a bounded text comparison. The server
+ * reports only changed lines (no context): `before` lines starting at
+ * `beforeStartLine` were replaced by `after` lines starting at
+ * `afterStartLine`. Either side may be empty for a pure insert or delete.
+ */
+export interface TextLineChange {
+  readonly after: readonly string[];
+  readonly afterStartLine: number;
+  readonly before: readonly string[];
+  readonly beforeStartLine: number;
+}
+
 export interface ComparedFile {
   readonly after: ManifestEntry;
   readonly before: ManifestEntry;
@@ -339,12 +352,7 @@ export interface ComparedFile {
     | {
       readonly afterLineCount: number;
       readonly beforeLineCount: number;
-      readonly change: {
-        readonly after: readonly string[];
-        readonly afterStartLine: number;
-        readonly before: readonly string[];
-        readonly beforeStartLine: number;
-      } | null;
+      readonly changes: readonly TextLineChange[];
       readonly kind: "text";
     }
     | {
@@ -424,12 +432,12 @@ const comparedFileSchema: z.ZodType<ComparedFile> = z.object({
     z.object({
       afterLineCount: z.number(),
       beforeLineCount: z.number(),
-      change: z.object({
+      changes: z.array(z.object({
         after: z.array(z.string()),
         afterStartLine: z.number(),
         before: z.array(z.string()),
         beforeStartLine: z.number(),
-      }).nullable(),
+      })),
       kind: z.literal("text"),
     }),
     z.object({
@@ -440,7 +448,8 @@ const comparedFileSchema: z.ZodType<ComparedFile> = z.object({
   links: z.object({ after: z.url(), before: z.url() }),
 });
 
-const comparisonSchema: z.ZodType<ArtifactComparison> = z.object({
+/** The Review client's view of `GET /api/v1/artifacts/:id/comparisons`. */
+export const comparisonSchema: z.ZodType<ArtifactComparison> = z.object({
   added: z.array(manifestEntrySchema),
   artifact: artifactSchema,
   changed: z.array(comparedFileSchema),

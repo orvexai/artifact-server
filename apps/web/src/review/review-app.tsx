@@ -50,6 +50,7 @@ import {
   type ArtifactDetails,
   type ArtifactPage,
   type ArtifactVersion,
+  type ComparedFile,
   type Project,
   type Session,
   type Version,
@@ -63,6 +64,7 @@ import {
 } from "@/lib/presentation";
 import artifactServerAnimationUrl from "./assets/artifact-server.svg";
 import {ArtifactMark} from "./artifact-mark.tsx";
+import {ComparedFileLines} from "./review-comparison.tsx";
 import {
   useReviewComments,
   ReviewCommentsInspector,
@@ -2441,11 +2443,15 @@ function ComparisonInspector({
 }) {
   if (error !== null) return <InlineState description={error.message} title="Comparison unavailable" />;
   if (comparison === null) return <InlineState description="Choose two versions from Versions." title="No comparison" />;
-  const changedEntries = [
-    ...comparison.added.map((entry) => ({kind: "Added", path: entry.path})),
-    ...comparison.changed.map((entry) => ({kind: "Changed", path: entry.after.path})),
-    ...comparison.removed.map((entry) => ({kind: "Removed", path: entry.path})),
-    ...comparison.renamed.map((entry) => ({kind: "Renamed", path: `${entry.from.path} → ${entry.to.path}`})),
+  const changedEntries: readonly {
+    readonly file: ComparedFile | null;
+    readonly kind: string;
+    readonly path: string;
+  }[] = [
+    ...comparison.added.map((entry) => ({file: null, kind: "Added", path: entry.path})),
+    ...comparison.changed.map((entry) => ({file: entry, kind: "Changed", path: entry.after.path})),
+    ...comparison.removed.map((entry) => ({file: null, kind: "Removed", path: entry.path})),
+    ...comparison.renamed.map((entry) => ({file: null, kind: "Renamed", path: `${entry.from.path} → ${entry.to.path}`})),
   ];
   return (
     <div className="as-inspector-stack">
@@ -2462,7 +2468,11 @@ function ComparisonInspector({
         {changedEntries.length === 0 ? <p className="as-inspector-empty">These versions have the same files.</p> : (
           <ol className="as-comparison-list">
             {changedEntries.map((entry) => (
-              <li key={`${entry.kind}-${entry.path}`}><span>{entry.kind}</span><code>{entry.path}</code></li>
+              <li key={`${entry.kind}-${entry.path}`}>
+                <span>{entry.kind}</span>
+                <code>{entry.path}</code>
+                {entry.file === null ? null : <ComparedFileLines file={entry.file} />}
+              </li>
             ))}
           </ol>
         )}
