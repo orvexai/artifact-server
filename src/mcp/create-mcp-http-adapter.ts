@@ -81,6 +81,15 @@ export function createMcpHttpAdapter(
       const principal = principalSchema.parse(
         context.authInfo?.extra?.["artifactServerPrincipal"],
       );
+      const agentClientId = z.string().min(1).nullable().parse(
+        context.authInfo?.extra?.["artifactServerOAuthClientId"] ?? null,
+      );
+      const attributedPrincipal = agentClientId === null
+        ? principal
+        : {
+          ...principal,
+          displayName: `MCP client ${agentClientId} for ${principal.displayName}`,
+        };
       const serverDependencies: ArtifactMcpServerDependencies = {
         applicationOrigin: dependencies.applicationOrigin
           ?? requestOrigin(context.requestInfo),
@@ -93,7 +102,7 @@ export function createMcpHttpAdapter(
       };
       return createArtifactMcpServer(
         serverDependencies,
-        {principal},
+        {agentClientId, principal: attributedPrincipal},
         context,
       );
     },
@@ -150,7 +159,10 @@ async function authenticateToken(
     return {
       clientId: authenticated.clientId,
       expiresAt: authenticated.expiresAt,
-      extra: {artifactServerPrincipal: authenticated.principal},
+      extra: {
+        artifactServerOAuthClientId: authenticated.oauthClientId ?? null,
+        artifactServerPrincipal: authenticated.principal,
+      },
       scopes: [...authenticated.scopes],
       token,
     };

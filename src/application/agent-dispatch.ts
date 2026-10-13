@@ -377,7 +377,10 @@ function makeAgentDispatchService(
       AgentDispatchRepositoryFailure | AuthorizationDenied
     > {
       const agent = yield* requireAgent(agentId);
-      if (agent.principalId === principal.id) return agent;
+      if (
+        agent.principalId === principal.id &&
+        (principal.kind !== "human" || agent.kind === "mcp-mailbox")
+      ) return agent;
       return yield* new AuthorizationDenied({
         message: "Only the registering principal can act as this agent.",
       });
@@ -456,14 +459,21 @@ function makeAgentDispatchService(
 
   const registerAgent = Effect.fn("AgentDispatchService.registerAgent")(
     function*(command: RegisterAgentCommand) {
-      yield* authorization.requireAgentConnection(command.principal);
+      const kind = yield* requireAgentKind(command.kind);
+      if (kind === "mcp-mailbox") {
+        yield* authorization.requireMailboxAgentConnection(command.principal);
+      } else {
+        yield* authorization.requireAgentConnection(command.principal);
+      }
       const connectionKey = yield* requireBoundedText(
         command.connectionKey,
         "connection key",
         maximumAgentConnectionKeyCharacters,
       );
       const displayName = yield* requireBoundedText(
-        command.displayName,
+        kind === "mcp-mailbox" && command.principal.kind === "human"
+          ? command.principal.displayName
+          : command.displayName,
         "display name",
         maximumAgentDisplayNameCharacters,
       );
@@ -479,7 +489,7 @@ function makeAgentDispatchService(
         displayName,
         id: dependencies.ids.registeredAgentId(),
         installationId: dependencies.installationId,
-        kind: yield* requireAgentKind(command.kind),
+        kind,
         principalId: command.principal.id,
         registeredAt: yield* now(),
         workingDirectory,
@@ -489,7 +499,11 @@ function makeAgentDispatchService(
 
   const disconnectAgent = Effect.fn("AgentDispatchService.disconnectAgent")(
     function*(command: ReadAgentCommand) {
-      yield* authorization.requireAgentConnection(command.principal);
+      if (command.principal.kind === "human") {
+        yield* authorization.requireMailboxAgentConnection(command.principal);
+      } else {
+        yield* authorization.requireAgentConnection(command.principal);
+      }
       const agent = yield* dependencies.repository.findAgent(
         dependencies.installationId,
         command.agentId,
@@ -499,6 +513,15 @@ function makeAgentDispatchService(
       if (agent.principalId !== command.principal.id) {
         yield* Effect.fail(new AuthorizationDenied({
           message: "Only the registering principal can disconnect this agent.",
+        }));
+        return;
+      }
+      if (
+        command.principal.kind === "human" &&
+        agent.kind !== "mcp-mailbox"
+      ) {
+        yield* Effect.fail(new AuthorizationDenied({
+          message: "Only the mailbox owner can disconnect this agent.",
         }));
         return;
       }
@@ -526,7 +549,11 @@ function makeAgentDispatchService(
 
   const recordActivity = Effect.fn("AgentDispatchService.recordActivity")(
     function*(command: RecordAgentActivityCommand) {
-      yield* authorization.requireAgentConnection(command.principal);
+      if (command.principal.kind === "human") {
+        yield* authorization.requireMailboxAgentConnection(command.principal);
+      } else {
+        yield* authorization.requireAgentConnection(command.principal);
+      }
       const agent = yield* dependencies.repository.findAgent(
         dependencies.installationId,
         command.agentId,
@@ -538,6 +565,15 @@ function makeAgentDispatchService(
           message: "The registered agent does not exist.",
         }));
         return;
+      }
+      if (command.principal.kind === "human") {
+        yield* authorization.requireMailboxAgentConnection(command.principal);
+        if (agent.kind !== "mcp-mailbox") {
+          yield* Effect.fail(new AgentNotFound({
+            message: "The registered agent does not exist.",
+          }));
+          return;
+        }
       }
       // Stored unconditionally — a stale-heartbeat beacon is accepted too —
       // and the read side applies the TTL and liveness gates.
@@ -578,7 +614,7 @@ function makeAgentDispatchService(
 
   const claimDispatch = Effect.fn("AgentDispatchService.claimDispatch")(
     function*(command: ClaimDispatchCommand) {
-      yield* authorization.requireAgentConnection(command.principal);
+      yield* authorization.requireMailboxAgentConnection(command.principal);
       const agent = yield* requireOwnedAgent(command.agentId, command.principal);
       return yield* dependencies.repository.claimNextDispatch(
         agent.id,
@@ -590,7 +626,7 @@ function makeAgentDispatchService(
 
   const reportDelivered = Effect.fn("AgentDispatchService.reportDelivered")(
     function*(command: ReportDeliveredCommand) {
-      yield* authorization.requireAgentConnection(command.principal);
+      yield* authorization.requireMailboxAgentConnection(command.principal);
       const agent = yield* requireOwnedAgent(command.agentId, command.principal);
       return yield* dependencies.repository.markDelivered({
         agentId: agent.id,
@@ -603,7 +639,7 @@ function makeAgentDispatchService(
 
   const reportFailed = Effect.fn("AgentDispatchService.reportFailed")(
     function*(command: ReportFailedCommand) {
-      yield* authorization.requireAgentConnection(command.principal);
+      yield* authorization.requireMailboxAgentConnection(command.principal);
       const agent = yield* requireOwnedAgent(command.agentId, command.principal);
       const reason = yield* requireBoundedText(
         command.reason,
