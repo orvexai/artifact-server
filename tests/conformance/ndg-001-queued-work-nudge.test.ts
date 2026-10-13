@@ -21,6 +21,7 @@ import {
   dispatchEnvelopeSchema,
 } from "../support/agent-dispatch.js";
 import {publishNew, type PublishResponse} from "../support/publishing.js";
+import {createTestMcpOAuthVerifier} from "../support/mcp-oauth.js";
 import {
   createTestInstallation,
   removeTestInstallation,
@@ -30,6 +31,7 @@ import {
 } from "../support/runtime-harness.js";
 
 const protocolVersion = "2026-07-28";
+const mcpToken = "ndg-001-mcp-oauth-token";
 const nudgeHeading = "— artifact server —";
 const maximumNudgeCharacters = 400;
 
@@ -60,7 +62,11 @@ describe("queued-work nudges on MCP tool results", () => {
 
   beforeEach(async () => {
     installation = await createTestInstallation();
-    server = await startTestServer(installation);
+    server = await startTestServer(installation, {
+      externalMcpOAuthVerifier: createTestMcpOAuthVerifier({
+        [mcpToken]: "nudge-client",
+      }),
+    });
     client = new ApiClient(server, installation.apiToken);
     published = (await publishNew(server, installation, {
       accessSetting: "account_required",
@@ -82,12 +88,12 @@ describe("queued-work nudges on MCP tool results", () => {
     const secondThread = await openThread("Tighten the intro.", "ndg-001-thread-second");
 
     // No mailbox agent yet: an unrelated call carries no nudge at all.
-    const before = await callTool(installation.apiToken, "project_list", {});
+    const before = await callTool(mcpToken, "project_list", {});
     expect(before.isError).not.toBe(true);
     expect(before.content).toHaveLength(1);
 
     const registered = inboxAnswerSchema.parse(
-      (await callTool(installation.apiToken, "dispatch_inbox", {
+      (await callTool(mcpToken, "dispatch_inbox", {
         agentName: "Nudged Claude",
         operation: "list",
       })).structuredContent,
@@ -97,7 +103,7 @@ describe("queued-work nudges on MCP tool results", () => {
     const youngerDispatch = await sendDispatch(registered.agent.id, [secondThread], "ndg-001-dispatch-younger");
 
     // Two queued bundles: exactly one trailing nudge naming the real count.
-    const queued = await callTool(installation.apiToken, "project_list", {});
+    const queued = await callTool(mcpToken, "project_list", {});
     expect(queued.isError).not.toBe(true);
     expect(queued.content).toHaveLength(2);
     const queuedNudge = queued.content[1]?.text ?? "";
@@ -110,14 +116,14 @@ describe("queued-work nudges on MCP tool results", () => {
 
     // Claiming drains one bundle: the count drops, and queued work still
     // outranks the claim that is now being worked.
-    const claim = await callTool(installation.apiToken, "dispatch_inbox", {
+    const claim = await callTool(mcpToken, "dispatch_inbox", {
       agentName: "Nudged Claude",
       operation: "claim",
     });
     expect(claim.isError).not.toBe(true);
     expect(inboxAnswerSchema.parse(claim.structuredContent).claimed?.dispatchId)
       .toBe(olderDispatch.id);
-    const oneQueued = await callTool(installation.apiToken, "project_list", {});
+    const oneQueued = await callTool(mcpToken, "project_list", {});
     expect(oneQueued.content).toHaveLength(2);
     expect(oneQueued.content[1]?.text).toContain("1 review bundle is queued");
     expect(oneQueued.content[1]?.text).not.toContain("not fully resolved");
@@ -127,14 +133,14 @@ describe("queued-work nudges on MCP tool results", () => {
     await reportDelivered(olderDispatch.id);
     await replyAndResolve(firstThread, "ndg-001-first");
     expect(await dispatchState(olderDispatch.id)).toBe("addressed");
-    const secondClaim = await callTool(installation.apiToken, "dispatch_inbox", {
+    const secondClaim = await callTool(mcpToken, "dispatch_inbox", {
       agentName: "Nudged Claude",
       operation: "claim",
     });
     expect(inboxAnswerSchema.parse(secondClaim.structuredContent).claimed?.dispatchId)
       .toBe(youngerDispatch.id);
     await reportDelivered(youngerDispatch.id);
-    const working = await callTool(installation.apiToken, "project_list", {});
+    const working = await callTool(mcpToken, "project_list", {});
     expect(working.content).toHaveLength(2);
     const workingNudge = working.content[1]?.text ?? "";
     expect(workingNudge.startsWith(nudgeHeading)).toBe(true);
@@ -142,7 +148,7 @@ describe("queued-work nudges on MCP tool results", () => {
     expect(workingNudge).not.toContain("queued for your inbox");
 
     // The call that settles the last thread carries the progress echo.
-    const replied = await callTool(installation.apiToken, "comment_reply", {
+    const replied = await callTool(mcpToken, "comment_reply", {
       artifactId: published.artifact.id,
       body: "Tightened the intro.",
       idempotencyKey: "ndg-001-reply-second",
@@ -150,7 +156,7 @@ describe("queued-work nudges on MCP tool results", () => {
       threadId: secondThread,
     });
     expect(replied.content[1]?.text).toContain("not fully resolved");
-    const settling = await callTool(installation.apiToken, "comment_resolve", {
+    const settling = await callTool(mcpToken, "comment_resolve", {
       artifactId: published.artifact.id,
       projectId,
       resolved: true,
@@ -164,7 +170,7 @@ describe("queued-work nudges on MCP tool results", () => {
     expect(await dispatchState(youngerDispatch.id)).toBe("addressed");
 
     // Nothing pending: the nudge is gone.
-    const after = await callTool(installation.apiToken, "project_list", {});
+    const after = await callTool(mcpToken, "project_list", {});
     expect(after.isError).not.toBe(true);
     expect(after.content).toHaveLength(1);
     expect(after.content[0]?.text).not.toContain(nudgeHeading);
@@ -174,7 +180,7 @@ describe("queued-work nudges on MCP tool results", () => {
     expect.hasAssertions();
     const thread = await openThread("Fix the footer.", "ndg-001-failure-thread");
     const registered = inboxAnswerSchema.parse(
-      (await callTool(installation.apiToken, "dispatch_inbox", {
+      (await callTool(mcpToken, "dispatch_inbox", {
         agentName: "Nudged Claude",
         operation: "list",
       })).structuredContent,
@@ -182,12 +188,12 @@ describe("queued-work nudges on MCP tool results", () => {
     await sendDispatch(registered.agent.id, [thread], "ndg-001-failure-dispatch");
 
     // The queue is live: an unrelated success carries the nudge...
-    const success = await callTool(installation.apiToken, "project_list", {});
+    const success = await callTool(mcpToken, "project_list", {});
     expect(success.content).toHaveLength(2);
     expect(success.content[1]?.text).toContain("1 review bundle is queued");
 
     // ...an error result carries only its own message...
-    const failed = await callTool(installation.apiToken, "comment_resolve", {
+    const failed = await callTool(mcpToken, "comment_resolve", {
       artifactId: published.artifact.id,
       projectId,
       resolved: true,
@@ -198,7 +204,7 @@ describe("queued-work nudges on MCP tool results", () => {
     expect(failed.content[0]?.text).not.toContain(nudgeHeading);
 
     // ...and the inbox itself, which already says everything, is nudge-free.
-    const inbox = await callTool(installation.apiToken, "dispatch_inbox", {
+    const inbox = await callTool(mcpToken, "dispatch_inbox", {
       agentName: "Nudged Claude",
       operation: "list",
     });
@@ -232,7 +238,7 @@ describe("queued-work nudges on MCP tool results", () => {
   }
 
   async function reportDelivered(dispatchId: string): Promise<void> {
-    const delivered = await callTool(installation.apiToken, "dispatch_inbox", {
+    const delivered = await callTool(mcpToken, "dispatch_inbox", {
       dispatchId,
       operation: "delivered",
     });
@@ -240,7 +246,7 @@ describe("queued-work nudges on MCP tool results", () => {
   }
 
   async function replyAndResolve(threadId: string, keyPrefix: string): Promise<void> {
-    const replied = await callTool(installation.apiToken, "comment_reply", {
+    const replied = await callTool(mcpToken, "comment_reply", {
       artifactId: published.artifact.id,
       body: `Addressed ${threadId}.`,
       idempotencyKey: `${keyPrefix}-reply-${threadId}`,
@@ -248,7 +254,7 @@ describe("queued-work nudges on MCP tool results", () => {
       threadId,
     });
     expect(replied.isError).not.toBe(true);
-    const resolved = await callTool(installation.apiToken, "comment_resolve", {
+    const resolved = await callTool(mcpToken, "comment_resolve", {
       artifactId: published.artifact.id,
       projectId,
       resolved: true,

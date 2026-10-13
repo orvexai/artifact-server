@@ -59,6 +59,37 @@ describe("generic OIDC group-role configuration", () => {
   test("group roles stay off unless a group list names a group", async () => {
     const configuration = await loadOidcConfiguration(completeOidc);
     expect(configuration?.groupRoles).toBeNull();
+    expect(configuration?.apiResource).toBeNull();
+  });
+
+  test("API OAuth resource can be overridden independently of the MCP resource", async () => {
+    const configuration = await loadOidcConfiguration({
+      ...completeOidc,
+      ARTIFACT_SERVER_OIDC_API_RESOURCE: "https://api.example.test/v2",
+      ARTIFACT_SERVER_OIDC_API_JWKS_URI: "https://idp.example.test/api-jwks",
+    });
+    expect(configuration?.apiResource).toBe("https://api.example.test/v2");
+    expect(configuration?.apiJwksUri).toBe("https://idp.example.test/api-jwks");
+
+    await expect(loadOidcConfiguration({
+      ARTIFACT_SERVER_OIDC_API_RESOURCE: "not a URL",
+    })).rejects.toThrow("Invalid URL");
+    await expect(loadOidcConfiguration({
+      ARTIFACT_SERVER_OIDC_API_JWKS_URI: "not a URL",
+    })).rejects.toThrow("Invalid URL");
+    await expect(loadOidcConfiguration({
+      ...completeOidc,
+      ARTIFACT_SERVER_OIDC_API_JWKS_URI: "http://idp.example.test/api-jwks",
+    })).rejects.toThrow("ARTIFACT_SERVER_OIDC_API_JWKS_URI must be an HTTPS URL");
+    const localIssuer = await loadOidcConfiguration({
+      ...completeOidc,
+      ARTIFACT_SERVER_OIDC_ISSUER: "http://localhost:8080/realms/main",
+      ARTIFACT_SERVER_OIDC_API_JWKS_URI: "http://localhost:8080/api-jwks",
+    });
+    expect(localIssuer?.apiJwksUri).toBe("http://localhost:8080/api-jwks");
+    await expect(loadOidcConfiguration({
+      ARTIFACT_SERVER_OIDC_API_RESOURCE: "https://api.example.test/v2",
+    })).rejects.toThrow("Generic OIDC authentication requires");
   });
 
   test("lists are trimmed, deduplicated, case-preserving, and read the groups claim by default", async () => {

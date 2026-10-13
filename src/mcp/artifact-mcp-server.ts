@@ -78,6 +78,7 @@ import {
   maximumUploadPlanRequestBytes,
 } from "../core/publishing-limits.js";
 import {
+  AuthenticationRequired,
   AgentNotFound,
   InvalidComment,
   InvalidDispatch,
@@ -228,6 +229,10 @@ const dispatchedThreadFilterSchema = z.enum([
   dispatchedThreadFilters.only,
 ]);
 const commentAuthorSchema = z.object({
+  actor: z.object({
+    clientId: z.string().min(1),
+    kind: z.literal("mcp-client"),
+  }).strict().nullable(),
   authorizedByPrincipalId: z.string().nullable(),
   displayName: z.string(),
   principalId: z.string(),
@@ -259,7 +264,6 @@ const commentReplySchema = z.object({
   updatedAt: z.string(),
 }).strict();
 const mailboxAgentKind = "mcp-mailbox";
-const defaultMailboxAgentName = "mailbox agent";
 /** A mailbox agent runs wherever its MCP client runs; no directory is known. */
 const mailboxWorkingDirectory = "(mcp mailbox)";
 /** Bound every cursor walk so a server bug can never spin the loop forever. */
@@ -288,7 +292,8 @@ async function collectCursorPages<T>(
   await collect(null);
   return collected;
 }
-const mailboxAgentNameSchema = z.string().trim().min(1).max(120);
+const mailboxAgentNameSchema = z.string().trim().min(1).max(120)
+  .describe("Legacy caller label. Ignored; the server derives agent identity from verified OAuth context.");
 const mailboxDispatchIdSchema = z.string().min(1).max(200);
 const mailboxAnchorSchema = z.object({originalText: z.string()}).loose();
 const mailboxAgentSchema = z.object({
@@ -401,6 +406,8 @@ function runMcpApplicationEffect<A, E>(
 
 /** Values attached to one already authenticated MCP request. */
 export interface ArtifactMcpRequestIdentity {
+  /** OAuth client identifier taken only from a verified bearer token. */
+  readonly agentClientId: string | null;
   readonly principal: Principal;
 }
 
@@ -494,7 +501,11 @@ export function createArtifactMcpServer(
   async function gatherNudgeFacts(
     progress: NudgeProgressThread | null,
   ): Promise<ToolResultNudgeFacts | null> {
-    const connectionKey = mailboxConnectionKey(identity.principal.id);
+    if (identity.agentClientId === null) return null;
+    const connectionKey = mailboxConnectionKey(
+      identity.principal.id,
+      identity.agentClientId,
+    );
     const agents = await runMcpApplicationEffect(
       dependencies,
       AgentDispatchService.use((registry) =>
@@ -1101,12 +1112,12 @@ export function createArtifactMcpServer(
             z.object({
               afterLineCount: z.number().int().nonnegative(),
               beforeLineCount: z.number().int().nonnegative(),
-              change: z.object({
+              changes: z.array(z.object({
                 after: z.array(z.string()),
                 afterStartLine: z.number().int().nonnegative(),
                 before: z.array(z.string()),
                 beforeStartLine: z.number().int().nonnegative(),
-              }).strict().nullable(),
+              }).strict()),
               kind: z.literal("text"),
             }).strict(),
             z.object({
@@ -1190,7 +1201,7 @@ export function createArtifactMcpServer(
     {
       title: "Begin a file upload",
       description:
-        "Begin publishing actual files. Supply relative paths, byte sizes, SHA-256 fingerprints, media types, and the entry file. Upload each file to its returned URL, then call artifact_commit_upload. Do not send file bytes through MCP.",
+        "Begin publishing actual files. Supply relative paths, byte sizes, SHA-256 fingerprints, media types, and the entry file. PUT each file to its returned short-lived, single-use upload URL without an Authorization header, then call artifact_commit_upload. Do not send file bytes through MCP.",
       inputSchema: z.object({
         entryPath: z.string().min(1).max(1_024),
         files: z.array(declaredFileSchema).min(1).max(maximumDeclaredFiles),
@@ -1204,10 +1215,7 @@ export function createArtifactMcpServer(
         }).strict(),
         expiresAt: z.string(),
         files: z.array(z.object({
-          authorization: z.object({
-            credential: z.literal("reuse_the_mcp_bearer_credential"),
-            scheme: z.literal("Bearer"),
-          }).strict(),
+          authorization: z.literal("short_lived_single_use_upload_url"),
           method: z.literal("PUT"),
           path: z.string(),
           size: z.number().int().nonnegative(),
@@ -1886,27 +1894,36 @@ export function createArtifactMcpServer(
     ),
   );
 
-  const registerMailboxAgent = (agentName: string | null) =>
-    runMcpApplicationEffect(
+  const registerMailboxAgent = (_agentName: string | null) => {
+    const agentClientId = requiredMailboxClientId(identity.agentClientId);
+    return runMcpApplicationEffect(
       dependencies,
       AgentDispatchService.use((agents) =>
         agents.registerAgent({
           agentSessionId: null,
           capabilities: {beacon: false, evidence: agentEvidenceKinds.mailbox},
-          connectionKey: mailboxConnectionKey(identity.principal.id),
-          displayName: agentName ?? defaultMailboxAgentName,
+          connectionKey: mailboxConnectionKey(
+            identity.principal.id,
+            agentClientId,
+          ),
+          displayName: identity.principal.displayName,
           kind: mailboxAgentKind,
           principal: identity.principal,
           workingDirectory: mailboxWorkingDirectory,
         })
       ),
     );
+  };
 
   /** Reports never register: without a prior list or claim, nothing is held. */
   const requireRegisteredMailboxAgent = async (): Promise<
     RegisteredAgentRecord
   > => {
-    const connectionKey = mailboxConnectionKey(identity.principal.id);
+    const agentClientId = requiredMailboxClientId(identity.agentClientId);
+    const connectionKey = mailboxConnectionKey(
+      identity.principal.id,
+      agentClientId,
+    );
     const agents = await runMcpApplicationEffect(
       dependencies,
       AgentDispatchService.use((registry) =>
@@ -2113,7 +2130,7 @@ export function createArtifactMcpServer(
     {
       title: "Agent dispatch inbox",
       description:
-        "This caller's mailbox for annotation bundles a reviewer dispatched to it. list registers the caller as a passive mailbox-tier agent and shows its queued dispatches; claim takes the oldest queued dispatch and returns the rendered bundle message; delivered and failed report the outcome of a claimed dispatch. After reporting delivered, address every thread in the bundle: comment_reply with what you did, then comment_resolve.",
+        "This caller's mailbox for annotation bundles a reviewer dispatched to it. list registers the caller as a passive mailbox-tier agent and shows its queued dispatches; claim takes the oldest queued dispatch and returns the rendered bundle message; delivered and failed report the outcome of a claimed dispatch. OAuth callers are attributed to the verified OAuth client for the human principal, and caller labels do not set agent identity. After reporting delivered, address every thread in the bundle: comment_reply with what you did, then comment_resolve.",
       inputSchema: z.discriminatedUnion("operation", [
         z.object({
           agentName: mailboxAgentNameSchema.nullable().default(null),
@@ -2324,7 +2341,7 @@ function agentInstructions(mode: "local" | "remote"): string {
     "Artifact Server stores actual files as immutable versions. It does not accept inline HTML, CSS, JavaScript, base64, or invented file contents through MCP.",
     "Start with artifact_capabilities when you do not know this installation's limits.",
     "Artifacts belong to projects. Omit projectId only when the installation has one active project; otherwise call project_list and choose explicitly.",
-    "For publishing, inspect the selected file or finished directory on the client, compute each relative path, byte length, media type, and SHA-256 fingerprint, call artifact_create_upload, PUT the exact bytes to every returned uploadUrl using the same bearer credential, then call artifact_commit_upload.",
+    "For publishing, inspect the selected file or finished directory on the client, compute each relative path, byte length, media type, and SHA-256 fingerprint, call artifact_create_upload, PUT the exact bytes to every returned uploadUrl without an Authorization header (each URL is a short-lived, single-use capability), then call artifact_commit_upload.",
     "After publishing, always give the user links.review first so they can see the exact version full screen and comment. Mention links.version second when the raw artifact is useful. Do not put content bootstrap URLs or credentials in chat.",
     "When publishing a new version, first call artifact_get and pass its current version ID as expectedCurrentVersionId. On conflict, inspect the new current version before retrying.",
     "Use a stable application idempotency key when retrying the same mutation. Use a new key only for an intentional new operation.",
@@ -2394,15 +2411,12 @@ function uploadPlan(
     },
     expiresAt: upload.expiresAt,
     files: upload.files.map((file) => ({
-      authorization: {
-        credential: "reuse_the_mcp_bearer_credential" as const,
-        scheme: "Bearer" as const,
-      },
+      authorization: "short_lived_single_use_upload_url" as const,
       method: "PUT" as const,
       path: file.entry.path,
       size: file.entry.size,
       uploadUrl: new URL(
-        `/api/v1/uploads/${upload.id}/files/${file.storageToken}?projectId=${encodeURIComponent(upload.projectId)}`,
+        `/api/v1/mcp-uploads/${upload.id}/files/${file.storageToken}`,
         applicationUrl,
       ).toString(),
     })),
@@ -2507,15 +2521,28 @@ interface MailboxAnswer {
 }
 
 /**
- * The mailbox registration identity: stable per principal, so every
- * dispatch_inbox caller reclaims one agent row, and never guessable from
- * another principal's id reading the agent listing.
+ * The mailbox registration identity is stable per verified OAuth client and
+ * principal, so an agent reclaims its own row without caller labels.
  */
-function mailboxConnectionKey(principalId: string): string {
+function mailboxConnectionKey(
+  principalId: string,
+  agentClientId: string,
+): string {
   const digest = createHash("sha256")
     .update(principalId, "utf8")
+    .update("\0", "utf8")
+    .update(agentClientId, "utf8")
     .digest("hex");
   return `mcp-mailbox:${digest.slice(0, 32)}`;
+}
+
+function requiredMailboxClientId(agentClientId: string | null): string {
+  if (agentClientId === null) {
+    throw new AuthenticationRequired({
+      message: "Mailbox access requires an OAuth token with a verified client identifier.",
+    });
+  }
+  return agentClientId;
 }
 
 function mailboxAgentProjection(agent: RegisteredAgentRecord) {

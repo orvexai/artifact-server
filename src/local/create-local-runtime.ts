@@ -97,6 +97,7 @@ export interface LocalRuntimeConfig {
   /** Server-only credential shared with a co-launched development proxy. */
   readonly developmentProxyCredential?: string;
   readonly externalApiBearerVerifier?: BearerCredentialVerifier;
+  readonly externalApiOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly externalMcpBearerVerifier?: BearerCredentialVerifier;
   readonly externalMcpOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly gitHistory?: NodeGitHistoryConfiguration;
@@ -117,6 +118,7 @@ export interface LocalRuntimeConfig {
   readonly runtimeLifecycle?: RuntimeLifecycle;
   readonly installationId?: string;
   readonly serviceVersion?: string;
+  readonly uploadUrlLifetimeMilliseconds?: number;
   readonly stagingCleanupPolicy?: StagingCleanupPolicy;
   /** Overrides the compiled web bundle directory; used by tests. */
   readonly webAssetsRoot?: string;
@@ -234,6 +236,7 @@ export async function createLocalRuntime(
     clock: runtimeClock,
     dispatches: repository,
     externalApiBearerVerifier: config.externalApiBearerVerifier ?? null,
+      externalApiOAuthVerifier: config.externalApiOAuthVerifier ?? null,
     externalMcpBearerVerifier: config.externalMcpBearerVerifier ?? null,
     externalMcpOAuthVerifier: config.externalMcpOAuthVerifier ?? null,
     groupRolePolicy: config.groupRolePolicy ?? null,
@@ -253,6 +256,11 @@ export async function createLocalRuntime(
     staging,
     stagingCleanupPolicy,
   };
+  if (config.uploadUrlLifetimeMilliseconds !== undefined) {
+    Object.assign(applicationAdapters, {
+      uploadUrlLifetimeMilliseconds: config.uploadUrlLifetimeMilliseconds,
+    });
+  }
   if (gitHistoryProvider !== null) {
     Object.assign(applicationAdapters, {gitHistoryProvider});
   }

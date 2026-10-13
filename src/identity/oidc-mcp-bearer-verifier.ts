@@ -70,7 +70,7 @@ interface VerifiedAccessToken {
 
 export interface OidcMcpBearerVerifierConfig {
   readonly algorithms?: readonly string[];
-  /** The exact MCP resource URL the issuer must bind into `aud`. */
+  /** The exact protected-resource URL the issuer must bind into `aud`. */
   readonly audience: string;
   readonly fetch?: typeof globalThis.fetch;
   /** Claim that lists the person's groups; null reads none. */
@@ -80,7 +80,7 @@ export interface OidcMcpBearerVerifierConfig {
   readonly userInfoEndpoint?: string | null;
 }
 
-/** Verify end-user OIDC access tokens presented to the MCP endpoint. */
+/** Verify end-user OIDC access tokens for one protected-resource audience. */
 export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
   readonly #algorithms: string[];
   readonly #audience: string;
@@ -119,8 +119,14 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
   readonly verify = Effect.fn("OidcMcpBearerVerifier.verify")(
     function*(this: OidcMcpBearerVerifier, credential: Redacted.Redacted) {
       const {claims} = yield* this.#verifiedToken(credential);
+      const clientId = claims.client_id ?? claims.azp;
+      if (clientId === undefined || clientId.trim().length === 0) {
+        return yield* invalidToken(
+          "The OIDC access token must identify its OAuth client.",
+        );
+      }
       const verified: VerifiedExternalMcpBearer = {
-        clientId: claims.client_id ?? claims.azp ?? null,
+        clientId,
         expiresAt: claims.exp,
         provider: this.#provider,
         scopes: tokenScopes(claims.scope),

@@ -50,7 +50,11 @@ An agent uses this sequence:
 
 1. Call `artifact_capabilities` to read limits and available features.
 2. Call `artifact_create_upload` with each path, size, media type, and SHA-256 fingerprint.
-3. Upload each file to its returned opaque upload URL with the same bearer credential the agent uses for MCP: an API key or the OAuth access token.
+3. PUT each file's exact bytes to its returned upload URL without an `Authorization` header. Each URL is a secret, file-scoped capability that expires with the upload plan and works once.
+
+Upload URLs expire after 10 minutes by default. Operators can set
+`ARTIFACT_SERVER_MCP_UPLOAD_URL_LIFETIME_MS` to a positive integer number of
+milliseconds; the configured value also bounds the staged upload plan.
 4. Call `artifact_commit_upload` with the publication target and idempotency key.
 
 When the agent publishes a new version, it first reads the current version ID. It sends that ID as `expectedCurrentVersionId`.
@@ -74,6 +78,8 @@ The server instructions tell the agent to share `links.review` first. This link 
 `links.artifact` follows the current version. `links.version` opens the immutable raw artifact without the Artifact Server interface.
 
 The agent must not place bootstrap URLs, access tokens, or credentials in chat.
+Treat upload URLs like credentials: anyone who receives one can upload that
+declared file until it expires or is used.
 
 Read operations use the same link roles. `artifact_get.current.links.review`
 opens the current exact version in full-screen Review. `artifact_open.reviewUrl`
@@ -93,6 +99,8 @@ opens its raw immutable content. Agents should hand people the Review URL.
 | Git history planning | `project_git_history_status`, `project_git_history_estimate` |
 
 Linked-artifact tools appear only when the deployment enables linked artifacts.
+Project archive and unarchive events are available to authorized project
+managers from `GET /api/v1/projects/:projectId/audit`.
 
 `project_set_git_history` enables one project only after an authorized caller confirms a fresh estimate. Provider configuration alone copies nothing. Agents should report the returned project state and must not describe `waiting`, `degraded`, or `budget-limited` history as ready.
 

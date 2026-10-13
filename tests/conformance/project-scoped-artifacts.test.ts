@@ -1,7 +1,15 @@
+import {Effect, Redacted} from "effect";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
 
+import type {BearerCredentialVerifier} from "../../src/application/authentication.js";
+import {AuthenticationRequired} from "../../src/core/errors.js";
 import {defaultProjectId} from "../../src/core/model.js";
+import {
+  membershipRoles,
+  principalCapabilities,
+  principalKinds,
+} from "../../src/core/identity.js";
 import {fetchLoopbackContent} from "../support/fetch-loopback-content.js";
 import {
   apiHeaders,
@@ -27,6 +35,17 @@ const projectSchema = z.object({
 });
 const projectResponseSchema = z.object({project: projectSchema});
 const projectListSchema = z.object({projects: z.array(projectSchema)});
+const projectAuditSchema = z.object({
+  events: z.array(z.object({
+    action: z.enum(["archive", "unarchive"]),
+    actorDisplayName: z.string().min(1),
+    authorizedByPrincipalId: z.string().nullable(),
+    createdAt: z.string(),
+    id: z.number().int(),
+    principalId: z.string().min(1),
+    projectId: z.string(),
+  })),
+});
 const artifactListSchema = z.object({
   artifacts: z.array(z.object({
     artifact: z.object({id: z.string(), projectId: z.string()}),
@@ -40,7 +59,9 @@ describe("project-scoped artifacts", () => {
 
   beforeEach(async () => {
     installation = await createTestInstallation();
-    server = await startTestServer(installation);
+    server = await startTestServer(installation, {
+      externalApiBearerVerifier: projectAuditBearerVerifier,
+    });
   });
 
   afterEach(async () => {
@@ -254,6 +275,23 @@ describe("project-scoped artifacts", () => {
       await archiveResponse.json(),
     ).project.archivedAt;
     expect(firstArchivedAt).not.toBeNull();
+    const archivedAudit = projectAuditSchema.parse(await (await apiFetch(
+      `/api/v1/projects/${created.id}/audit`,
+    )).json()).events;
+    expect(archivedAudit).toHaveLength(1);
+    expect(archivedAudit[0]).toMatchObject({
+      action: "archive",
+      actorDisplayName: "Local",
+      authorizedByPrincipalId: null,
+      createdAt: firstArchivedAt,
+      principalId: "local-api-token",
+      projectId: created.id,
+    });
+    const readerAudit = await fetch(
+      `${server.baseUrl}/api/v1/projects/${created.id}/audit`,
+      {headers: {Authorization: "Bearer project-audit-reader"}},
+    );
+    expect(readerAudit.status).toBe(403);
     const repeatedArchivedAt = projectResponseSchema.parse(
       await (await apiFetch(
         `/api/v1/projects/${created.id}/archive`,
@@ -309,6 +347,13 @@ describe("project-scoped artifacts", () => {
       {headers: apiHeaders(installation, "unused-project-unarchive-key"), method: "POST"},
     );
     expect(unarchived.status).toBe(200);
+    const lifecycleAudit = projectAuditSchema.parse(await (await apiFetch(
+      `/api/v1/projects/${created.id}/audit`,
+    )).json()).events;
+    expect(lifecycleAudit.map(({action}) => action)).toEqual([
+      "unarchive",
+      "archive",
+    ]);
     const second = await publishVersion(server, installation, {
       artifactId: first.body.artifact.id,
       content: "second version after unarchive",
@@ -336,6 +381,25 @@ describe("project-scoped artifacts", () => {
     return fetch(`${server.baseUrl}${pathname}`, {...init, headers});
   }
 });
+
+const projectAuditBearerVerifier: BearerCredentialVerifier = {
+  verify: (credential) => {
+    if (Redacted.value(credential) !== "project-audit-reader") {
+      return Effect.fail(new AuthenticationRequired({
+        message: "The project audit test credential is invalid.",
+      }));
+    }
+    return Effect.succeed({
+      authorizedByPrincipalId: "member_reviewer",
+      capabilities: [principalCapabilities.readArtifacts],
+      displayName: "Read-only reviewer",
+      id: "service:project_audit_reader",
+      installationId: "local",
+      kind: principalKinds.service,
+      membershipRole: membershipRoles.member,
+    });
+  },
+};
 
 function failMissingUploadFile(): never {
   throw new Error("The project upload plan omitted its declared file.");

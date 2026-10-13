@@ -7,7 +7,11 @@ import {
 } from "../identity/oidc-groups-claim.js";
 import {defaultOidcScopes} from "../identity/oidc-identity-provider.js";
 import {keycloakAdminBaseUrl} from "../identity/keycloak-directory.js";
-import {requireOidcIssuer} from "../identity/oidc-issuer.js";
+import {
+  isLocalOidcIssuer,
+  normalizeOidcEndpoint,
+  requireOidcIssuer,
+} from "../identity/oidc-issuer.js";
 import {
   loadOptionalCredential,
   type LoadedSecret,
@@ -17,6 +21,8 @@ import {runCliEffect} from "./run-cli-effect.js";
 const oidcEnvironmentSchema = z.object({
   ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL: z.email().optional(),
   ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS: z.string().min(1).optional(),
+  ARTIFACT_SERVER_OIDC_API_RESOURCE: z.url().optional(),
+  ARTIFACT_SERVER_OIDC_API_JWKS_URI: z.url().optional(),
   ARTIFACT_SERVER_OIDC_CLIENT_ID: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: z.string().min(1).optional(),
@@ -38,6 +44,8 @@ export interface OidcDirectoryConfiguration {
 
 /** Complete optional generic OIDC browser-login configuration. */
 export interface OidcConfiguration {
+  readonly apiResource: string | null;
+  readonly apiJwksUri: string | null;
   readonly applicationOrigin: string;
   readonly bootstrapAdministratorEmail: string;
   readonly clientId: string;
@@ -75,7 +83,9 @@ export async function loadOidcConfiguration(
     parsed.ARTIFACT_SERVER_OIDC_SCOPES === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_GROUPS_CLAIM === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_MEMBER_GROUPS === undefined &&
-    parsed.ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS === undefined
+    parsed.ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS === undefined &&
+    parsed.ARTIFACT_SERVER_OIDC_API_RESOURCE === undefined &&
+    parsed.ARTIFACT_SERVER_OIDC_API_JWKS_URI === undefined
   ) {
     return null;
   }
@@ -94,8 +104,19 @@ export async function loadOidcConfiguration(
     requireString(parsed.ARTIFACT_SERVER_OIDC_ISSUER),
     "ARTIFACT_SERVER_OIDC_ISSUER",
   );
+  const apiJwksUri = parsed.ARTIFACT_SERVER_OIDC_API_JWKS_URI ?? null;
+  if (
+    apiJwksUri !== null &&
+    normalizeOidcEndpoint(apiJwksUri, isLocalOidcIssuer(issuer)) === null
+  ) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_API_JWKS_URI must be an HTTPS URL. Plain http is allowed only when the OIDC issuer is local (localhost, 127.0.0.1, or ::1).",
+    );
+  }
   const groupRoles = oidcGroupRoles(parsed);
   return {
+    apiResource: parsed.ARTIFACT_SERVER_OIDC_API_RESOURCE ?? null,
+    apiJwksUri,
     applicationOrigin: requireString(parsed.ARTIFACT_SERVER_ORIGIN),
     bootstrapAdministratorEmail: requireString(
       parsed.ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL,

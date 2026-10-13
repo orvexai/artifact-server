@@ -29,7 +29,7 @@ export type AuthenticationFailure =
 
 /** Provider-neutral claims verified from one external MCP access token. */
 export interface VerifiedExternalMcpBearer {
-  readonly clientId: string | null;
+  readonly clientId: string;
   readonly expiresAt: number;
   readonly provider: string;
   readonly scopes: readonly string[];
@@ -58,6 +58,8 @@ export interface ExternalMcpBearerVerifier {
 export interface AuthenticatedMcpBearer {
   readonly clientId: string;
   readonly expiresAt: number;
+  /** Client identifier from a cryptographically verified external OAuth token. */
+  readonly oauthClientId?: string | null;
   readonly principal: Principal;
   readonly scopes: readonly string[];
 }

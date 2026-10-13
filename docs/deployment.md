@@ -42,11 +42,10 @@ Remote deployments use WorkOS or a generic OIDC provider. Network access and app
 ### Use a generic OIDC issuer for MCP
 
 The issuer configured for browser login also protects `/mcp`. Agents present an
-end-user access token, and the server records the person who obtained it. The
-same access token also writes the files of the agent's own MCP upload plan
-(`PUT /api/v1/uploads/<upload>/files/<file>`, the URLs `artifact_create_upload`
-returns), so an agent signed in only through OAuth can publish. Every other API
-route still requires an API key or a browser session. The
+end-user access token, and the server records the person who obtained it. MCP
+upload plans return short-lived, single-use file URLs that accept the declared
+file bytes without forwarding the MCP access token. Every other API route still
+requires an API key or a browser session. The
 server never issues client credentials and never runs an authorization server of
 its own.
 
@@ -90,6 +89,25 @@ Clients that cannot complete OAuth keep using administration-issued API keys.
 Tokens that name another resource are refused. ID tokens and other JWTs that are
 not access tokens are refused too: a JOSE `typ` other than `at+jwt` or `JWT`,
 or an ID-token claim such as `nonce` or `at_hash`.
+
+The same OIDC deployment can protect the HTTP API. It publishes RFC 9728
+metadata at `/.well-known/oauth-protected-resource/api`, advertises the
+configured issuer, and accepts access tokens whose audience names the API
+resource. The default resource is `<ARTIFACT_SERVER_ORIGIN>/api`; configure an
+issuer audience mapper or resource indicator for that URL. To use a different
+resource URL, set `ARTIFACT_SERVER_OIDC_API_RESOURCE`. API and MCP tokens are
+audience-bound independently. The API verifier uses the JWKS URI published by
+issuer discovery. Set `ARTIFACT_SERVER_OIDC_API_JWKS_URI` only when the API
+verifier must use a different JWKS endpoint; the browser and MCP verifiers
+continue using the discovery document's JWKS URI. The API metadata issuer and
+token issuer are `ARTIFACT_SERVER_OIDC_ISSUER`.
+
+Cloud deployments pass these API OAuth settings as environment variables:
+
+| Environment variable | Contract |
+| --- | --- |
+| `ARTIFACT_SERVER_OIDC_API_RESOURCE` | Optional API audience URL; defaults to `<ARTIFACT_SERVER_ORIGIN>/api`. |
+| `ARTIFACT_SERVER_OIDC_API_JWKS_URI` | Optional API verifier JWKS override. It must use HTTPS; plain HTTP is allowed only for a local OIDC issuer (`localhost`, `127.0.0.1`, or `::1`). |
 
 The server reads the issuer's discovery document once at startup. If the issuer
 cannot be reached then, the server logs a warning and starts with browser login

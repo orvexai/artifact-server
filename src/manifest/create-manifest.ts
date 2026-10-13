@@ -176,6 +176,7 @@ function portableCaseFold(candidate: string): string {
 function dispositionFor(mediaType: string): FileDisposition {
   const essence = mediaType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
   return essence.startsWith("audio/") ||
+      essence.startsWith("font/") ||
       essence.startsWith("image/") ||
       essence.startsWith("text/") ||
       essence.startsWith("video/") ||

@@ -82,6 +82,7 @@ export interface ExternalStorageRuntimeConfig {
   readonly contentDomain: string;
   readonly databaseUrl: Redacted.Redacted;
   readonly externalApiBearerVerifier?: BearerCredentialVerifier;
+  readonly externalApiOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly externalMcpBearerVerifier?: BearerCredentialVerifier;
   readonly externalMcpOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly gitHistory?: NodeGitHistoryConfiguration;
@@ -99,6 +100,7 @@ export interface ExternalStorageRuntimeConfig {
   readonly postgresMaxConnections?: number;
   readonly runtimeLifecycle?: RuntimeLifecycle;
   readonly serviceVersion?: string;
+  readonly uploadUrlLifetimeMilliseconds?: number;
   readonly stagingCleanupPolicy?: StagingCleanupPolicy;
 }
 
@@ -178,6 +180,7 @@ export async function createExternalStorageRuntime(
       clock: runtimeClock,
       dispatches: repository,
       externalApiBearerVerifier: config.externalApiBearerVerifier ?? null,
+      externalApiOAuthVerifier: config.externalApiOAuthVerifier ?? null,
       externalMcpBearerVerifier: config.externalMcpBearerVerifier ?? null,
       externalMcpOAuthVerifier: config.externalMcpOAuthVerifier ?? null,
       groupRolePolicy: config.groupRolePolicy ?? null,
@@ -192,6 +195,11 @@ export async function createExternalStorageRuntime(
       staging,
       stagingCleanupPolicy,
     };
+    if (config.uploadUrlLifetimeMilliseconds !== undefined) {
+      Object.assign(applicationAdapters, {
+        uploadUrlLifetimeMilliseconds: config.uploadUrlLifetimeMilliseconds,
+      });
+    }
     if (gitHistoryProvider !== null) {
       Object.assign(applicationAdapters, {gitHistoryProvider});
     }

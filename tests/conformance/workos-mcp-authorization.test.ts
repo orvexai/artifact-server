@@ -15,6 +15,7 @@ import {
 } from "jose";
 import {Predicate, Redacted} from "effect";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
+import {z} from "zod";
 
 import {WorkOsMcpBearerVerifier} from
   "../../src/identity/workos-mcp-bearer-verifier.js";
@@ -27,12 +28,59 @@ import {
   startTestServer,
   type TestInstallation,
 } from "../support/runtime-harness.js";
+import {publishNew} from "../support/publishing.js";
 
 const protocolVersion = "2026-07-28";
 const issuer = "https://artifact-server-staging.authkit.test";
 const resource = "https://staging.artifactserver.test/mcp";
 const userId = "user_01_artifact_server_test";
 const userEmail = "administrator@example.test";
+interface WorkOsMcpToolArguments {
+  readonly agentName?: string;
+  readonly artifactId?: string;
+  readonly body?: string;
+  readonly idempotencyKey?: string;
+  readonly operation?: string;
+  readonly projectId?: string;
+  readonly resolved?: boolean;
+  readonly threadId?: string;
+  readonly versionId?: string;
+}
+const commentAuthorResponseSchema = z.object({
+  actor: z.object({
+    clientId: z.string(),
+    kind: z.literal("mcp-client"),
+  }).nullable(),
+  authorizedByPrincipalId: z.string().nullable(),
+  displayName: z.string(),
+  principalId: z.string(),
+  principalKind: z.literal("human"),
+});
+const mailboxAgentResponseSchema = z.object({
+  result: z.object({
+    structuredContent: z.object({
+      agent: z.object({displayName: z.string()}),
+    }),
+  }),
+});
+const commentThreadResponseSchema = z.object({
+  result: z.object({
+    structuredContent: z.object({
+      thread: z.object({
+        author: commentAuthorResponseSchema,
+        id: z.string(),
+        resolvedBy: commentAuthorResponseSchema.nullable(),
+      }),
+    }),
+  }),
+});
+const commentReplyResponseSchema = z.object({
+  result: z.object({
+    structuredContent: z.object({
+      reply: z.object({author: commentAuthorResponseSchema}),
+    }),
+  }),
+});
 
 describe("hosted WorkOS MCP authorization", () => {
   let installation: TestInstallation;
@@ -153,12 +201,92 @@ describe("hosted WorkOS MCP authorization", () => {
     expect(apiKeyFallback.status).toBe(200);
   });
 
+  test("a verified OAuth client gets its own human-scoped mailbox and caller labels do not set its identity", async () => {
+    expect.hasAssertions();
+    const token = await issueToken({});
+    const response = await mcpTool(token, "dispatch_inbox", {
+      agentName: "Daniel's agent (caller supplied)",
+      operation: "list",
+    });
+    expect(response.status).toBe(200);
+    const body = mailboxAgentResponseSchema.parse(await response.json());
+    expect(body.result.structuredContent.agent.displayName)
+      .toBe("MCP client client_test for Artifact Administrator");
+  });
+
+  test("MCP comment authorship shows the verified client and human while retaining the human permission principal", async () => {
+    expect.hasAssertions();
+    const published = await publishNew(server, installation, {
+      accessSetting: "account_required",
+      content: "<!doctype html><title>OAuth comment attribution</title>",
+      idempotencyKey: "workos-mcp-attribution-publish",
+      name: "OAuth comment attribution",
+    });
+    const token = await issueToken({});
+    const response = await mcpTool(token, "comment_create", {
+      artifactId: published.body.artifact.id,
+      body: "Review comment from a verified client.",
+      idempotencyKey: "workos-mcp-attribution-comment",
+      projectId: published.body.artifact.projectId,
+      versionId: published.body.version.id,
+    });
+    expect(response.status).toBe(200);
+    const body = commentThreadResponseSchema.parse(await response.json());
+    expect(body.result.structuredContent.thread.author).toMatchObject({
+      actor: {clientId: "client_test", kind: "mcp-client"},
+      authorizedByPrincipalId: null,
+      displayName: "MCP client client_test for Artifact Administrator",
+      principalId: expect.any(String),
+      principalKind: "human",
+    });
+    expect(body.result.structuredContent.thread.author.principalId)
+      .not.toBe("client_test");
+    const threadId = body.result.structuredContent.thread.id;
+    const replyResponse = await mcpTool(token, "comment_reply", {
+      artifactId: published.body.artifact.id,
+      body: "Reply from a verified client.",
+      idempotencyKey: "workos-mcp-attribution-reply",
+      projectId: published.body.artifact.projectId,
+      threadId,
+    });
+    expect(replyResponse.status).toBe(200);
+    const replyBody = commentReplyResponseSchema.parse(
+      await replyResponse.json(),
+    );
+    expect(replyBody.result.structuredContent.reply.author).toMatchObject({
+      actor: {clientId: "client_test", kind: "mcp-client"},
+      authorizedByPrincipalId: null,
+      displayName: "MCP client client_test for Artifact Administrator",
+      principalKind: "human",
+    });
+    const resolveResponse = await mcpTool(token, "comment_resolve", {
+      artifactId: published.body.artifact.id,
+      projectId: published.body.artifact.projectId,
+      resolved: true,
+      threadId,
+    });
+    expect(resolveResponse.status).toBe(200);
+    const resolveBody = commentThreadResponseSchema.parse(
+      await resolveResponse.json(),
+    );
+    expect(resolveBody.result.structuredContent.thread.resolvedBy)
+      .toMatchObject({
+        actor: {clientId: "client_test", kind: "mcp-client"},
+        authorizedByPrincipalId: null,
+        displayName: "MCP client client_test for Artifact Administrator",
+        principalKind: "human",
+      });
+  });
+
   test("foundation: wrong token contracts fail closed and provider outages stay distinct", async () => {
     expect.hasAssertions();
     const wrongAudience = await mcpDiscovery(await issueToken({
       audience: "https://attacker.example/mcp",
     }));
     expect(wrongAudience.status).toBe(401);
+
+    const missingClientId = await mcpDiscovery(await issueToken({clientId: null}));
+    expect(missingClientId.status).toBe(401);
 
     const multipleAudiences = await mcpDiscovery(await issueToken({
       audience: [resource, "https://attacker.example/mcp"],
@@ -195,15 +323,22 @@ describe("hosted WorkOS MCP authorization", () => {
 
   async function issueToken(options: {
     readonly audience?: string | string[];
+    readonly clientId?: string | null;
     readonly expiresAt?: number;
     readonly issuer?: string;
     readonly signingKey?: CryptoKey;
     readonly scope?: string;
     readonly subject?: string | null;
   }): Promise<string> {
-    const token = new SignJWT(options.scope === undefined
-      ? {client_id: "client_test"}
-      : {client_id: "client_test", scope: options.scope})
+    const claims = options.clientId === null
+      ? options.scope === undefined ? {} : {scope: options.scope}
+      : options.scope === undefined
+      ? {client_id: options.clientId ?? "client_test"}
+      : {
+        client_id: options.clientId ?? "client_test",
+        scope: options.scope,
+      };
+    const token = new SignJWT(claims)
       .setProtectedHeader({alg: "RS256", kid: keyId})
       .setIssuer(options.issuer ?? issuer)
       .setAudience(options.audience ?? resource)
@@ -237,6 +372,38 @@ describe("hosted WorkOS MCP authorization", () => {
         },
       }),
       headers,
+      method: "POST",
+    });
+  }
+
+  function mcpTool(
+    token: string,
+    name: string,
+    arguments_: WorkOsMcpToolArguments,
+  ): Promise<Response> {
+    return fetch(`${server.baseUrl}/mcp`, {
+      body: JSON.stringify({
+        id: crypto.randomUUID(),
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          _meta: {
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+            [CLIENT_INFO_META_KEY]: {name: "workos-auth-test", version: "1"},
+            [PROTOCOL_VERSION_META_KEY]: protocolVersion,
+          },
+          arguments: arguments_,
+          name,
+        },
+      }),
+      headers: {
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": name,
+        "MCP-Protocol-Version": protocolVersion,
+      },
       method: "POST",
     });
   }
