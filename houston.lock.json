@@ -1,6 +1,6 @@
 {
   "schema": "houston-lock/v1",
-  "generated": "2026-10-13T17:26:38Z",
+  "generated": "2026-10-13T18:02:39Z",
   "installer": "dev",
   "project": "artifact-server",
   "agents": [
@@ -28,7 +28,7 @@
       "authority": "authoritative",
       "pin": "6.12.2",
       "resolved": "6.12.2",
-      "observed": "6.12.0",
+      "observed": "6.12.2",
       "floor": "6.8.0",
       "ceiling": "6.13.0",
       "provenance": "adopted",
