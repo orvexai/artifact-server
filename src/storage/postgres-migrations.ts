@@ -699,7 +699,7 @@ const migrationLoader = Migrator.fromRecord({
 });
 
 /** Schema revision required by this Artifact Server build. */
-export const requiredPostgresSchemaVersion = 12;
+export const requiredPostgresSchemaVersion = 13;
 
 /** Migration compatibility observed without changing Postgres. */
 export interface PostgresMigrationStatus {
@@ -787,6 +787,12 @@ export const readPostgresMigrationStatus = Effect.gen(function*() {
   }, {
     migration_id: 11,
     name: "artifact_search_name",
+  }, {
+    migration_id: 12,
+    name: "comment_actor_attribution",
+  }, {
+    migration_id: 13,
+    name: "project_archive_audit",
   }] as const;
   const observedRequiredHistory = rows.filter(
     (row) => row.migration_id <= requiredPostgresSchemaVersion,

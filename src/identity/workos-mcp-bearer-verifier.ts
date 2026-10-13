@@ -29,6 +29,7 @@ const workOsUser = Schema.Struct({
 const decodeWorkOsUser = Schema.decodeUnknownEffect(workOsUser);
 const workOsAccessTokenClaims = Schema.Struct({
   aud: Schema.Union([Schema.String, Schema.Array(Schema.String)]),
+  azp: Schema.optionalKey(Schema.String),
   client_id: Schema.optionalKey(Schema.String),
   exp: Schema.Number,
   scope: Schema.optionalKey(
@@ -171,9 +172,15 @@ function validateClaims(
         "The WorkOS access token is for a different resource.",
       );
     }
+    const clientId = claims.client_id ?? claims.azp;
+    if (clientId === undefined || clientId.trim().length === 0) {
+      return yield* invalidToken(
+        "The WorkOS access token must identify its OAuth client.",
+      );
+    }
     const scopes = tokenScopes(claims.scope);
     return {
-      clientId: claims.client_id ?? null,
+      clientId,
       expiresAt: claims.exp,
       provider: workOsProviderName,
       scopes,

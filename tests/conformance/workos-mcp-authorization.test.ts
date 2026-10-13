@@ -285,6 +285,9 @@ describe("hosted WorkOS MCP authorization", () => {
     }));
     expect(wrongAudience.status).toBe(401);
 
+    const missingClientId = await mcpDiscovery(await issueToken({clientId: null}));
+    expect(missingClientId.status).toBe(401);
+
     const multipleAudiences = await mcpDiscovery(await issueToken({
       audience: [resource, "https://attacker.example/mcp"],
     }));
@@ -320,15 +323,22 @@ describe("hosted WorkOS MCP authorization", () => {
 
   async function issueToken(options: {
     readonly audience?: string | string[];
+    readonly clientId?: string | null;
     readonly expiresAt?: number;
     readonly issuer?: string;
     readonly signingKey?: CryptoKey;
     readonly scope?: string;
     readonly subject?: string | null;
   }): Promise<string> {
-    const token = new SignJWT(options.scope === undefined
-      ? {client_id: "client_test"}
-      : {client_id: "client_test", scope: options.scope})
+    const claims = options.clientId === null
+      ? options.scope === undefined ? {} : {scope: options.scope}
+      : options.scope === undefined
+      ? {client_id: options.clientId ?? "client_test"}
+      : {
+        client_id: options.clientId ?? "client_test",
+        scope: options.scope,
+      };
+    const token = new SignJWT(claims)
       .setProtectedHeader({alg: "RS256", kid: keyId})
       .setIssuer(options.issuer ?? issuer)
       .setAudience(options.audience ?? resource)

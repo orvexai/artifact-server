@@ -18,16 +18,14 @@ import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
 
 import {renderBundleMessage} from "@plannotator/agent-bridge";
-import {principalCapabilities} from "../../src/core/identity.js";
 import {
   agentListSchema,
   ApiClient,
   dispatchCreationSchema,
   dispatchEnvelopeSchema,
-  issueApiKey,
-  signInAdministrator,
 } from "../support/agent-dispatch.js";
 import {publishNew, type PublishResponse} from "../support/publishing.js";
+import {createTestMcpOAuthVerifier} from "../support/mcp-oauth.js";
 import {
   createTestInstallation,
   removeTestInstallation,
@@ -37,6 +35,8 @@ import {
 } from "../support/runtime-harness.js";
 
 const protocolVersion = "2026-07-28";
+const firstMcpToken = "brp-mailbox-first-mcp-oauth-token";
+const secondMcpToken = "brp-mailbox-second-mcp-oauth-token";
 
 const mailboxAgentSchema = z.object({
   capabilities: z.object({
@@ -112,7 +112,12 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
 
   beforeEach(async () => {
     installation = await createTestInstallation();
-    server = await startTestServer(installation);
+    server = await startTestServer(installation, {
+      externalMcpOAuthVerifier: createTestMcpOAuthVerifier({
+        [firstMcpToken]: "mailbox-client-a",
+        [secondMcpToken]: "mailbox-client-b",
+      }),
+    });
     client = new ApiClient(server, installation.apiToken);
     published = (await publishNew(server, installation, {
       accessSetting: "account_required",
@@ -128,7 +133,7 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
     await removeTestInstallation(installation);
   });
 
-  test("BRP-002-B: an MCP principal lists its inbox with implicit mailbox registration, claims the oldest dispatch as a rendered sanitized bundle, and reports delivered, and the agent listing shows the mailbox tier", async () => {
+  test("BRP-002-B: a verified MCP client lists its human-scoped inbox, claims the oldest dispatch as a rendered sanitized bundle, and reports delivered", async () => {
     expect.hasAssertions();
     const firstThread = await openThread(
       hostileFirstBody,
@@ -146,16 +151,20 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
       null,
     );
 
-    // Listing registers the mailbox agent implicitly: mailbox tier, no
-    // beacon, a server default name for non-OAuth credentials, and an empty
-    // inbox so far. Caller labels do not establish agent identity.
-    const registered = await callInboxTool(installation.apiToken, {
+    // API-key authentication has no OAuth client identity and cannot open a
+    // mailbox. The verified OAuth client gets its own human-scoped mailbox.
+    const noOAuthClient = await callToolExpectingFailure(
+      installation.apiToken,
+      {agentName: "ignored", operation: "list"},
+    );
+    expect(noOAuthClient.code).toBe("AUTHENTICATION_REQUIRED");
+    const registered = await callInboxTool(firstMcpToken, {
       agentName: "Mailbox Claude",
       operation: "list",
     });
     expect(registered.agent).toEqual({
       capabilities: {beacon: false, evidence: "mailbox"},
-      displayName: "mailbox agent",
+      displayName: "MCP client mailbox-client-a for Administrator",
       id: registered.agent.id,
       kind: "mcp-mailbox",
     });
@@ -178,7 +187,7 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
 
     // A second list re-registers the same agent row and shows both queued
     // dispatches oldest first, with note and thread count.
-    const listed = await callInboxTool(installation.apiToken, {
+    const listed = await callInboxTool(firstMcpToken, {
       agentName: "Mailbox Claude",
       operation: "list",
     });
@@ -201,7 +210,7 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
     // The single-shot claim takes the oldest dispatch and renders the
     // bundle exactly as the shared bridge render does from the same raw
     // inputs — sanitization included, byte for byte.
-    const claimAnswer = await callInboxTool(installation.apiToken, {
+    const claimAnswer = await callInboxTool(firstMcpToken, {
       agentName: "Mailbox Claude",
       operation: "claim",
     });
@@ -285,7 +294,7 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
     expect(mailboxAgent?.activeDispatchId).toBe(olderDispatch.id);
 
     // The delivered report lands, and the younger dispatch stays queued.
-    const deliveredAnswer = await callInboxTool(installation.apiToken, {
+    const deliveredAnswer = await callInboxTool(firstMcpToken, {
       dispatchId: olderDispatch.id,
       operation: "delivered",
     });
@@ -299,7 +308,7 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
     // both threads, and the server infers the dispatch as addressed.
     for (const threadId of [firstThread, secondThread]) {
       // eslint-disable-next-line no-await-in-loop
-      const replied = await callTool(installation.apiToken, "comment_reply", {
+      const replied = await callTool(firstMcpToken, "comment_reply", {
         artifactId: published.artifact.id,
         body: `Addressed thread ${threadId} from the mailbox.`,
         idempotencyKey: `brp-mailbox-reply-${threadId}`,
@@ -312,7 +321,7 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
           .reply.threadId,
       ).toBe(threadId);
       // eslint-disable-next-line no-await-in-loop
-      const resolved = await callTool(installation.apiToken, "comment_resolve", {
+      const resolved = await callTool(firstMcpToken, "comment_resolve", {
         artifactId: published.artifact.id,
         projectId,
         resolved: true,
@@ -327,14 +336,14 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
     expect(await dispatchState(olderDispatch.id)).toBe("addressed");
   });
 
-  test("BRP-002-F: a second principal never sees the first principal's dispatches, claim with an empty inbox answers cleanly, and a delivered report for a dispatch the caller does not hold is refused", async () => {
+  test("BRP-002-F: a second OAuth client never sees another client's dispatches and cannot report its delivery", async () => {
     expect.hasAssertions();
     const thread = await openThread(
       "An annotation for the first principal's mailbox.",
       "brp-mailbox-foreign-thread",
       null,
     );
-    const first = await callInboxTool(installation.apiToken, {
+    const first = await callInboxTool(firstMcpToken, {
       agentName: "First mailbox",
       operation: "list",
     });
@@ -345,24 +354,9 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
       "brp-mailbox-foreign-dispatch",
     );
 
-    const administratorCookies = await signInAdministrator(
-      server,
-      installation,
-    );
-    const secondToken = await issueApiKey(
-      server,
-      administratorCookies,
-      [
-        principalCapabilities.connectAgents,
-        principalCapabilities.readArtifacts,
-        principalCapabilities.writeComments,
-      ],
-      "Second mailbox principal",
-    );
-
-    // Before its first list or claim, the second principal holds nothing,
+    // Before its first list or claim, the second client holds nothing,
     // so its delivered report is refused without touching the dispatch.
-    const unregistered = await callToolExpectingFailure(secondToken, {
+    const unregistered = await callToolExpectingFailure(secondMcpToken, {
       dispatchId: dispatch.id,
       operation: "delivered",
     });
@@ -371,16 +365,17 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
 
     // Its own inbox registers a separate agent and never shows the first
     // principal's dispatch.
-    const foreign = await callInboxTool(secondToken, {
+    const foreign = await callInboxTool(secondMcpToken, {
       agentName: null,
       operation: "list",
     });
     expect(foreign.agent.id).not.toBe(first.agent.id);
-    expect(foreign.agent.displayName).toBe("mailbox agent");
+    expect(foreign.agent.displayName)
+      .toBe("MCP client mailbox-client-b for Administrator");
     expect(foreign.inbox).toEqual([]);
 
     // An empty-inbox claim answers cleanly rather than erroring.
-    const emptyClaim = await callInboxTool(secondToken, {
+    const emptyClaim = await callInboxTool(secondMcpToken, {
       agentName: null,
       operation: "claim",
     });
@@ -389,7 +384,7 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
 
     // Registered but still not the holder: the report is refused and the
     // first principal's dispatch stays queued for its own agent.
-    const refused = await callToolExpectingFailure(secondToken, {
+    const refused = await callToolExpectingFailure(secondMcpToken, {
       dispatchId: dispatch.id,
       operation: "delivered",
     });

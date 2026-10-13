@@ -78,6 +78,7 @@ import {
   maximumUploadPlanRequestBytes,
 } from "../core/publishing-limits.js";
 import {
+  AuthenticationRequired,
   AgentNotFound,
   InvalidComment,
   InvalidDispatch,
@@ -263,7 +264,6 @@ const commentReplySchema = z.object({
   updatedAt: z.string(),
 }).strict();
 const mailboxAgentKind = "mcp-mailbox";
-const defaultMailboxAgentName = "mailbox agent";
 /** A mailbox agent runs wherever its MCP client runs; no directory is known. */
 const mailboxWorkingDirectory = "(mcp mailbox)";
 /** Bound every cursor walk so a server bug can never spin the loop forever. */
@@ -501,6 +501,7 @@ export function createArtifactMcpServer(
   async function gatherNudgeFacts(
     progress: NudgeProgressThread | null,
   ): Promise<ToolResultNudgeFacts | null> {
+    if (identity.agentClientId === null) return null;
     const connectionKey = mailboxConnectionKey(
       identity.principal.id,
       identity.agentClientId,
@@ -1893,8 +1894,9 @@ export function createArtifactMcpServer(
     ),
   );
 
-  const registerMailboxAgent = (_agentName: string | null) =>
-    runMcpApplicationEffect(
+  const registerMailboxAgent = (_agentName: string | null) => {
+    const agentClientId = requiredMailboxClientId(identity.agentClientId);
+    return runMcpApplicationEffect(
       dependencies,
       AgentDispatchService.use((agents) =>
         agents.registerAgent({
@@ -1902,25 +1904,25 @@ export function createArtifactMcpServer(
           capabilities: {beacon: false, evidence: agentEvidenceKinds.mailbox},
           connectionKey: mailboxConnectionKey(
             identity.principal.id,
-            identity.agentClientId,
+            agentClientId,
           ),
-          displayName: identity.agentClientId === null
-            ? defaultMailboxAgentName
-            : identity.principal.displayName,
+          displayName: identity.principal.displayName,
           kind: mailboxAgentKind,
           principal: identity.principal,
           workingDirectory: mailboxWorkingDirectory,
         })
       ),
     );
+  };
 
   /** Reports never register: without a prior list or claim, nothing is held. */
   const requireRegisteredMailboxAgent = async (): Promise<
     RegisteredAgentRecord
   > => {
+    const agentClientId = requiredMailboxClientId(identity.agentClientId);
     const connectionKey = mailboxConnectionKey(
       identity.principal.id,
-      identity.agentClientId,
+      agentClientId,
     );
     const agents = await runMcpApplicationEffect(
       dependencies,
@@ -2524,14 +2526,23 @@ interface MailboxAnswer {
  */
 function mailboxConnectionKey(
   principalId: string,
-  agentClientId: string | null,
+  agentClientId: string,
 ): string {
   const digest = createHash("sha256")
     .update(principalId, "utf8")
     .update("\0", "utf8")
-    .update(agentClientId ?? "legacy", "utf8")
+    .update(agentClientId, "utf8")
     .digest("hex");
   return `mcp-mailbox:${digest.slice(0, 32)}`;
+}
+
+function requiredMailboxClientId(agentClientId: string | null): string {
+  if (agentClientId === null) {
+    throw new AuthenticationRequired({
+      message: "Mailbox access requires an OAuth token with a verified client identifier.",
+    });
+  }
+  return agentClientId;
 }
 
 function mailboxAgentProjection(agent: RegisteredAgentRecord) {

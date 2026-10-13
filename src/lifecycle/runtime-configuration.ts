@@ -38,6 +38,8 @@ import {
   loadStagingCleanupPolicy,
   type StagingCleanupPolicy,
 } from "./staging-cleanup.js";
+import {defaultUploadUrlLifetimeMilliseconds} from
+  "../application/staged-upload.js";
 
 const bearerCredentialSchema = Schema.String.check(
   Schema.isMinLength(32),
@@ -97,6 +99,7 @@ export interface CompactRuntimeConfiguration {
   readonly port: number;
   readonly readinessWithdrawalMilliseconds: number;
   readonly shutdownDeadlineMilliseconds: number;
+  readonly uploadUrlLifetimeMilliseconds: number;
   readonly stagingCleanupPolicy: StagingCleanupPolicy;
 }
 
@@ -121,6 +124,7 @@ export interface ExternalStorageRuntimeConfiguration {
   readonly postgresMaxConnections: number;
   readonly readinessWithdrawalMilliseconds: number;
   readonly shutdownDeadlineMilliseconds: number;
+  readonly uploadUrlLifetimeMilliseconds: number;
   readonly stagingCleanupPolicy: StagingCleanupPolicy;
 }
 
@@ -159,6 +163,7 @@ export interface RuntimeConfigurationSummary {
   readonly readinessWithdrawalMilliseconds: number;
   readonly shutdownDeadlineMilliseconds: number;
   readonly stagingCleanup: StagingCleanupPolicy;
+  readonly uploadUrlLifetimeMilliseconds: number;
   readonly status: "valid";
 }
 
@@ -262,6 +267,9 @@ export const parseCompactRuntimeConfiguration = Effect.fn(
       "ARTIFACT_SERVER_SHUTDOWN_DEADLINE_MS",
       10_000,
     ),
+    uploadUrlLifetimeMilliseconds: yield* parseUploadUrlLifetime(
+      input.environment,
+    ),
     stagingCleanupPolicy: yield* parseStagingCleanupPolicy(input.environment),
   };
 });
@@ -340,6 +348,7 @@ export const parseExternalStorageRuntimeConfiguration = Effect.fn(
       "ARTIFACT_SERVER_SHUTDOWN_DEADLINE_MS",
       10_000,
     ),
+    uploadUrlLifetimeMilliseconds: yield* parseUploadUrlLifetime(environment),
     stagingCleanupPolicy: yield* parseStagingCleanupPolicy(environment),
   };
 });
@@ -565,6 +574,7 @@ function runtimeConfigurationSummary(
         configuration.readinessWithdrawalMilliseconds,
       shutdownDeadlineMilliseconds: configuration.shutdownDeadlineMilliseconds,
       stagingCleanup: configuration.stagingCleanupPolicy,
+      uploadUrlLifetimeMilliseconds: configuration.uploadUrlLifetimeMilliseconds,
       status: "valid",
     };
   }
@@ -586,6 +596,7 @@ function runtimeConfigurationSummary(
       configuration.readinessWithdrawalMilliseconds,
     shutdownDeadlineMilliseconds: configuration.shutdownDeadlineMilliseconds,
     stagingCleanup: configuration.stagingCleanupPolicy,
+    uploadUrlLifetimeMilliseconds: configuration.uploadUrlLifetimeMilliseconds,
     status: "valid",
   };
 }
@@ -739,6 +750,22 @@ function parseMilliseconds(
     );
   }
   return Effect.succeed(milliseconds);
+}
+
+function parseUploadUrlLifetime(
+  environment: NodeJS.ProcessEnv,
+): Effect.Effect<number, RuntimeConfigurationError> {
+  const field = "ARTIFACT_SERVER_MCP_UPLOAD_URL_LIFETIME_MS";
+  const value = Number(
+    environment[field] ?? String(defaultUploadUrlLifetimeMilliseconds),
+  );
+  if (!Number.isSafeInteger(value) || value < 1) {
+    return invalidValue(
+      field,
+      `${field} must be a positive integer number of milliseconds.`,
+    );
+  }
+  return Effect.succeed(value);
 }
 
 function parsePostgresMaxConnections(

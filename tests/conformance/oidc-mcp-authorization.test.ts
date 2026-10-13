@@ -347,6 +347,9 @@ describe("generic OIDC MCP authorization", () => {
       .rejects.toThrow("for another resource");
     await expect(verifiedSubject(hosted.externalMcpOAuthVerifier, await
       issueToken({idToken: true}))).rejects.toThrow("ID token is not");
+    await expect(verifiedSubject(hosted.externalMcpOAuthVerifier, await
+      issueToken({clientIdentity: false})))
+      .rejects.toThrow("must identify its OAuth client");
   });
 
   test("hosted OIDC config verifies the API audience and publishes matching metadata", async () => {
@@ -624,6 +627,7 @@ describe("generic OIDC MCP authorization", () => {
 
   async function issueToken(options: {
     readonly audience?: string | string[];
+    readonly clientIdentity?: boolean;
     /** `null` leaves the claim out. */
     readonly emailVerified?: boolean | null;
     readonly expiresAt?: number;
@@ -642,6 +646,10 @@ describe("generic OIDC MCP authorization", () => {
       azp: "artifact-server",
       scope: "openid profile email",
     };
+    if (options.clientIdentity === false) {
+      delete claims["azp"];
+      delete claims["client_id"];
+    }
     if (options.profile !== false) {
       Object.assign(claims, {
         email: userEmail,

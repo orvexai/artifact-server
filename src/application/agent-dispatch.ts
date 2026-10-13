@@ -549,11 +549,7 @@ function makeAgentDispatchService(
 
   const recordActivity = Effect.fn("AgentDispatchService.recordActivity")(
     function*(command: RecordAgentActivityCommand) {
-      if (command.principal.kind === "human") {
-        yield* authorization.requireMailboxAgentConnection(command.principal);
-      } else {
-        yield* authorization.requireAgentConnection(command.principal);
-      }
+      yield* authorization.requireAgentConnection(command.principal);
       const agent = yield* dependencies.repository.findAgent(
         dependencies.installationId,
         command.agentId,
@@ -565,15 +561,6 @@ function makeAgentDispatchService(
           message: "The registered agent does not exist.",
         }));
         return;
-      }
-      if (command.principal.kind === "human") {
-        yield* authorization.requireMailboxAgentConnection(command.principal);
-        if (agent.kind !== "mcp-mailbox") {
-          yield* Effect.fail(new AgentNotFound({
-            message: "The registered agent does not exist.",
-          }));
-          return;
-        }
       }
       // Stored unconditionally — a stale-heartbeat beacon is accepted too —
       // and the read side applies the TTL and liveness gates.

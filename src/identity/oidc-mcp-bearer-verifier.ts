@@ -119,8 +119,14 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
   readonly verify = Effect.fn("OidcMcpBearerVerifier.verify")(
     function*(this: OidcMcpBearerVerifier, credential: Redacted.Redacted) {
       const {claims} = yield* this.#verifiedToken(credential);
+      const clientId = claims.client_id ?? claims.azp;
+      if (clientId === undefined || clientId.trim().length === 0) {
+        return yield* invalidToken(
+          "The OIDC access token must identify its OAuth client.",
+        );
+      }
       const verified: VerifiedExternalMcpBearer = {
-        clientId: claims.client_id ?? claims.azp ?? null,
+        clientId,
         expiresAt: claims.exp,
         provider: this.#provider,
         scopes: tokenScopes(claims.scope),

@@ -45,7 +45,7 @@ import {
   ProjectManagementService,
 } from "./project-management.js";
 
-const uploadLifetimeMilliseconds = 60 * 60 * 1_000;
+export const defaultUploadUrlLifetimeMilliseconds = 10 * 60 * 1_000;
 
 /** Input for creating a principal-bound staged upload. */
 export interface CreateStagedUploadCommand {
@@ -147,6 +147,7 @@ export interface StagingStoragePort {
 export interface StagedUploadDependencies {
   readonly clock: ApplicationClock;
   readonly ids: IdGenerator;
+  readonly uploadUrlLifetimeMilliseconds: number;
   readonly staging: StagingStoragePort;
   readonly uploads: StagedUploadRepositoryPort;
 }
@@ -251,7 +252,7 @@ function makeStagedUploadService(
       return yield* dependencies.uploads.createStagedUpload({
         createdAt: DateTime.formatIso(created),
         expiresAt: DateTime.formatIso(
-          DateTime.addDuration(created, uploadLifetimeMilliseconds),
+          DateTime.addDuration(created, dependencies.uploadUrlLifetimeMilliseconds),
         ),
         files: manifest.entries.map((entry) => ({
           entry,

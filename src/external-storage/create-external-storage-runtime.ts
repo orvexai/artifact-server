@@ -100,6 +100,7 @@ export interface ExternalStorageRuntimeConfig {
   readonly postgresMaxConnections?: number;
   readonly runtimeLifecycle?: RuntimeLifecycle;
   readonly serviceVersion?: string;
+  readonly uploadUrlLifetimeMilliseconds?: number;
   readonly stagingCleanupPolicy?: StagingCleanupPolicy;
 }
 
@@ -194,6 +195,11 @@ export async function createExternalStorageRuntime(
       staging,
       stagingCleanupPolicy,
     };
+    if (config.uploadUrlLifetimeMilliseconds !== undefined) {
+      Object.assign(applicationAdapters, {
+        uploadUrlLifetimeMilliseconds: config.uploadUrlLifetimeMilliseconds,
+      });
+    }
     if (gitHistoryProvider !== null) {
       Object.assign(applicationAdapters, {gitHistoryProvider});
     }

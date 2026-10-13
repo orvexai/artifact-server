@@ -51,6 +51,10 @@ An agent uses this sequence:
 1. Call `artifact_capabilities` to read limits and available features.
 2. Call `artifact_create_upload` with each path, size, media type, and SHA-256 fingerprint.
 3. PUT each file's exact bytes to its returned upload URL without an `Authorization` header. Each URL is a secret, file-scoped capability that expires with the upload plan and works once.
+
+Upload URLs expire after 10 minutes by default. Operators can set
+`ARTIFACT_SERVER_MCP_UPLOAD_URL_LIFETIME_MS` to a positive integer number of
+milliseconds; the configured value also bounds the staged upload plan.
 4. Call `artifact_commit_upload` with the publication target and idempotency key.
 
 When the agent publishes a new version, it first reads the current version ID. It sends that ID as `expectedCurrentVersionId`.

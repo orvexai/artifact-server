@@ -393,6 +393,7 @@ function configureExternalStorageStart(
         serviceVersion: productVersion,
         shutdownDeadlineMilliseconds: parsed.shutdownDeadlineMilliseconds,
         stagingCleanupPolicy: parsed.stagingCleanupPolicy,
+        uploadUrlLifetimeMilliseconds: parsed.uploadUrlLifetimeMilliseconds,
       };
       if (hostedAuthentication !== null) {
         serverConfig = {
@@ -465,6 +466,7 @@ async function startCompactServer(
     serviceVersion: productVersion,
     shutdownDeadlineMilliseconds: configuration.shutdownDeadlineMilliseconds,
     stagingCleanupPolicy: configuration.stagingCleanupPolicy,
+    uploadUrlLifetimeMilliseconds: configuration.uploadUrlLifetimeMilliseconds,
   };
   if (hostedAuthentication !== null) {
     serverConfig = {
@@ -537,6 +539,7 @@ function compactMaintenanceConfig(
       ...configuration.stagingCleanupPolicy,
       schedule: "external",
     },
+    uploadUrlLifetimeMilliseconds: configuration.uploadUrlLifetimeMilliseconds,
   };
 }
 
@@ -559,6 +562,7 @@ function externalMaintenanceConfig(
       ...configuration.stagingCleanupPolicy,
       schedule: "external",
     },
+    uploadUrlLifetimeMilliseconds: configuration.uploadUrlLifetimeMilliseconds,
   };
 }
 

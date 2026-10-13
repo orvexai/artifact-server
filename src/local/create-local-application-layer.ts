@@ -56,6 +56,7 @@ import {
   PublishArtifactService,
 } from "../application/publish-artifact.js";
 import {
+  defaultUploadUrlLifetimeMilliseconds,
   type StagedUploadDependencies,
   StagedUploadService,
 } from "../application/staged-upload.js";
@@ -162,6 +163,7 @@ export interface ApplicationAdapters {
   readonly identityRepository: IdentityRepository;
   readonly installationId: string;
   readonly interactiveIdentityProvider: InteractiveIdentityProvider | null;
+  readonly uploadUrlLifetimeMilliseconds?: number;
   /** Live optional-provider state used to guard project enablement. */
   readonly gitHistory?: GitHistoryCapabilityReader;
   /** Optional managed provider used only after application authorization. */
@@ -286,6 +288,8 @@ export function createApplicationLayer(
   const stagedDependencies: StagedUploadDependencies = {
     clock,
     ids: adapters.ids,
+    uploadUrlLifetimeMilliseconds: adapters.uploadUrlLifetimeMilliseconds ??
+      defaultUploadUrlLifetimeMilliseconds,
     staging: {
       open: (uploadId, storageToken) =>
         Effect.tryPromise({
@@ -1002,7 +1006,7 @@ export function createApplicationLayer(
           principal = yield* installationAccess.authenticateExternalIdentity(identity);
         }
         return {
-          clientId: verified.clientId ?? verified.subject,
+          clientId: verified.clientId,
           expiresAt: verified.expiresAt,
           oauthClientId: verified.clientId,
           principal,

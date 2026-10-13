@@ -118,6 +118,7 @@ export interface LocalRuntimeConfig {
   readonly runtimeLifecycle?: RuntimeLifecycle;
   readonly installationId?: string;
   readonly serviceVersion?: string;
+  readonly uploadUrlLifetimeMilliseconds?: number;
   readonly stagingCleanupPolicy?: StagingCleanupPolicy;
   /** Overrides the compiled web bundle directory; used by tests. */
   readonly webAssetsRoot?: string;
@@ -255,6 +256,11 @@ export async function createLocalRuntime(
     staging,
     stagingCleanupPolicy,
   };
+  if (config.uploadUrlLifetimeMilliseconds !== undefined) {
+    Object.assign(applicationAdapters, {
+      uploadUrlLifetimeMilliseconds: config.uploadUrlLifetimeMilliseconds,
+    });
+  }
   if (gitHistoryProvider !== null) {
     Object.assign(applicationAdapters, {gitHistoryProvider});
   }
