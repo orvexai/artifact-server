@@ -28,6 +28,7 @@ import type {
   CommentThreadClearing,
   PageCursor,
   PublishedVersion,
+  ProjectAuditEvent,
   ProjectRecord,
   RegisteredAgentKind,
   RegisteredAgentPresence,
@@ -604,7 +605,12 @@ export interface RenameProject {
 
 /** Values used to archive or unarchive one project. */
 export interface SetProjectArchive {
+  readonly action: "archive" | "unarchive";
   readonly archivedAt: string | null;
+  readonly actorDisplayName: string;
+  readonly authorizedByPrincipalId: string | null;
+  readonly createdAt: string;
+  readonly principalId: string;
   readonly projectId: string;
 }
 
@@ -613,6 +619,7 @@ export interface ProjectRepository {
   createProject(command: CreateProject): Promise<ProjectRecord>;
   findProject(projectId: string): Promise<ProjectRecord | null>;
   listProjects(): Promise<readonly ProjectRecord[]>;
+  listProjectAuditEvents(projectId: string): Promise<readonly ProjectAuditEvent[]>;
   renameProject(command: RenameProject): Promise<ProjectRecord>;
   setProjectArchive(command: SetProjectArchive): Promise<ProjectRecord>;
 }

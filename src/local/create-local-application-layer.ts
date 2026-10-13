@@ -411,6 +411,10 @@ export function createApplicationLayer(
         try: () => adapters.repository.listProjects(),
         catch: (cause) => repositoryFailure("listProjects", cause),
       }),
+      listProjectAuditEvents: (projectId) => Effect.tryPromise({
+        try: () => adapters.repository.listProjectAuditEvents(projectId),
+        catch: (cause) => repositoryFailure("listProjectAuditEvents", cause),
+      }),
       renameProject: (command) => Effect.tryPromise({
         try: () => adapters.repository.renameProject(command),
         catch: (cause) => cause instanceof ProjectNotFound

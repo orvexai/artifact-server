@@ -69,6 +69,17 @@ export interface ProjectRecord {
   readonly name: string;
 }
 
+/** One attributed project lifecycle event. */
+export interface ProjectAuditEvent {
+  readonly action: "archive" | "unarchive";
+  readonly actorDisplayName: string;
+  readonly authorizedByPrincipalId: string | null;
+  readonly createdAt: string;
+  readonly id: number;
+  readonly principalId: string;
+  readonly projectId: string;
+}
+
 export interface ArtifactRecord {
   readonly accessSetting: AccessSetting;
   readonly createdAt: string;
