@@ -66,11 +66,16 @@ describe("generic OIDC group-role configuration", () => {
     const configuration = await loadOidcConfiguration({
       ...completeOidc,
       ARTIFACT_SERVER_OIDC_API_RESOURCE: "https://api.example.test/v2",
+      ARTIFACT_SERVER_OIDC_API_JWKS_URI: "https://idp.example.test/api-jwks",
     });
     expect(configuration?.apiResource).toBe("https://api.example.test/v2");
+    expect(configuration?.apiJwksUri).toBe("https://idp.example.test/api-jwks");
 
     await expect(loadOidcConfiguration({
       ARTIFACT_SERVER_OIDC_API_RESOURCE: "not a URL",
+    })).rejects.toThrow("Invalid URL");
+    await expect(loadOidcConfiguration({
+      ARTIFACT_SERVER_OIDC_API_JWKS_URI: "not a URL",
     })).rejects.toThrow("Invalid URL");
     await expect(loadOidcConfiguration({
       ARTIFACT_SERVER_OIDC_API_RESOURCE: "https://api.example.test/v2",

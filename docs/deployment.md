@@ -97,7 +97,11 @@ configured issuer, and accepts access tokens whose audience names the API
 resource. The default resource is `<ARTIFACT_SERVER_ORIGIN>/api`; configure an
 issuer audience mapper or resource indicator for that URL. To use a different
 resource URL, set `ARTIFACT_SERVER_OIDC_API_RESOURCE`. API and MCP tokens are
-audience-bound independently.
+audience-bound independently. The API verifier uses the JWKS URI published by
+issuer discovery. Set `ARTIFACT_SERVER_OIDC_API_JWKS_URI` only when the API
+verifier must use a different JWKS endpoint; the browser and MCP verifiers
+continue using the discovery document's JWKS URI. The API metadata issuer and
+token issuer are `ARTIFACT_SERVER_OIDC_ISSUER`.
 
 The server reads the issuer's discovery document once at startup. If the issuer
 cannot be reached then, the server logs a warning and starts with browser login

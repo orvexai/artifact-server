@@ -17,6 +17,7 @@ import {
 import {loadOidcAuthorizationServer} from "./oidc-oauth-metadata.js";
 
 export interface OidcHostedAuthenticationConfig {
+  readonly apiJwksUri?: string | null;
   readonly apiResource?: string | null;
   readonly applicationOrigin: string;
   readonly clientId: string;
@@ -60,7 +61,11 @@ export async function createOidcHostedAuthentication(
   if (config.fetch !== undefined) {
     verifierConfig = {...verifierConfig, fetch: config.fetch};
   }
-  const apiVerifierConfig = {...verifierConfig, audience: apiResource};
+  const apiVerifierConfig = {
+    ...verifierConfig,
+    audience: apiResource,
+    jwksUri: config.apiJwksUri ?? authorizationServer.jwksUri,
+  };
   return {
     apiOAuthResource: {
       authorizationServers: [issuer],
