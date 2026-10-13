@@ -1,6 +1,6 @@
-# Image, video, and Markdown previews
+# Image, video, Markdown, and PDF previews
 
-**Status:** Accepted and implemented with local HTTP and browser proof; multi-deployment verification remains open (`PRV-001` through `PRV-005`, August 23, 2026; Markdown reader `PRV-006`, October 13, 2026)
+**Status:** Accepted and implemented with local HTTP and browser proof; multi-deployment verification remains open (`PRV-001` through `PRV-005`, August 23, 2026; Markdown reader `PRV-006`, October 13, 2026; PDF viewer `PRV-007`, October 13, 2026)
 **Owner:** Artifact Server web application
 **Companion documents:** [Product specification](./artifact-server-product-spec.md), [Local workspace features](./local-workspace-spec.md), [Artifact comments](./artifact-comments-spec.md), [Conformance ledger](./conformance.yml)
 
@@ -10,9 +10,11 @@ The Artifact Server review interface presents an image or video from one exact i
 
 The browser remains the media engine. Artifact Server does not decode, transform, transcode, resize, generate thumbnails, invent posters, or probe uploaded media. The work is a secure delivery path and a useful native presentation, not a media-processing subsystem.
 
-This slice covers images, video, and Markdown. Audio and PDF previews remain separate follow-on work. Existing HTML preview behavior stays unchanged.
+This slice covers images, video, Markdown, and PDF. Audio previews remain separate follow-on work. Existing HTML preview behavior stays unchanged.
 
 Markdown is the one text format with an inline presentation, because agents and tools publish it as their primary review document: Plannotator's "Share to Artifact Server" publishes a `review.md`. Section 2.4 converts it into a sanitized reader document that uses the existing HTML annotation frame, so a Markdown review gets the same element and text-selection comments as an HTML review.
+
+PDF is the one document format Review hands to the browser's own viewer, because people publish reports and exports as PDFs and expect to read them in Review. Section 2.5 frames the entry from the version's isolated content host, never from the application origin.
 
 ## 2. User experience
 
@@ -26,7 +28,7 @@ The selected path is resolved in this order:
 2. The version manifest's `entryPath`.
 3. No selection. The viewer does not guess by opening an arbitrary asset from the manifest.
 
-The Files tab makes every manifest row selectable. Selecting a row updates the preview and the URL's `path` query without changing the selected version. HTML, image, and video entries use their native presentation, Markdown entries use the reader presentation in section 2.4, and every other declared type uses the typed fallback. Browser back and forward restore the previous path. A missing path, a path outside the manifest, or a file that cannot be previewed settles into an explicit fallback state.
+The Files tab makes every manifest row selectable. Selecting a row updates the preview and the URL's `path` query without changing the selected version. HTML, image, and video entries use their native presentation, Markdown entries use the reader presentation in section 2.4, PDF entries use the browser's PDF viewer in section 2.5, and every other declared type uses the typed fallback. Browser back and forward restore the previous path. A missing path, a path outside the manifest, or a file that cannot be previewed settles into an explicit fallback state.
 
 ### 2.2 Images
 
@@ -68,7 +70,18 @@ An entry whose normalized media type is `text/markdown` or `text/x-markdown` ren
 - A Markdown entry larger than 2 MiB is neither fetched nor rendered. It settles into the typed fallback, which explains the limit and offers `Open raw artifact` and `Download file`.
 - The renderer loads on first use as a separate chunk, so it adds nothing to the initial Review bundle.
 
-### 2.5 Identity and controls
+### 2.5 PDF
+
+An entry whose normalized media type is `application/pdf` renders in the browser's own PDF viewer. The `.pdf` extension does not participate: a PDF labelled `application/octet-stream`, `application/x-pdf`, or any other type uses the typed fallback.
+
+- Review requests the version's preview lease, the same exact-version lease an HTML entry uses for its `<base href>`, and checks that the lease names the selected version. A lease for any other version is a terminal failure, never a substitute.
+- The PDF frame's `src` is the entry's URL on that lease's content host, `<lease token>.<content domain>`, with every path segment percent-encoded. It is never an application-origin URL; section 4.4 describes the delivery.
+- The frame is a plain `<iframe>`, not a sandboxed one, because browser PDF viewers refuse to run in sandboxed frames. Isolation comes from the origin instead: the content host is a different origin from the application, so the PDF viewer, and anything it navigates to inside the frame, has no access to the application document, its cookies, or its storage. The frame sends no referrer.
+- The frame's accessible title names the artifact and the selected path. The PDF viewer supplies paging, zoom, search, printing, and its own download control, and streams large files by range.
+- A bounded loading state names the selected path until the frame loads. A lease that cannot be issued settles into the typed fallback with `Retry preview`, `Open raw artifact`, and `Download file`. A browser that is configured not to display PDFs inline never loads the frame; after 15 seconds Review keeps the frame and adds a notice with the same three actions.
+- There is no size limit beyond the existing publication limits, because the viewer streams the file instead of Review reading it into the tab.
+
+### 2.6 Identity and controls
 
 The preview header continues to show the artifact name, exact version number, access setting, and `Open version` action. When a non-entry file is selected, it also shows the selected manifest path. The Files tab remains the detailed place for media type, byte size, and fingerprint.
 
@@ -82,6 +95,7 @@ The normalized media type is the lowercase essence of the manifest entry's `medi
 - `video/*` selects the video presenter.
 - `text/html` keeps the existing credential-free HTML review frame.
 - `text/markdown` and `text/x-markdown`, plus `text/plain` with a `.md` or `.markdown` path, select the sanitized Markdown reader in section 2.4.
+- `application/pdf` selects the browser PDF viewer in section 2.5.
 - Every other type uses the fallback in section 5.
 
 Artifact Server never sniffs bytes or trusts a filename extension to promote a file into an active document. The only extension rule, `.md` or `.markdown` on `text/plain`, still renders the bytes as sanitized Markdown text. A publisher that labels arbitrary bytes as `image/*` or `video/*` can make the browser attempt a decode, but cannot turn those bytes into an application-origin document.
@@ -139,6 +153,20 @@ Full responses answer `200`, valid single ranges answer `206`, unsatisfiable ran
 
 The original version-file route remains download-only and unchanged. The media route never serves HTML, XML outside `image/svg+xml`, scripts, styles, PDFs, office documents, archives, or unknown types. It never accepts a URL or a storage key.
 
+### 4.4 PDF delivery through the content host
+
+A PDF must load as a document in a frame, which the media route refuses by design. Review therefore never asks the application origin for PDF bytes. It frames the entry on the version's preview-lease content host instead:
+
+| Request | Result |
+| --- | --- |
+| `GET https://<lease token>.<content domain>/<encoded manifest path>` | The exact immutable entry with `Content-Type: application/pdf`, `Content-Disposition: inline`, `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store`, `Referrer-Policy: no-referrer`, a strong `ETag`, and single-range support. |
+| `HEAD` on the same URL | The same metadata with no body. |
+
+- The lease token in the host name is the whole authorization. The request carries no cookie and no application credential, so a framed navigation works without third-party cookies. The lease is short-lived, read-only, and bound to one exact version, artifact, and project; a forged, expired, or cross-version lease fails closed (`CMT-018`).
+- Lease responses carry no `X-Frame-Options` and no `frame-ancestors` policy, so the application may frame them. The private version's ordinary content host still requires a content session.
+- The application document's Content Security Policy allows frames from itself and from content hosts only: `frame-src 'self' https://*.<content domain> http://*.<content domain>:*`. Every other application directive is unchanged, including `frame-ancestors 'none'`, `object-src 'none'`, and `connect-src 'self'`. No other origin can be framed by Review.
+- The review frame's own policy is unchanged and frames nothing.
+
 ## 5. Loading, failure, and recovery
 
 The preview must always settle. It must not leave the current permanent "Loading preview" card in the canvas.
@@ -148,6 +176,8 @@ The preview must always settle. It must not leave the current permanent "Loading
 | Loading | A bounded loading state names the selected path. Existing content remains only until the new selection is confirmed. | None. |
 | Ready image | The decoded image replaces loading. | Focus view or `Open version`. |
 | Ready video | Native controls appear after metadata can load. | Play, seek, focus view, or `Open version`. |
+| Ready PDF | The browser PDF viewer replaces loading. | Viewer controls, focus view, or `Open version`. |
+| PDF not displayed | The frame stays, and a notice says the browser may not show PDFs inline. | Retry, `Open raw artifact`, or `Download file`. |
 | Browser cannot decode | A typed fallback says that this browser cannot preview the media type. It does not call the artifact corrupt. | `Open version` and `Download file`. |
 | Authentication expired | The normal session-expired response appears. | Sign in, then retry the same tuple. |
 | Version or path missing | The preview says that the selected immutable file no longer resolves in the requested project context. | Return to the manifest entry path. |
@@ -159,6 +189,7 @@ Changing the artifact, version, or path invalidates the previous load immediatel
 
 - An image uses the artifact name and selected filename as its fallback accessible name. The UI does not invent a semantic description of visual content.
 - The video uses native controls, has an accessible label naming the artifact and file, and never autoplays.
+- The PDF frame has an accessible title naming the artifact and file. The browser PDF viewer provides its own keyboard and screen-reader support.
 - Loading uses a polite status announcement. A terminal preview failure uses an alert announcement once.
 - Focus view retains a visible way to restore the Artifact Server controls.
 - Browser zoom remains available. The viewer does not intercept standard browser or native media shortcuts.
@@ -174,7 +205,7 @@ Changing the artifact, version, or path invalidates the previous load immediatel
 
 ## 8. Comments and editing
 
-Image and video previews are read-only in this slice. Existing whole-file comments remain available from the Comments surface. Markdown previews support the same element and text-selection comments as HTML. Each anchored comment stores the Markdown entry's manifest path, just as an HTML comment stores `entry.path`. The preview does not add image coordinates, video timecodes, drawing tools, trimming, rotation, metadata editing, or replacement uploads.
+Image, video, and PDF previews are read-only in this slice. Existing whole-file comments remain available from the Comments surface; a PDF has no page, region, or text-selection anchors. Markdown previews support the same element and text-selection comments as HTML. Each anchored comment stores the Markdown entry's manifest path, just as an HTML comment stores `entry.path`. The preview does not add image coordinates, video timecodes, drawing tools, trimming, rotation, metadata editing, or replacement uploads.
 
 ## 9. Non-goals
 
@@ -184,12 +215,12 @@ Image and video previews are read-only in this slice. Existing whole-file commen
 - A custom image decoder, video player, codec polyfill, or playback analytics.
 - EXIF inspection, color-profile controls, image comparison, or frame comparison.
 - Image-region comments, video-time comments, captions generation, or transcription.
-- Audio, PDF, office-document, archive, or source-code preview work. Markdown is covered by `PRV-006`; there is no syntax highlighting, Mermaid or math rendering, or Markdown editing.
+- Audio, office-document, archive, or source-code preview work. Markdown is covered by `PRV-006`; there is no syntax highlighting, Mermaid or math rendering, or Markdown editing. PDF is covered by `PRV-007`; there is no bundled PDF renderer, page thumbnails, text extraction, or page and region comments.
 - Autoplay or background playback.
 
 ## 10. Conformance requirements
 
-All six requirements have local normal and hostile evidence and are `behavior_verified`. They remain short of `verified` until the same contract has passing evidence for every deployment named in the ledger.
+All seven requirements have local normal and hostile evidence and are `behavior_verified`. They remain short of `verified` until the same contract has passing evidence for every deployment named in the ledger.
 
 | ID | Contract |
 | --- | --- |
@@ -199,6 +230,7 @@ All six requirements have local normal and hostile evidence and are `behavior_ve
 | `PRV-004` | Manifest file selection is URL-addressable, version-pinned, back/forward aware, and protected from stale preview responses. |
 | `PRV-005` | Unsupported types, codecs, corrupt media, and delivery failures settle into an honest typed fallback without sniffing, conversion, or an infinite loading state. |
 | `PRV-006` | Markdown entries render as a sanitized, theme-following reader document through the HTML annotation frame, with path-anchored comments and a bounded-size fallback. |
+| `PRV-007` | PDF entries render in the browser's PDF viewer, framed from the exact version's preview-lease content host and never from the application origin, with a frame policy limited to content hosts and a typed fallback. |
 
 ## 11. Implementation order
 

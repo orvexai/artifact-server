@@ -4889,3 +4889,21 @@ requirements:
         result: pass
         run: project/evidence/browser.json
         recorded_at: "2026-10-13T19:02:34.370Z"
+
+  - id: PRV-007
+    kind: behavior
+    behavior: The Artifact Server review interface renders a PDF entry in the browser's own PDF viewer, framed from the exact version's preview-lease content host and never from the application origin, with an application frame policy limited to itself and content hosts and a typed fallback.
+    owner: web-application
+    source: {file: media-preview-spec.md, anchor: conformance-requirements}
+    acceptance:
+      behavior: {id: PRV-007-B, description: "Open a declared application/pdf entry and observe an unsandboxed, titled frame whose source is the entry on the exact version's lease content host, a cookie-less framed navigation answered 200 with application/pdf, inline disposition, and no framing refusal, the browser PDF viewer loaded in that frame, and an application-shell policy of frame-src 'self' plus content hosts only."}
+      failure: {id: PRV-007-F, description: "The same-origin media route still refuses PDF bytes, a .pdf path with another declared type stays unsupported, a lease that cannot be issued settles into the typed fallback with retry, open, and download, and a frame the browser never displays still settles with the same actions."}
+    deployments: *all
+    status: behavior_verified
+    depends_on: [CMT-018, PRV-003, PRV-004, PRV-005]
+    evidence:
+      - deployment: local
+        tests: [PRV-007-B, PRV-007-F]
+        result: pass
+        run: project/evidence/browser.json
+        recorded_at: "2026-10-13T20:31:17.084Z"

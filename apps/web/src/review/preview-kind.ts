@@ -1,5 +1,5 @@
 /** The presenter Review uses for one manifest entry in its preview surface. */
-export type PreviewKind = "html" | "image" | "markdown" | "other" | "video";
+export type PreviewKind = "html" | "image" | "markdown" | "other" | "pdf" | "video";
 
 /** The manifest facts the preview classification may consult. */
 export interface PreviewEntryFacts {
@@ -32,7 +32,9 @@ export function mediaTypeEssence(mediaType: string): string {
  * Classify one entry by its declared media type. The only use of the path is
  * the long-standing `text/plain` labelling of `.md` files by generic
  * publishers: that text is rendered through the same sanitized Markdown path,
- * never promoted into an active document.
+ * never promoted into an active document. A PDF is recognised only by its
+ * declared `application/pdf` type, never by a `.pdf` extension, so the browser
+ * PDF viewer is offered exactly the bytes the publisher labelled as a PDF.
  */
 export function previewKindOf(entry: PreviewEntryFacts): PreviewKind {
   const essence = mediaTypeEssence(entry.mediaType);
@@ -41,6 +43,7 @@ export function previewKindOf(entry: PreviewEntryFacts): PreviewKind {
   if (essence === "text/plain" && markdownPathSuffix.test(entry.path)) {
     return "markdown";
   }
+  if (essence === "application/pdf") return "pdf";
   if (essence.startsWith("image/")) return "image";
   if (essence.startsWith("video/")) return "video";
   return "other";
