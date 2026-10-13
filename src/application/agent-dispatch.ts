@@ -765,6 +765,9 @@ function connectedAgent(
 
 function dispatchSender(principal: Principal): CommentAuthor {
   return {
+    actor: principal.actorClientId === null || principal.actorClientId === undefined
+      ? null
+      : {clientId: principal.actorClientId, kind: "mcp-client"},
     authorizedByPrincipalId: principal.authorizedByPrincipalId,
     displayName: principal.displayName,
     principalId: principal.id,

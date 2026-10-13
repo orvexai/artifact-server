@@ -388,6 +388,7 @@ const commentThreadStateSchema = z.enum([
 const commentThreadRowSchema = z.object({
   anchorJson: z.string().nullable(),
   artifactId: z.string(),
+  authorActorClientId: z.string().nullable(),
   authorAuthorizedByPrincipalId: z.string().nullable(),
   authorDisplayName: z.string(),
   authorPrincipalId: z.string(),
@@ -400,6 +401,7 @@ const commentThreadRowSchema = z.object({
   projectId: z.string(),
   replyCount: nonnegativeIntegerSchema,
   resolvedAt: z.string().nullable(),
+  resolvedByActorClientId: z.string().nullable(),
   resolvedByAuthorizedByPrincipalId: z.string().nullable(),
   resolvedByDisplayName: z.string().nullable(),
   resolvedByPrincipalId: z.string().nullable(),
@@ -410,6 +412,7 @@ const commentThreadRowSchema = z.object({
 });
 const commentReplyRowSchema = z.object({
   authorAuthorizedByPrincipalId: z.string().nullable(),
+  authorActorClientId: z.string().nullable(),
   authorDisplayName: z.string(),
   authorPrincipalId: z.string(),
   authorPrincipalKind: commentPrincipalKindSchema,
@@ -508,6 +511,7 @@ interface ChangedCommentThreadValues {
   readonly anchorJson: string | null;
   readonly body: string;
   readonly resolvedAt: string | null;
+  readonly resolvedByActorClientId: string | null;
   readonly resolvedByAuthorizedByPrincipalId: string | null;
   readonly resolvedByDisplayName: string | null;
   readonly resolvedByPrincipalId: string | null;
@@ -2291,9 +2295,10 @@ export class PostgresArtifactRepository implements
           installation_id, project_id, id, artifact_id, version_id, path,
           anchor_json, body, state, author_principal_id,
           author_principal_kind, author_display_name,
-          author_authorized_by_principal_id, resolved_at,
+          author_authorized_by_principal_id, author_actor_client_id, resolved_at,
           resolved_by_principal_id, resolved_by_principal_kind,
           resolved_by_display_name, resolved_by_authorized_by_principal_id,
+          resolved_by_actor_client_id,
           idempotency_key, created_at, updated_at
         ) VALUES (
           ${installationId}, ${command.projectId}, ${command.id},
@@ -2302,7 +2307,8 @@ export class PostgresArtifactRepository implements
           ${command.author.principalId}, ${command.author.principalKind},
           ${command.author.displayName},
           ${command.author.authorizedByPrincipalId},
-          NULL, NULL, NULL, NULL, NULL,
+          ${command.author.actor?.clientId ?? null},
+          NULL, NULL, NULL, NULL, NULL, NULL,
           ${command.idempotencyKey}, ${command.createdAt}, ${command.createdAt}
         )`;
         const createAction = commentActionIdentity(command.id);
@@ -2418,6 +2424,7 @@ export class PostgresArtifactRepository implements
             resolved_by_authorized_by_principal_id = ${
           next.resolvedByAuthorizedByPrincipalId
         },
+            resolved_by_actor_client_id = ${next.resolvedByActorClientId},
             updated_at = ${command.updatedAt}
           WHERE installation_id = ${installationId} AND id = ${command.threadId}
             AND project_id = ${command.projectId}
@@ -2618,15 +2625,16 @@ export class PostgresArtifactRepository implements
           `INSERT INTO comment_replies (
             installation_id, project_id, id, thread_id, body,
             author_principal_id, author_principal_kind, author_display_name,
-            author_authorized_by_principal_id, idempotency_key,
+            author_authorized_by_principal_id, author_actor_client_id,
+            idempotency_key,
             created_at, updated_at
           )
           SELECT thread.installation_id, thread.project_id, $2::text, thread.id,
             $3::text, $4::text, $5::text, $6::text, $7::text, $8::text,
-            $9::text, $9::text
+            $9::text, $10::text, $10::text
           FROM comment_threads thread
-          WHERE thread.installation_id = $1 AND thread.id = $10
-            AND thread.project_id = $11 AND thread.artifact_id = $12
+          WHERE thread.installation_id = $1 AND thread.id = $11
+            AND thread.project_id = $12 AND thread.artifact_id = $13
             AND thread.state = 'open'
           RETURNING id`,
           [
@@ -2637,6 +2645,7 @@ export class PostgresArtifactRepository implements
             command.author.principalKind,
             command.author.displayName,
             command.author.authorizedByPrincipalId,
+            command.author.actor?.clientId ?? null,
             command.idempotencyKey,
             command.createdAt,
             command.threadId,
@@ -4575,12 +4584,14 @@ const commentThreadColumns = `SELECT
     thread.author_principal_kind AS "authorPrincipalKind",
     thread.author_display_name AS "authorDisplayName",
     thread.author_authorized_by_principal_id AS "authorAuthorizedByPrincipalId",
+    thread.author_actor_client_id AS "authorActorClientId",
     thread.resolved_at AS "resolvedAt",
     thread.resolved_by_principal_id AS "resolvedByPrincipalId",
     thread.resolved_by_principal_kind AS "resolvedByPrincipalKind",
     thread.resolved_by_display_name AS "resolvedByDisplayName",
     thread.resolved_by_authorized_by_principal_id
       AS "resolvedByAuthorizedByPrincipalId",
+    thread.resolved_by_actor_client_id AS "resolvedByActorClientId",
     thread.created_at AS "createdAt",
     thread.updated_at AS "updatedAt",
     (SELECT COUNT(*) FROM comment_replies reply
@@ -4597,6 +4608,7 @@ const commentReplyColumns = `SELECT
     reply.author_principal_kind AS "authorPrincipalKind",
     reply.author_display_name AS "authorDisplayName",
     reply.author_authorized_by_principal_id AS "authorAuthorizedByPrincipalId",
+    reply.author_actor_client_id AS "authorActorClientId",
     reply.created_at AS "createdAt",
     reply.updated_at AS "updatedAt"
   FROM comment_replies reply`;
@@ -4638,6 +4650,7 @@ function changedThreadValues(
         : serializeCommentAnchor(command.anchor),
       body: command.body ?? row.body,
       resolvedAt: row.resolvedAt,
+      resolvedByActorClientId: row.resolvedByActorClientId,
       resolvedByAuthorizedByPrincipalId: row.resolvedByAuthorizedByPrincipalId,
       resolvedByDisplayName: row.resolvedByDisplayName,
       resolvedByPrincipalId: row.resolvedByPrincipalId,
@@ -4651,6 +4664,7 @@ function changedThreadValues(
       : serializeCommentAnchor(command.anchor),
     body: command.body ?? row.body,
     resolvedAt: command.state.resolvedAt,
+    resolvedByActorClientId: resolution?.actor?.clientId ?? null,
     resolvedByAuthorizedByPrincipalId: resolution?.authorizedByPrincipalId ?? null,
     resolvedByDisplayName: resolution?.displayName ?? null,
     resolvedByPrincipalId: resolution?.principalId ?? null,
@@ -4663,6 +4677,9 @@ function commentAuthorFromRow(
   row: z.infer<typeof commentThreadRowSchema> | z.infer<typeof commentReplyRowSchema>,
 ): CommentAuthor {
   return {
+    actor: row.authorActorClientId === null
+      ? null
+      : {clientId: row.authorActorClientId, kind: "mcp-client"},
     authorizedByPrincipalId: row.authorAuthorizedByPrincipalId,
     displayName: row.authorDisplayName,
     principalId: row.authorPrincipalId,
@@ -4690,6 +4707,9 @@ function commentThreadFromRow(
         row.resolvedByDisplayName === null
       ? null
       : {
+        actor: row.resolvedByActorClientId === null
+          ? null
+          : {clientId: row.resolvedByActorClientId, kind: "mcp-client"},
         authorizedByPrincipalId: row.resolvedByAuthorizedByPrincipalId,
         displayName: row.resolvedByDisplayName,
         principalId: row.resolvedByPrincipalId,

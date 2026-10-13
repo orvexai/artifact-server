@@ -88,6 +88,7 @@ export function createMcpHttpAdapter(
         ? principal
         : {
           ...principal,
+          actorClientId: agentClientId,
           displayName: `MCP client ${agentClientId} for ${principal.displayName}`,
         };
       const serverDependencies: ArtifactMcpServerDependencies = {

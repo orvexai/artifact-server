@@ -15,6 +15,7 @@ import {
 } from "jose";
 import {Predicate, Redacted} from "effect";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
+import {z} from "zod";
 
 import {WorkOsMcpBearerVerifier} from
   "../../src/identity/workos-mcp-bearer-verifier.js";
@@ -41,6 +42,7 @@ interface WorkOsMcpToolArguments {
   readonly idempotencyKey?: string;
   readonly operation?: string;
   readonly projectId?: string;
+  readonly threadId?: string;
   readonly versionId?: string;
 }
 
@@ -198,18 +200,47 @@ describe("hosted WorkOS MCP authorization", () => {
     expect(response.status).toBe(200);
     // SAFETY: the MCP structured result is parsed below through optional reads.
     const body = await response.json() as {
-      result?: {structuredContent?: {thread?: {author?: {
+      result?: {structuredContent?: {thread?: {id?: string; author?: {
+        actor?: {clientId?: string; kind?: string} | null;
         displayName?: string;
         principalId?: string;
         principalKind?: string;
       }}}};
     };
     expect(body.result?.structuredContent?.thread?.author).toMatchObject({
+      actor: {clientId: "client_test", kind: "mcp-client"},
+      authorizedByPrincipalId: null,
       displayName: "MCP client client_test for Artifact Administrator",
+      principalId: expect.any(String),
       principalKind: "human",
     });
     expect(body.result?.structuredContent?.thread?.author?.principalId)
       .not.toBe("client_test");
+    const threadId = z.string().parse(body.result?.structuredContent?.thread?.id);
+    const replyResponse = await mcpTool(token, "comment_reply", {
+      artifactId: published.body.artifact.id,
+      body: "Reply from a verified client.",
+      idempotencyKey: "workos-mcp-attribution-reply",
+      projectId: published.body.artifact.projectId,
+      threadId,
+    });
+    expect(replyResponse.status).toBe(200);
+    // SAFETY: The MCP JSON-RPC response is shaped by the comment_reply output schema.
+    const replyBody = await replyResponse.json() as {
+      result?: {structuredContent?: {reply?: {author?: {
+        actor?: {clientId?: string; kind?: string} | null;
+        authorizedByPrincipalId?: string | null;
+        displayName?: string;
+        principalId?: string;
+        principalKind?: string;
+      }}}};
+    };
+    expect(replyBody.result?.structuredContent?.reply?.author).toMatchObject({
+      actor: {clientId: "client_test", kind: "mcp-client"},
+      authorizedByPrincipalId: null,
+      displayName: "MCP client client_test for Artifact Administrator",
+      principalKind: "human",
+    });
   });
 
   test("foundation: wrong token contracts fail closed and provider outages stay distinct", async () => {

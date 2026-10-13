@@ -228,6 +228,10 @@ const dispatchedThreadFilterSchema = z.enum([
   dispatchedThreadFilters.only,
 ]);
 const commentAuthorSchema = z.object({
+  actor: z.object({
+    clientId: z.string().min(1),
+    kind: z.literal("mcp-client"),
+  }).strict().nullable(),
   authorizedByPrincipalId: z.string().nullable(),
   displayName: z.string(),
   principalId: z.string(),

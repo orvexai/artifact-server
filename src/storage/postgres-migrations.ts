@@ -655,6 +655,15 @@ const addArtifactSearchName = Effect.gen(function*() {
   );
 });
 
+const addCommentActorAttribution = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE comment_threads
+    ADD COLUMN author_actor_client_id TEXT,
+    ADD COLUMN resolved_by_actor_client_id TEXT`);
+  yield* sql.unsafe(`ALTER TABLE comment_replies
+    ADD COLUMN author_actor_client_id TEXT`);
+});
+
 const migrationLoader = Migrator.fromRecord({
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -667,10 +676,11 @@ const migrationLoader = Migrator.fromRecord({
   "0009_git_history_mirror": addGitHistoryMirror,
   "0010_agent_capabilities": widenRegisteredAgentKind,
   "0011_artifact_search_name": addArtifactSearchName,
+  "0012_comment_actor_attribution": addCommentActorAttribution,
 });
 
 /** Schema revision required by this Artifact Server build. */
-export const requiredPostgresSchemaVersion = 11;
+export const requiredPostgresSchemaVersion = 12;
 
 /** Migration compatibility observed without changing Postgres. */
 export interface PostgresMigrationStatus {
