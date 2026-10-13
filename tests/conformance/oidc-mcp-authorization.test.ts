@@ -349,6 +349,48 @@ describe("generic OIDC MCP authorization", () => {
       issueToken({idToken: true}))).rejects.toThrow("ID token is not");
   });
 
+  test("hosted OIDC config verifies the API audience and publishes matching metadata", async () => {
+    const applicationOrigin = server.baseUrl;
+    const port = server.port;
+    await server.stop();
+    const hosted = await createOidcHostedAuthentication({
+      apiJwksUri: `${issuer}/api-jwks`,
+      applicationOrigin,
+      clientId: "artifact-server",
+      clientSecret: null,
+      issuer,
+      scopes: "openid email profile",
+    });
+    provider.setKeysStatus(503);
+    server = await startTestServer(installation, {
+      applicationOrigin,
+      apiOAuthResource: hosted.apiOAuthResource,
+      bootstrapAdministratorEmail: userEmail,
+      externalApiOAuthVerifier: hosted.externalApiOAuthVerifier,
+      port,
+    });
+
+    const metadata = await fetch(
+      `${server.baseUrl}/.well-known/oauth-protected-resource/api`,
+    );
+    expect(metadata.status).toBe(200);
+    expect(await metadata.json()).toMatchObject({
+      authorization_servers: [issuer],
+      resource: `${applicationOrigin}/api`,
+    });
+
+    const accepted = await fetch(`${server.baseUrl}/api/v1/session`, {
+      headers: {Authorization: `Bearer ${await issueToken({
+        audience: hosted.apiOAuthResource.resource,
+      })}`},
+    });
+    expect(accepted.status).toBe(200);
+    const wrongAudience = await fetch(`${server.baseUrl}/api/v1/session`, {
+      headers: {Authorization: `Bearer ${await issueToken({})}`},
+    });
+    expect(wrongAudience.status).toBe(401);
+  });
+
   test("an OIDC MCP upload URL uploads once without exposing the access token", async () => {
     const token = await issueToken({});
     const bytes = new TextEncoder().encode("<!doctype html><title>oidc</title>\n");
@@ -753,6 +795,11 @@ async function startProviderBoundary(options: {
         response.end();
         return;
       }
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({keys: [options.jwk]}));
+      return;
+    }
+    if (request.url === `${realmPath}/api-jwks`) {
       response.setHeader("Content-Type", "application/json");
       response.end(JSON.stringify({keys: [options.jwk]}));
       return;

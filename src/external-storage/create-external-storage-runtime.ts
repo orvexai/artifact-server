@@ -82,6 +82,7 @@ export interface ExternalStorageRuntimeConfig {
   readonly contentDomain: string;
   readonly databaseUrl: Redacted.Redacted;
   readonly externalApiBearerVerifier?: BearerCredentialVerifier;
+  readonly externalApiOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly externalMcpBearerVerifier?: BearerCredentialVerifier;
   readonly externalMcpOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly gitHistory?: NodeGitHistoryConfiguration;
@@ -178,6 +179,7 @@ export async function createExternalStorageRuntime(
       clock: runtimeClock,
       dispatches: repository,
       externalApiBearerVerifier: config.externalApiBearerVerifier ?? null,
+      externalApiOAuthVerifier: config.externalApiOAuthVerifier ?? null,
       externalMcpBearerVerifier: config.externalMcpBearerVerifier ?? null,
       externalMcpOAuthVerifier: config.externalMcpOAuthVerifier ?? null,
       groupRolePolicy: config.groupRolePolicy ?? null,

@@ -31,6 +31,7 @@ New variables, mirroring Workspaces' `OIDC_*` names under this repo's `ARTIFACT_
 | Variable | Required | Rule |
 | --- | --- | --- |
 | `ARTIFACT_SERVER_OIDC_ISSUER` | yes | `https://` origin-or-path URL, trailing slashes stripped, query/hash refused. Plain `http://` allowed only for `localhost`, `127.0.0.1`, `::1` (development), exactly Workspaces' `normalizeIssuer` rule. |
+| `ARTIFACT_SERVER_OIDC_API_RESOURCE` | no | Override the API OAuth audience/resource URL; defaults to `<ARTIFACT_SERVER_ORIGIN>/api`. |
 | `ARTIFACT_SERVER_OIDC_CLIENT_ID` | yes | Non-empty string. |
 | `ARTIFACT_SERVER_OIDC_CLIENT_SECRET` / `…_FILE` | no | Optional: a public client using PKCE alone is valid, as in Workspaces. When set, sent as `client_secret` in the token-request form body (`client_secret_post`, what Workspaces does). |
 | `ARTIFACT_SERVER_OIDC_SCOPES` | no | Default `"openid email profile"` (Workspaces' default). |

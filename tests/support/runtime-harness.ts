@@ -92,6 +92,7 @@ export async function startTestServer(
     readonly completedRequestLogSampleRate?: number;
     readonly developmentProxyCredential?: string;
     readonly externalApiBearerVerifier?: BearerCredentialVerifier;
+    readonly externalApiOAuthVerifier?: ExternalMcpBearerVerifier;
     readonly externalMcpBearerVerifier?: BearerCredentialVerifier;
     readonly externalMcpOAuthVerifier?: ExternalMcpBearerVerifier;
     readonly gitHistory?: NodeGitHistoryConfiguration;
@@ -136,6 +137,12 @@ export async function startTestServer(
     config = {
       ...config,
       externalApiBearerVerifier: options.externalApiBearerVerifier,
+    };
+  }
+  if (options.externalApiOAuthVerifier !== undefined) {
+    config = {
+      ...config,
+      externalApiOAuthVerifier: options.externalApiOAuthVerifier,
     };
   }
   if (options.developmentProxyCredential !== undefined) {
