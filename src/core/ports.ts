@@ -693,6 +693,10 @@ export interface StagedUploadRepository {
     uploadId: string,
     principalId: string,
   ): Promise<StagedUpload | null>;
+  findStagedUploadByFileCapability(
+    uploadId: string,
+    storageToken: string,
+  ): Promise<StagedUpload | null>;
   markStagedFileUploaded(
     projectId: string,
     uploadId: string,

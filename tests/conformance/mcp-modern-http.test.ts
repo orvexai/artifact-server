@@ -47,10 +47,7 @@ const toolCallResultSchema = z.object({
   }).loose(),
 });
 const uploadPlanSchema = z.object({
-  authorization: z.object({
-    credential: z.literal("reuse_the_mcp_bearer_credential"),
-    scheme: z.literal("Bearer"),
-  }),
+  authorization: z.literal("short_lived_single_use_upload_url"),
   method: z.literal("PUT"),
   path: z.string(),
   size: z.number().int().nonnegative(),
@@ -555,7 +552,6 @@ describe("modern MCP HTTP", () => {
     );
     await uploadMcpFiles(
       updatedUpload,
-      installation.apiToken,
       new Map([
         ["assets/data.bin", assetBytes],
         ["index.html", indexBytes],
@@ -1062,7 +1058,6 @@ function declaredMcpFile(
 
 async function uploadMcpFiles(
   upload: z.infer<typeof createUploadResultSchema>,
-  token: string,
   files: ReadonlyMap<string, Uint8Array>,
 ): Promise<void> {
   await Promise.all(upload.files.map(async (plan) => {
@@ -1072,7 +1067,6 @@ async function uploadMcpFiles(
     }
     const response = await fetch(plan.uploadUrl, {
       body: Buffer.from(bytes),
-      headers: {Authorization: `Bearer ${token}`},
       method: plan.method,
     });
     if (response.status !== 200) {

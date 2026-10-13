@@ -331,6 +331,14 @@ export function createApplicationLayer(
             ),
           catch: (cause) => repositoryFailure("findStagedUpload", cause),
         }),
+      findStagedUploadByFileCapability: (uploadId, storageToken) =>
+        Effect.tryPromise({
+          try: () => adapters.repository.findStagedUploadByFileCapability(
+            uploadId,
+            storageToken,
+          ),
+          catch: (cause) => repositoryFailure("findStagedUpload", cause),
+        }),
       listExpiredStagedUploads: (expiredBefore, limit) =>
         Effect.tryPromise({
           try: () => adapters.repository.listExpiredStagedUploads(

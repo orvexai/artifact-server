@@ -50,7 +50,7 @@ An agent uses this sequence:
 
 1. Call `artifact_capabilities` to read limits and available features.
 2. Call `artifact_create_upload` with each path, size, media type, and SHA-256 fingerprint.
-3. Upload each file to its returned opaque upload URL with the same bearer credential the agent uses for MCP: an API key or the OAuth access token.
+3. PUT each file's exact bytes to its returned upload URL without an `Authorization` header. Each URL is a secret, file-scoped capability that expires with the upload plan and works once.
 4. Call `artifact_commit_upload` with the publication target and idempotency key.
 
 When the agent publishes a new version, it first reads the current version ID. It sends that ID as `expectedCurrentVersionId`.
@@ -74,6 +74,8 @@ The server instructions tell the agent to share `links.review` first. This link 
 `links.artifact` follows the current version. `links.version` opens the immutable raw artifact without the Artifact Server interface.
 
 The agent must not place bootstrap URLs, access tokens, or credentials in chat.
+Treat upload URLs like credentials: anyone who receives one can upload that
+declared file until it expires or is used.
 
 Read operations use the same link roles. `artifact_get.current.links.review`
 opens the current exact version in full-screen Review. `artifact_open.reviewUrl`
