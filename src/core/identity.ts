@@ -37,6 +37,8 @@ export type PrincipalCapability =
 /** A credential-independent identity used by every application operation. */
 export interface Principal {
   readonly authorizedByPrincipalId: string | null;
+  /** OAuth client ID verified by the MCP bearer boundary, when applicable. */
+  readonly actorClientId?: string | null;
   readonly capabilities: readonly PrincipalCapability[];
   /** Name captured with every write this principal makes; never re-read later. */
   readonly displayName: string;

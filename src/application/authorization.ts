@@ -21,6 +21,9 @@ export interface AuthorizationOperations {
   readonly requireAgentConnection: (
     principal: Principal,
   ) => Effect.Effect<void, AuthorizationDenied>;
+  readonly requireMailboxAgentConnection: (
+    principal: Principal,
+  ) => Effect.Effect<void, AuthorizationDenied>;
   readonly requireDispatchSend: (
     principal: Principal,
   ) => Effect.Effect<void, AuthorizationDenied>;
@@ -113,6 +116,20 @@ function makeAuthorizationService(
     ) {
       return;
     }
+    yield* denied();
+  });
+
+  // A direct human can use the MCP mailbox for delegated work. The service
+  // layer still limits that principal to its own mcp-mailbox registration.
+  const requireMailboxAgentConnection = Effect.fn(
+    "AuthorizationService.requireMailboxAgentConnection",
+  )(function*(principal: Principal) {
+    yield* requireInstallation(principal);
+    if (
+      isDirectHumanPrincipal(principal) ||
+      (principal.kind === principalKinds.service &&
+        hasCapability(principal, principalCapabilities.connectAgents))
+    ) return;
     yield* denied();
   });
 
@@ -281,6 +298,7 @@ function makeAuthorizationService(
 
   return AuthorizationService.of({
     requireAgentConnection,
+    requireMailboxAgentConnection,
     requireDispatchSend,
     requireInstallationAdministration,
     requireArtifactListing,

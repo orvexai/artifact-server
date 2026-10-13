@@ -277,6 +277,11 @@ export type CommentThreadState =
 
 /** The principal attribution copied onto a comment when it was written. */
 export interface CommentAuthor {
+  /** Verified MCP client acting for the permission principal, when present. */
+  readonly actor?: {
+    readonly clientId: string;
+    readonly kind: "mcp-client";
+  } | null;
   readonly authorizedByPrincipalId: string | null;
   readonly displayName: string;
   readonly principalId: string;

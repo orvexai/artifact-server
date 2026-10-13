@@ -228,6 +228,10 @@ const dispatchedThreadFilterSchema = z.enum([
   dispatchedThreadFilters.only,
 ]);
 const commentAuthorSchema = z.object({
+  actor: z.object({
+    clientId: z.string().min(1),
+    kind: z.literal("mcp-client"),
+  }).strict().nullable(),
   authorizedByPrincipalId: z.string().nullable(),
   displayName: z.string(),
   principalId: z.string(),
@@ -288,7 +292,8 @@ async function collectCursorPages<T>(
   await collect(null);
   return collected;
 }
-const mailboxAgentNameSchema = z.string().trim().min(1).max(120);
+const mailboxAgentNameSchema = z.string().trim().min(1).max(120)
+  .describe("Legacy caller label. Ignored; the server derives agent identity from verified OAuth context.");
 const mailboxDispatchIdSchema = z.string().min(1).max(200);
 const mailboxAnchorSchema = z.object({originalText: z.string()}).loose();
 const mailboxAgentSchema = z.object({
@@ -401,6 +406,8 @@ function runMcpApplicationEffect<A, E>(
 
 /** Values attached to one already authenticated MCP request. */
 export interface ArtifactMcpRequestIdentity {
+  /** OAuth client identifier taken only from a verified bearer token. */
+  readonly agentClientId: string | null;
   readonly principal: Principal;
 }
 
@@ -494,7 +501,10 @@ export function createArtifactMcpServer(
   async function gatherNudgeFacts(
     progress: NudgeProgressThread | null,
   ): Promise<ToolResultNudgeFacts | null> {
-    const connectionKey = mailboxConnectionKey(identity.principal.id);
+    const connectionKey = mailboxConnectionKey(
+      identity.principal.id,
+      identity.agentClientId,
+    );
     const agents = await runMcpApplicationEffect(
       dependencies,
       AgentDispatchService.use((registry) =>
@@ -1883,15 +1893,20 @@ export function createArtifactMcpServer(
     ),
   );
 
-  const registerMailboxAgent = (agentName: string | null) =>
+  const registerMailboxAgent = (_agentName: string | null) =>
     runMcpApplicationEffect(
       dependencies,
       AgentDispatchService.use((agents) =>
         agents.registerAgent({
           agentSessionId: null,
           capabilities: {beacon: false, evidence: agentEvidenceKinds.mailbox},
-          connectionKey: mailboxConnectionKey(identity.principal.id),
-          displayName: agentName ?? defaultMailboxAgentName,
+          connectionKey: mailboxConnectionKey(
+            identity.principal.id,
+            identity.agentClientId,
+          ),
+          displayName: identity.agentClientId === null
+            ? defaultMailboxAgentName
+            : identity.principal.displayName,
           kind: mailboxAgentKind,
           principal: identity.principal,
           workingDirectory: mailboxWorkingDirectory,
@@ -1903,7 +1918,10 @@ export function createArtifactMcpServer(
   const requireRegisteredMailboxAgent = async (): Promise<
     RegisteredAgentRecord
   > => {
-    const connectionKey = mailboxConnectionKey(identity.principal.id);
+    const connectionKey = mailboxConnectionKey(
+      identity.principal.id,
+      identity.agentClientId,
+    );
     const agents = await runMcpApplicationEffect(
       dependencies,
       AgentDispatchService.use((registry) =>
@@ -2110,7 +2128,7 @@ export function createArtifactMcpServer(
     {
       title: "Agent dispatch inbox",
       description:
-        "This caller's mailbox for annotation bundles a reviewer dispatched to it. list registers the caller as a passive mailbox-tier agent and shows its queued dispatches; claim takes the oldest queued dispatch and returns the rendered bundle message; delivered and failed report the outcome of a claimed dispatch. After reporting delivered, address every thread in the bundle: comment_reply with what you did, then comment_resolve.",
+        "This caller's mailbox for annotation bundles a reviewer dispatched to it. list registers the caller as a passive mailbox-tier agent and shows its queued dispatches; claim takes the oldest queued dispatch and returns the rendered bundle message; delivered and failed report the outcome of a claimed dispatch. OAuth callers are attributed to the verified OAuth client for the human principal, and caller labels do not set agent identity. After reporting delivered, address every thread in the bundle: comment_reply with what you did, then comment_resolve.",
       inputSchema: z.discriminatedUnion("operation", [
         z.object({
           agentName: mailboxAgentNameSchema.nullable().default(null),
@@ -2501,13 +2519,17 @@ interface MailboxAnswer {
 }
 
 /**
- * The mailbox registration identity: stable per principal, so every
- * dispatch_inbox caller reclaims one agent row, and never guessable from
- * another principal's id reading the agent listing.
+ * The mailbox registration identity is stable per verified OAuth client and
+ * principal, so an agent reclaims its own row without caller labels.
  */
-function mailboxConnectionKey(principalId: string): string {
+function mailboxConnectionKey(
+  principalId: string,
+  agentClientId: string | null,
+): string {
   const digest = createHash("sha256")
     .update(principalId, "utf8")
+    .update("\0", "utf8")
+    .update(agentClientId ?? "legacy", "utf8")
     .digest("hex");
   return `mcp-mailbox:${digest.slice(0, 32)}`;
 }

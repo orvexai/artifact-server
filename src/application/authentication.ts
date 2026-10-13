@@ -58,6 +58,8 @@ export interface ExternalMcpBearerVerifier {
 export interface AuthenticatedMcpBearer {
   readonly clientId: string;
   readonly expiresAt: number;
+  /** Client identifier from a cryptographically verified external OAuth token. */
+  readonly oauthClientId?: string | null;
   readonly principal: Principal;
   readonly scopes: readonly string[];
 }
