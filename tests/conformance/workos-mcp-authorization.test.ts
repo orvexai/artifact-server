@@ -42,9 +42,45 @@ interface WorkOsMcpToolArguments {
   readonly idempotencyKey?: string;
   readonly operation?: string;
   readonly projectId?: string;
+  readonly resolved?: boolean;
   readonly threadId?: string;
   readonly versionId?: string;
 }
+const commentAuthorResponseSchema = z.object({
+  actor: z.object({
+    clientId: z.string(),
+    kind: z.literal("mcp-client"),
+  }).nullable(),
+  authorizedByPrincipalId: z.string().nullable(),
+  displayName: z.string(),
+  principalId: z.string(),
+  principalKind: z.literal("human"),
+});
+const mailboxAgentResponseSchema = z.object({
+  result: z.object({
+    structuredContent: z.object({
+      agent: z.object({displayName: z.string()}),
+    }),
+  }),
+});
+const commentThreadResponseSchema = z.object({
+  result: z.object({
+    structuredContent: z.object({
+      thread: z.object({
+        author: commentAuthorResponseSchema,
+        id: z.string(),
+        resolvedBy: commentAuthorResponseSchema.nullable(),
+      }),
+    }),
+  }),
+});
+const commentReplyResponseSchema = z.object({
+  result: z.object({
+    structuredContent: z.object({
+      reply: z.object({author: commentAuthorResponseSchema}),
+    }),
+  }),
+});
 
 describe("hosted WorkOS MCP authorization", () => {
   let installation: TestInstallation;
@@ -173,11 +209,8 @@ describe("hosted WorkOS MCP authorization", () => {
       operation: "list",
     });
     expect(response.status).toBe(200);
-    // SAFETY: the MCP structured result is parsed below through optional reads.
-    const body = await response.json() as {
-      result?: {structuredContent?: {agent?: {displayName?: string}}};
-    };
-    expect(body.result?.structuredContent?.agent?.displayName)
+    const body = mailboxAgentResponseSchema.parse(await response.json());
+    expect(body.result.structuredContent.agent.displayName)
       .toBe("MCP client client_test for Artifact Administrator");
   });
 
@@ -198,25 +231,17 @@ describe("hosted WorkOS MCP authorization", () => {
       versionId: published.body.version.id,
     });
     expect(response.status).toBe(200);
-    // SAFETY: the MCP structured result is parsed below through optional reads.
-    const body = await response.json() as {
-      result?: {structuredContent?: {thread?: {id?: string; author?: {
-        actor?: {clientId?: string; kind?: string} | null;
-        displayName?: string;
-        principalId?: string;
-        principalKind?: string;
-      }}}};
-    };
-    expect(body.result?.structuredContent?.thread?.author).toMatchObject({
+    const body = commentThreadResponseSchema.parse(await response.json());
+    expect(body.result.structuredContent.thread.author).toMatchObject({
       actor: {clientId: "client_test", kind: "mcp-client"},
       authorizedByPrincipalId: null,
       displayName: "MCP client client_test for Artifact Administrator",
       principalId: expect.any(String),
       principalKind: "human",
     });
-    expect(body.result?.structuredContent?.thread?.author?.principalId)
+    expect(body.result.structuredContent.thread.author.principalId)
       .not.toBe("client_test");
-    const threadId = z.string().parse(body.result?.structuredContent?.thread?.id);
+    const threadId = body.result.structuredContent.thread.id;
     const replyResponse = await mcpTool(token, "comment_reply", {
       artifactId: published.body.artifact.id,
       body: "Reply from a verified client.",
@@ -225,22 +250,32 @@ describe("hosted WorkOS MCP authorization", () => {
       threadId,
     });
     expect(replyResponse.status).toBe(200);
-    // SAFETY: The MCP JSON-RPC response is shaped by the comment_reply output schema.
-    const replyBody = await replyResponse.json() as {
-      result?: {structuredContent?: {reply?: {author?: {
-        actor?: {clientId?: string; kind?: string} | null;
-        authorizedByPrincipalId?: string | null;
-        displayName?: string;
-        principalId?: string;
-        principalKind?: string;
-      }}}};
-    };
-    expect(replyBody.result?.structuredContent?.reply?.author).toMatchObject({
+    const replyBody = commentReplyResponseSchema.parse(
+      await replyResponse.json(),
+    );
+    expect(replyBody.result.structuredContent.reply.author).toMatchObject({
       actor: {clientId: "client_test", kind: "mcp-client"},
       authorizedByPrincipalId: null,
       displayName: "MCP client client_test for Artifact Administrator",
       principalKind: "human",
     });
+    const resolveResponse = await mcpTool(token, "comment_resolve", {
+      artifactId: published.body.artifact.id,
+      projectId: published.body.artifact.projectId,
+      resolved: true,
+      threadId,
+    });
+    expect(resolveResponse.status).toBe(200);
+    const resolveBody = commentThreadResponseSchema.parse(
+      await resolveResponse.json(),
+    );
+    expect(resolveBody.result.structuredContent.thread.resolvedBy)
+      .toMatchObject({
+        actor: {clientId: "client_test", kind: "mcp-client"},
+        authorizedByPrincipalId: null,
+        displayName: "MCP client client_test for Artifact Administrator",
+        principalKind: "human",
+      });
   });
 
   test("foundation: wrong token contracts fail closed and provider outages stay distinct", async () => {
