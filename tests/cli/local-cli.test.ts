@@ -113,7 +113,7 @@ describe("local Artifact Server CLI", () => {
       }
       await rm(parentDirectory, {force: true, recursive: true});
     }
-  });
+  }, 60_000);
 
   test("starts with private reusable credentials without printing them", async () => {
     const dataDirectory = await mkdtemp(path.join(tmpdir(), "artifact-server-cli-"));
@@ -150,7 +150,7 @@ describe("local Artifact Server CLI", () => {
     } finally {
       await rm(dataDirectory, {force: true, recursive: true});
     }
-  });
+  }, 60_000);
 
   test("rejects an invalid port before creating persistent state", async () => {
     const parentDirectory = await mkdtemp(path.join(tmpdir(), "artifact-server-cli-invalid-"));

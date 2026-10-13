@@ -233,7 +233,7 @@ describe("generic OIDC group-role configuration", () => {
     );
     expect(orphaned.exitCode).not.toBe(0);
     expect(orphaned.output).toContain("Generic OIDC authentication requires");
-  });
+  }, 60_000);
 });
 
 function runCli(

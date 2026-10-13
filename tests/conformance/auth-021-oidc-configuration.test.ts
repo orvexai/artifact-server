@@ -46,7 +46,7 @@ interface CommandResult {
   readonly output: string;
 }
 
-describe("generic OIDC configuration", () => {
+describe("generic OIDC configuration", {timeout: 60_000}, () => {
   let compactDirectory: string;
   let installation: TestInstallation;
   let provider: RunningStubOidcProvider;

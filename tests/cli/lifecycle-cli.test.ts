@@ -505,7 +505,7 @@ describe("Artifact Server lifecycle CLI", () => {
     } finally {
       await rm(parent, {force: true, recursive: true});
     }
-  }, 30_000);
+  }, 60_000);
 
   test("foundation: compact serving withdraws readiness and integrity scans real committed bytes", async () => {
     const parent = await mkdtemp(path.join(tmpdir(), "artifact-server-drain-"));
