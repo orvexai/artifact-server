@@ -27,6 +27,7 @@ Sign in once, save a named profile, and use it when publishing:
 
 ```sh
 artifactserver auth login https://artifacts.example.com --name team
+artifactserver auth login https://artifacts.example.com --name team --headless
 artifactserver publish ./dist --profile team
 ```
 
@@ -54,5 +55,7 @@ artifactserver comments list art_example --server https://artifacts.example.com 
 The command uses the saved CLI profile for that exact server origin and prints
 JSON. `--include-replies` adds each thread's replies. It reads comments through
 the CLI's authenticated connection; callers do not need to handle an access token.
+
+On a headless host, `auth login --headless` prints the authorization URL. Open it on a machine with a browser, then paste the authorization code (or the full redirect URL) back into the CLI prompt. The CLI uses OAuth authorization code with S256 PKCE and stores the resulting login in the user's local profile; it does not require an API key.
 
 Run `artifactserver --help` or `artifactserver <command> --help` for the complete command reference.
