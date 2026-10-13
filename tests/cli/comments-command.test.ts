@@ -68,6 +68,7 @@ describe("listArtifactComments", () => {
       return new Response(JSON.stringify({
         replies: [{
           author: {
+            actor: {clientId: "artifact-server", kind: "mcp-client"},
             authorizedByPrincipalId: null,
             displayName: "MCP client artifact-server for Reviewer",
             principalId: "human-reviewer-1",
@@ -97,12 +98,14 @@ describe("listArtifactComments", () => {
       "Please clarify this step.",
     ]);
     expect(items[0]?.author).toEqual({
+      actor: {clientId: "artifact-server", kind: "mcp-client"},
       authorizedByPrincipalId: null,
       displayName: "MCP client artifact-server for Reviewer",
       principalId: "human-reviewer-1",
       principalKind: "human",
     });
     expect(items[0]?.replies?.[0]?.author).toEqual({
+      actor: {clientId: "artifact-server", kind: "mcp-client"},
       authorizedByPrincipalId: null,
       displayName: "MCP client artifact-server for Reviewer",
       principalId: "human-reviewer-1",
@@ -116,6 +119,7 @@ function thread(id: string) {
   return {
     artifactId: "artifact/one",
     author: {
+      actor: {clientId: "artifact-server", kind: "mcp-client"},
       authorizedByPrincipalId: null,
       displayName: "MCP client artifact-server for Reviewer",
       principalId: "human-reviewer-1",
