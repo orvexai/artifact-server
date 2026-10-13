@@ -14,6 +14,7 @@ import {
   type ReviewAnchor,
   type ReviewAnnotation,
 } from "@/review-frame/protocol";
+import {contentHostEntryUrl, documentBaseUrl} from "./content-host-url.ts";
 import {
   markdownPreviewByteLimit,
   markdownPreviewLimitLabel,
@@ -148,6 +149,19 @@ export function ReviewPreview({
         readOnly={readOnly}
         selectedThreadId={selectedThreadId}
         version={version}
+      />
+    );
+  }
+  if (kind === "pdf") {
+    return (
+      <PdfPreview
+        actions={commonActions}
+        artifactId={artifactId}
+        artifactName={artifactName}
+        entry={entry}
+        key={identity}
+        projectId={projectId}
+        versionId={version.version.id}
       />
     );
   }
@@ -449,14 +463,6 @@ async function annotatedDocument(
   return renderMarkdownDocument(source, path);
 }
 
-function documentBaseUrl(versionBaseUrl: string, entryPath: string): string {
-  const entryUrl = new URL(
-    entryPath.split("/").map(encodeURIComponent).join("/"),
-    versionBaseUrl,
-  );
-  return new URL(".", entryUrl).toString();
-}
-
 function NativeMediaPreview({
   actions,
   artifactName,
@@ -555,6 +561,125 @@ function NativeMediaPreview({
   );
 }
 
+/**
+ * How long a PDF frame may stay unloaded before Review offers the open and
+ * download actions. Browser PDF viewers load their viewer document well before
+ * a large file finishes streaming, so this only fires when the browser will not
+ * show the PDF inline (for example when it is set to download PDFs instead).
+ */
+const pdfFrameStallMilliseconds = 15_000;
+
+/**
+ * A PDF entry in the browser's own PDF viewer. The frame loads the entry from
+ * the version's isolated content host through a short-lived preview lease, so
+ * the bytes never become an application-origin document and the request needs
+ * no cookie. The frame is not sandboxed: browser PDF viewers refuse to run in
+ * sandboxed frames, and the content host is already a separate origin from
+ * Review.
+ */
+function PdfPreview({
+  actions,
+  artifactId,
+  artifactName,
+  entry,
+  projectId,
+  versionId,
+}: {
+  readonly actions: PreviewActions;
+  readonly artifactId: string;
+  readonly artifactName: string;
+  readonly entry: PreviewEntry;
+  readonly projectId: string;
+  readonly versionId: string;
+}) {
+  const [attempt, setAttempt] = useState(0);
+  const [source, setSource] = useState<string | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const [status, setStatus] = useState<"loading" | "ready" | "stalled">("loading");
+  const accessibleName = `${artifactName} — ${entry.path}`;
+
+  useEffect(() => {
+    let current = true;
+    void (async () => {
+      try {
+        const lease = await api.previewLease(projectId, artifactId, versionId);
+        if (lease.versionId !== versionId) {
+          throw new Error("The preview lease resolved a different version.");
+        }
+        if (current) setSource(contentHostEntryUrl(lease.baseUrl, entry.path));
+      } catch (cause) {
+        if (!current) return;
+        setError(
+          cause instanceof Error ? cause : new Error("PDF preview failed."),
+        );
+      }
+    })();
+    return () => {
+      current = false;
+    };
+  }, [artifactId, attempt, entry.path, projectId, versionId]);
+
+  useEffect(() => {
+    if (source === null || status !== "loading") return undefined;
+    const timer = window.setTimeout(
+      () => setStatus("stalled"),
+      pdfFrameStallMilliseconds,
+    );
+    return () => window.clearTimeout(timer);
+  }, [source, status]);
+
+  const retry = (): void => {
+    setError(null);
+    setSource(null);
+    setStatus("loading");
+    setAttempt((current) => current + 1);
+  };
+
+  if (error !== null) {
+    return (
+      <TerminalPreviewState
+        actions={actions}
+        description={error.message}
+        mediaType={entry.mediaType}
+        onRetry={retry}
+        path={entry.path}
+        size={entry.size}
+        title="PDF preview unavailable"
+      />
+    );
+  }
+  return (
+    <div className="as-pdf-preview" data-status={status}>
+      {source === null ? null : (
+        <iframe
+          className="as-pdf-preview__frame"
+          onLoad={() => setStatus("ready")}
+          referrerPolicy="no-referrer"
+          src={source}
+          title={accessibleName}
+        />
+      )}
+      {status === "loading" ? (
+        <div className="as-media-preview__loading" role="status">
+          <span aria-hidden="true" className="as-preview-state__mark" />
+          <strong>Loading preview</strong>
+          <small>{entry.path}</small>
+        </div>
+      ) : null}
+      {status === "stalled" ? (
+        <div className="as-media-preview__loading as-pdf-preview__stalled" role="status">
+          <strong>The PDF has not appeared yet</strong>
+          <p>
+            This browser may not show PDFs inline. Open the raw artifact or
+            download the file to read it.
+          </p>
+          <PreviewActionButtons actions={actions} onRetry={retry} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function reviewThemeTokens() {
   const style = getComputedStyle(document.documentElement);
   const value = (name: string): string => style.getPropertyValue(name).trim();
@@ -619,23 +744,35 @@ function TerminalPreviewState({
           <div><dt>Size</dt><dd>{formatBytes(size)}</dd></div>
         )}
       </dl>
-      <div className="as-preview-state__actions">
-        {onRetry === undefined ? null : (
-          <button className="as-button" onClick={onRetry} type="button">Retry preview</button>
-        )}
-        <button
-          className="as-button as-button--primary"
-          disabled={actions.opening}
-          onClick={actions.onOpenRawArtifact}
-          type="button"
-        >
-          <HugeiconsIcon aria-hidden="true" icon={ExternalLinkIcon} strokeWidth={1.8} />
-          {actions.opening ? "Opening…" : "Open raw artifact"}
-        </button>
-        {actions.downloadUrl === null ? null : (
-          <a className="as-button" download href={actions.downloadUrl}>Download file</a>
-        )}
-      </div>
+      <PreviewActionButtons actions={actions} onRetry={onRetry} />
+    </div>
+  );
+}
+
+function PreviewActionButtons({
+  actions,
+  onRetry,
+}: {
+  readonly actions: PreviewActions;
+  readonly onRetry?: (() => void) | undefined;
+}) {
+  return (
+    <div className="as-preview-state__actions">
+      {onRetry === undefined ? null : (
+        <button className="as-button" onClick={onRetry} type="button">Retry preview</button>
+      )}
+      <button
+        className="as-button as-button--primary"
+        disabled={actions.opening}
+        onClick={actions.onOpenRawArtifact}
+        type="button"
+      >
+        <HugeiconsIcon aria-hidden="true" icon={ExternalLinkIcon} strokeWidth={1.8} />
+        {actions.opening ? "Opening…" : "Open raw artifact"}
+      </button>
+      {actions.downloadUrl === null ? null : (
+        <a className="as-button" download href={actions.downloadUrl}>Download file</a>
+      )}
     </div>
   );
 }

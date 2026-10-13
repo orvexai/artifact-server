@@ -3380,6 +3380,32 @@ select:focus-visible {
   white-space: nowrap;
 }
 
+.as-pdf-preview {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  width: 100%;
+}
+
+.as-pdf-preview__frame {
+  background: var(--as-surface);
+  border: 0;
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+
+.as-pdf-preview[data-status="loading"] .as-pdf-preview__frame {
+  opacity: 0;
+}
+
+.as-pdf-preview__stalled p {
+  color: var(--as-subtle);
+  font-size: 0.78rem;
+  margin: 0;
+}
+
 .as-preview-state--terminal {
   max-width: 32rem;
 }

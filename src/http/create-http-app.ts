@@ -4269,9 +4269,7 @@ function isContentBootstrapRequest(requestUrl: URL): boolean {
  * content hosts. The frame still cannot reach the trusted application origin.
  */
 function reviewFrameContentSecurityPolicy(contentDomain: string): string {
-  const httpContent = `http://*.${contentDomain}:*`;
-  const httpsContent = `https://*.${contentDomain}`;
-  const contentSources = `${httpContent} ${httpsContent}`;
+  const contentSources = contentHostSources(contentDomain);
   return [
     "default-src 'none'",
     `script-src 'self' 'unsafe-inline' ${contentSources}`,
@@ -4285,6 +4283,36 @@ function reviewFrameContentSecurityPolicy(contentDomain: string): string {
     "media-src * data: blob:",
     `connect-src ${contentSources}`,
     "frame-ancestors 'self'",
+  ].join("; ");
+}
+
+/**
+ * Every exact-version content host: `https` on its default port, plus `http`
+ * on any port for loopback and local installations.
+ */
+function contentHostSources(contentDomain: string): string {
+  return `http://*.${contentDomain}:* https://*.${contentDomain}`;
+}
+
+/**
+ * The trusted application document. It may frame only itself (the review
+ * frame) and the isolated content hosts, where Review shows a PDF entry in the
+ * browser's own viewer through a preview lease. Artifact bytes are never framed
+ * from the application origin, and nothing may frame the application.
+ */
+function applicationContentSecurityPolicy(contentDomain: string): string {
+  return [
+    "default-src 'self'",
+    "base-uri 'none'",
+    "connect-src 'self'",
+    "font-src 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    `frame-src 'self' ${contentHostSources(contentDomain)}`,
+    "img-src 'self' data:",
+    "object-src 'none'",
+    "script-src 'self'",
+    "style-src 'self'",
   ].join("; ");
 }
 
@@ -4306,7 +4334,7 @@ async function serveWebAsset(
       : "no-cache, must-revalidate",
     "Content-Security-Policy": kind === "review-frame"
       ? reviewFrameContentSecurityPolicy(dependencies.contentDomain)
-      : "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'",
+      : applicationContentSecurityPolicy(dependencies.contentDomain),
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
   });

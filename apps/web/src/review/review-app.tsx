@@ -2789,7 +2789,7 @@ function reviewHref(location: ReviewLocation): string {
 function reviewPreviewKind(
   version: ArtifactVersion | null,
   selectedPath: string | null,
-): "html" | "markdown" | "media" | "other" {
+): "html" | "markdown" | "media" | "other" | "pdf" {
   if (version === null) return "other";
   const path = selectedPath ?? version.manifest.entryPath;
   const entry = version.manifest.entries.find((candidate) => candidate.path === path);
