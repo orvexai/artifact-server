@@ -50,3 +50,6 @@ deploy/pulumi/*/Pulumi.*.yaml
 *.gate.lock*
 .cache/linear/
 .cache/
+
+# Serena code-intelligence state: per-machine cache, local config and memories
+.serena/
