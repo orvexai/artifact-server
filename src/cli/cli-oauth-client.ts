@@ -478,7 +478,7 @@ class ArtifactServerOAuthProvider implements OAuthClientProvider {
     if (this.#headless) {
       process.stderr.write(`
 Open this authorization URL on a machine with a browser:
-${url}
+${terminalLink(url)}
 
 `);
       return Promise.resolve();
@@ -487,7 +487,7 @@ ${url}
     // opener actually reaching a browser.
     process.stderr.write(`
 Opening a browser to sign in to Artifact Server. If it does not open, visit:
-${url}
+${terminalLink(url)}
 
 `);
     this.#browserLaunchFailure = launchBrowserForLogin(url, this.#environment);
@@ -670,6 +670,24 @@ function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => error === undefined ? resolve() : reject(error));
   });
+}
+
+/**
+ * Render a URL for a person at a terminal. A long OAuth address that a
+ * terminal or tmux wraps is often no longer detected as one link, and copying
+ * it can carry the wrap breaks into the browser's address bar. An OSC 8
+ * hyperlink (as Claude Code and gh print) stays one clickable link however it
+ * wraps. The visible text is the full URL, so selecting and copying it still
+ * works; pipes, files and `TERM=dumb` get the plain URL unchanged.
+ */
+export function terminalLink(
+  url: URL | string,
+  stream: {readonly isTTY?: boolean} = process.stderr,
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
+  const text = url.toString();
+  if (stream.isTTY !== true || environment["TERM"] === "dumb") return text;
+  return `\u001B]8;;${text}\u001B\\${text}\u001B]8;;\u001B\\`;
 }
 
 /** Open one trusted browser address with the configured operating-system command. */
