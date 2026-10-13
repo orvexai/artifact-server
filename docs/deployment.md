@@ -102,6 +102,13 @@ verifier must use a different JWKS endpoint; the browser and MCP verifiers
 continue using the discovery document's JWKS URI. The API metadata issuer and
 token issuer are `ARTIFACT_SERVER_OIDC_ISSUER`.
 
+Cloud deployments pass these API OAuth settings as environment variables:
+
+| Environment variable | Contract |
+| --- | --- |
+| `ARTIFACT_SERVER_OIDC_API_RESOURCE` | Optional API audience URL; defaults to `<ARTIFACT_SERVER_ORIGIN>/api`. |
+| `ARTIFACT_SERVER_OIDC_API_JWKS_URI` | Optional API verifier JWKS override. It must use HTTPS; plain HTTP is allowed only for a local OIDC issuer (`localhost`, `127.0.0.1`, or `::1`). |
+
 The server reads the issuer's discovery document once at startup. If the issuer
 cannot be reached then, the server logs a warning and starts with browser login
 and API keys only. MCP OAuth stays off until the next restart.

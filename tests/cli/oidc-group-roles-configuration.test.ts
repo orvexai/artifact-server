@@ -78,6 +78,16 @@ describe("generic OIDC group-role configuration", () => {
       ARTIFACT_SERVER_OIDC_API_JWKS_URI: "not a URL",
     })).rejects.toThrow("Invalid URL");
     await expect(loadOidcConfiguration({
+      ...completeOidc,
+      ARTIFACT_SERVER_OIDC_API_JWKS_URI: "http://idp.example.test/api-jwks",
+    })).rejects.toThrow("ARTIFACT_SERVER_OIDC_API_JWKS_URI must be an HTTPS URL");
+    const localIssuer = await loadOidcConfiguration({
+      ...completeOidc,
+      ARTIFACT_SERVER_OIDC_ISSUER: "http://localhost:8080/realms/main",
+      ARTIFACT_SERVER_OIDC_API_JWKS_URI: "http://localhost:8080/api-jwks",
+    });
+    expect(localIssuer?.apiJwksUri).toBe("http://localhost:8080/api-jwks");
+    await expect(loadOidcConfiguration({
       ARTIFACT_SERVER_OIDC_API_RESOURCE: "https://api.example.test/v2",
     })).rejects.toThrow("Generic OIDC authentication requires");
   });

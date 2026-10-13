@@ -7,7 +7,11 @@ import {
 } from "../identity/oidc-groups-claim.js";
 import {defaultOidcScopes} from "../identity/oidc-identity-provider.js";
 import {keycloakAdminBaseUrl} from "../identity/keycloak-directory.js";
-import {requireOidcIssuer} from "../identity/oidc-issuer.js";
+import {
+  isLocalOidcIssuer,
+  normalizeOidcEndpoint,
+  requireOidcIssuer,
+} from "../identity/oidc-issuer.js";
 import {
   loadOptionalCredential,
   type LoadedSecret,
@@ -100,10 +104,19 @@ export async function loadOidcConfiguration(
     requireString(parsed.ARTIFACT_SERVER_OIDC_ISSUER),
     "ARTIFACT_SERVER_OIDC_ISSUER",
   );
+  const apiJwksUri = parsed.ARTIFACT_SERVER_OIDC_API_JWKS_URI ?? null;
+  if (
+    apiJwksUri !== null &&
+    normalizeOidcEndpoint(apiJwksUri, isLocalOidcIssuer(issuer)) === null
+  ) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_API_JWKS_URI must be an HTTPS URL. Plain http is allowed only when the OIDC issuer is local (localhost, 127.0.0.1, or ::1).",
+    );
+  }
   const groupRoles = oidcGroupRoles(parsed);
   return {
     apiResource: parsed.ARTIFACT_SERVER_OIDC_API_RESOURCE ?? null,
-    apiJwksUri: parsed.ARTIFACT_SERVER_OIDC_API_JWKS_URI ?? null,
+    apiJwksUri,
     applicationOrigin: requireString(parsed.ARTIFACT_SERVER_ORIGIN),
     bootstrapAdministratorEmail: requireString(
       parsed.ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL,
