@@ -1,6 +1,6 @@
-# Image and video previews
+# Image, video, and Markdown previews
 
-**Status:** Accepted and implemented with local HTTP and browser proof; multi-deployment verification remains open (`PRV-001` through `PRV-005`, August 23, 2026)
+**Status:** Accepted and implemented with local HTTP and browser proof; multi-deployment verification remains open (`PRV-001` through `PRV-005`, August 23, 2026; Markdown reader `PRV-006`, October 13, 2026)
 **Owner:** Artifact Server web application
 **Companion documents:** [Product specification](./artifact-server-product-spec.md), [Local workspace features](./local-workspace-spec.md), [Artifact comments](./artifact-comments-spec.md), [Conformance ledger](./conformance.yml)
 
@@ -10,7 +10,9 @@ The Artifact Server review interface presents an image or video from one exact i
 
 The browser remains the media engine. Artifact Server does not decode, transform, transcode, resize, generate thumbnails, invent posters, or probe uploaded media. The work is a secure delivery path and a useful native presentation, not a media-processing subsystem.
 
-This slice covers images and video only. Audio and PDF previews remain separate follow-on work. Existing HTML preview behavior stays unchanged.
+This slice covers images, video, and Markdown. Audio and PDF previews remain separate follow-on work. Existing HTML preview behavior stays unchanged.
+
+Markdown is the one text format with an inline presentation, because agents and tools publish it as their primary review document: Plannotator's "Share to Artifact Server" publishes a `review.md`. Section 2.4 converts it into a sanitized reader document that uses the existing HTML annotation frame, so a Markdown review gets the same element and text-selection comments as an HTML review.
 
 ## 2. User experience
 
@@ -24,7 +26,7 @@ The selected path is resolved in this order:
 2. The version manifest's `entryPath`.
 3. No selection. The viewer does not guess by opening an arbitrary asset from the manifest.
 
-The Files tab makes every manifest row selectable. Selecting a row updates the preview and the URL's `path` query without changing the selected version. HTML, image, and video entries use their native presentation; every other declared type uses the typed fallback. Browser back and forward restore the previous path. A missing path, a path outside the manifest, or a file that cannot be previewed settles into an explicit fallback state.
+The Files tab makes every manifest row selectable. Selecting a row updates the preview and the URL's `path` query without changing the selected version. HTML, image, and video entries use their native presentation, Markdown entries use the reader presentation in section 2.4, and every other declared type uses the typed fallback. Browser back and forward restore the previous path. A missing path, a path outside the manifest, or a file that cannot be previewed settles into an explicit fallback state.
 
 ### 2.2 Images
 
@@ -51,7 +53,22 @@ An entry whose normalized manifest media type starts with `video/` renders in a 
 
 The conformance video fixture uses a browser-decodable WebM file. MP4, WebM, Ogg, and other containers or codecs work only when the active browser can decode them. Artifact Server does not claim codec support beyond the browser.
 
-### 2.4 Identity and controls
+### 2.4 Markdown
+
+An entry whose normalized media type is `text/markdown` or `text/x-markdown` renders as a reader document. A `text/plain` entry whose path ends in `.md` or `.markdown` (any case) gets the same treatment, because generic publishers often label Markdown as plain text. No other `text/plain` entry is promoted. The bytes are always parsed as Markdown source and sanitized; the extension never turns a file into an active document.
+
+- The application fetches the exact entry through the authenticated version-file route, exactly as it fetches an HTML entry, and resolves the same preview lease for the `<base href>`.
+- The application converts GitHub Flavored Markdown with `marked`: tables, task lists, fenced code with its language label, strikethrough, autolinks, and stable heading `id`s using GitHub-style slugs.
+- The rendered HTML is sanitized with DOMPurify before it leaves the application. Scripts, inline event handlers, `javascript:` URLs, `iframe`, `frame`, `object`, `embed`, `form`, every form control, `style`, `link`, `meta`, `base`, `template`, `noscript`, SVG, and MathML are removed. Task-list boxes are read-only ARIA checkboxes, not `<input>` elements.
+- Relative links and images are kept as authored. The review frame's `<base href>` resolves them against the version's own content host, never the application origin.
+- The sanitized body is wrapped in a complete reader document: a 72-character measure, a typographic scale, styled tables, code blocks, block quotes, task lists, and images limited to the column width. Review's own Atkinson Hyperlegible faces are embedded, because the opaque-origin sandbox cannot fetch application font files.
+- The document opts in to host theming with `<meta name="plannotator-theme" content="host">`. Its colors come from the Review theme tokens that the frame already pushes, with system-color fallbacks, so it follows Review's light and dark themes, including live switches.
+- A small trusted script in the wrapper keeps in-page `#fragment` links on the document. Markdown-authored script never survives sanitization.
+- The document then takes the HTML path unchanged: the credential-free review frame, the opaque-origin `allow-scripts` sandbox, annotate and interact modes, element and text-selection comments, focus, and focus view.
+- A Markdown entry larger than 2 MiB is neither fetched nor rendered. It settles into the typed fallback, which explains the limit and offers `Open raw artifact` and `Download file`.
+- The renderer loads on first use as a separate chunk, so it adds nothing to the initial Review bundle.
+
+### 2.5 Identity and controls
 
 The preview header continues to show the artifact name, exact version number, access setting, and `Open version` action. When a non-entry file is selected, it also shows the selected manifest path. The Files tab remains the detailed place for media type, byte size, and fingerprint.
 
@@ -64,9 +81,10 @@ The normalized media type is the lowercase essence of the manifest entry's `medi
 - `image/*` selects the image presenter.
 - `video/*` selects the video presenter.
 - `text/html` keeps the existing credential-free HTML review frame.
+- `text/markdown` and `text/x-markdown`, plus `text/plain` with a `.md` or `.markdown` path, select the sanitized Markdown reader in section 2.4.
 - Every other type uses the fallback in section 5.
 
-Artifact Server never sniffs bytes or trusts a filename extension to promote a file into an inline preview. A publisher that labels arbitrary bytes as `image/*` or `video/*` can make the browser attempt a decode, but cannot turn those bytes into an application-origin document.
+Artifact Server never sniffs bytes or trusts a filename extension to promote a file into an active document. The only extension rule, `.md` or `.markdown` on `text/plain`, still renders the bytes as sanitized Markdown text. A publisher that labels arbitrary bytes as `image/*` or `video/*` can make the browser attempt a decode, but cannot turn those bytes into an application-origin document.
 
 ## 4. Authenticated media delivery
 
@@ -156,7 +174,7 @@ Changing the artifact, version, or path invalidates the previous load immediatel
 
 ## 8. Comments and editing
 
-Image and video previews are read-only in this slice. Existing whole-file comments remain available from the Comments surface. The preview does not add image coordinates, video timecodes, drawing tools, trimming, rotation, metadata editing, or replacement uploads.
+Image and video previews are read-only in this slice. Existing whole-file comments remain available from the Comments surface. Markdown previews support the same element and text-selection comments as HTML. Each anchored comment stores the Markdown entry's manifest path, just as an HTML comment stores `entry.path`. The preview does not add image coordinates, video timecodes, drawing tools, trimming, rotation, metadata editing, or replacement uploads.
 
 ## 9. Non-goals
 
@@ -166,12 +184,12 @@ Image and video previews are read-only in this slice. Existing whole-file commen
 - A custom image decoder, video player, codec polyfill, or playback analytics.
 - EXIF inspection, color-profile controls, image comparison, or frame comparison.
 - Image-region comments, video-time comments, captions generation, or transcription.
-- Audio, PDF, office-document, archive, Markdown, or source-code preview work.
+- Audio, PDF, office-document, archive, or source-code preview work. Markdown is covered by `PRV-006`; there is no syntax highlighting, Mermaid or math rendering, or Markdown editing.
 - Autoplay or background playback.
 
 ## 10. Conformance requirements
 
-All five requirements have local normal and hostile evidence and are `behavior_verified`. They remain short of `verified` until the same contract has passing evidence for every deployment named in the ledger.
+All six requirements have local normal and hostile evidence and are `behavior_verified`. They remain short of `verified` until the same contract has passing evidence for every deployment named in the ledger.
 
 | ID | Contract |
 | --- | --- |
@@ -180,6 +198,7 @@ All five requirements have local normal and hostile evidence and are `behavior_v
 | `PRV-003` | Authenticated media delivery is same-origin, media-destination-only, correctly typed, range-capable, and cannot become an application-origin document. |
 | `PRV-004` | Manifest file selection is URL-addressable, version-pinned, back/forward aware, and protected from stale preview responses. |
 | `PRV-005` | Unsupported types, codecs, corrupt media, and delivery failures settle into an honest typed fallback without sniffing, conversion, or an infinite loading state. |
+| `PRV-006` | Markdown entries render as a sanitized, theme-following reader document through the HTML annotation frame, with path-anchored comments and a bounded-size fallback. |
 
 ## 11. Implementation order
 

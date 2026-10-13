@@ -192,11 +192,11 @@ Opens a **linked** artifact's source file in an application on the user's machin
 
 ## 8. Broader previews
 
-The first broader-preview slice is specified in [Image and video previews](./media-preview-spec.md). The Artifact Server review interface presents one exact-version image or video with native browser elements, manifest file selection, focus viewing, explicit terminal states, and ranged video seeking.
+The first broader-preview slice is specified in [Image, video, and Markdown previews](./media-preview-spec.md). The Artifact Server review interface presents one exact-version image or video with native browser elements, manifest file selection, focus viewing, explicit terminal states, and ranged video seeking.
 
 The authenticated version-file route remains download-only. Native media uses a separate application-origin route that returns the manifest media type only to authenticated same-origin `image` or `video` subresource requests and rejects top-level document navigation. This corrects the earlier assumption that a browser subresource could render the version-file route despite its `application/octet-stream` and `attachment` response. `CMT-013` remains unchanged.
 
-Audio, PDF, and preformatted text presentation are follow-on preview slices, not part of `PRV-001` through `PRV-005`. Everything without an implemented browser-native presentation uses a typed fallback and never renders inline. Comments on non-HTML files keep the existing whole-file anchor. Deployments: all six.
+Markdown entries render as a sanitized reader document through the HTML annotation frame (`PRV-006`). Audio, PDF, and other preformatted text presentation are follow-on preview slices, not part of `PRV-001` through `PRV-006`. Everything without an implemented presentation uses a typed fallback and never renders inline. Comments on files that are neither HTML nor Markdown keep the existing whole-file anchor. Deployments: all six.
 
 ## 9. Security summary
 
@@ -285,6 +285,7 @@ New ledger modules `local-workspace` (LNK, OPN) and `kanban` (KAN); EDT belongs 
 | `PRV-003` | Authenticated media delivery is same-origin, media-destination-only, correctly typed, range-capable, and cannot become an application-origin document. |
 | `PRV-004` | Manifest file selection is URL-addressable, version-pinned, back/forward aware, and protected from stale preview responses. |
 | `PRV-005` | Unsupported types, codecs, corrupt media, and delivery failures settle into an honest typed fallback without sniffing, conversion, or an infinite loading state. |
+| `PRV-006` | Markdown entries render as a sanitized, theme-following reader document through the HTML annotation frame, with path-anchored comments and a bounded-size fallback. |
 
 ## 13. Sequencing and effort
 

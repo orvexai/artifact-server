@@ -157,7 +157,8 @@ select:focus-visible {
   grid-row: 1;
 }
 
-.as-app[data-focus-mode="true"] .as-preview-panel__body[data-preview-kind="html"] {
+.as-app[data-focus-mode="true"] .as-preview-panel__body[data-preview-kind="html"],
+.as-app[data-focus-mode="true"] .as-preview-panel__body[data-preview-kind="markdown"] {
   background: var(--as-surface);
 }
 

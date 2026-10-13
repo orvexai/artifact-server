@@ -64,6 +64,7 @@ import {
 } from "@/lib/presentation";
 import artifactServerAnimationUrl from "./assets/artifact-server.svg";
 import {ArtifactMark} from "./artifact-mark.tsx";
+import {markdownPreviewByteLimit, previewKindOf} from "./preview-kind.ts";
 import {ComparedFileLines} from "./review-comparison.tsx";
 import {
   useReviewComments,
@@ -968,6 +969,7 @@ function ArtifactReview({
     && session.principal.membershipRole === "administrator"
   ) || session.principal.capabilities.includes("artifact:manage:any");
   const previewKind = reviewPreviewKind(selectedVersion, selectedPath);
+  const annotatablePreview = previewKind === "html" || previewKind === "markdown";
   const download = reviewDownload(
     projectId,
     selectedArtifactId,
@@ -1632,7 +1634,7 @@ function ArtifactReview({
                   inert={focusControlsCollapsed}
                   role="toolbar"
                 >
-                  {previewKind === "html" && canComment ? (
+                  {annotatablePreview && canComment ? (
                     <button
                       aria-pressed={htmlAnnotateModeActive}
                       className="as-button as-focus-controls__button"
@@ -1759,7 +1761,7 @@ function ArtifactReview({
               <h1>{details?.artifact.name ?? selectedItem?.artifact.name ?? "Artifact Server"}</h1>
             </div>
             <div className="as-preview-header__actions">
-              {previewKind === "html" && canComment ? (
+              {annotatablePreview && canComment ? (
                 <IconButton
                   active={htmlAnnotateModeActive}
                   label={htmlAnnotateModeActive
@@ -2787,19 +2789,17 @@ function reviewHref(location: ReviewLocation): string {
 function reviewPreviewKind(
   version: ArtifactVersion | null,
   selectedPath: string | null,
-): "html" | "media" | "other" {
+): "html" | "markdown" | "media" | "other" {
   if (version === null) return "other";
   const path = selectedPath ?? version.manifest.entryPath;
-  const mediaType = version.manifest.entries
-    .find((entry) => entry.path === path)
-    ?.mediaType.split(";", 1)[0]
-    ?.trim()
-    .toLowerCase();
-  if (mediaType === "text/html") return "html";
-  if (mediaType?.startsWith("image/") || mediaType?.startsWith("video/")) {
-    return "media";
-  }
-  return "other";
+  const entry = version.manifest.entries.find((candidate) => candidate.path === path);
+  if (entry === undefined) return "other";
+  const kind = previewKindOf(entry);
+  if (kind === "image" || kind === "video") return "media";
+  // An oversized Markdown file settles into the typed fallback, which has
+  // nothing to annotate.
+  if (kind === "markdown" && entry.size > markdownPreviewByteLimit) return "other";
+  return kind;
 }
 
 function compactId(value: string): string {
