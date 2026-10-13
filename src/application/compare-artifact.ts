@@ -52,7 +52,7 @@ export type FileComparisonDetail =
   | {
     readonly afterLineCount: number;
     readonly beforeLineCount: number;
-    readonly change: TextLineChange | null;
+    readonly changes: readonly TextLineChange[];
     readonly kind: "text";
   }
   | {
@@ -188,7 +188,7 @@ function makeCompareArtifactService(
         detail: {
           afterLineCount: afterLines.length,
           beforeLineCount: beforeLines.length,
-          change: changedLineRegion(beforeLines, afterLines),
+          changes: changedLineRegions(beforeLines, afterLines),
           kind: "text" as const,
         },
       };
@@ -271,27 +271,124 @@ function splitLines(text: string): readonly string[] {
   return text.split("\n");
 }
 
-function changedLineRegion(
+function changedLineRegions(
   before: readonly string[],
   after: readonly string[],
-): TextLineChange | null {
-  let prefix = 0;
-  const sharedLength = Math.min(before.length, after.length);
-  while (prefix < sharedLength && before[prefix] === after[prefix]) prefix += 1;
-  if (prefix === before.length && prefix === after.length) return null;
+): readonly TextLineChange[] {
+  const maxEditDistance = 512;
+  let frontier = new Map<number, number>([[1, 0]]);
+  const trace: Map<number, number>[] = [];
+  let distance = 0;
+  let finished = false;
 
-  let suffix = 0;
-  while (
-    suffix < before.length - prefix &&
-    suffix < after.length - prefix &&
-    before[before.length - suffix - 1] === after[after.length - suffix - 1]
-  ) {
-    suffix += 1;
+  for (distance = 0; distance <= maxEditDistance; distance += 1) {
+    trace.push(new Map(frontier));
+    for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+      const previousX = diagonal === -distance ||
+          (diagonal !== distance &&
+            (frontier.get(diagonal - 1) ?? -1) <
+              (frontier.get(diagonal + 1) ?? -1))
+        ? frontier.get(diagonal + 1) ?? 0
+        : (frontier.get(diagonal - 1) ?? 0) + 1;
+      let x = previousX;
+      let y = x - diagonal;
+      while (x < before.length && y < after.length && before[x] === after[y]) {
+        x += 1;
+        y += 1;
+      }
+      frontier.set(diagonal, x);
+      if (x >= before.length && y >= after.length) {
+        finished = true;
+        break;
+      }
+    }
+    if (finished) break;
   }
+
+  if (!finished) return [wholeFileChange(before, after)];
+
+  const operations: Array<{kind: "equal" | "insert" | "delete"; line: string}> = [];
+  let x = before.length;
+  let y = after.length;
+  for (let d = distance; d > 0; d -= 1) {
+    const previousFrontier = trace[d];
+    const diagonal = x - y;
+    const previousDiagonal = diagonal === -d ||
+        (diagonal !== d &&
+          (previousFrontier?.get(diagonal - 1) ?? -1) <
+            (previousFrontier?.get(diagonal + 1) ?? -1))
+      ? diagonal + 1
+      : diagonal - 1;
+    const previousX = previousFrontier?.get(previousDiagonal) ?? 0;
+    const previousY = previousX - previousDiagonal;
+    while (x > previousX && y > previousY) {
+      operations.push({kind: "equal", line: before[x - 1] ?? ""});
+      x -= 1;
+      y -= 1;
+    }
+    if (x === previousX) {
+      operations.push({kind: "insert", line: after[y - 1] ?? ""});
+      y -= 1;
+    } else {
+      operations.push({kind: "delete", line: before[x - 1] ?? ""});
+      x -= 1;
+    }
+  }
+  while (x > 0 && y > 0) {
+    operations.push({kind: "equal", line: before[x - 1] ?? ""});
+    x -= 1;
+    y -= 1;
+  }
+  while (x > 0) {
+    operations.push({kind: "delete", line: before[--x] ?? ""});
+  }
+  while (y > 0) {
+    operations.push({kind: "insert", line: after[--y] ?? ""});
+  }
+  operations.reverse();
+
+  const changes: TextLineChange[] = [];
+  let beforeLine = 1;
+  let afterLine = 1;
+  let current: {beforeStartLine: number; afterStartLine: number; before: string[]; after: string[]} | null = null;
+  const flush = () => {
+    if (current === null) return;
+    changes.push(current);
+    current = null;
+  };
+  for (const operation of operations) {
+    if (operation.kind === "equal") {
+      flush();
+      beforeLine += 1;
+      afterLine += 1;
+    } else {
+      current ??= {
+        beforeStartLine: beforeLine,
+        afterStartLine: afterLine,
+        before: [],
+        after: [],
+      };
+      if (operation.kind === "delete") {
+        current.before.push(operation.line);
+        beforeLine += 1;
+      } else {
+        current.after.push(operation.line);
+        afterLine += 1;
+      }
+    }
+  }
+  flush();
+  return changes;
+}
+
+function wholeFileChange(
+  before: readonly string[],
+  after: readonly string[],
+): TextLineChange {
   return {
-    after: after.slice(prefix, after.length - suffix),
-    afterStartLine: prefix + 1,
-    before: before.slice(prefix, before.length - suffix),
-    beforeStartLine: prefix + 1,
+    after,
+    afterStartLine: 1,
+    before,
+    beforeStartLine: 1,
   };
 }

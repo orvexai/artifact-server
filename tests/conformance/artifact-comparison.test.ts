@@ -38,12 +38,12 @@ const comparisonSchema = z.object({
       z.object({
         afterLineCount: z.number(),
         beforeLineCount: z.number(),
-        change: z.object({
+        changes: z.array(z.object({
           after: z.array(z.string()),
           afterStartLine: z.number(),
           before: z.array(z.string()),
           beforeStartLine: z.number(),
-        }).nullable(),
+        })),
         kind: z.literal("text"),
       }),
       z.object({
@@ -81,7 +81,7 @@ describe("artifact comparisons", () => {
   test("AUTH-004-B DIF-001-B DIF-002-B DIF-002-F DIF-003-B DIF-003-F DIF-004-B DIF-004-F DIF-005-B DIF-005-F: public content exposes no history while authenticated comparisons work without Git", async () => {
     const ambiguousBytes = textBytes("ambiguous rename bytes");
     const beforeFiles: readonly TestSiteFile[] = [
-      file("index.html", "text/html; charset=utf-8", "same\nbefore\nend\n"),
+      file("index.html", "text/html; charset=utf-8", "same\nbefore\nmiddle\nold end\nlast\n"),
       file("removed.txt", "text/plain", "removed"),
       file("old-name.txt", "text/plain", "certain rename"),
       {bytes: ambiguousBytes, mediaType: "text/plain", path: "old-a.txt"},
@@ -105,7 +105,7 @@ describe("artifact comparisons", () => {
       file("unchanged.txt", "text/plain", "unchanged"),
     ];
     const afterFiles: readonly TestSiteFile[] = [
-      file("index.html", "text/html; charset=utf-8", "same\nafter\nend\n"),
+      file("index.html", "text/html; charset=utf-8", "same\nafter\nmiddle\nnew end\nlast\n"),
       file("added.txt", "text/plain", "added"),
       file("new-name.txt", "text/plain", "certain rename"),
       {bytes: ambiguousBytes, mediaType: "text/plain", path: "new-a.txt"},
@@ -222,14 +222,22 @@ describe("artifact comparisons", () => {
       ({after}) => after.path === "index.html",
     );
     expect(indexChange?.detail).toEqual({
-      afterLineCount: 4,
-      beforeLineCount: 4,
-      change: {
-        after: ["after"],
-        afterStartLine: 2,
-        before: ["before"],
-        beforeStartLine: 2,
-      },
+      afterLineCount: 6,
+      beforeLineCount: 6,
+      changes: [
+        {
+          after: ["after"],
+          afterStartLine: 2,
+          before: ["before"],
+          beforeStartLine: 2,
+        },
+        {
+          after: ["new end"],
+          afterStartLine: 4,
+          before: ["old end"],
+          beforeStartLine: 4,
+        },
+      ],
       kind: "text",
     });
     const binaryChange = comparison.changed.find(
