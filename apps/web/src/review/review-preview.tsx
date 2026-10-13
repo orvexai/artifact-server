@@ -14,6 +14,17 @@ import {
   type ReviewAnchor,
   type ReviewAnnotation,
 } from "@/review-frame/protocol";
+import {
+  markdownPreviewByteLimit,
+  markdownPreviewLimitLabel,
+  previewKindOf,
+} from "./preview-kind.ts";
+
+/**
+ * Which document the annotation frame shows: an HTML entry as authored, or a
+ * Markdown entry converted into a sanitized reader document first.
+ */
+type AnnotatedDocumentKind = "html" | "markdown";
 
 interface PreviewDocument {
   readonly baseHref: string;
@@ -104,15 +115,28 @@ export function ReviewPreview({
       />
     );
   }
-  const mediaType = mediaTypeEssence(entry.mediaType);
+  const kind = previewKindOf(entry);
   const identity = `${version.version.id}:${entry.path}`;
-  if (mediaType === "text/html") {
+  if (kind === "markdown" && entry.size > markdownPreviewByteLimit) {
+    return (
+      <TerminalPreviewState
+        actions={commonActions}
+        description={`This Markdown file is larger than the ${markdownPreviewLimitLabel} inline preview limit. Open the raw artifact or download the file to read it.`}
+        mediaType={entry.mediaType}
+        path={entry.path}
+        size={entry.size}
+        title="Preview not supported"
+      />
+    );
+  }
+  if (kind === "html" || kind === "markdown") {
     return (
       <HtmlPreview
         actions={commonActions}
         annotateModeActive={annotateModeActive}
         annotations={annotations}
         artifactId={artifactId}
+        documentKind={kind}
         entry={entry}
         isLight={isLight}
         key={identity}
@@ -127,7 +151,7 @@ export function ReviewPreview({
       />
     );
   }
-  if (mediaType.startsWith("image/")) {
+  if (kind === "image") {
     return (
       <NativeMediaPreview
         actions={commonActions}
@@ -150,7 +174,7 @@ export function ReviewPreview({
       />
     );
   }
-  if (mediaType.startsWith("video/")) {
+  if (kind === "video") {
     return (
       <NativeMediaPreview
         actions={commonActions}
@@ -190,6 +214,7 @@ function HtmlPreview({
   annotateModeActive,
   annotations,
   artifactId,
+  documentKind,
   entry,
   isLight,
   onAnnotateModeChange,
@@ -205,6 +230,7 @@ function HtmlPreview({
   readonly annotateModeActive: boolean;
   readonly annotations: readonly ReviewAnnotation[];
   readonly artifactId: string;
+  readonly documentKind: AnnotatedDocumentKind;
   readonly entry: PreviewEntry;
   readonly isLight: boolean;
   readonly onAnnotateModeChange: (active: boolean) => void;
@@ -243,7 +269,7 @@ function HtmlPreview({
             artifactId,
             version.version.id,
             entry.path,
-          ),
+          ).then((source) => annotatedDocument(documentKind, source, entry.path)),
           api.previewLease(projectId, artifactId, version.version.id).then(
             (lease) => {
               if (lease.versionId !== version.version.id) {
@@ -272,7 +298,7 @@ function HtmlPreview({
     return () => {
       current = false;
     };
-  }, [artifactId, entry.path, projectId, version.version.id]);
+  }, [artifactId, documentKind, entry.path, projectId, version.version.id]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent<unknown>): void => {
@@ -407,6 +433,22 @@ function HtmlPreview({
   );
 }
 
+/**
+ * The document the frame annotates. Markdown is rendered and sanitized here,
+ * in the application, so the frame and its sandbox only ever receive the
+ * finished reader document. The renderer loads on first use, keeping marked
+ * and DOMPurify out of the initial Review bundle.
+ */
+async function annotatedDocument(
+  kind: AnnotatedDocumentKind,
+  source: string,
+  path: string,
+): Promise<string> {
+  if (kind === "html") return source;
+  const {renderMarkdownDocument} = await import("./markdown-document.ts");
+  return renderMarkdownDocument(source, path);
+}
+
 function documentBaseUrl(versionBaseUrl: string, entryPath: string): string {
   const entryUrl = new URL(
     entryPath.split("/").map(encodeURIComponent).join("/"),
@@ -511,10 +553,6 @@ function NativeMediaPreview({
       ) : null}
     </div>
   );
-}
-
-function mediaTypeEssence(mediaType: string): string {
-  return mediaType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
 }
 
 function reviewThemeTokens() {

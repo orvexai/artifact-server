@@ -157,7 +157,8 @@ select:focus-visible {
   grid-row: 1;
 }
 
-.as-app[data-focus-mode="true"] .as-preview-panel__body[data-preview-kind="html"] {
+.as-app[data-focus-mode="true"] .as-preview-panel__body[data-preview-kind="html"],
+.as-app[data-focus-mode="true"] .as-preview-panel__body[data-preview-kind="markdown"] {
   background: var(--as-surface);
 }
 
@@ -3107,7 +3108,7 @@ select:focus-visible {
 }
 
 .as-activity-list li,
-.as-comparison-list li {
+.as-comparison-list > li {
   border-top: 1px solid color-mix(in oklab, var(--as-border) 62%, transparent);
   display: grid;
   gap: 0.25rem;
@@ -3115,22 +3116,124 @@ select:focus-visible {
 }
 
 .as-activity-list li:first-child,
-.as-comparison-list li:first-child {
+.as-comparison-list > li:first-child {
   border-top: 0;
 }
 
 .as-activity-list strong,
-.as-comparison-list span {
+.as-comparison-list > li > span {
   font-size: 0.75rem;
   font-weight: 600;
 }
 
 .as-activity-list time,
 .as-activity-list code,
-.as-comparison-list code {
+.as-comparison-list > li > code {
   color: var(--as-muted);
   font-size: 0.65rem;
   overflow-wrap: anywhere;
+}
+
+/*
+ * Compare line view. The server reports only the replaced lines of each
+ * region, so every row is either removed (old line number) or added (new line
+ * number); the palette has no green, so additions get their own token.
+ */
+.as-diff {
+  --as-diff-added: oklch(0.74 0.15 152);
+  --as-diff-removed: var(--as-love);
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.3rem;
+  min-width: 0;
+}
+
+:root[data-review-theme="dawn"] .as-diff {
+  --as-diff-added: oklch(0.52 0.14 152);
+}
+
+.as-diff__stats {
+  align-items: baseline;
+  color: var(--as-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.66rem;
+  gap: 0.2rem 0.55rem;
+  margin: 0;
+}
+
+.as-diff__stats span[data-kind] {
+  font: 600 0.7rem/1.2 "Atkinson Hyperlegible Mono", ui-monospace, monospace;
+}
+
+.as-diff__stats span[data-kind="added"] {
+  color: var(--as-diff-added);
+}
+
+.as-diff__stats span[data-kind="removed"] {
+  color: var(--as-diff-removed);
+}
+
+.as-diff__hunk {
+  background: var(--as-canvas);
+  border: 1px solid color-mix(in oklab, var(--as-border) 80%, transparent);
+  border-radius: 0.375rem;
+  font: 0.68rem/1.55 "Atkinson Hyperlegible Mono", ui-monospace, monospace;
+  overflow: hidden;
+}
+
+.as-diff__header {
+  background: color-mix(in oklab, var(--as-iris) 9%, transparent);
+  border-bottom: 1px solid color-mix(in oklab, var(--as-border) 70%, transparent);
+  color: var(--as-subtle);
+  padding: 0.2rem 0.55rem;
+}
+
+.as-diff__line {
+  display: grid;
+  grid-template-columns: minmax(2.4ch, max-content) 1.5ch minmax(0, 1fr);
+}
+
+.as-diff__line[data-kind="added"] {
+  background: color-mix(in oklab, var(--as-diff-added) 13%, transparent);
+}
+
+.as-diff__line[data-kind="removed"] {
+  background: color-mix(in oklab, var(--as-diff-removed) 13%, transparent);
+}
+
+.as-diff__number {
+  color: var(--as-muted);
+  padding: 0 0.45rem 0 0.55rem;
+  text-align: right;
+  user-select: none;
+}
+
+.as-diff__marker {
+  font-weight: 600;
+  user-select: none;
+}
+
+.as-diff__line[data-kind="added"] .as-diff__marker {
+  color: var(--as-diff-added);
+}
+
+.as-diff__line[data-kind="removed"] .as-diff__marker {
+  color: var(--as-diff-removed);
+}
+
+.as-diff__line code {
+  color: var(--as-text);
+  font: inherit;
+  overflow-wrap: anywhere;
+  padding-right: 0.55rem;
+  white-space: pre-wrap;
+}
+
+.as-diff__note {
+  color: var(--as-muted);
+  font-size: 0.68rem;
+  margin: 0.15rem 0 0;
 }
 
 .as-comparison-summary {

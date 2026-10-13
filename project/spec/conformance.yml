@@ -1,6 +1,6 @@
 version: 1
 product: Artifact Server
-updated: "2026-08-26"
+updated: "2026-10-13"
 evidence_root: "../.."
 
 source:
@@ -4871,3 +4871,21 @@ requirements:
         result: pass
         run: project/evidence/browser.json
         recorded_at: "2026-08-24T03:47:04.897Z"
+
+  - id: PRV-006
+    kind: behavior
+    behavior: The Artifact Server review interface renders a Markdown entry as a sanitized, theme-following reader document through the HTML annotation frame, with comments anchored to the Markdown path and a bounded-size fallback.
+    owner: web-application
+    source: {file: media-preview-spec.md, anchor: conformance-requirements}
+    acceptance:
+      behavior: {id: PRV-006-B, description: "Open text/markdown, text/x-markdown, and .md-labelled text/plain entries and observe GFM headings with stable ids, tables, task lists, fenced code, and content-host-relative images in the Review palette across a live theme switch, with in-page fragment links, annotate mode, and an element comment stored against the Markdown path."}
+      failure: {id: PRV-006-F, description: "Authored scripts, event handlers, javascript: URLs, frames, objects, forms, form controls, and styles never survive into the reader document; other text/plain stays unsupported; a Markdown file over 2 MiB is not fetched and settles into the typed fallback with open and download actions."}
+    deployments: *all
+    status: behavior_verified
+    depends_on: [CMT-014, PRV-004, PRV-005]
+    evidence:
+      - deployment: local
+        tests: [PRV-006-B, PRV-006-F]
+        result: pass
+        run: project/evidence/browser.json
+        recorded_at: "2026-10-13T19:02:34.370Z"
