@@ -68,6 +68,7 @@ import {
   type ManifestEntry,
   type PageCursor,
   type PublishedVersion,
+  type ProjectAuditEvent,
   type ProjectRecord,
   type RegisteredAgentPresence,
   type RegisteredAgentRecord,
@@ -1167,15 +1168,49 @@ export class SqliteArtifactRepository implements
   }
 
   setProjectArchive(command: SetProjectArchive): Promise<ProjectRecord> {
-    return Promise.resolve().then(() => {
+    return Promise.resolve().then(() => this.#transaction(() => {
       const result = this.#database.prepare(
         "UPDATE projects SET archived_at = ? WHERE id = ?",
       ).run(command.archivedAt, command.projectId);
       if (result.changes !== 1) {
         throw new ProjectNotFound({message: "The project does not exist."});
       }
+      this.#database.prepare(`
+        INSERT INTO project_archive_events (
+          installation_id, project_id, action, principal_id,
+          authorized_by_principal_id, actor_display_name, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        this.#installationId,
+        command.projectId,
+        command.action,
+        command.principalId,
+        command.authorizedByPrincipalId,
+        command.actorDisplayName,
+        command.createdAt,
+      );
       return this.#readProject(command.projectId);
-    });
+    }));
+  }
+
+  listProjectAuditEvents(projectId: string): Promise<readonly ProjectAuditEvent[]> {
+    return Promise.resolve().then(() => z.array(z.object({
+      action: z.enum(["archive", "unarchive"]),
+      actorDisplayName: z.string(),
+      authorizedByPrincipalId: z.string().nullable(),
+      createdAt: z.string(),
+      id: z.number().int(),
+      principalId: z.string(),
+      projectId: z.string(),
+    })).parse(this.#database.prepare(`
+      SELECT id, project_id AS projectId, action,
+        principal_id AS principalId,
+        authorized_by_principal_id AS authorizedByPrincipalId,
+        actor_display_name AS actorDisplayName, created_at AS createdAt
+      FROM project_archive_events
+      WHERE installation_id = ? AND project_id = ?
+      ORDER BY id DESC
+    `).all(this.#installationId, projectId)));
   }
 
   close(): void {
@@ -4788,6 +4823,17 @@ export class SqliteArtifactRepository implements
         archived_at TEXT
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS project_archive_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        installation_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        action TEXT NOT NULL CHECK (action IN ('archive', 'unarchive')),
+        principal_id TEXT NOT NULL,
+        authorized_by_principal_id TEXT,
+        actor_display_name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
       CREATE TABLE IF NOT EXISTS artifacts (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES projects(id),
@@ -4935,6 +4981,8 @@ export class SqliteArtifactRepository implements
         ON artifact_tags (tag, artifact_id);
       CREATE INDEX IF NOT EXISTS actions_artifact_created
         ON actions (artifact_id, created_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS project_archive_events_project_created
+        ON project_archive_events (installation_id, project_id, created_at DESC, id DESC);
       CREATE INDEX IF NOT EXISTS manifest_entries_sha256
         ON manifest_entries (sha256);
       CREATE INDEX IF NOT EXISTS staged_uploads_expiry

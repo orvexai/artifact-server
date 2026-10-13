@@ -48,7 +48,9 @@ new versions, and comment writes so its review history stays stable while the
 project is archived. Existing versions, public links, account-required reads,
 comment reads, comparisons, action history, backups, and restores remain
 available. Restore means restoring an artifact version, not unarchiving the
-project. Project unarchive is a separate project operation.
+project. Project unarchive is a separate project operation. Each archive or
+unarchive change records the actor and time in the project's durable lifecycle
+audit, exposed at `GET /api/v1/projects/:projectId/audit`.
 
 ## Storage and migration contract
 
