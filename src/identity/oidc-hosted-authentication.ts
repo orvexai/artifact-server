@@ -3,7 +3,10 @@ import type {Redacted} from "effect";
 import type {ExternalMcpBearerVerifier} from "../application/authentication.js";
 import type {InteractiveIdentityProvider} from "../application/interactive-login.js";
 import type {GroupRolePolicy} from "../core/group-role-policy.js";
-import type {McpOAuthResourceConfiguration} from "../http/create-http-app.js";
+import type {
+  ApiOAuthResourceConfiguration,
+  McpOAuthResourceConfiguration,
+} from "../http/create-http-app.js";
 import type {OidcGroupRoles} from "./oidc-groups-claim.js";
 import {createOidcIdentityProvider} from "./oidc-identity-provider.js";
 import {requireOidcIssuer} from "./oidc-issuer.js";
@@ -14,6 +17,8 @@ import {
 import {loadOidcAuthorizationServer} from "./oidc-oauth-metadata.js";
 
 export interface OidcHostedAuthenticationConfig {
+  readonly apiJwksUri?: string | null;
+  readonly apiResource?: string | null;
   readonly applicationOrigin: string;
   readonly clientId: string;
   readonly clientSecret: Redacted.Redacted | null;
@@ -24,6 +29,8 @@ export interface OidcHostedAuthenticationConfig {
 }
 
 export interface OidcHostedAuthentication {
+  readonly apiOAuthResource: ApiOAuthResourceConfiguration;
+  readonly externalApiOAuthVerifier: ExternalMcpBearerVerifier;
   readonly externalMcpOAuthVerifier: ExternalMcpBearerVerifier;
   /** Issuer groups that admit people and set their role, when configured. */
   readonly groupRolePolicy: GroupRolePolicy | null;
@@ -31,11 +38,13 @@ export interface OidcHostedAuthentication {
   readonly mcpOAuthResource: McpOAuthResourceConfiguration;
 }
 
-/** Build browser and MCP authentication from one generic OIDC issuer. */
+/** Build browser, API, and MCP authentication from one generic OIDC issuer. */
 export async function createOidcHostedAuthentication(
   config: OidcHostedAuthenticationConfig,
 ): Promise<OidcHostedAuthentication> {
   const issuer = requireOidcIssuer(config.issuer, "ARTIFACT_SERVER_OIDC_ISSUER");
+  const apiResource = config.apiResource ??
+    new URL("/api", config.applicationOrigin).toString();
   const resource = new URL("/mcp", config.applicationOrigin).toString();
   const groupRoles = config.groupRoles ?? null;
   const authorizationServer = await loadOidcAuthorizationServer(
@@ -52,7 +61,17 @@ export async function createOidcHostedAuthentication(
   if (config.fetch !== undefined) {
     verifierConfig = {...verifierConfig, fetch: config.fetch};
   }
+  const apiVerifierConfig = {
+    ...verifierConfig,
+    audience: apiResource,
+    jwksUri: config.apiJwksUri ?? authorizationServer.jwksUri,
+  };
   return {
+    apiOAuthResource: {
+      authorizationServers: [issuer],
+      resource: apiResource,
+    },
+    externalApiOAuthVerifier: new OidcMcpBearerVerifier(apiVerifierConfig),
     externalMcpOAuthVerifier: new OidcMcpBearerVerifier(verifierConfig),
     groupRolePolicy: groupRoles,
     interactiveIdentityProvider: createOidcIdentityProvider({
