@@ -91,6 +91,14 @@ Tokens that name another resource are refused. ID tokens and other JWTs that are
 not access tokens are refused too: a JOSE `typ` other than `at+jwt` or `JWT`,
 or an ID-token claim such as `nonce` or `at_hash`.
 
+The same OIDC deployment can protect the HTTP API. It publishes RFC 9728
+metadata at `/.well-known/oauth-protected-resource/api`, advertises the
+configured issuer, and accepts access tokens whose audience names the API
+resource. The default resource is `<ARTIFACT_SERVER_ORIGIN>/api`; configure an
+issuer audience mapper or resource indicator for that URL. To use a different
+resource URL, set `ARTIFACT_SERVER_OIDC_API_RESOURCE`. API and MCP tokens are
+audience-bound independently.
+
 The server reads the issuer's discovery document once at startup. If the issuer
 cannot be reached then, the server logs a warning and starts with browser login
 and API keys only. MCP OAuth stays off until the next restart.

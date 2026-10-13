@@ -17,6 +17,7 @@ import {runCliEffect} from "./run-cli-effect.js";
 const oidcEnvironmentSchema = z.object({
   ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL: z.email().optional(),
   ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS: z.string().min(1).optional(),
+  ARTIFACT_SERVER_OIDC_API_RESOURCE: z.url().optional(),
   ARTIFACT_SERVER_OIDC_CLIENT_ID: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: z.string().min(1).optional(),
@@ -38,6 +39,7 @@ export interface OidcDirectoryConfiguration {
 
 /** Complete optional generic OIDC browser-login configuration. */
 export interface OidcConfiguration {
+  readonly apiResource: string | null;
   readonly applicationOrigin: string;
   readonly bootstrapAdministratorEmail: string;
   readonly clientId: string;
@@ -75,7 +77,8 @@ export async function loadOidcConfiguration(
     parsed.ARTIFACT_SERVER_OIDC_SCOPES === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_GROUPS_CLAIM === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_MEMBER_GROUPS === undefined &&
-    parsed.ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS === undefined
+    parsed.ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS === undefined &&
+    parsed.ARTIFACT_SERVER_OIDC_API_RESOURCE === undefined
   ) {
     return null;
   }
@@ -96,6 +99,7 @@ export async function loadOidcConfiguration(
   );
   const groupRoles = oidcGroupRoles(parsed);
   return {
+    apiResource: parsed.ARTIFACT_SERVER_OIDC_API_RESOURCE ?? null,
     applicationOrigin: requireString(parsed.ARTIFACT_SERVER_ORIGIN),
     bootstrapAdministratorEmail: requireString(
       parsed.ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL,

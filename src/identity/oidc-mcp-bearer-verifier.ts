@@ -70,7 +70,7 @@ interface VerifiedAccessToken {
 
 export interface OidcMcpBearerVerifierConfig {
   readonly algorithms?: readonly string[];
-  /** The exact MCP resource URL the issuer must bind into `aud`. */
+  /** The exact protected-resource URL the issuer must bind into `aud`. */
   readonly audience: string;
   readonly fetch?: typeof globalThis.fetch;
   /** Claim that lists the person's groups; null reads none. */
@@ -80,7 +80,7 @@ export interface OidcMcpBearerVerifierConfig {
   readonly userInfoEndpoint?: string | null;
 }
 
-/** Verify end-user OIDC access tokens presented to the MCP endpoint. */
+/** Verify end-user OIDC access tokens for one protected-resource audience. */
 export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
   readonly #algorithms: string[];
   readonly #audience: string;

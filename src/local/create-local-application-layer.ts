@@ -148,6 +148,7 @@ export interface ApplicationAdapters {
   readonly bootstrapAdministratorEmail: string;
   readonly clock: Clock;
   readonly externalApiBearerVerifier: BearerCredentialVerifier | null;
+  readonly externalApiOAuthVerifier: ExternalMcpBearerVerifier | null;
   readonly externalMcpBearerVerifier: BearerCredentialVerifier | null;
   readonly externalMcpOAuthVerifier: ExternalMcpBearerVerifier | null;
   /** Issuer groups that admit people and set their role; absent keeps admission manual. */
@@ -902,22 +903,44 @@ export function createApplicationLayer(
     InstallationAccessService.use((installationAccess) => {
       const authenticateBearerWith = (
         externalVerifier: BearerCredentialVerifier | null,
-      ): BearerCredentialVerifier["verify"] => (credential) => {
+        externalOAuthVerifier: ExternalMcpBearerVerifier | null,
+      ): BearerCredentialVerifier["verify"] => Effect.fn(
+        "AuthenticationService.authenticateApiBearer",
+      )(function*(credential) {
         const raw = Redacted.value(credential);
         if (
           adapters.apiToken !== null
           && credentialsEqual(raw, Redacted.value(adapters.apiToken))
         ) {
-          return Effect.succeed(localPrincipal);
+          return localPrincipal;
         }
         if (raw.startsWith("as_key_")) {
-          return installationAccess.authenticateManagedApiKey(credential);
+          return yield* installationAccess.authenticateManagedApiKey(credential);
         }
-        if (externalVerifier !== null) return externalVerifier.verify(credential);
-        return Effect.fail(new AuthenticationRequired({
+        if (externalVerifier !== null) {
+          return yield* externalVerifier.verify(credential);
+        }
+        if (externalOAuthVerifier !== null) {
+          const verified = yield* externalOAuthVerifier.verify(credential);
+          let principal = yield* installationAccess.authenticateExternalSubject(
+            verified.provider,
+            verified.subject,
+          );
+          if (principal === null) {
+            const identity = yield* externalOAuthVerifier.resolveIdentity(
+              verified,
+              credential,
+            );
+            principal = yield* installationAccess.authenticateExternalIdentity(
+              identity,
+            );
+          }
+          return principal;
+        }
+        return yield* Effect.fail(new AuthenticationRequired({
           message: "A valid Artifact Server API key is required.",
         }));
-      };
+      });
       const authenticateMcpBearer = Effect.fn(
         "AuthenticationService.authenticateMcpBearer",
       )(function*(credential: Redacted.Redacted) {
@@ -978,6 +1001,7 @@ export function createApplicationLayer(
       return Effect.succeed(AuthenticationService.of({
         authenticateApiBearer: authenticateBearerWith(
           adapters.externalApiBearerVerifier,
+          adapters.externalApiOAuthVerifier,
         ),
         authenticateApplicationSession: installationAccess.authenticateSession,
         authenticateMcpBearer,

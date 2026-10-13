@@ -97,6 +97,7 @@ export interface LocalRuntimeConfig {
   /** Server-only credential shared with a co-launched development proxy. */
   readonly developmentProxyCredential?: string;
   readonly externalApiBearerVerifier?: BearerCredentialVerifier;
+  readonly externalApiOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly externalMcpBearerVerifier?: BearerCredentialVerifier;
   readonly externalMcpOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly gitHistory?: NodeGitHistoryConfiguration;
@@ -234,6 +235,7 @@ export async function createLocalRuntime(
     clock: runtimeClock,
     dispatches: repository,
     externalApiBearerVerifier: config.externalApiBearerVerifier ?? null,
+      externalApiOAuthVerifier: config.externalApiOAuthVerifier ?? null,
     externalMcpBearerVerifier: config.externalMcpBearerVerifier ?? null,
     externalMcpOAuthVerifier: config.externalMcpOAuthVerifier ?? null,
     groupRolePolicy: config.groupRolePolicy ?? null,
