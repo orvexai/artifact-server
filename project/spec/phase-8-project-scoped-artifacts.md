@@ -44,10 +44,11 @@ service must return the same not-found result for a missing artifact and an
 artifact in another project or installation.
 
 Project archive is reversible. An archived project rejects new artifacts,
-new versions, and comment writes. Existing versions, public links,
-account-required reads, comment reads, comparisons, action history, backups,
-and restores remain available. Restore means restoring an artifact version,
-not unarchiving the project. Project unarchive is a separate project operation.
+new versions, and comment writes so its review history stays stable while the
+project is archived. Existing versions, public links, account-required reads,
+comment reads, comparisons, action history, backups, and restores remain
+available. Restore means restoring an artifact version, not unarchiving the
+project. Project unarchive is a separate project operation.
 
 ## Storage and migration contract
 
