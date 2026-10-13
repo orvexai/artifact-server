@@ -425,6 +425,7 @@ const commentThreadStateSchema = z.enum([
 const commentThreadRowSchema = z.object({
   anchorJson: z.string().nullable(),
   artifactId: z.string(),
+  authorActorClientId: z.string().nullable(),
   authorAuthorizedByPrincipalId: z.string().nullable(),
   authorDisplayName: z.string(),
   authorPrincipalId: z.string(),
@@ -437,6 +438,7 @@ const commentThreadRowSchema = z.object({
   projectId: z.string(),
   replyCount: z.number().int().nonnegative(),
   resolvedAt: z.string().nullable(),
+  resolvedByActorClientId: z.string().nullable(),
   resolvedByAuthorizedByPrincipalId: z.string().nullable(),
   resolvedByDisplayName: z.string().nullable(),
   resolvedByPrincipalId: z.string().nullable(),
@@ -446,6 +448,7 @@ const commentThreadRowSchema = z.object({
   versionId: z.string(),
 });
 const commentReplyRowSchema = z.object({
+  authorActorClientId: z.string().nullable(),
   authorAuthorizedByPrincipalId: z.string().nullable(),
   authorDisplayName: z.string(),
   authorPrincipalId: z.string(),
@@ -3211,13 +3214,14 @@ export class SqliteArtifactRepository implements
               id, installation_id, project_id, artifact_id, version_id, path,
               anchor_json, body, state, author_principal_id,
               author_principal_kind, author_display_name,
-              author_authorized_by_principal_id, resolved_at,
+              author_authorized_by_principal_id, author_actor_client_id, resolved_at,
               resolved_by_principal_id, resolved_by_principal_kind,
               resolved_by_display_name, resolved_by_authorized_by_principal_id,
+              resolved_by_actor_client_id,
               idempotency_key, created_at, updated_at
             ) VALUES (
-              ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?,
-              NULL, NULL, NULL, NULL, NULL, ?, ?, ?
+              ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?,
+              NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?
             )`,
           )
           .run(
@@ -3233,6 +3237,7 @@ export class SqliteArtifactRepository implements
             command.author.principalKind,
             command.author.displayName,
             command.author.authorizedByPrincipalId,
+            command.author.actor?.clientId ?? null,
             command.idempotencyKey,
             command.createdAt,
             command.createdAt,
@@ -3353,6 +3358,7 @@ export class SqliteArtifactRepository implements
                resolved_by_principal_kind = ?,
                resolved_by_display_name = ?,
                resolved_by_authorized_by_principal_id = ?,
+               resolved_by_actor_client_id = ?,
                updated_at = ?
              WHERE id = ? AND project_id = ? AND artifact_id = ?`,
           )
@@ -3375,6 +3381,9 @@ export class SqliteArtifactRepository implements
             command.state === null
               ? row.resolvedByAuthorizedByPrincipalId
               : resolution?.authorizedByPrincipalId ?? null,
+            command.state === null
+              ? row.resolvedByActorClientId
+              : resolution?.actor?.clientId ?? null,
             command.updatedAt,
             command.threadId,
             command.projectId,
@@ -3539,10 +3548,10 @@ export class SqliteArtifactRepository implements
             `INSERT INTO comment_replies (
               id, thread_id, project_id, body, author_principal_id,
               author_principal_kind, author_display_name,
-              author_authorized_by_principal_id, idempotency_key,
+              author_authorized_by_principal_id, author_actor_client_id, idempotency_key,
               created_at, updated_at
             )
-            SELECT ?, t.id, t.project_id, ?, ?, ?, ?, ?, ?, ?, ?
+            SELECT ?, t.id, t.project_id, ?, ?, ?, ?, ?, ?, ?, ?, ?
             FROM comment_threads t
             WHERE t.id = ? AND t.project_id = ? AND t.artifact_id = ?
               AND t.state = 'open'`,
@@ -3554,6 +3563,7 @@ export class SqliteArtifactRepository implements
             command.author.principalKind,
             command.author.displayName,
             command.author.authorizedByPrincipalId,
+            command.author.actor?.clientId ?? null,
             command.idempotencyKey,
             command.createdAt,
             command.createdAt,
@@ -4635,6 +4645,22 @@ export class SqliteArtifactRepository implements
       CREATE INDEX IF NOT EXISTS comment_replies_thread_created
         ON comment_replies (thread_id, created_at, id);
     `);
+    const threadColumns = this.#tableColumns("comment_threads");
+    if (!threadColumns.includes("author_actor_client_id")) {
+      this.#database.exec(
+        "ALTER TABLE comment_threads ADD COLUMN author_actor_client_id TEXT",
+      );
+    }
+    if (!threadColumns.includes("resolved_by_actor_client_id")) {
+      this.#database.exec(
+        "ALTER TABLE comment_threads ADD COLUMN resolved_by_actor_client_id TEXT",
+      );
+    }
+    if (!this.#tableColumns("comment_replies").includes("author_actor_client_id")) {
+      this.#database.exec(
+        "ALTER TABLE comment_replies ADD COLUMN author_actor_client_id TEXT",
+      );
+    }
   }
 
   #addAgentDispatchTablesIfMissing(): void {
@@ -5490,6 +5516,7 @@ export class SqliteArtifactRepository implements
       | "actions"
       | "artifacts"
       | "comment_threads"
+      | "comment_replies"
       | "content_bootstraps"
       | "content_sessions"
       | "git_history_project_settings"
@@ -5746,11 +5773,13 @@ const commentThreadColumns = `SELECT
     t.author_principal_kind AS authorPrincipalKind,
     t.author_display_name AS authorDisplayName,
     t.author_authorized_by_principal_id AS authorAuthorizedByPrincipalId,
+    t.author_actor_client_id AS authorActorClientId,
     t.resolved_at AS resolvedAt,
     t.resolved_by_principal_id AS resolvedByPrincipalId,
     t.resolved_by_principal_kind AS resolvedByPrincipalKind,
     t.resolved_by_display_name AS resolvedByDisplayName,
     t.resolved_by_authorized_by_principal_id AS resolvedByAuthorizedByPrincipalId,
+    t.resolved_by_actor_client_id AS resolvedByActorClientId,
     t.created_at AS createdAt,
     t.updated_at AS updatedAt,
     (SELECT COUNT(*) FROM comment_replies r WHERE r.thread_id = t.id) AS replyCount
@@ -5806,6 +5835,7 @@ const commentReplyColumns = `SELECT
     r.author_principal_kind AS authorPrincipalKind,
     r.author_display_name AS authorDisplayName,
     r.author_authorized_by_principal_id AS authorAuthorizedByPrincipalId,
+    r.author_actor_client_id AS authorActorClientId,
     r.created_at AS createdAt,
     r.updated_at AS updatedAt
   FROM comment_replies r`;
@@ -5839,6 +5869,9 @@ function commentAuthorFromRow(
   row: z.infer<typeof commentThreadRowSchema> | z.infer<typeof commentReplyRowSchema>,
 ): CommentAuthor {
   return {
+    actor: row.authorActorClientId === null
+      ? null
+      : {clientId: row.authorActorClientId, kind: "mcp-client"},
     authorizedByPrincipalId: row.authorAuthorizedByPrincipalId,
     displayName: row.authorDisplayName,
     principalId: row.authorPrincipalId,
@@ -5866,6 +5899,9 @@ function commentThreadFromRow(
         row.resolvedByDisplayName === null
       ? null
       : {
+        actor: row.resolvedByActorClientId === null
+          ? null
+          : {clientId: row.resolvedByActorClientId, kind: "mcp-client"},
         authorizedByPrincipalId: row.resolvedByAuthorizedByPrincipalId,
         displayName: row.resolvedByDisplayName,
         principalId: row.resolvedByPrincipalId,

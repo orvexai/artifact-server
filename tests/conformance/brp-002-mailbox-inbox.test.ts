@@ -147,14 +147,15 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
     );
 
     // Listing registers the mailbox agent implicitly: mailbox tier, no
-    // beacon, the caller-chosen display name, and an empty inbox so far.
+    // beacon, a server default name for non-OAuth credentials, and an empty
+    // inbox so far. Caller labels do not establish agent identity.
     const registered = await callInboxTool(installation.apiToken, {
       agentName: "Mailbox Claude",
       operation: "list",
     });
     expect(registered.agent).toEqual({
       capabilities: {beacon: false, evidence: "mailbox"},
-      displayName: "Mailbox Claude",
+      displayName: "mailbox agent",
       id: registered.agent.id,
       kind: "mcp-mailbox",
     });

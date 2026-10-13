@@ -977,6 +977,7 @@ export function createApplicationLayer(
         return {
           clientId: verified.clientId ?? verified.subject,
           expiresAt: verified.expiresAt,
+          oauthClientId: verified.clientId,
           principal,
           // The exact resource-bound audience grants access to this MCP
           // endpoint. WorkOS does not issue a separate product scope.
