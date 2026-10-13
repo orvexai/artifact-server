@@ -1447,6 +1447,20 @@ export function createHttpApp(
     return context.json({project});
   });
 
+  app.get("/api/v1/projects/:projectId/audit", async (context) => {
+    const events = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      ProjectManagementService.use((management) =>
+        management.listAuditEvents({
+          principal: context.get("principal"),
+          projectId: projectIdSchema.parse(context.req.param("projectId")),
+        })
+      ),
+    );
+    return context.json({events});
+  });
+
   app.patch(
     "/api/v1/projects/:projectId",
     boundedJsonBody,

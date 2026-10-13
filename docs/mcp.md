@@ -93,6 +93,8 @@ opens its raw immutable content. Agents should hand people the Review URL.
 | Git history planning | `project_git_history_status`, `project_git_history_estimate` |
 
 Linked-artifact tools appear only when the deployment enables linked artifacts.
+Project archive and unarchive events are available to authorized project
+managers from `GET /api/v1/projects/:projectId/audit`.
 
 `project_set_git_history` enables one project only after an authorized caller confirms a fresh estimate. Provider configuration alone copies nothing. Agents should report the returned project state and must not describe `waiting`, `degraded`, or `budget-limited` history as ready.
 

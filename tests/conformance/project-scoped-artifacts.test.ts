@@ -27,6 +27,17 @@ const projectSchema = z.object({
 });
 const projectResponseSchema = z.object({project: projectSchema});
 const projectListSchema = z.object({projects: z.array(projectSchema)});
+const projectAuditSchema = z.object({
+  events: z.array(z.object({
+    action: z.enum(["archive", "unarchive"]),
+    actorDisplayName: z.string().min(1),
+    authorizedByPrincipalId: z.string().nullable(),
+    createdAt: z.string(),
+    id: z.number().int(),
+    principalId: z.string().min(1),
+    projectId: z.string(),
+  })),
+});
 const artifactListSchema = z.object({
   artifacts: z.array(z.object({
     artifact: z.object({id: z.string(), projectId: z.string()}),
@@ -254,6 +265,14 @@ describe("project-scoped artifacts", () => {
       await archiveResponse.json(),
     ).project.archivedAt;
     expect(firstArchivedAt).not.toBeNull();
+    const archivedAudit = projectAuditSchema.parse(await (await apiFetch(
+      `/api/v1/projects/${created.id}/audit`,
+    )).json()).events;
+    expect(archivedAudit).toHaveLength(1);
+    expect(archivedAudit[0]).toMatchObject({
+      action: "archive",
+      projectId: created.id,
+    });
     const repeatedArchivedAt = projectResponseSchema.parse(
       await (await apiFetch(
         `/api/v1/projects/${created.id}/archive`,
@@ -309,6 +328,13 @@ describe("project-scoped artifacts", () => {
       {headers: apiHeaders(installation, "unused-project-unarchive-key"), method: "POST"},
     );
     expect(unarchived.status).toBe(200);
+    const lifecycleAudit = projectAuditSchema.parse(await (await apiFetch(
+      `/api/v1/projects/${created.id}/audit`,
+    )).json()).events;
+    expect(lifecycleAudit.map(({action}) => action)).toEqual([
+      "unarchive",
+      "archive",
+    ]);
     const second = await publishVersion(server, installation, {
       artifactId: first.body.artifact.id,
       content: "second version after unarchive",

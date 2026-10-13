@@ -655,6 +655,24 @@ const addArtifactSearchName = Effect.gen(function*() {
   );
 });
 
+const addProjectArchiveAudit = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`CREATE TABLE project_archive_events (
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    installation_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('archive', 'unarchive')),
+    principal_id TEXT NOT NULL,
+    authorized_by_principal_id TEXT,
+    actor_display_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (installation_id, project_id)
+      REFERENCES projects(installation_id, id)
+  )`);
+  yield* sql.unsafe(`CREATE INDEX project_archive_events_project_created
+    ON project_archive_events (installation_id, project_id, created_at DESC, id DESC)`);
+});
+
 const migrationLoader = Migrator.fromRecord({
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -667,10 +685,11 @@ const migrationLoader = Migrator.fromRecord({
   "0009_git_history_mirror": addGitHistoryMirror,
   "0010_agent_capabilities": widenRegisteredAgentKind,
   "0011_artifact_search_name": addArtifactSearchName,
+  "0012_project_archive_audit": addProjectArchiveAudit,
 });
 
 /** Schema revision required by this Artifact Server build. */
-export const requiredPostgresSchemaVersion = 11;
+export const requiredPostgresSchemaVersion = 12;
 
 /** Migration compatibility observed without changing Postgres. */
 export interface PostgresMigrationStatus {

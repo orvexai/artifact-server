@@ -15,7 +15,7 @@ import {
   ProjectSelectionRequired,
 } from "../core/errors.js";
 import type {Principal} from "../core/identity.js";
-import type {ProjectRecord} from "../core/model.js";
+import type {ProjectAuditEvent, ProjectRecord} from "../core/model.js";
 import type {
   CreateProject,
   IdGenerator,
@@ -61,6 +61,9 @@ export interface ProjectManagementRepository {
     readonly ProjectRecord[],
     ArtifactRepositoryFailure
   >;
+  readonly listProjectAuditEvents: (
+    projectId: string,
+  ) => Effect.Effect<readonly ProjectAuditEvent[], ArtifactRepositoryFailure>;
   readonly renameProject: (
     command: RenameProject,
   ) => Effect.Effect<ProjectRecord, ProjectNotFound | ArtifactRepositoryFailure>;
@@ -103,6 +106,9 @@ interface ProjectManagementOperations {
   readonly listProjects: (
     principal: Principal,
   ) => Effect.Effect<readonly ProjectRecord[], ProjectManagementFailure>;
+  readonly listAuditEvents: (
+    command: ReadProjectCommand,
+  ) => Effect.Effect<readonly ProjectAuditEvent[], ProjectManagementFailure>;
   readonly renameProject: (
     command: RenameProjectCommand,
   ) => Effect.Effect<ProjectRecord, ProjectManagementFailure>;
@@ -157,6 +163,13 @@ function makeProjectManagementService(
       return yield* dependencies.repository.listProjects();
     },
   );
+
+  const listAuditEvents = Effect.fn(
+    "ProjectManagementService.listAuditEvents",
+  )(function*(command: ReadProjectCommand) {
+    const project = yield* requireProject(command.principal, command.projectId);
+    return yield* dependencies.repository.listProjectAuditEvents(project.id);
+  });
 
   const resolveActiveProject = Effect.fn(
     "ProjectManagementService.resolveActiveProject",
@@ -234,7 +247,12 @@ function makeProjectManagementService(
       : project.archivedAt !== null;
     if (alreadyInRequestedState) return project;
     return yield* dependencies.repository.setProjectArchive({
+      action: archivedAt === null ? "unarchive" : "archive",
       archivedAt,
+      actorDisplayName: command.principal.displayName,
+      authorizedByPrincipalId: command.principal.authorizedByPrincipalId,
+      createdAt: archivedAt ?? DateTime.formatIso(yield* dependencies.clock.now),
+      principalId: command.principal.id,
       projectId: command.projectId,
     });
   });
@@ -258,6 +276,7 @@ function makeProjectManagementService(
     archiveProject,
     createProject,
     getProject,
+    listAuditEvents,
     listProjects,
     renameProject,
     resolveActiveProject,

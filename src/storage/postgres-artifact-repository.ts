@@ -60,6 +60,7 @@ import {
   defaultProjectId,
   defaultProjectName,
   type PublishedVersion,
+  type ProjectAuditEvent,
   type ProjectRecord,
   type RegisteredAgentPresence,
   type RegisteredAgentRecord,
@@ -1205,18 +1206,55 @@ export class PostgresArtifactRepository implements
 
   async setProjectArchive(command: SetProjectArchive): Promise<ProjectRecord> {
     const installationId = this.#installationId;
-    const rows = await this.#database.run(Effect.gen(function*() {
+    return this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
-      return yield* sql`UPDATE projects SET archived_at = ${command.archivedAt}
-        WHERE installation_id = ${installationId} AND id = ${command.projectId}
-        RETURNING installation_id AS "installationId", id, name,
-          created_at AS "createdAt", archived_at AS "archivedAt"`;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        const rows = yield* sql`UPDATE projects SET archived_at = ${command.archivedAt}
+          WHERE installation_id = ${installationId} AND id = ${command.projectId}
+          RETURNING installation_id AS "installationId", id, name,
+            created_at AS "createdAt", archived_at AS "archivedAt"`;
+        const project = projectRowSchema.nullable().parse(rows[0] ?? null);
+        if (project === null) {
+          return yield* new ProjectNotFound({message: "The project does not exist."});
+        }
+        yield* sql`INSERT INTO project_archive_events (
+          installation_id, project_id, action, principal_id,
+          authorized_by_principal_id, actor_display_name, created_at
+        ) VALUES (
+          ${installationId}, ${command.projectId}, ${command.action},
+          ${command.principalId}, ${command.authorizedByPrincipalId},
+          ${command.actorDisplayName}, ${command.createdAt}
+        )`;
+        return project;
+      }));
     }));
-    const project = projectRowSchema.nullable().parse(rows[0] ?? null);
-    if (project === null) {
-      throw new ProjectNotFound({message: "The project does not exist."});
-    }
-    return project;
+  }
+
+  async listProjectAuditEvents(
+    projectId: string,
+  ): Promise<readonly ProjectAuditEvent[]> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(`
+        SELECT id, project_id AS "projectId", action,
+          principal_id AS "principalId",
+          authorized_by_principal_id AS "authorizedByPrincipalId",
+          actor_display_name AS "actorDisplayName", created_at AS "createdAt"
+        FROM project_archive_events
+        WHERE installation_id = $1 AND project_id = $2
+        ORDER BY created_at DESC, id DESC
+      `, [installationId, projectId]);
+      return z.array(z.object({
+        action: z.enum(["archive", "unarchive"]),
+        actorDisplayName: z.string(),
+        authorizedByPrincipalId: z.string().nullable(),
+        createdAt: z.string(),
+        id: z.number().int(),
+        principalId: z.string(),
+        projectId: z.string(),
+      })).parse(rows);
+    }));
   }
 
   /** The owning Postgres database closes the process pool. */
