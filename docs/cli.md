@@ -42,4 +42,17 @@ artifactserver publish ./dist \
 
 The expected version prevents an old client from replacing a newer current pointer.
 
+## Read comments
+
+List comments for an artifact (all pages, newest activity first):
+
+```sh
+artifactserver comments list art_example --server https://artifacts.example.com
+artifactserver comments list art_example --server https://artifacts.example.com --project proj_example --version ver_example --include-replies
+```
+
+The command uses the saved CLI profile for that exact server origin and prints
+JSON. `--include-replies` adds each thread's replies. It reads comments through
+the CLI's authenticated connection; callers do not need to handle an access token.
+
 Run `artifactserver --help` or `artifactserver <command> --help` for the complete command reference.
