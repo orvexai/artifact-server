@@ -167,6 +167,7 @@ function makeProjectManagementService(
   const listAuditEvents = Effect.fn(
     "ProjectManagementService.listAuditEvents",
   )(function*(command: ReadProjectCommand) {
+    yield* authorization.requireProjectManagement(command.principal);
     const project = yield* requireProject(command.principal, command.projectId);
     return yield* dependencies.repository.listProjectAuditEvents(project.id);
   });
