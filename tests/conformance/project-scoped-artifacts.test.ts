@@ -281,6 +281,10 @@ describe("project-scoped artifacts", () => {
     expect(archivedAudit).toHaveLength(1);
     expect(archivedAudit[0]).toMatchObject({
       action: "archive",
+      actorDisplayName: "Local",
+      authorizedByPrincipalId: null,
+      createdAt: firstArchivedAt,
+      principalId: "local-api-token",
       projectId: created.id,
     });
     const readerAudit = await fetch(
