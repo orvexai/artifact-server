@@ -2148,6 +2148,36 @@ export class PostgresArtifactRepository implements
     ));
   }
 
+  async findStagedUploadByFileCapability(
+    uploadId: string,
+    storageToken: string,
+  ): Promise<StagedUpload | null> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen({self: this}, function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(`
+        SELECT upload.project_id AS "projectId",
+          upload.principal_id AS "principalId"
+        FROM staged_uploads AS upload
+        JOIN staged_upload_files AS file
+          ON file.installation_id = upload.installation_id
+          AND file.upload_id = upload.id
+        WHERE upload.installation_id = $1
+          AND upload.id = $2 AND file.storage_token = $3
+      `, [installationId, uploadId, storageToken]);
+      const owner = z.object({
+        principalId: z.string(),
+        projectId: z.string(),
+      }).nullable().parse(rows[0] ?? null);
+      if (owner === null) return null;
+      return yield* this.#readStagedUploadOrNull(
+        owner.projectId,
+        uploadId,
+        owner.principalId,
+      );
+    }));
+  }
+
   async listExpiredStagedUploads(
     expiredBefore: string,
     limit: number,
@@ -2220,6 +2250,7 @@ export class PostgresArtifactRepository implements
           WHERE file.installation_id = ${installationId}
             AND file.upload_id = ${uploadId}
             AND file.storage_token = ${storageToken}
+            AND file.uploaded_at IS NULL
             AND upload.installation_id = file.installation_id
             AND upload.project_id = ${projectId}
             AND upload.id = file.upload_id
@@ -2246,6 +2277,13 @@ export class PostgresArtifactRepository implements
           if (upload.expiresAt <= uploadedAt) {
             return yield* new UploadExpired({
               message: "The staged upload has expired.",
+            });
+          }
+          if (upload.files.some((file) =>
+            file.storageToken === storageToken && file.uploadedAt !== null
+          )) {
+            return yield* new UploadFileNotFound({
+              message: "The staged upload file capability has already been used.",
             });
           }
           return yield* new UploadFileNotFound({

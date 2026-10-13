@@ -42,11 +42,10 @@ Remote deployments use WorkOS or a generic OIDC provider. Network access and app
 ### Use a generic OIDC issuer for MCP
 
 The issuer configured for browser login also protects `/mcp`. Agents present an
-end-user access token, and the server records the person who obtained it. The
-same access token also writes the files of the agent's own MCP upload plan
-(`PUT /api/v1/uploads/<upload>/files/<file>`, the URLs `artifact_create_upload`
-returns), so an agent signed in only through OAuth can publish. Every other API
-route still requires an API key or a browser session. The
+end-user access token, and the server records the person who obtained it. MCP
+upload plans return short-lived, single-use file URLs that accept the declared
+file bytes without forwarding the MCP access token. Every other API route still
+requires an API key or a browser session. The
 server never issues client credentials and never runs an authorization server of
 its own.
 
