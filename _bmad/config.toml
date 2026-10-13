@@ -1,0 +1,6 @@
+[houston.lin]
+linear_initiative = "67703033-fc16-492c-bf54-23a4e7a194a3"
+linear_project = "Houston v1"
+story_title_pattern = "."
+team_key = "ENG"
+tracking_system = "linear"

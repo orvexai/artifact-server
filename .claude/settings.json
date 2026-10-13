@@ -1,0 +1,42 @@
+{
+  "deniedMcpServers": [
+    {
+      "serverName": "plugin:ecc:chrome-devtools"
+    }
+  ],
+  "enabledPlugins": {
+    "ecc@ecc": true
+  },
+  "extraKnownMarketplaces": {
+    "ecc": {
+      "source": {
+        "source": "git",
+        "url": "https://github.com/affaan-m/ECC.git"
+      }
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "bd prime --hook-json",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ]
+  },
+  "pluginConfigs": {
+    "ecc@ecc": {
+      "disabled_hooks": [],
+      "hook_profile": "standard",
+      "keep_deny_gates": [
+        "gateguard",
+        "config-protection",
+        "block-no-verify"
+      ]
+    }
+  }
+}

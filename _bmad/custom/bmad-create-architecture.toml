@@ -1,0 +1,19 @@
+# Compatibility orientation-only override for the deprecated bmad-create-architecture shim.
+# The shim forwards these legacy fields to bmad-architecture, but its canonical
+# external_handoffs are resolved from bmad-architecture.toml. The old on_complete
+# is intentionally removed: retaining it would double-publish beside the canonical
+# Finalize handoff. Keep this file so legacy invocations retain wiki-first orientation.
+# Sparse, append-only — copy to {project-root}/_bmad/custom/bmad-create-architecture.toml.
+
+[workflow]
+
+activation_steps_prepend = [
+  "WIKI-FIRST — this is a living-wiki project and the wiki manual OUTRANKS local files. Before any local-file discovery, resolve what the manual already holds: invoke skill:houston-doc-read-first for doc_type=architecture (it runs `docmost-cli search '\"Architecture: {project_name}\"' --cached --content --space {docmost_space} --output json`, then `docmost-cli page get <slug> --output json`). Treat the wiki page — not the local architecture spine — as the source of truth and the PRIMARY existing input.",
+  "Report the WIKI status FIRST in your discovery summary (architecture page: exists or absent; if it exists, its status draft|canonical, slug, and a one-line content summary), then any local artifacts. NEVER conclude that no architecture exists from the local filesystem alone. If the living page EXISTS, amend it in place as a DRAFT revision (current-state-only, P4) — a canonical page is amended then demoted to draft for human ratification via houston-doc-ratify, never left edited-and-live as canonical; never spawn a dated or parallel sibling.",
+]
+
+persistent_facts = [
+  "skill:houston-doc-session-policy",
+  "file:data/wiki-first-mandate.md",
+  "file:data/decision-order.md",
+]
