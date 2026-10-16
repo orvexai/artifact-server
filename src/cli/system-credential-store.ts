@@ -1,10 +1,23 @@
 import {spawn} from "node:child_process";
+import {randomUUID} from "node:crypto";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readFile,
+  rm,
+  rename,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import {Context, Effect, Redacted, Schema} from "effect";
+import {z} from "zod";
 
 const maximumHelperOutputBytes = 1_000_000;
 const missingExitCode = 2;
+const fileCredentialStateSchema = z.record(z.string(), z.string());
 
 /** Expected failure while reading or changing a user credential store. */
 export class CliCredentialStoreError extends Schema.TaggedError<CliCredentialStoreError>()(
@@ -45,11 +58,19 @@ export interface SystemCredentialStoreOptions {
   readonly platform?: NodeJS.Platform;
 }
 
-/** Select the native credential store or an explicitly configured helper. */
+/** Select the native credential store, falling back to a private file store. */
 export function createSystemCredentialStore(
   options: SystemCredentialStoreOptions = {},
 ): CliCredentialStoreOperations {
   const environment = options.environment ?? process.env;
+  const selectedStore = environment["ARTIFACT_SERVER_CREDENTIAL_STORE"];
+  const fileStore = fileCredentialStore(environment);
+  if (selectedStore === "file") return fileStore;
+  if (selectedStore !== undefined && selectedStore !== "keyring") {
+    return unavailableStore(
+      "ARTIFACT_SERVER_CREDENTIAL_STORE must be either 'file' or 'keyring'.",
+    );
+  }
   const helper = environment["ARTIFACT_SERVER_CREDENTIAL_HELPER"];
   if (helper !== undefined) {
     if (!path.isAbsolute(helper)) {
@@ -60,18 +81,175 @@ export function createSystemCredentialStore(
     return helperStore(helper, environment);
   }
 
+  let nativeStore: CliCredentialStoreOperations;
   switch (options.platform ?? process.platform) {
     case "darwin":
-      return macOsCredentialStore(environment);
+      nativeStore = macOsCredentialStore(environment);
+      break;
     case "linux":
-      return linuxCredentialStore(environment);
+      nativeStore = linuxCredentialStore(environment);
+      break;
     case "win32":
-      return windowsCredentialStore(environment);
+      nativeStore = windowsCredentialStore(environment);
+      break;
     default:
-      return unavailableStore(
+      nativeStore = unavailableStore(
         "This operating system has no supported Artifact Server credential-store adapter.",
       );
+      break;
   }
+  return selectedStore === "keyring"
+    ? nativeStore
+    : withFileFallback(nativeStore, fileStore);
+}
+
+function withFileFallback(
+  keyring: CliCredentialStoreOperations,
+  file: CliCredentialStoreOperations,
+): CliCredentialStoreOperations {
+  return {
+    delete: (account) => keyring.delete(account).pipe(
+      Effect.flatMap((deleted) => file.delete(account).pipe(
+        Effect.map((fileDeleted) => deleted || fileDeleted),
+      )),
+      Effect.catchTag("CliCredentialStoreError", (error) =>
+        mayFallbackFromKeyring(error) ? file.delete(account) : Effect.fail(error)),
+    ),
+    read: (account) => keyring.read(account).pipe(
+      Effect.catchTag("CliCredentialStoreError", (error) =>
+        mayFallbackFromKeyring(error) ? file.read(account) : Effect.fail(error)),
+    ),
+    write: (account, secret) => keyring.write(account, secret).pipe(
+      Effect.catchTag("CliCredentialStoreError", (error) =>
+        error.reason === "backend_unavailable"
+          ? file.write(account, secret)
+          : Effect.fail(error)),
+    ),
+  };
+}
+
+function fileCredentialStore(
+  environment: NodeJS.ProcessEnv,
+): CliCredentialStoreOperations {
+  const configHome = environment["XDG_CONFIG_HOME"] ??
+    path.join(environment["HOME"] ?? os.homedir(), ".config");
+  if (!path.isAbsolute(configHome)) {
+    return unavailableStore(
+      "XDG_CONFIG_HOME must be an absolute path for the file credential store.",
+    );
+  }
+  const directory = path.join(configHome, "artifact-server");
+  const filePath = path.join(directory, "credentials.json");
+  const operate = <A>(
+    operation: "delete" | "read" | "write",
+    run: () => Promise<A>,
+  ): Effect.Effect<A, CliCredentialStoreError> => Effect.tryPromise({
+    try: run,
+    catch: (cause) => cause instanceof CliCredentialStoreError
+      ? cause
+      : new CliCredentialStoreError({
+        message: cause instanceof Error
+          ? cause.message
+          : "The Artifact Server file credential store could not be accessed.",
+        operation,
+        reason: "operation_failed",
+      }),
+  });
+  const readState = async () => {
+    await ensurePrivateDirectory(directory);
+    let source: string;
+    try {
+      await ensurePrivateFile(filePath);
+      source = await readFile(filePath, "utf8");
+    } catch (cause) {
+      if (isMissingFile(cause)) return {};
+      throw cause;
+    }
+    let parsed: Record<string, string>;
+    try {
+      parsed = fileCredentialStateSchema.parse(JSON.parse(source));
+    } catch {
+      throw new Error("The Artifact Server file credential store contains invalid JSON or an invalid format.");
+    }
+    return parsed;
+  };
+  const writeState = async (state: Record<string, string>) => {
+    await ensurePrivateDirectory(directory);
+    try {
+      await ensurePrivateFile(filePath);
+    } catch (cause) {
+      if (!isMissingFile(cause)) throw cause;
+    }
+    const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      await rename(temporaryPath, filePath);
+    } finally {
+      await rm(temporaryPath, {force: true});
+    }
+  };
+  return {
+    delete: (account) => operate("delete", async () => {
+      const state = await readState();
+      if (!(account in state)) return false;
+      delete state[account];
+      await writeState(state);
+      return true;
+    }),
+    read: (account) => operate("read", async () => {
+      const state = await readState();
+      const secret = state[account];
+      if (secret === undefined) {
+        throw new CliCredentialStoreError({
+          message: "The Artifact Server CLI credential was not found in the file store.",
+          operation: "read",
+          reason: "credential_missing",
+        });
+      }
+      return Redacted.make(secret, {label: "artifact-server-cli-profile"});
+    }),
+    write: (account, secret) => operate("write", async () => {
+      const state = await readState();
+      state[account] = Redacted.value(secret);
+      await writeState(state);
+    }),
+  };
+}
+
+async function ensurePrivateDirectory(directory: string): Promise<void> {
+  await mkdir(directory, {recursive: true, mode: 0o700});
+  const metadata = await lstat(directory);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error("The Artifact Server file credential directory must be a real directory.");
+  }
+  await chmod(directory, 0o700);
+}
+
+async function ensurePrivateFile(filePath: string): Promise<void> {
+  const metadata = await lstat(filePath);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("The Artifact Server file credential store must be a regular file.");
+  }
+  if ((metadata.mode & 0o077) !== 0) {
+    throw new Error(
+      "The Artifact Server file credential store has unsafe permissions; set it to 0600 before continuing.",
+    );
+  }
+}
+
+function isMissingFile(cause: unknown): boolean {
+  return cause instanceof Error
+    && "code" in cause
+    && cause.code === "ENOENT";
+}
+
+function mayFallbackFromKeyring(error: CliCredentialStoreError): boolean {
+  return error.reason === "backend_unavailable"
+    || error.reason === "credential_missing";
 }
 
 const credentialService = "artifactserver.com/cli";
@@ -363,6 +541,7 @@ interface CredentialProcessInput {
 
 interface CredentialProcessResult {
   readonly exitCode: number;
+  readonly stderr: string;
   readonly stdout: string;
 }
 
@@ -379,6 +558,13 @@ function runCredentialProcess(
   }).pipe(
     Effect.flatMap((result) => {
       if (result.exitCode === 0) return Effect.succeed(result);
+      if (credentialBackendIsUnavailable(result.stderr)) {
+        return Effect.fail(new CliCredentialStoreError({
+          message: "The operating-system credential store is unavailable.",
+          operation: input.operation,
+          reason: "backend_unavailable",
+        }));
+      }
       if (
         result.exitCode === missingExitCode
         || input.missingCodes?.has(result.exitCode) === true
@@ -400,16 +586,26 @@ function executeCredentialProcess(
   return new Promise((resolve, reject) => {
     const child = spawn(input.executable, [...input.arguments], {
       env: input.environment,
-      stdio: ["pipe", "pipe", "ignore"],
+      stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
     let stdout = "";
+    let stderr = "";
     let outputTooLarge = false;
     child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       if (outputTooLarge) return;
       stdout += chunk;
       if (Buffer.byteLength(stdout) > maximumHelperOutputBytes) {
+        outputTooLarge = true;
+        child.kill();
+      }
+    });
+    child.stderr.on("data", (chunk: string) => {
+      if (outputTooLarge) return;
+      stderr += chunk;
+      if (Buffer.byteLength(stderr) > maximumHelperOutputBytes) {
         outputTooLarge = true;
         child.kill();
       }
@@ -420,11 +616,16 @@ function executeCredentialProcess(
         reject(new Error("Credential helper output exceeded the safe limit."));
         return;
       }
-      resolve({exitCode: exitCode ?? 1, stdout});
+      resolve({exitCode: exitCode ?? 1, stderr, stdout});
     });
     child.stdin.on("error", reject);
     child.stdin.end(input.input, "utf8");
   });
+}
+
+function credentialBackendIsUnavailable(stderr: string): boolean {
+  return /cannot autolaunch D-Bus|org\.freedesktop\.DBus\.Error\.(?:ServiceUnknown|NameHasNoOwner)|org\.freedesktop\.secrets.*(?:not provided|not found)|org\.freedesktop\.Secret\.Error\.IsLocked|no such file or directory.*(?:bus|secret)/i
+    .test(stderr);
 }
 
 function missingCredential(

@@ -26,13 +26,23 @@ artifactserver doctor codex
 artifactserver disconnect codex
 ```
 
-The command registers a local stdio bridge. When a verified CLI profile is
-available, the bridge connects to that profile's installation and uses its
-API-key or OAuth credential from the operating-system credential store. When
-the CLI has no usable authenticated profile, it keeps the existing behavior of
-connecting to the local service with its private credential. Clients that
-connect directly to a team's `/mcp` endpoint continue to use that server's
-configured OAuth or API-key authentication.
+On Linux with an active systemd user manager, `connect` installs and enables
+`artifact-server-mcp-relay.service`. Claude Code and Codex connect directly to
+its loopback HTTP endpoint; no per-agent stdio process or local database
+process is created. The relay checks the current CLI profile for each MCP
+request and forwards to that remote installation when a usable profile is
+available. Otherwise it starts or reuses the shared local Artifact Server
+service and authenticates with its private local credential, preserving the
+headless local workflow. A later CLI login is picked up without restarting the
+relay. The relay gets an available loopback port on first start and saves that
+port under `~/.artifact-server`. Restarts reuse the saved port; if another
+process has claimed it, the service fails instead of changing the URL stored
+in client configuration. Manage it with `systemctl --user status
+artifact-server-mcp-relay.service`.
+
+Cursor and VS Code continue to use the local stdio server configuration.
+Clients that connect directly to a team's `/mcp` endpoint continue to use that
+server's configured OAuth or API-key authentication.
 
 The credential does not appear in client configuration, command output, or startup logs.
 
