@@ -1,6 +1,6 @@
 {
   "schema": "houston-lock/v1",
-  "generated": "2026-10-13T18:02:39Z",
+  "generated": "2026-10-16T15:20:48Z",
   "installer": "dev",
   "project": "artifact-server",
   "agents": [
@@ -41,8 +41,8 @@
     "houston-modules": {
       "kind": "git-commit",
       "authority": "authoritative",
-      "pin": "v0.3.41",
-      "resolved": "8521a70472dc048e63d226e6e7b401a85a4265ca",
+      "pin": "v0.3.56",
+      "resolved": "2d3539d08effbb75b6da02dafbc2e5802a026bae",
       "observed": "8521a70472dc048e63d226e6e7b401a85a4265ca",
       "provenance": "adopted",
       "dependents": [
