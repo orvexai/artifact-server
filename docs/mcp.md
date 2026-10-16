@@ -26,7 +26,13 @@ artifactserver doctor codex
 artifactserver disconnect codex
 ```
 
-The command registers a local stdio bridge. The bridge starts or locates the local service and handles its private credential.
+The command registers a local stdio bridge. When a verified CLI profile is
+available, the bridge connects to that profile's installation and uses its
+API-key or OAuth credential from the operating-system credential store. When
+the CLI has no usable authenticated profile, it keeps the existing behavior of
+connecting to the local service with its private credential. Clients that
+connect directly to a team's `/mcp` endpoint continue to use that server's
+configured OAuth or API-key authentication.
 
 The credential does not appear in client configuration, command output, or startup logs.
 
