@@ -12,6 +12,10 @@ import {z} from "zod";
 
 import type {CliInvocation} from "../cli/current-cli-invocation.js";
 import {ensureManagedLocalService} from "../cli/local-service-manager.js";
+import {
+  resolveDefaultMcpCliProfile,
+  type McpCliProfileConnection,
+} from "../cli/mcp-cli-profile.js";
 import {readLocalApiCredential} from "../local/local-credentials.js";
 
 const modernProtocolRevision = "2026-07-28";
@@ -45,6 +49,10 @@ export function startLocalMcpStdioBridge(
 async function createForwardingServer(
   options: LocalMcpStdioBridgeOptions,
 ): Promise<Server> {
+  const profile = await resolveDefaultMcpCliProfile(options.dataDirectory);
+  if (profile !== null) {
+    return createRemoteForwardingServer(options, profile);
+  }
   const service = await ensureManagedLocalService(
     options.dataDirectory,
     options.invocation,
@@ -60,6 +68,44 @@ async function createForwardingServer(
         token: () => readLocalApiCredential(options.dataDirectory),
       },
     },
+  );
+  try {
+    await client.connect(transport);
+  } catch (error) {
+    await client.close();
+    throw error;
+  }
+
+  const serverInformation = client.getServerVersion() ?? {
+    name: "artifact-server",
+    version: options.productVersion,
+  };
+  const capabilities = client.getServerCapabilities() ?? emptyCapabilities;
+  const instructions = client.getInstructions();
+  const server = new LocalForwardingServer(
+    serverInformation,
+    capabilities,
+    instructions,
+    client,
+  );
+  server.fallbackRequestHandler = (request) =>
+    client.request(request, forwardedResultSchema);
+  server.fallbackNotificationHandler = (notification) =>
+    client.notification(notification);
+  return server;
+}
+
+async function createRemoteForwardingServer(
+  options: LocalMcpStdioBridgeOptions,
+  profile: McpCliProfileConnection,
+): Promise<Server> {
+  const client = new Client(
+    {name: "artifact-server-cli-profile-bridge", version: options.productVersion},
+    {versionNegotiation: {mode: {pin: modernProtocolRevision}}},
+  );
+  const transport = new StreamableHTTPClientTransport(
+    new URL("/mcp", profile.origin),
+    {authProvider: {token: profile.token}},
   );
   try {
     await client.connect(transport);

@@ -708,11 +708,13 @@ if (operation === "read") {
 }
 `, {mode: 0o700});
   await chmod(helper, 0o700);
-  return {
+  const environment: NodeJS.ProcessEnv = {
     ...process.env,
     ARTIFACT_SERVER_CREDENTIAL_HELPER: helper,
     CREDENTIAL_HELPER_STATE: statePath,
   };
+  delete environment["ARTIFACT_SERVER_CREDENTIAL_STORE"];
+  return environment;
 }
 
 async function writeBrowserHelper(target: string): Promise<void> {

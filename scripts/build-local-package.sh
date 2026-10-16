@@ -8,6 +8,10 @@ artifactserver_tmp_root=${artifactserver_tmp_root%/}
 artifactserver_stage_prefix="${artifactserver_tmp_root%/}/artifact-server-local-package."
 artifactserver_stage_parent=$(mktemp -d "$artifactserver_stage_prefix"XXXXXX)
 artifactserver_stage="$artifactserver_stage_parent/artifactserver"
+artifactserver_offline_args=(--offline)
+if [[ "${ARTIFACTSERVER_LOCAL_PACKAGE_OFFLINE:-true}" == "false" ]]; then
+  artifactserver_offline_args=()
+fi
 
 cleanup() {
   if [[ "$artifactserver_stage_parent" == "$artifactserver_stage_prefix"* ]]; then
@@ -41,7 +45,7 @@ pnpm --dir "$artifactserver_stage" install \
   --config.node-linker=hoisted \
   --frozen-lockfile \
   --ignore-scripts \
-  --offline \
+  "${artifactserver_offline_args[@]}" \
   --prod
 
 cp -R -- "$artifactserver_repository/dist" "$artifactserver_stage/dist"

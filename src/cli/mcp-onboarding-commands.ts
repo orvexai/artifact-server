@@ -1,16 +1,17 @@
 import path from "node:path";
 
-import {
-  Client,
-  StreamableHTTPClientTransport,
-} from "@modelcontextprotocol/client";
-import {StdioClientTransport} from "@modelcontextprotocol/client/stdio";
 import {type Command, Option} from "commander";
 
-import {readLocalApiCredential} from "../local/local-credentials.js";
+import {
+  localMcpHttpRelayAddressPath,
+  localMcpHttpRelayOrigin,
+  readLocalMcpHttpRelayAddress,
+  startLocalMcpHttpRelay,
+} from "../mcp/start-local-mcp-http-relay.js";
 import {startLocalMcpStdioBridge} from "../mcp/start-local-mcp-stdio-bridge.js";
-import {currentCliInvocation, localMcpCommand} from "./current-cli-invocation.js";
+import {currentCliInvocation} from "./current-cli-invocation.js";
 import {runCliEffect} from "./run-cli-effect.js";
+import {ensureManagedLocalService, inspectManagedLocalService} from "./local-service-manager.js";
 import {
   connectMcpClient,
   detectInstalledMcpClients,
@@ -20,12 +21,9 @@ import {
   parseMcpClientId,
   type McpClientId,
 } from "./mcp-client-registrations.js";
-import {
-  ensureManagedLocalService,
-  inspectManagedLocalService,
-} from "./local-service-manager.js";
+import {ensureMcpHttpRelayService} from "./mcp-http-relay-service.js";
+import {resolveDefaultMcpCliProfile} from "./mcp-cli-profile.js";
 
-const modernProtocolRevision = "2026-07-28";
 
 interface DataOptions {
   readonly data: string;
@@ -52,9 +50,9 @@ function configureMcpCommand(
   program: Command,
   options: McpOnboardingCommandOptions,
 ): void {
-  program
+  const mcp = program
     .command("mcp")
-    .description("Serve the local Artifact Server over MCP stdio.")
+    .description("Run Artifact Server MCP transports.")
     .addOption(dataOption(options.defaultDataDirectory))
     .action((commandOptions: DataOptions) => {
       startLocalMcpStdioBridge({
@@ -62,6 +60,39 @@ function configureMcpCommand(
         invocation: currentCliInvocation(),
         productVersion: options.productVersion,
       });
+    });
+  const relay = mcp
+    .command("relay")
+    .description("Run the local HTTP MCP relay using available CLI or local service auth.")
+    .addOption(dataOption(options.defaultDataDirectory))
+    .addOption(new Option("--port <number>", "loopback relay port; 0 selects and saves a free port").default("0"))
+    .addOption(new Option("--address-file <file>", "saved relay address file"))
+    .action(async (commandOptions: DataOptions & {readonly port: string; readonly addressFile?: string}) => {
+      const port = Number(commandOptions.port);
+      if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+        throw new Error("The MCP relay port must be an integer from 0 to 65535.");
+      }
+      const dataDirectory = path.resolve(commandOptions.data);
+      await startLocalMcpHttpRelay(
+        dataDirectory,
+        port,
+        path.resolve(commandOptions.addressFile ?? localMcpHttpRelayAddressPath(dataDirectory)),
+        currentCliInvocation(),
+      );
+    });
+  relay
+    .command("ensure")
+    .description("Install and start the persistent per-user MCP relay service.")
+    .addOption(dataOption(options.defaultDataDirectory))
+    .action(async (commandOptions: DataOptions) => {
+      const service = await ensureMcpHttpRelayService(
+        path.resolve(commandOptions.data),
+        currentCliInvocation(),
+      );
+      console.log(JSON.stringify({
+        serverAddress: `${service.origin}/mcp`,
+        service: service.systemdManaged ? "systemd --user" : "local HTTP relay",
+      }, null, 2));
     });
 }
 
@@ -77,16 +108,20 @@ function configureConnectCommand(
       const dataDirectory = path.resolve(commandOptions.data);
       const client = await selectInstalledClient(clientName);
       const invocation = currentCliInvocation();
-      const service = await ensureManagedLocalService(dataDirectory, invocation);
-      await connectMcpClient(client, dataDirectory, invocation);
-      await verifyLocalStdioBridge(
+      const service = client === "codex" || client === "claude"
+        ? await ensureMcpHttpRelayService(dataDirectory, invocation)
+        : {origin: (await ensureManagedLocalService(dataDirectory, invocation)).origin, systemdManaged: false};
+      await connectMcpClient(
+        client,
         dataDirectory,
         invocation,
-        options.productVersion,
+        process.env,
+        client === "codex" || client === "claude" ? `${service.origin}/mcp` : undefined,
       );
       console.log(JSON.stringify({
         client,
         serverAddress: service.origin,
+        service: service.systemdManaged ? "systemd --user" : "local HTTP relay",
       }, null, 2));
     });
 }
@@ -123,27 +158,29 @@ function configureDoctorCommand(
       const requestedClient = clientName === undefined
         ? null
         : await runCliEffect(parseMcpClientId(clientName));
-      const [service, clients] = await Promise.all([
+      const [reachable, localService, profile, clients] = await Promise.all([
+        relayIsHealthy(dataDirectory),
         inspectManagedLocalService(dataDirectory),
+        resolveDefaultMcpCliProfile(dataDirectory).catch(() => null),
         inspectMcpClientRegistrations(dataDirectory),
       ]);
       const selectedClients = requestedClient === null
         ? clients
         : clients.filter((client) => client.client === requestedClient);
-      let discovery: {protocolRevision: string; status: "healthy"; tools: number}
-        | {reason: string; status: "unhealthy"};
-      if (!service.reachable || service.record === null) {
-        discovery = {reason: "The managed local service is not reachable.", status: "unhealthy"};
-      } else {
-        discovery = await inspectModernMcp(
-          dataDirectory,
-          service.record.origin,
-          options.productVersion,
-        );
-      }
+      const isHttpClient = requestedClient === "claude" || requestedClient === "codex";
+      const serviceReachable = requestedClient === null
+        ? reachable || localService.reachable
+        : isHttpClient
+          ? reachable
+          : localService.reachable;
+      const discovery = serviceReachable
+        ? {protocol: "streamable-http", status: "healthy" as const}
+        : {reason: isHttpClient || requestedClient === null
+          ? "The local HTTP auth relay is not reachable."
+          : "The local Artifact Server service is not reachable.", status: "unhealthy" as const};
       const clientHealthy = requestedClient === null
         || selectedClients.every((client) => client.installed && client.managed);
-      const healthy = service.reachable
+      const healthy = serviceReachable
         && discovery.status === "healthy"
         && clientHealthy;
       console.log(JSON.stringify({
@@ -151,14 +188,14 @@ function configureDoctorCommand(
         dataDirectory,
         discovery,
         remediation: healthy
-          ? []
+          ? (profile === null ? ["Run artifactserver auth login when remote MCP access is needed."] : [])
           : [`artifactserver connect${requestedClient === null ? "" : ` ${requestedClient}`}`],
         service: {
-          processAlive: service.processAlive,
-          reachable: service.reachable,
-          recordState: service.recordState === "valid" && !service.reachable
-            ? (service.processAlive === true ? "unhealthy" : "stale")
-            : service.recordState,
+          authentication: profile === null ? "logged_out" : "authenticated",
+          processAlive: isHttpClient || (requestedClient === null && reachable)
+            ? reachable
+            : localService.processAlive,
+          reachable: serviceReachable,
         },
         status: healthy ? "healthy" : "unhealthy",
       }, null, 2));
@@ -206,65 +243,16 @@ function selectSingleClient(
   );
 }
 
-async function verifyLocalStdioBridge(
-  dataDirectory: string,
-  invocation: ReturnType<typeof currentCliInvocation>,
-  productVersion: string,
-): Promise<{readonly protocolRevision: string; readonly tools: number}> {
-  const stdio = localMcpCommand(invocation, dataDirectory);
-  const transport = new StdioClientTransport({
-    args: [...stdio.args],
-    command: stdio.command,
-    stderr: "pipe",
-  });
-  transport.stderr?.on("data", () => undefined);
-  const client = new Client(
-    {name: "artifact-server-connect-verifier", version: productVersion},
-    {versionNegotiation: {mode: {pin: modernProtocolRevision}}},
-  );
+async function relayIsHealthy(dataDirectory: string): Promise<boolean> {
+  const address = await readLocalMcpHttpRelayAddress(localMcpHttpRelayAddressPath(dataDirectory));
+  if (address === null) return false;
   try {
-    await client.connect(transport);
-    const listed = await client.listTools();
-    if (listed.tools.length === 0) {
-      throw new Error("Artifact Server connected but returned no MCP tools.");
-    }
-    return {
-      protocolRevision: client.getNegotiatedProtocolVersion() ?? modernProtocolRevision,
-      tools: listed.tools.length,
-    };
-  } finally {
-    await client.close();
-  }
-}
-
-async function inspectModernMcp(
-  dataDirectory: string,
-  origin: string,
-  productVersion: string,
-): Promise<
-  | {reason: string; status: "unhealthy"}
-  | {protocolRevision: string; status: "healthy"; tools: number}
-> {
-  const client = new Client(
-    {name: "artifact-server-doctor", version: productVersion},
-    {versionNegotiation: {mode: {pin: modernProtocolRevision}}},
-  );
-  try {
-    const credential = await readLocalApiCredential(dataDirectory);
-    await client.connect(new StreamableHTTPClientTransport(
-      new URL("/mcp", origin),
-      {authProvider: {token: async () => credential}},
-    ));
-    const listed = await client.listTools();
-    return {
-      protocolRevision: client.getNegotiatedProtocolVersion() ?? modernProtocolRevision,
-      status: "healthy",
-      tools: listed.tools.length,
-    };
+    const response = await fetch(`${localMcpHttpRelayOrigin(address.port)}/health`, {
+      signal: AbortSignal.timeout(750),
+    });
+    return response.ok;
   } catch {
-    return {reason: "Modern MCP discovery failed.", status: "unhealthy"};
-  } finally {
-    await client.close();
+    return false;
   }
 }
 

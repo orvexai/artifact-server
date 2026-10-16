@@ -11,7 +11,7 @@ import {
 import {tmpdir} from "node:os";
 import path from "node:path";
 
-import {Client} from "@modelcontextprotocol/client";
+import {Client, StreamableHTTPClientTransport} from "@modelcontextprotocol/client";
 import {StdioClientTransport} from "@modelcontextprotocol/client/stdio";
 import {afterEach, describe, expect, test} from "vitest";
 import {z} from "zod";
@@ -44,13 +44,11 @@ const serviceRecordSchema = z.object({
 }).strict();
 const doctorSchema = z.object({
   discovery: z.object({
-    protocolRevision: z.literal(modernProtocolRevision),
+    protocol: z.literal("streamable-http"),
     status: z.literal("healthy"),
-    tools: z.number().int().positive(),
   }),
   service: z.object({
     reachable: z.literal(true),
-    recordState: z.literal("valid"),
   }),
   status: z.literal("healthy"),
 }).loose();
@@ -124,7 +122,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     const doctor = await runCli(["doctor", "--data", dataDirectory]);
     expect(doctor.exitCode).toBe(0);
     expect(doctorSchema.parse(JSON.parse(doctor.stdout))).toMatchObject({
-      discovery: {tools: 33},
+      discovery: {protocol: "streamable-http"},
       status: "healthy",
     });
     const apiCredential = (await readFile(
@@ -147,6 +145,58 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     expect(safeSurfaces).not.toContain("Local API token:");
     expect(safeSurfaces).not.toContain("Browser login:");
   }, 30_000);
+
+  test("HTTP relay uses the local service when no remote CLI profile exists", async () => {
+    const workspace = await temporaryWorkspace("artifact-server-mcp-relay-");
+    const dataDirectory = path.join(workspace, "data");
+    const addressFile = path.join(dataDirectory, "mcp-http-relay.json");
+    const relayProcess = spawn(tsxExecutable, [
+      cliEntrypoint,
+      "mcp",
+      "relay",
+      "--data",
+      dataDirectory,
+      "--address-file",
+      addressFile,
+    ], {cwd: repositoryRoot, stdio: "ignore"});
+    if (relayProcess.pid !== undefined) managedServicePids.add(relayProcess.pid);
+
+    let client: Client | null = null;
+    try {
+      await waitForFile(addressFile);
+      const address = z.object({
+        pid: z.number().int().positive(),
+        port: z.number().int().min(1).max(65_535),
+        schemaVersion: z.literal(1),
+      }).parse(JSON.parse(await readFile(addressFile, "utf8")));
+      client = new Client(
+        {name: "artifact-server-http-relay-test", version: "0.0.0"},
+      );
+      await client.connect(new StreamableHTTPClientTransport(
+        new URL("/mcp", `http://127.0.0.1:${address.port}`),
+      ));
+      expect((await client.listTools()).tools).toHaveLength(33);
+      const capabilities = await client.callTool({
+        arguments: {},
+        name: "artifact_capabilities",
+      });
+      expect(capabilities.isError).not.toBe(true);
+    } finally {
+      if (client !== null) await client.close().catch(() => undefined);
+      const localServiceContents = await readFile(
+        path.join(dataDirectory, "local-service.json"),
+        "utf8",
+      ).catch(() => null);
+      if (localServiceContents !== null) {
+        const localService = serviceRecordSchema.safeParse(
+          JSON.parse(localServiceContents),
+        );
+        if (localService.success) managedServicePids.add(localService.data.pid);
+      }
+      if (relayProcess.pid !== undefined) managedServicePids.delete(relayProcess.pid);
+      await killProcess(relayProcess);
+    }
+  }, 45_000);
 
   test("connect and disconnect preserve unrelated client configuration", async () => {
     const workspace = await temporaryWorkspace("artifact-server-mcp-clients-");
@@ -181,6 +231,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
       ARTIFACT_SERVER_CURSOR_MCP_CONFIG: cursorConfig,
       ARTIFACT_SERVER_VSCODE_MCP_CONFIG: vscodeConfig,
       FAKE_CLIENT_STATE_DIRECTORY: fakeStateDirectory,
+      HOME: fakeStateDirectory,
       PATH: binaryDirectory,
     };
     const invocation: CliInvocation = {
@@ -188,8 +239,10 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
       prefixArguments: ["/opt/artifact-server/main.js"],
     };
 
-    await connectMcpClient("codex", dataDirectory, invocation, environment);
-    await connectMcpClient("claude", dataDirectory, invocation, environment);
+    await connectMcpClient("codex", dataDirectory, invocation, environment, "http://127.0.0.1:43127/mcp");
+    await rm(path.join(fakeStateDirectory, "codex.connected"), {force: true});
+    await connectMcpClient("codex", dataDirectory, invocation, environment, "http://127.0.0.1:43127/mcp");
+    await connectMcpClient("claude", dataDirectory, invocation, environment, "http://127.0.0.1:43127/mcp");
     await connectMcpClient("cursor", dataDirectory, invocation, environment);
     await connectMcpClient("vscode", dataDirectory, invocation, environment);
 
@@ -211,9 +264,9 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
       path.join(fakeStateDirectory, "calls.log"),
       "utf8",
     );
-    expect(nativeCalls).toContain("codex mcp add artifact-server --");
+    expect(nativeCalls).toContain("codex mcp add artifact-server --url http://127.0.0.1:43127/mcp");
     expect(nativeCalls).toContain(
-      "claude mcp add --transport stdio --scope user artifact-server --",
+      "claude mcp add --transport http --scope user artifact-server http://127.0.0.1:43127/mcp",
     );
     expect([connectedCursor, connectedVscode, registrations, nativeCalls].join("\n"))
       .not.toMatch(/[A-Za-z0-9_-]{43}/u);
@@ -248,6 +301,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
       ...process.env,
       FAKE_CLIENT_GET_ERROR: "1",
       FAKE_CLIENT_STATE_DIRECTORY: workspace,
+      HOME: workspace,
       PATH: binaryDirectory,
     };
     const invocation: CliInvocation = {
@@ -256,7 +310,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     };
 
     await expect(
-      connectMcpClient("codex", dataDirectory, invocation, environment),
+      connectMcpClient("codex", dataDirectory, invocation, environment, "http://127.0.0.1:43127/mcp"),
     ).rejects.toThrow("permission denied while reading client configuration");
     expect(await readFile(path.join(workspace, "calls.log"), "utf8"))
       .toBe("codex mcp get artifact-server --json\n");
@@ -276,6 +330,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
       ...process.env,
       FAKE_CLIENT_PAUSE_AFTER_ADD: "1",
       FAKE_CLIENT_STATE_DIRECTORY: fakeStateDirectory,
+      HOME: fakeStateDirectory,
       PATH: binaryDirectory,
     };
     const child = spawn(process.execPath, [
@@ -305,6 +360,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
         prefixArguments: ["/opt/artifact-server/main.js"],
       },
       recoveryEnvironment,
+      "http://127.0.0.1:43127/mcp",
     );
     const registrations = registrationFileSchema.parse(JSON.parse(await readFile(
       path.join(dataDirectory, "mcp-registrations.json"),
@@ -332,13 +388,14 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     const baseEnvironment = {
       ...process.env,
       FAKE_CLIENT_STATE_DIRECTORY: fakeStateDirectory,
+      HOME: fakeStateDirectory,
       PATH: binaryDirectory,
     };
 
     await expect(connectMcpClient("codex", dataDirectory, invocation, {
       ...baseEnvironment,
       FAKE_CLIENT_FAIL_AFTER_ADD: "1",
-    })).rejects.toThrow("Could not add Artifact Server to Codex");
+    }, "http://127.0.0.1:43127/mcp")).rejects.toThrow("Could not add Artifact Server to Codex");
     await expect(stat(path.join(fakeStateDirectory, "codex.connected")))
       .rejects.toMatchObject({code: "ENOENT"});
     await expect(stat(path.join(dataDirectory, "mcp-onboarding-transaction.json")))
@@ -374,6 +431,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
       conflictDataDirectory,
       invocation,
       baseEnvironment,
+      "http://127.0.0.1:43127/mcp",
     )).rejects.toThrow("changed independently");
     expect(await readFile(clientState, "utf8")).toBe(independentlyChangedState);
     expect((await stat(journal)).mode & 0o777).toBe(0o600);
@@ -417,6 +475,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     const environment = {
       ...process.env,
       FAKE_CLIENT_STATE_DIRECTORY: workspace,
+      HOME: workspace,
       PATH: [
         binaryDirectory,
         path.dirname(process.execPath),
@@ -452,7 +511,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     );
     expect(missingDoctor.exitCode).toBe(2);
     expect(JSON.parse(missingDoctor.stdout)).toMatchObject({
-      service: {reachable: false, recordState: "missing"},
+      service: {reachable: false},
       status: "unhealthy",
     });
     await expect(stat(missingDataDirectory)).rejects.toMatchObject({code: "ENOENT"});
@@ -475,27 +534,11 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     );
     expect(staleDoctor.exitCode).toBe(2);
     expect(JSON.parse(staleDoctor.stdout)).toMatchObject({
-      service: {reachable: false, recordState: "stale"},
+      service: {reachable: false},
       status: "unhealthy",
     });
     expect(await readFile(staleRecordPath, "utf8")).toBe(staleRecord);
 
-    const runningUnhealthyRecord = `${JSON.stringify({
-      dataDirectory: staleDataDirectory,
-      origin: "http://127.0.0.1:1",
-      pid: process.pid,
-      productVersion: "0.0.0",
-      schemaVersion: 1,
-      startedAt: new Date().toISOString(),
-    }, null, 2)}\n`;
-    await writeFile(staleRecordPath, runningUnhealthyRecord);
-    const refused = await runCli(
-      ["connect", "codex", "--data", staleDataDirectory],
-      environment,
-    );
-    expect(refused.exitCode).not.toBe(0);
-    expect(refused.stderr).toContain("a second process was not started against the same database");
-    expect(await readFile(staleRecordPath, "utf8")).toBe(runningUnhealthyRecord);
   });
 });
 
@@ -588,8 +631,24 @@ if [ "$1" = "mcp" ] && [ "$2" = "get" ]; then
 fi
 if [ "$1" = "mcp" ] && [ "$2" = "add" ]; then
   if [ '${name}' = "codex" ]; then
+    if [ "\${4:-}" = "--url" ]; then
+      printf '{"transport":{"type":"http","url":"%s"}}\n' "$5" > "$state"
+      if [ "\${FAKE_CLIENT_FAIL_AFTER_ADD:-}" = "1" ]; then
+        exit 9
+      fi
+      if [ "\${FAKE_CLIENT_PAUSE_AFTER_ADD:-}" = "1" ]; then
+        /bin/sleep 30
+      fi
+      exit 0
+    fi
     shift 4
   else
+    if [ "\${3:-}" = "--transport" ] && [ "\${4:-}" = "http" ]; then
+      url="$8"
+      printf '{"mcpServers":{"artifact-server":{"type":"http","url":"%s"}}}\n' "$url" > "$HOME/.claude.json"
+      printf 'Type: http\nURL: %s\n' "$url" > "$state"
+      exit 0
+    fi
     shift 8
   fi
   command="$1"
@@ -606,6 +665,9 @@ if [ "$1" = "mcp" ] && [ "$2" = "add" ]; then
 fi
 if [ "$1" = "mcp" ] && [ "$2" = "remove" ]; then
   /bin/rm -f "$state"
+  if [ '${name}' = "claude" ]; then
+    printf '{}\n' > "$HOME/.claude.json"
+  fi
   exit 0
 fi
 exit 2

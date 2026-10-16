@@ -30,14 +30,25 @@ import {localMcpCommand} from "./current-cli-invocation.js";
 
 const managedServerName = "artifact-server";
 const clientIdSchema = z.enum(["codex", "claude", "cursor", "vscode"]);
-const managedCommandSchema = z.object({
+const stdioConnectionSchema = z.object({
   args: z.array(z.string()),
   command: z.string().min(1),
 }).strict();
-const registrationSchema = managedCommandSchema.extend({
-  client: clientIdSchema,
-  configuredAt: z.iso.datetime(),
+const httpConnectionSchema = z.object({
+  transport: z.literal("http"),
+  url: z.url(),
 }).strict();
+const managedCommandSchema = z.union([stdioConnectionSchema, httpConnectionSchema]);
+const registrationSchema = z.union([
+  stdioConnectionSchema.extend({
+    client: clientIdSchema,
+    configuredAt: z.iso.datetime(),
+  }),
+  httpConnectionSchema.extend({
+    client: clientIdSchema,
+    configuredAt: z.iso.datetime(),
+  }),
+]);
 const registrationStateSchema = z.object({
   registrations: z.array(registrationSchema),
   schemaVersion: z.literal(1),
@@ -59,6 +70,10 @@ const claudeStdioEntrySchema = z.object({
   command: z.string().min(1),
   env: z.record(z.string(), z.string()),
   type: z.literal("stdio"),
+}).strict();
+const claudeHttpEntrySchema = z.object({
+  type: z.literal("http"),
+  url: z.url(),
 }).strict();
 const systemErrorSchema = z.object({code: z.string().optional()});
 const commandSnapshotSchema = managedCommandSchema.nullable();
@@ -144,10 +159,18 @@ export async function connectMcpClient(
   dataDirectory: string,
   invocation: CliInvocation,
   environment: NodeJS.ProcessEnv = process.env,
+  relayEndpoint?: string,
 ): Promise<void> {
   const recovered = await recoverPendingOnboarding(dataDirectory, environment);
   if (recovered?.action === "connect" && recovered.client === client) return;
-  const command = localMcpCommand(invocation, dataDirectory);
+  const command: ManagedCommand = client === "claude" || client === "codex"
+    ? {transport: "http", url: relayEndpoint ?? (() => {
+      throw new Error("The local MCP relay endpoint is required for Codex and Claude.");
+    })()}
+    : (() => {
+      const stdio = localMcpCommand(invocation, dataDirectory);
+      return {args: [...stdio.args], command: stdio.command};
+    })();
   const state = await readRegistrationState(dataDirectory);
   const owned = state.registrations.find((item) => item.client === client);
   const change = client === "codex" || client === "claude"
@@ -157,8 +180,7 @@ export async function connectMcpClient(
     registrations: [
       ...state.registrations.filter((item) => item.client !== client),
       {
-        ...command,
-        args: [...command.args],
+        ...cloneConnection(command),
         client,
         configuredAt: new Date().toISOString(),
       },
@@ -227,14 +249,17 @@ export async function managedMcpClients(
   );
 }
 
-interface ManagedCommand {
-  readonly args: readonly string[];
-  readonly command: string;
-}
+type ManagedCommand = z.infer<typeof managedCommandSchema>;
 type Registration = z.infer<typeof registrationSchema>;
 type RegistrationState = z.infer<typeof registrationStateSchema>;
 type OnboardingJournal = z.infer<typeof onboardingJournalSchema>;
 type ClientChange = OnboardingJournal["change"];
+
+function cloneConnection(connection: ManagedCommand): ManagedCommand {
+  return "command" in connection
+    ? {args: [...connection.args], command: connection.command}
+    : {transport: connection.transport, url: connection.url};
+}
 
 interface OnboardingTransactionInput {
   readonly action: OnboardingJournal["action"];
@@ -256,16 +281,16 @@ async function planNativeChange(
       `${displayName(client)} already has an unmanaged ${managedServerName} entry.`,
     );
   }
-  const before = owned === undefined
+  const before = owned === undefined || !current.exists
     ? null
-    : {args: [...owned.args], command: owned.command};
-  if (!nativeInspectionMatches(current, before)) {
+    : cloneConnection(owned);
+  if (current.exists && !nativeInspectionMatches(current, before)) {
     throw new Error(
       `${displayName(client)}'s ${managedServerName} entry changed after Artifact Server created it.`,
     );
   }
   return {
-    after: after === null ? null : {args: [...after.args], command: after.command},
+    after: after === null ? null : cloneConnection(after),
     before,
     kind: "native",
   };
@@ -511,6 +536,9 @@ function jsonEntry(
   client: "cursor" | "vscode",
   command: ManagedCommand,
 ): JsoncMcpEntry {
+  if (!("command" in command)) {
+    throw new Error(`${displayName(client)} does not support the managed HTTP registration.`);
+  }
   return client === "vscode"
     ? {args: [...command.args], command: command.command, type: "stdio"}
     : {args: [...command.args], command: command.command};
@@ -556,7 +584,12 @@ async function replaceNativeClient(
   }
   if (after === null) return;
   const addArguments = client === "claude"
-    ? [
+    ? "url" in after
+      ? [
+        "mcp", "add", "--transport", "http", "--scope", "user",
+        managedServerName, after.url,
+      ]
+      : [
       "mcp",
       "add",
       "--transport",
@@ -568,7 +601,9 @@ async function replaceNativeClient(
       after.command,
       ...after.args,
     ]
-    : [
+    : "url" in after
+      ? ["mcp", "add", managedServerName, "--url", after.url]
+      : [
       "mcp",
       "add",
       managedServerName,
@@ -647,6 +682,7 @@ function nativeInspectionMatches(
     ? undefined
     : lines[environmentLine + 1];
   return lines.some((line) => line.trim() === "Type: stdio")
+    && "command" in expected
     && lines.some((line) => line.trim() === `Command: ${expected.command}`)
     && lines.some((line) => line.trim() === `Args: ${expected.args.join(" ")}`)
     && environmentLine !== -1
@@ -659,7 +695,7 @@ function parseNativeCommand(
 ): ManagedCommand | null {
   try {
     const decoded: unknown = JSON.parse(output);
-    const direct = managedCommandSchema.safeParse(decoded);
+    const direct = stdioConnectionSchema.safeParse(decoded);
     if (direct.success) return direct.data;
     if (client === "codex") {
       const codex = z.object({
@@ -684,6 +720,10 @@ function parseNativeCommand(
           command: codex.data.transport.command,
         };
       }
+      const codexHttp = z.object({
+        transport: z.object({type: z.enum(["http", "streamable_http"]), url: z.url()}).passthrough(),
+      }).passthrough().safeParse(decoded);
+      if (codexHttp.success) return {transport: "http", url: codexHttp.data.transport.url};
     }
   } catch {
     // Claude currently exposes human-readable output instead of JSON.
@@ -701,9 +741,10 @@ async function readClaudeManagedCommand(
       "utf8",
     ));
     const root = claudeUserConfigurationSchema.parse(decoded);
-    const entry = claudeStdioEntrySchema.safeParse(
-      root.mcpServers?.[managedServerName],
-    );
+    const candidate = root.mcpServers?.[managedServerName];
+    const httpEntry = claudeHttpEntrySchema.safeParse(candidate);
+    if (httpEntry.success) return {transport: "http", url: httpEntry.data.url};
+    const entry = claudeStdioEntrySchema.safeParse(candidate);
     if (!entry.success || Object.keys(entry.data.env).length > 0) return null;
     return {args: entry.data.args, command: entry.data.command};
   } catch (error) {
