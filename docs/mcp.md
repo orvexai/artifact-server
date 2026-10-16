@@ -28,6 +28,18 @@ artifactserver disconnect codex
 
 The command registers a local stdio bridge. The bridge starts or locates the local service and handles its private credential.
 
+For a hosted server, first sign in once with the CLI, then connect the selected
+client through the saved profile:
+
+```sh
+artifactserver auth login https://artifacts.example.com
+artifactserver connect codex --server https://artifacts.example.com
+```
+
+The registered stdio bridge reads and refreshes the profile through the
+operating-system credential store. The token is not copied into Codex config,
+and Codex does not run a separate OAuth login for this connection.
+
 The credential does not appear in client configuration, command output, or startup logs.
 
 ## Connect to a team server
@@ -40,7 +52,9 @@ https://artifacts.example.com/mcp
 
 The client opens the configured identity provider. Complete browser authorization, then return to the client.
 
-The access token is valid for that exact `/mcp` resource. A token for another installation or application resource does not qualify.
+For a direct HTTP connection, the access token is valid for that exact `/mcp`
+resource. A token for another installation or application resource does not
+qualify. The local stdio bridge instead uses the existing CLI profile.
 
 ## Publish from an agent
 

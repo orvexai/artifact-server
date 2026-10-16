@@ -9,6 +9,7 @@ import {type Command, Option} from "commander";
 
 import {readLocalApiCredential} from "../local/local-credentials.js";
 import {startLocalMcpStdioBridge} from "../mcp/start-local-mcp-stdio-bridge.js";
+import {resolveCliServerConnection} from "./cli-server-connection.js";
 import {currentCliInvocation, localMcpCommand} from "./current-cli-invocation.js";
 import {runCliEffect} from "./run-cli-effect.js";
 import {
@@ -29,6 +30,10 @@ const modernProtocolRevision = "2026-07-28";
 
 interface DataOptions {
   readonly data: string;
+}
+
+interface McpServerOptions extends DataOptions {
+  readonly server?: string;
 }
 
 /** Build values needed by the local MCP onboarding commands. */
@@ -54,14 +59,19 @@ function configureMcpCommand(
 ): void {
   program
     .command("mcp")
-    .description("Serve the local Artifact Server over MCP stdio.")
+    .description("Serve Artifact Server over MCP stdio using local credentials.")
     .addOption(dataOption(options.defaultDataDirectory))
-    .action((commandOptions: DataOptions) => {
-      startLocalMcpStdioBridge({
+    .addOption(new Option("--server <origin>", "use a saved CLI profile for this remote server"))
+    .action((commandOptions: McpServerOptions) => {
+      let bridgeOptions: Parameters<typeof startLocalMcpStdioBridge>[0] = {
         dataDirectory: path.resolve(commandOptions.data),
         invocation: currentCliInvocation(),
         productVersion: options.productVersion,
-      });
+      };
+      if (commandOptions.server !== undefined) {
+        bridgeOptions = {...bridgeOptions, serverOrigin: commandOptions.server};
+      }
+      startLocalMcpStdioBridge(bridgeOptions);
     });
 }
 
@@ -73,20 +83,32 @@ function configureConnectCommand(
     .command("connect [client]")
     .description("Connect Artifact Server to an installed AI client.")
     .addOption(dataOption(options.defaultDataDirectory))
-    .action(async (clientName: string | undefined, commandOptions: DataOptions) => {
+    .addOption(new Option("--server <origin>", "connect to a remote server using its saved CLI profile"))
+    .action(async (clientName: string | undefined, commandOptions: McpServerOptions) => {
       const dataDirectory = path.resolve(commandOptions.data);
       const client = await selectInstalledClient(clientName);
       const invocation = currentCliInvocation();
-      const service = await ensureManagedLocalService(dataDirectory, invocation);
-      await connectMcpClient(client, dataDirectory, invocation);
+      const serverOrigin = commandOptions.server;
+      if (serverOrigin !== undefined) {
+        await resolveCliServerConnection({
+          data: dataDirectory,
+          profileData: dataDirectory,
+          server: serverOrigin,
+        }, "history");
+      }
+      const service = serverOrigin === undefined
+        ? await ensureManagedLocalService(dataDirectory, invocation)
+        : null;
+      await connectMcpClient(client, dataDirectory, invocation, process.env, serverOrigin);
       await verifyLocalStdioBridge(
         dataDirectory,
         invocation,
         options.productVersion,
+        serverOrigin,
       );
       console.log(JSON.stringify({
         client,
-        serverAddress: service.origin,
+        serverAddress: serverOrigin ?? service?.origin,
       }, null, 2));
     });
 }
@@ -210,8 +232,9 @@ async function verifyLocalStdioBridge(
   dataDirectory: string,
   invocation: ReturnType<typeof currentCliInvocation>,
   productVersion: string,
+  serverOrigin?: string,
 ): Promise<{readonly protocolRevision: string; readonly tools: number}> {
-  const stdio = localMcpCommand(invocation, dataDirectory);
+  const stdio = localMcpCommand(invocation, dataDirectory, serverOrigin);
   const transport = new StdioClientTransport({
     args: [...stdio.args],
     command: stdio.command,

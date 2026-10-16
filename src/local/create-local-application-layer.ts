@@ -919,6 +919,23 @@ export function createApplicationLayer(
             scopes: ["mcp"],
           };
         }
+        // The local CLI MCP bridge forwards the user's existing API profile
+        // credential. API bearer authentication already resolves the same
+        // admitted principal and permission set as the remote MCP OAuth path.
+        // This avoids a second browser login while preserving user attribution.
+        if (adapters.externalApiBearerVerifier !== null) {
+          const apiAuthentication = yield* Effect.result(
+            adapters.externalApiBearerVerifier.verify(credential),
+          );
+          if (apiAuthentication._tag === "Success") {
+            return {
+              clientId: "artifact-server-cli-profile",
+              expiresAt: Math.floor(adapters.clock.now().getTime() / 1_000) + 60,
+              principal: apiAuthentication.success,
+              scopes: ["mcp"],
+            };
+          }
+        }
         if (raw.startsWith("as_key_")) {
           return {
             clientId: "artifact-server-managed-api-key",

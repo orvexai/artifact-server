@@ -127,6 +127,16 @@ whatever `registration_endpoint` the issuer publishes and issues no client
 credentials of its own, which keeps MCP-014 intact: no embedded authorization
 server appears here.
 
+### A local CLI profile may authenticate its stdio MCP bridge
+
+`artifactserver connect --server <origin>` uses the existing API OAuth
+profile from the operating-system credential store. The stdio bridge sends
+that credential directly to `/mcp`; it never places it in client config or
+process arguments. The MCP adapter verifies it through the same API bearer
+verifier used by CLI operations and applies the same admitted principal and
+permissions. This is a separate accepted credential class: remote HTTP MCP
+clients still require a token whose audience contains the exact `/mcp` resource.
+
 ## What stays excluded
 
 - OAuth on the HTTP API. `apiOAuthResource` and `externalApiBearerVerifier`

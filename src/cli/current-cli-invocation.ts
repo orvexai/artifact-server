@@ -28,11 +28,16 @@ export function currentCliInvocation(): CliInvocation {
 export function localMcpCommand(
   invocation: CliInvocation,
   dataDirectory: string,
+  serverOrigin?: string,
 ): LocalMcpCommand {
+  const serverArguments = serverOrigin === undefined
+    ? []
+    : ["--server", serverOrigin];
   return {
     args: [
       ...invocation.prefixArguments,
       "mcp",
+      ...serverArguments,
       "--data",
       path.resolve(dataDirectory),
     ],

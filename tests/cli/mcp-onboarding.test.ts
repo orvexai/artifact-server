@@ -188,7 +188,13 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
       prefixArguments: ["/opt/artifact-server/main.js"],
     };
 
-    await connectMcpClient("codex", dataDirectory, invocation, environment);
+    await connectMcpClient(
+      "codex",
+      dataDirectory,
+      invocation,
+      environment,
+      "https://artifacts.example.com",
+    );
     await connectMcpClient("claude", dataDirectory, invocation, environment);
     await connectMcpClient("cursor", dataDirectory, invocation, environment);
     await connectMcpClient("vscode", dataDirectory, invocation, environment);
@@ -212,6 +218,9 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
       "utf8",
     );
     expect(nativeCalls).toContain("codex mcp add artifact-server --");
+    expect(nativeCalls).toContain(
+      "mcp --server https://artifacts.example.com --data",
+    );
     expect(nativeCalls).toContain(
       "claude mcp add --transport stdio --scope user artifact-server --",
     );

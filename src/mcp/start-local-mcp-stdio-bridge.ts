@@ -9,8 +9,10 @@ import {
 } from "@modelcontextprotocol/server";
 import {serveStdio, type StdioServerHandle} from "@modelcontextprotocol/server/stdio";
 import {z} from "zod";
+import {Redacted} from "effect";
 
 import type {CliInvocation} from "../cli/current-cli-invocation.js";
+import {resolveCliServerConnection} from "../cli/cli-server-connection.js";
 import {ensureManagedLocalService} from "../cli/local-service-manager.js";
 import {readLocalApiCredential} from "../local/local-credentials.js";
 
@@ -24,6 +26,7 @@ export interface LocalMcpStdioBridgeOptions {
   readonly dataDirectory: string;
   readonly invocation: CliInvocation;
   readonly productVersion: string;
+  readonly serverOrigin?: string;
 }
 
 /** Start a dual-era stdio bridge to the single managed local service. */
@@ -45,22 +48,31 @@ export function startLocalMcpStdioBridge(
 async function createForwardingServer(
   options: LocalMcpStdioBridgeOptions,
 ): Promise<Server> {
-  const service = await ensureManagedLocalService(
-    options.dataDirectory,
-    options.invocation,
-  );
   const client = new Client(
     {name: "artifact-server-local-bridge", version: options.productVersion},
     {versionNegotiation: {mode: {pin: modernProtocolRevision}}},
   );
-  const transport = new StreamableHTTPClientTransport(
-    new URL("/mcp", service.origin),
-    {
-      authProvider: {
-        token: () => readLocalApiCredential(options.dataDirectory),
+  const origin = options.serverOrigin === undefined
+    ? (await ensureManagedLocalService(
+      options.dataDirectory,
+      options.invocation,
+    )).origin
+    : options.serverOrigin;
+  const transport = new StreamableHTTPClientTransport(new URL("/mcp", origin), {
+    authProvider: {
+      token: async () => {
+        if (options.serverOrigin === undefined) {
+          return readLocalApiCredential(options.dataDirectory);
+        }
+        const connection = await resolveCliServerConnection({
+          data: options.dataDirectory,
+          profileData: options.dataDirectory,
+          server: options.serverOrigin,
+        }, "history");
+        return Redacted.value(connection.apiToken);
       },
     },
-  );
+  });
   try {
     await client.connect(transport);
   } catch (error) {

@@ -18,14 +18,17 @@ is still required because local AI clients commonly install stdio commands.
 ## Decision
 
 `artifactserver mcp` is a transport-only bridge. It serves stdio with the
-official SDK and forwards requests to the per-user service's authenticated
-loopback `/mcp` endpoint. The per-user service is started once, owns SQLite and
-local files, and advertises its non-secret loopback address through a user-only
-service record.
+official SDK and forwards requests to an authenticated `/mcp` endpoint. By
+default it uses the per-user service's loopback endpoint; with `--server`, it
+uses the saved CLI profile for that exact remote origin. The per-user local
+service is started once, owns SQLite and local files, and advertises its
+non-secret loopback address through a user-only service record.
 
-The bridge obtains the existing local credential from private per-user state.
-The credential never becomes a command argument, client configuration field,
-stdout value, ordinary log field, or diagnostic value.
+The local bridge obtains its credential from private per-user state. The remote
+bridge resolves the existing CLI profile through the operating-system
+credential store and refreshes it as needed. Credentials never become command
+arguments, client configuration fields, stdout values, ordinary log fields, or
+diagnostic values.
 
 ## Consequences
 
@@ -36,5 +39,7 @@ stdout value, ordinary log field, or diagnostic value.
   smoke and performance checks.
 - The per-user service needs an explicit non-secret discovery record and stale
   state diagnostics.
-- Remote deployments continue to use Streamable HTTP directly; the stdio bridge
-  is a local onboarding adapter, not a second deployed MCP architecture.
+- Remote clients may use Streamable HTTP and MCP OAuth directly. A local CLI
+  may use stdio with its saved API profile, avoiding a second browser login.
+  The remote MCP adapter resolves that same admitted principal and applies the
+  same product permissions.

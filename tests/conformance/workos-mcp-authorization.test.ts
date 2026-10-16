@@ -13,11 +13,16 @@ import {
   type CryptoKey,
   type JWK,
 } from "jose";
-import {Predicate, Redacted} from "effect";
+import {Effect, Predicate, Redacted} from "effect";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
 
 import {WorkOsMcpBearerVerifier} from
   "../../src/identity/workos-mcp-bearer-verifier.js";
+import type {BearerCredentialVerifier} from
+  "../../src/application/authentication.js";
+import {AuthenticationRequired} from "../../src/core/errors.js";
+import {membershipRoles, principalKinds, type Principal} from
+  "../../src/core/identity.js";
 import {loadWorkOsOAuthMetadata} from
   "../../src/identity/workos-oauth-metadata.js";
 import {
@@ -191,6 +196,42 @@ describe("hosted WorkOS MCP authorization", () => {
     provider.setUserResponseStatus(401);
     expect((await mcpDiscovery(await issueToken({}))).status).toBe(500);
     expect(provider.userRequests()).toBe(1);
+  });
+
+  test("local CLI bridge can use the saved API profile for MCP without changing principal identity", async () => {
+    expect.hasAssertions();
+    await server.stop();
+    const cliPrincipal: Principal = {
+      authorizedByPrincipalId: null,
+      capabilities: [],
+      displayName: "CLI Profile Member",
+      id: "member_cli_profile",
+      installationId: "local",
+      kind: principalKinds.human,
+      membershipRole: membershipRoles.member,
+    };
+    let verifierCalled = false;
+    const verifier: BearerCredentialVerifier = {
+      verify: (credential) => {
+        verifierCalled = true;
+        return Redacted.value(credential) === "cli-profile-token"
+          ? Effect.succeed(cliPrincipal)
+          : Effect.fail(new AuthenticationRequired({
+          message: "The CLI profile credential is invalid.",
+          }));
+      },
+    };
+    server = await startTestServer(installation, {
+      bootstrapAdministratorEmail: userEmail,
+      externalApiBearerVerifier: verifier,
+      mcpOAuthResource: {
+        authorizationServerMetadata: authorizationMetadata(),
+        resource,
+      },
+    });
+    const response = await mcpDiscovery("cli-profile-token");
+    expect(verifierCalled).toBe(true);
+    expect(response.status).toBe(200);
   });
 
   async function issueToken(options: {

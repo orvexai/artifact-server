@@ -144,10 +144,11 @@ export async function connectMcpClient(
   dataDirectory: string,
   invocation: CliInvocation,
   environment: NodeJS.ProcessEnv = process.env,
+  serverOrigin?: string,
 ): Promise<void> {
   const recovered = await recoverPendingOnboarding(dataDirectory, environment);
   if (recovered?.action === "connect" && recovered.client === client) return;
-  const command = localMcpCommand(invocation, dataDirectory);
+  const command = localMcpCommand(invocation, dataDirectory, serverOrigin);
   const state = await readRegistrationState(dataDirectory);
   const owned = state.registrations.find((item) => item.client === client);
   const change = client === "codex" || client === "claude"
