@@ -1370,7 +1370,7 @@ export class PostgresArtifactRepository implements
         yield* this.#assertProjectActive(command.projectId);
         yield* this.#assertStagedUploadReady(
           command.source,
-          command.manifest.digest,
+          command.sourceManifestDigest ?? command.manifest.digest,
           command.createdAt,
         );
         const currentRows = yield* sql.unsafe<{currentVersionId: string}>(

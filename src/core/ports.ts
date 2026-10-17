@@ -127,6 +127,8 @@ export interface CommitArtifactVersion {
   readonly idempotencyKey: string;
   readonly inputDigest: string;
   readonly manifest: CanonicalManifest;
+  /** Digest of the staged input manifest when the committed manifest carries earlier files forward. */
+  readonly sourceManifestDigest?: string;
   readonly principalId: string;
   readonly projectId: string;
   readonly authorizedByPrincipalId: string | null;
