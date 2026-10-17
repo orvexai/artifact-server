@@ -4282,6 +4282,10 @@ function reviewFrameContentSecurityPolicy(contentDomain: string): string {
     "font-src * data:",
     "media-src * data: blob:",
     `connect-src ${contentSources}`,
+    // The review frame hosts the isolated artifact document in a sandboxed
+    // srcdoc iframe. Without this explicit source, default-src 'none' blocks
+    // the nested frame and Chrome displays its broken-document placeholder.
+    "frame-src 'self'",
     "frame-ancestors 'self'",
   ].join("; ");
 }
