@@ -417,6 +417,8 @@ function runMcpApplicationEffect<A, E>(
 export interface ArtifactMcpRequestIdentity {
   /** OAuth client identifier taken only from a verified bearer token. */
   readonly agentClientId: string | null;
+  /** Self-reported MCP name used only for display. */
+  readonly agentDisplayName?: string | null;
   readonly principal: Principal;
 }
 
@@ -439,6 +441,26 @@ export function createArtifactMcpServer(
       instructions: agentInstructions(dependencies.mode),
     },
   );
+
+  /**
+   * Keep the verified OAuth client as the durable actor and use the MCP
+   * client's self-reported name only as a display label. It is not used for
+   * authorization; older clients without per-request client info fall back
+   * to their verified client ID.
+   */
+  function clientDisplayName(): string {
+    if (identity.agentClientId === null) return identity.principal.displayName;
+    const clientName = identity.agentDisplayName?.trim();
+    const actorName = clientName === undefined || clientName.length === 0
+      ? `MCP client ${identity.agentClientId}`
+      : clientName;
+    return `${actorName} for ${identity.principal.displayName}`;
+  }
+
+  function commentPrincipal(): Principal {
+    if (identity.agentClientId === null) return identity.principal;
+    return {...identity.principal, displayName: clientDisplayName()};
+  }
 
   /**
    * Register one tool and append the nudge pass to its results. The pass
@@ -1845,7 +1867,7 @@ export function createArtifactMcpServer(
             body,
             idempotencyKey,
             path,
-            principal: identity.principal,
+            principal: commentPrincipal(),
             projectId,
             versionId,
           })
@@ -1886,7 +1908,7 @@ export function createArtifactMcpServer(
               artifactId,
               body,
               idempotencyKey,
-              principal: identity.principal,
+              principal: commentPrincipal(),
               projectId,
               threadId,
             })
@@ -1917,7 +1939,7 @@ export function createArtifactMcpServer(
         ArtifactCommentService.use((comments) =>
           comments.updateThread({
             artifactId,
-            principal: identity.principal,
+            principal: commentPrincipal(),
             projectId,
             state: resolved
               ? commentThreadStates.resolved
@@ -2071,9 +2093,9 @@ export function createArtifactMcpServer(
             identity.principal.id,
             agentClientId,
           ),
-          displayName: identity.principal.displayName,
+          displayName: clientDisplayName(),
           kind: mailboxAgentKind,
-          principal: identity.principal,
+          principal: commentPrincipal(),
           workingDirectory: mailboxWorkingDirectory,
         })
       ),

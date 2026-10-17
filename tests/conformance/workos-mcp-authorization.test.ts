@@ -54,7 +54,7 @@ const commentAuthorResponseSchema = z.object({
   authorizedByPrincipalId: z.string().nullable(),
   displayName: z.string(),
   principalId: z.string(),
-  principalKind: z.literal("human"),
+  principalKind: z.enum(["human", "service"]),
 });
 const mailboxAgentResponseSchema = z.object({
   result: z.object({
@@ -78,6 +78,13 @@ const commentReplyResponseSchema = z.object({
   result: z.object({
     structuredContent: z.object({
       reply: z.object({author: commentAuthorResponseSchema}),
+    }),
+  }),
+});
+const commentListResponseSchema = z.object({
+  result: z.object({
+    structuredContent: z.object({
+      items: z.array(z.object({author: commentAuthorResponseSchema})),
     }),
   }),
 });
@@ -211,7 +218,7 @@ describe("hosted WorkOS MCP authorization", () => {
     expect(response.status).toBe(200);
     const body = mailboxAgentResponseSchema.parse(await response.json());
     expect(body.result.structuredContent.agent.displayName)
-      .toBe("MCP client client_test for Artifact Administrator");
+      .toBe("Claude Code for Artifact Administrator");
   });
 
   test("MCP comment authorship shows the verified client and human while retaining the human permission principal", async () => {
@@ -235,7 +242,7 @@ describe("hosted WorkOS MCP authorization", () => {
     expect(body.result.structuredContent.thread.author).toMatchObject({
       actor: {clientId: "client_test", kind: "mcp-client"},
       authorizedByPrincipalId: null,
-      displayName: "MCP client client_test for Artifact Administrator",
+      displayName: "Claude Code for Artifact Administrator",
       principalId: expect.any(String),
       principalKind: "human",
     });
@@ -256,7 +263,7 @@ describe("hosted WorkOS MCP authorization", () => {
     expect(replyBody.result.structuredContent.reply.author).toMatchObject({
       actor: {clientId: "client_test", kind: "mcp-client"},
       authorizedByPrincipalId: null,
-      displayName: "MCP client client_test for Artifact Administrator",
+      displayName: "Claude Code for Artifact Administrator",
       principalKind: "human",
     });
     const resolveResponse = await mcpTool(token, "comment_resolve", {
@@ -273,9 +280,37 @@ describe("hosted WorkOS MCP authorization", () => {
       .toMatchObject({
         actor: {clientId: "client_test", kind: "mcp-client"},
         authorizedByPrincipalId: null,
-        displayName: "MCP client client_test for Artifact Administrator",
+        displayName: "Claude Code for Artifact Administrator",
         principalKind: "human",
       });
+    const listed = await mcpTool(token, "comment_list", {
+      artifactId: published.body.artifact.id,
+    });
+    expect(listed.status).toBe(200);
+    const listedBody = commentListResponseSchema.parse(await listed.json());
+    expect(listedBody.result.structuredContent.items[0]?.author)
+      .toMatchObject({
+        actor: {clientId: "client_test", kind: "mcp-client"},
+        displayName: "Claude Code for Artifact Administrator",
+      });
+    const humanComment = await mcpTool(installation.apiToken, "comment_create", {
+      artifactId: published.body.artifact.id,
+      body: "Direct human comment.",
+      idempotencyKey: "workos-mcp-attribution-human-comment",
+      projectId: published.body.artifact.projectId,
+      versionId: published.body.version.id,
+    });
+    expect(humanComment.status).toBe(200);
+    const humanCommentBody = commentThreadResponseSchema.parse(
+      await humanComment.json(),
+    );
+    expect(humanCommentBody.result.structuredContent.thread.author)
+      .toMatchObject({
+        actor: null,
+        displayName: expect.any(String),
+      });
+    expect(humanCommentBody.result.structuredContent.thread.author.displayName)
+      .not.toContain("Claude Code");
   });
 
   test("foundation: wrong token contracts fail closed and provider outages stay distinct", async () => {
@@ -366,7 +401,7 @@ describe("hosted WorkOS MCP authorization", () => {
         params: {
           _meta: {
             [CLIENT_CAPABILITIES_META_KEY]: {},
-            [CLIENT_INFO_META_KEY]: {name: "workos-auth-test", version: "1"},
+            [CLIENT_INFO_META_KEY]: {name: "Claude Code", version: "1"},
             [PROTOCOL_VERSION_META_KEY]: protocolVersion,
           },
         },
@@ -389,7 +424,7 @@ describe("hosted WorkOS MCP authorization", () => {
         params: {
           _meta: {
             [CLIENT_CAPABILITIES_META_KEY]: {},
-            [CLIENT_INFO_META_KEY]: {name: "workos-auth-test", version: "1"},
+            [CLIENT_INFO_META_KEY]: {name: "Claude Code", version: "1"},
             [PROTOCOL_VERSION_META_KEY]: protocolVersion,
           },
           arguments: arguments_,
