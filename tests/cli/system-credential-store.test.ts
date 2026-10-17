@@ -29,7 +29,7 @@ async function temporaryDirectory(): Promise<string> {
   return directory;
 }
 
-describe("CLI credential file fallback", () => {
+describe("CLI credential store", () => {
   it("uses the private file store when no keyring executable is available", async () => {
     const home = await temporaryDirectory();
     const store = createSystemCredentialStore({
@@ -107,5 +107,28 @@ describe("CLI credential file fallback", () => {
 
     await expect(Effect.runPromise(store.read("profile-3")))
       .rejects.toThrow("unsafe permissions; set it to 0600");
+  });
+
+  it("uses the configured private file store for headless profile credentials", async () => {
+    const home = await temporaryDirectory();
+    const configHome = path.join(home, "config");
+    const store = createSystemCredentialStore({
+      environment: {
+        ARTIFACT_SERVER_CREDENTIAL_STORE: "file",
+        HOME: home,
+        XDG_CONFIG_HOME: configHome,
+      },
+      platform: "linux",
+    });
+
+    await Effect.runPromise(store.write("profile-4", Redacted.make("headless-secret")));
+    const stored = await Effect.runPromise(store.read("profile-4"));
+    const filePath = path.join(configHome, "artifact-server", "credentials.json");
+
+    expect(Redacted.value(stored)).toBe("headless-secret");
+    expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual({
+      "profile-4": "headless-secret",
+    });
   });
 });

@@ -9,20 +9,21 @@ supported AI client only when the command finds more than one, and starts using
 Artifact Server without copying a token, reading startup logs, opening a
 browser, or running Docker.
 
-The local path consists of three processes with one product implementation:
+The HTTP relay path keeps one lightweight per-user process and reuses the
+existing remote product implementation:
 
 ```text
-AI client
-  -> artifactserver mcp (stdio transport bridge)
-  -> per-user Artifact Server service (loopback POST /mcp)
+Claude Code or Codex
+  -> per-user loopback HTTP auth relay
   -> existing authentication, authorization, artifact, version, and storage services
 ```
 
-The bridge does not define tools or write the database. It forwards MCP to the
-same authenticated HTTP endpoint used by every deployment. Its private local
-credential is read from the per-user data directory and is never printed,
-placed in client configuration, passed as a process argument, or returned in a
-diagnostic report.
+The relay uses the bearer credential from the user's default CLI profile when
+available. When no usable remote profile is available, it forwards to the
+shared per-user local service with that service's private local credential.
+The relay does not define tools or manage artifact storage. Credentials are
+never printed, placed in client configuration, passed as process arguments, or
+returned in diagnostics.
 
 ## Commands
 
@@ -46,12 +47,13 @@ diagnostic report.
 - Selects the only detected client automatically. If more than one is found,
   it lists the choices and exits without changing state unless `client` was
   supplied.
-- Starts or locates the per-user service.
-- Registers one user-scoped stdio command that invokes this exact installed
-  Artifact Server release with the absolute per-user data directory and no
-  credential argument.
-- Verifies the complete stdio bridge with a modern `server/discover` and
-  `tools/list` exchange before reporting success.
+- Starts or locates the shared loopback HTTP auth relay.
+- Registers Claude Code and Codex with the relay HTTP URL; they connect
+  directly without spawning an Artifact Server process per agent.
+- Keeps the relay healthy while logged out and serves the existing local
+  service; later CLI login switches requests to the remote profile without a
+  relay restart.
+- Retains the existing local stdio registration for Cursor and VS Code.
 - Never prints or stores the private local credential in the target client's
   configuration.
 
@@ -68,9 +70,9 @@ interfaces do not provide a complete add-and-remove lifecycle.
 
 ### `artifactserver doctor [client]`
 
-- Does not start or change the service or client configuration.
-- Reports the selected data directory, service-record state, loopback health,
-  modern MCP discovery, and each requested client's registration state.
+- Does not start or change the relay or client configuration.
+- Reports the selected data directory, relay health, CLI authentication state,
+  and each requested client's registration state.
 - Reports safe remediation commands.
 - Never includes credential values or credential-bearing URLs.
 - Exits unsuccessfully when any requested check is unhealthy.
@@ -81,22 +83,32 @@ The onboarding data directory defaults to `~/.artifact-server`. The existing
 `start --data` behavior remains available for explicit project-local or test
 servers.
 
-The managed service binds to `127.0.0.1` on an operating-system-assigned port.
-After it is listening, it atomically writes a user-only service record containing
-only schema version, process ID, loopback origin, data directory, product
-version, and start time. The record contains no credential. A stale or malformed
-record is never trusted as a live service.
+On Linux, onboarding installs and enables the `artifact-server-mcp-relay`
+`systemd --user` unit. It starts at user login and restarts after an unexpected
+exit. On first start, the relay asks the operating system for an available
+loopback port and saves it in the per-user data directory. It reuses that port
+on every restart; if another process has claimed it, the relay fails instead
+of silently selecting a new URL. It forwards MCP HTTP
+traffic to the installation in the current default CLI profile, adding the
+credential held in the operating-system credential store. The relay does not
+own a database or artifact storage.
 
-Only the service owns SQLite and local blob storage. Every stdio bridge reaches
-that process over the existing authenticated HTTP boundary, so multiple clients
-do not create multiple processes that manage the same database lifecycle.
+The relay starts when no CLI profile is authenticated. MCP requests then use
+the shared per-user local service and its private credential. It resolves the
+current remote profile on each request, so a later CLI login switches traffic
+to that remote installation without restarting the relay or reconfiguring
+clients. Claude Code and Codex use the relay's HTTP URL directly; they do not
+spawn stdio bridge processes. Systems without a systemd user manager use a
+detached per-user relay process.
 
 ## Client configuration
 
-The managed server name is `artifact-server`.
+The managed server name is `artifact-server`. Claude Code and Codex are
+registered with the relay's Streamable HTTP URL. Cursor and VS Code retain
+stdio registrations for the local Artifact Server process.
 
-- Codex: `codex mcp add artifact-server -- <artifactserver> mcp --data <dir>`
-- Claude Code: `claude mcp add --transport stdio --scope user artifact-server -- <artifactserver> mcp --data <dir>`
+- Codex: `codex mcp add artifact-server --url <saved-loopback-url>/mcp`
+- Claude Code: `claude mcp add --transport http --scope user artifact-server <saved-loopback-url>/mcp`
 - Cursor: preserve the user JSON document and manage only
   `mcpServers.artifact-server`.
 - VS Code: preserve the user JSON document and manage only
@@ -117,20 +129,17 @@ limited to the local application address and data directory.
 
 The implementation is not complete until tests prove:
 
-1. one packaged command starts the managed service, performs modern discovery,
-   lists and calls tools through both modern and stateless 2025-era stdio, then
-   reconnects after the bridge exits;
-2. all four client adapters preserve unrelated configuration and contain no
-   credential;
-3. Codex and Claude Code command adapters are exercised through isolated client
-   homes or faithful executable seams without touching the developer's actual
-   configuration;
-4. ambiguous, missing, conflicting, malformed, stale, and unreachable states
-   fail with useful, credential-free diagnostics;
-5. `start`, `connect`, `disconnect`, `doctor`, service logs, process arguments,
-   client files, and test reports contain no local credential; and
-6. the existing modern HTTP MCP, local package, performance, Compose, and Helm
-   gates remain green.
+1. the relay starts without a CLI profile, returns an auth-required response,
+   and begins proxying after a later CLI login without a process restart;
+2. concurrent requests share the single relay, and streamable HTTP session
+   headers and event-stream responses pass through correctly;
+3. Codex and Claude Code receive HTTP registrations while Cursor and VS Code
+   preserve their local stdio setup;
+4. client adapters preserve unrelated configuration and contain no credential;
+5. conflicting, malformed, and unreachable states fail with useful,
+   credential-free diagnostics; and
+6. `connect`, `disconnect`, `doctor`, service logs, process arguments, client
+   files, and test reports contain no local credential.
 
 Real current Codex, Claude Code, Cursor, and VS Code host runs remain the
 cross-client release proof in `MCP-019`; adapter and protocol tests do not

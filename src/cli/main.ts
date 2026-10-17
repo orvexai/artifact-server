@@ -32,6 +32,7 @@ import {configureLinkCommand} from "./link-command.js";
 import {configureMcpOnboardingCommands} from "./mcp-onboarding-commands.js";
 import {configurePublishCommand} from "./publish-command.js";
 import {configureCommentsCommand} from "./comments-command.js";
+import {configureDownloadCommand} from "./download-command.js";
 import {configureGitHistoryCommands} from "./git-history-commands.js";
 import {waitForProcessSignal} from "./wait-for-process-signal.js";
 import {configureOpenManagementCommand} from "./open-management-command.js";
@@ -77,6 +78,9 @@ configurePublishCommand(program, {
   defaultProfileDirectory: defaultUserDataDirectory,
 });
 configureCommentsCommand(program, {
+  defaultProfileDirectory: defaultUserDataDirectory,
+});
+configureDownloadCommand(program, {
   defaultProfileDirectory: defaultUserDataDirectory,
 });
 configureGitHistoryCommands(program, {

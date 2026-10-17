@@ -17,4 +17,6 @@ await connectMcpClient(
     command: "/opt/artifact-server/node",
     prefixArguments: ["/opt/artifact-server/main.js"],
   },
+  process.env,
+  "http://127.0.0.1:43127/mcp",
 );

@@ -2057,21 +2057,9 @@ function reviewDownload(
 ): ReviewDownload | null {
   if (artifactId === null || version === null) return null;
   const entries = version.manifest.entries;
-  const onlyEntry = entries.length === 1 ? entries[0] : undefined;
-  if (onlyEntry !== undefined) {
-    return {
-      href: api.versionFileUrl(
-        projectId,
-        artifactId,
-        version.version.id,
-        onlyEntry.path,
-      ),
-      title: `Download ${onlyEntry.path}`,
-    };
-  }
   return {
     href: api.versionArchiveUrl(projectId, artifactId, version.version.id),
-    title: `Download ${entries.length} files as a ZIP`,
+    title: `Download all ${entries.length} source ${entries.length === 1 ? "file" : "files"} as a ZIP`,
   };
 }
 
@@ -2084,22 +2072,22 @@ function ReviewDownloadControl({
 }) {
   if (download === null) {
     return (
-      <button aria-label="Download" className={className} disabled type="button">
+      <button aria-label="Download source" className={className} disabled type="button">
         <HugeiconsIcon aria-hidden="true" icon={Download04Icon} strokeWidth={1.8} />
-        <span className="as-button__label">Download</span>
+        <span className="as-button__label">Download source</span>
       </button>
     );
   }
   return (
     <a
-      aria-label="Download"
+      aria-label="Download source"
       className={className}
       download
       href={download.href}
       title={download.title}
     >
       <HugeiconsIcon aria-hidden="true" icon={Download04Icon} strokeWidth={1.8} />
-      <span className="as-button__label">Download</span>
+      <span className="as-button__label">Download source</span>
     </a>
   );
 }
