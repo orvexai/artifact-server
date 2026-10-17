@@ -811,6 +811,9 @@ export const readPostgresMigrationStatus = Effect.gen(function*() {
   }, {
     migration_id: 13,
     name: "project_archive_audit",
+  }, {
+    migration_id: 14,
+    name: "artifact_state_entries",
   }] as const;
   const observedRequiredHistory = rows.filter(
     (row) => row.migration_id <= requiredPostgresSchemaVersion,
