@@ -391,21 +391,27 @@ describe("modern MCP HTTP", () => {
       sha256: createHash("sha256").update(bytes).digest("hex"),
       size: bytes.byteLength,
     };
+    const retainedIndex = new TextEncoder().encode(
+      "<!doctype html><title>MCP retained site</title><script src=assets/data.bin></script>",
+    );
+    const retainedAsset = Buffer.alloc(1_100_000, 0x61);
+    retainedAsset.write("This complete site includes a large actual asset.\n");
+    const initialFiles = [
+      declaredMcpFile("assets/data.bin", "application/octet-stream", retainedAsset),
+      declaredMcpFile("index.html", "text/html", retainedIndex),
+      declaredFile,
+    ];
     const uploadResult = await callTool(server, installation.apiToken, {
-      arguments: {entryPath: declaredFile.path, files: [declaredFile]},
+      arguments: {entryPath: "index.html", files: initialFiles},
       name: "artifact_create_upload",
     });
     expect(uploadResult.isError).not.toBe(true);
     const upload = createUploadResultSchema.parse(uploadResult.structuredContent);
-    const filePlan = upload.files[0];
-    if (filePlan === undefined) throw new Error("The MCP upload plan has no file.");
-
-    const uploaded = await fetch(filePlan.uploadUrl, {
-      body: bytes,
-      headers: {Authorization: `Bearer ${installation.apiToken}`},
-      method: filePlan.method,
-    });
-    expect(uploaded.status).toBe(200);
+    await uploadMcpFiles(upload, new Map([
+      ["assets/data.bin", retainedAsset],
+      ["index.html", retainedIndex],
+      [declaredFile.path, bytes],
+    ]));
 
     const commitArguments = {
       idempotencyKey: "mcp-file-publication-proof-001",
@@ -467,7 +473,7 @@ describe("modern MCP HTTP", () => {
     }).parse(detailsResult.structuredContent);
     expect(details.artifact.currentVersionId).toBe(committed.version.id);
     expect(details.artifact.tags).toEqual(["mcp", "proof"]);
-    expect(details.current.manifest.entryPath).toBe("proof.txt");
+    expect(details.current.manifest.entryPath).toBe("index.html");
     expect(details.current.manifest.entries).toContainEqual(
       expect.objectContaining({path: "proof.txt", sha256: declaredFile.sha256}),
     );
@@ -533,31 +539,17 @@ describe("modern MCP HTTP", () => {
     });
 
     const updatedBytes = new TextEncoder().encode("MCP file publication proof, updated\n");
-    const indexBytes = new TextEncoder().encode(
-      "<!doctype html><title>MCP complete site</title><script src=assets/data.bin></script>",
-    );
-    const assetBytes = Buffer.alloc(1_100_000, 0x61);
-    assetBytes.write("This complete site includes a large actual asset.\n");
     const updatedDeclaredFiles = [
-      declaredMcpFile("assets/data.bin", "application/octet-stream", assetBytes),
-      declaredMcpFile("index.html", "text/html", indexBytes),
       declaredMcpFile("proof.txt", "text/plain", updatedBytes),
     ];
     const updatedUploadResult = await callTool(server, installation.apiToken, {
-      arguments: {entryPath: "index.html", files: updatedDeclaredFiles},
+      arguments: {entryPath: "proof.txt", files: updatedDeclaredFiles},
       name: "artifact_create_upload",
     });
     const updatedUpload = createUploadResultSchema.parse(
       updatedUploadResult.structuredContent,
     );
-    await uploadMcpFiles(
-      updatedUpload,
-      new Map([
-        ["assets/data.bin", assetBytes],
-        ["index.html", indexBytes],
-        ["proof.txt", updatedBytes],
-      ]),
-    );
+    await uploadMcpFiles(updatedUpload, new Map([["proof.txt", updatedBytes]]));
     const updated = publicationCommitResultSchema.parse(
       (await callTool(server, installation.apiToken, {
         arguments: {
@@ -628,9 +620,7 @@ describe("modern MCP HTTP", () => {
       },
       name: "artifact_diff",
     })).structuredContent);
-    expect(difference.added).toContainEqual(
-      expect.objectContaining({path: "assets/data.bin"}),
-    );
+    expect(difference.added).toEqual([]);
     expect(difference.changed).toContainEqual(expect.objectContaining({
       after: expect.objectContaining({path: "proof.txt"}),
       detail: expect.objectContaining({kind: "text"}),

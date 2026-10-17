@@ -1432,7 +1432,7 @@ export class SqliteArtifactRepository implements
     this.#assertProjectActive(command.projectId);
     this.#assertStagedUploadReady(
       command.source,
-      command.manifest.digest,
+      command.sourceManifestDigest ?? command.manifest.digest,
       command.createdAt,
     );
 

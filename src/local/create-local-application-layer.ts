@@ -283,6 +283,15 @@ export function createApplicationLayer(
           try: () => adapters.repository.findCurrentVersion(projectId, artifactId),
           catch: (cause) => repositoryFailure("findCurrentVersion", cause),
         }),
+      findVersionRecord: (projectId, artifactId, versionId) =>
+        Effect.tryPromise({
+          try: () => adapters.repository.findVersionRecord(
+            projectId,
+            artifactId,
+            versionId,
+          ),
+          catch: (cause) => repositoryFailure("findVersionRecord", cause),
+        }),
     },
   };
   const stagedDependencies: StagedUploadDependencies = {
