@@ -47,6 +47,7 @@ export const reviewAnchorSchema = z.object({
 });
 
 const optionalAnchorSchema = reviewAnchorSchema.nullable().catch(null);
+export {reviewAnchorSchema};
 
 /** One comment thread as the host projects it into the page. */
 export const reviewAnnotationSchema = z.object({
@@ -63,6 +64,7 @@ const themeTokensSchema = z.record(
 
 /** Every message the host is allowed to send into the review frame. */
 export const hostMessageSchema = z.discriminatedUnion("type", [
+  artifactBridgeResponseSchema,
   z.object({
     annotateModeActive: z.boolean().optional(),
     annotations: z.array(reviewAnnotationSchema),
@@ -104,8 +106,27 @@ export type ReviewAnchor = z.infer<typeof reviewAnchorSchema>;
 export type ReviewInit = Extract<HostMessage, {type: "as-review-init"}>;
 export type ReviewTheme = Extract<HostMessage, {type: "as-review-theme"}>;
 
+const stateKeySchema = z.string().min(1).max(200);
+const bridgeRequestIdSchema = z.string().min(16).max(100);
+const artifactBridgeRequestSchema = z.discriminatedUnion("operation", [
+  z.object({id: bridgeRequestIdSchema, operation: z.literal("list"), type: z.literal("as-artifact-bridge-request"), v: versionSchema}).strict(),
+  z.object({id: bridgeRequestIdSchema, key: stateKeySchema, operation: z.literal("get"), type: z.literal("as-artifact-bridge-request"), v: versionSchema}).strict(),
+  z.object({id: bridgeRequestIdSchema, key: stateKeySchema, operation: z.literal("set"), type: z.literal("as-artifact-bridge-request"), value: z.unknown(), v: versionSchema}).strict(),
+  z.object({id: bridgeRequestIdSchema, key: stateKeySchema, operation: z.literal("delete"), type: z.literal("as-artifact-bridge-request"), v: versionSchema}).strict(),
+  z.object({anchor: reviewAnchorSchema.nullable().default(null), body: z.string().min(1).max(8_192), id: bridgeRequestIdSchema, operation: z.literal("comment_create"), path: z.string().min(1).max(1_024).nullable().default(null), type: z.literal("as-artifact-bridge-request"), v: versionSchema}).strict(),
+]);
+const artifactBridgeResponseSchema = z.object({
+  error: z.string().max(500).optional(),
+  id: bridgeRequestIdSchema,
+  ok: z.boolean(),
+  result: z.unknown().optional(),
+  type: z.literal("as-artifact-bridge-response"),
+  v: versionSchema,
+}).strict();
+
 /** Every message the review frame sends back to the host. */
 export const frameMessageSchema = z.discriminatedUnion("type", [
+  artifactBridgeRequestSchema,
   z.object({
     type: z.literal("as-review-ready"),
     v: versionSchema,
@@ -135,6 +156,8 @@ export const frameMessageSchema = z.discriminatedUnion("type", [
 ]);
 
 export type FrameMessage = z.infer<typeof frameMessageSchema>;
+export type ArtifactBridgeRequest = z.infer<typeof artifactBridgeRequestSchema>;
+export type ArtifactBridgeResponse = z.infer<typeof artifactBridgeResponseSchema>;
 
 /** Build the anchor stored on a thread from what the viewer emitted. */
 export function reviewAnchorFrom(

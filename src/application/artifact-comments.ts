@@ -37,6 +37,7 @@ import {
   commentThreadStates,
   dispatchedThreadFilters,
   type ArtifactRecord,
+  type ArtifactStateEntry,
   type ArtifactVersion,
   type CommentAuthor,
   type CommentClearScope,
@@ -57,12 +58,17 @@ import type {
   CreateCommentThread,
   DeleteCommentReply,
   DeleteCommentThread,
+  DeleteArtifactStateEntry,
   IdGenerator,
   ListCommentThreads,
   UpdateCommentReply,
   UpdateCommentThread,
+  WriteArtifactStateEntry,
 } from "../core/ports.js";
 import {
+  maximumArtifactStateEntryBytes,
+  maximumArtifactStateEntryCount,
+  maximumArtifactStateTotalBytes,
   maximumCommentAnchorBytes,
   maximumCommentBodyCharacters,
   maximumCommentPageSize,
@@ -108,6 +114,16 @@ export interface ReadArtifactCommentsCommand {
 /** Input shared by every operation scoped to one existing comment thread. */
 export interface ReadCommentThreadCommand extends ReadArtifactCommentsCommand {
   readonly threadId: string;
+}
+
+/** Input for reading one artifact's durable state. */
+export interface ReadArtifactStateCommand extends ReadArtifactCommentsCommand {
+  readonly key: string;
+}
+
+/** Input for storing one JSON value shared across all saved versions. */
+export interface WriteArtifactStateCommand extends ReadArtifactStateCommand {
+  readonly value: unknown;
 }
 
 /** Input shared by every operation scoped to one existing reply. */
@@ -171,6 +187,14 @@ export interface ArtifactCommentRepository {
   readonly createThread: (
     command: CreateCommentThread,
   ) => Effect.Effect<CommentThreadCreation, CommentRepositoryFailure>;
+  readonly deleteStateEntry: (
+    command: DeleteArtifactStateEntry,
+  ) => Effect.Effect<void, CommentRepositoryFailure>;
+  readonly findStateEntry: (
+    projectId: string,
+    artifactId: string,
+    key: string,
+  ) => Effect.Effect<ArtifactStateEntry | null, CommentRepositoryFailure>;
   readonly deleteReply: (
     command: DeleteCommentReply,
   ) => Effect.Effect<void, CommentRepositoryFailure>;
@@ -197,12 +221,19 @@ export interface ArtifactCommentRepository {
   readonly listThreads: (
     command: ListCommentThreads,
   ) => Effect.Effect<CommentThreadPage, CommentRepositoryFailure>;
+  readonly listStateEntries: (
+    projectId: string,
+    artifactId: string,
+  ) => Effect.Effect<readonly ArtifactStateEntry[], CommentRepositoryFailure>;
   readonly updateReply: (
     command: UpdateCommentReply,
   ) => Effect.Effect<CommentReplyRecord, CommentRepositoryFailure>;
   readonly updateThread: (
     command: UpdateCommentThread,
   ) => Effect.Effect<CommentThreadRecord, CommentRepositoryFailure>;
+  readonly writeStateEntry: (
+    command: WriteArtifactStateEntry,
+  ) => Effect.Effect<ArtifactStateEntry, CommentRepositoryFailure>;
   readonly versionContainsPath: (
     projectId: string,
     versionId: string,
@@ -244,6 +275,18 @@ interface ArtifactCommentOperations {
   readonly createThread: (
     command: CreateCommentThreadCommand,
   ) => Effect.Effect<CommentThreadCreation, ArtifactCommentFailure>;
+  readonly deleteState: (
+    command: ReadArtifactStateCommand,
+  ) => Effect.Effect<void, ArtifactCommentFailure>;
+  readonly getState: (
+    command: ReadArtifactStateCommand,
+  ) => Effect.Effect<ArtifactStateEntry | null, ArtifactCommentFailure>;
+  readonly listState: (
+    command: ReadArtifactCommentsCommand,
+  ) => Effect.Effect<readonly ArtifactStateEntry[], ArtifactCommentFailure>;
+  readonly setState: (
+    command: WriteArtifactStateCommand,
+  ) => Effect.Effect<ArtifactStateEntry, ArtifactCommentFailure>;
   readonly deleteReply: (
     command: ReadCommentReplyCommand,
   ) => Effect.Effect<void, ArtifactCommentFailure>;
@@ -324,6 +367,120 @@ function makeArtifactCommentService(
       );
       if (artifact !== null) return artifact;
       return yield* new ArtifactNotFound({message: "The artifact does not exist."});
+    },
+  );
+
+  const requireStateKey = Effect.fn("ArtifactCommentService.requireStateKey")(
+    function*(key: string): Effect.fn.Return<string, InvalidComment> {
+      if (key.length >= 1 && key.length <= 200 && !/\p{Cc}/u.test(key)) {
+        return key;
+      }
+      return yield* new InvalidComment({
+        message: "An artifact state key must contain 1 to 200 non-control characters.",
+      });
+    },
+  );
+
+  const listState = Effect.fn("ArtifactCommentService.listState")(
+    function*(command: ReadArtifactCommentsCommand) {
+      const project = yield* resolveProjectForRead(
+        command.principal,
+        command.projectId,
+      );
+      yield* requireArtifact(project.id, command.artifactId);
+      return yield* dependencies.repository.listStateEntries(
+        project.id,
+        command.artifactId,
+      );
+    },
+  );
+
+  const getState = Effect.fn("ArtifactCommentService.getState")(
+    function*(command: ReadArtifactStateCommand) {
+      const project = yield* resolveProjectForRead(
+        command.principal,
+        command.projectId,
+      );
+      yield* requireArtifact(project.id, command.artifactId);
+      return yield* dependencies.repository.findStateEntry(
+        project.id,
+        command.artifactId,
+        yield* requireStateKey(command.key),
+      );
+    },
+  );
+
+  const setState = Effect.fn("ArtifactCommentService.setState")(
+    function*(command: WriteArtifactStateCommand) {
+      const project = yield* resolveProjectForWrite(
+        command.principal,
+        command.projectId,
+      );
+      yield* authorization.requireCommentWrite(command.principal);
+      const artifact = yield* requireArtifact(project.id, command.artifactId);
+      const key = yield* requireStateKey(command.key);
+      let valueJson: string;
+      try {
+        const serialized: string | undefined = JSON.stringify(command.value);
+        if (serialized === undefined) throw new Error("Not JSON serializable.");
+        valueJson = serialized;
+      } catch {
+        return yield* new InvalidComment({
+          message: "Artifact state must be a JSON value.",
+        });
+      }
+      const valueBytes = Buffer.byteLength(valueJson, "utf8");
+      if (valueBytes > maximumArtifactStateEntryBytes) {
+        return yield* new InvalidComment({
+          message: `An artifact state value may be at most ${maximumArtifactStateEntryBytes} bytes.`,
+        });
+      }
+      const existing = yield* dependencies.repository.listStateEntries(
+        project.id,
+        artifact.id,
+      );
+      if (
+        !existing.some((entry) => entry.key === key) &&
+        existing.length >= maximumArtifactStateEntryCount
+      ) {
+        return yield* new InvalidComment({
+          message: `An artifact may have at most ${maximumArtifactStateEntryCount} state keys.`,
+        });
+      }
+      const totalBytes = existing.reduce((sum, entry) => {
+        if (entry.key === key) return sum + valueBytes;
+        return sum + Buffer.byteLength(JSON.stringify(entry.value), "utf8");
+      }, 0);
+      if (totalBytes > maximumArtifactStateTotalBytes) {
+        return yield* new InvalidComment({
+          message: `Artifact state may use at most ${maximumArtifactStateTotalBytes} bytes.`,
+        });
+      }
+      return yield* dependencies.repository.writeStateEntry({
+        artifactId: artifact.id,
+        installationId: dependencies.installationId,
+        key,
+        projectId: project.id,
+        updatedAt: DateTime.formatIso(yield* dependencies.clock.now),
+        valueJson,
+      });
+    },
+  );
+
+  const deleteState = Effect.fn("ArtifactCommentService.deleteState")(
+    function*(command: ReadArtifactStateCommand) {
+      const project = yield* resolveProjectForWrite(
+        command.principal,
+        command.projectId,
+      );
+      yield* authorization.requireCommentWrite(command.principal);
+      const artifact = yield* requireArtifact(project.id, command.artifactId);
+      yield* dependencies.repository.deleteStateEntry({
+        artifactId: artifact.id,
+        installationId: dependencies.installationId,
+        key: yield* requireStateKey(command.key),
+        projectId: project.id,
+      });
     },
   );
 
@@ -794,10 +951,14 @@ function makeArtifactCommentService(
     clearThreads,
     createReply,
     createThread,
+    deleteState,
     deleteReply,
     deleteThread,
+    getState,
     getThread,
+    listState,
     listThreads,
+    setState,
     updateReply,
     updateThread,
   });

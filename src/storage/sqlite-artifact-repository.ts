@@ -52,6 +52,7 @@ import {
   type ArtifactDeletion,
   type ArtifactPage,
   type ArtifactRecord,
+  type ArtifactStateEntry,
   type ArtifactState,
   type ArtifactTombstone,
   type ArtifactVersion,
@@ -97,6 +98,7 @@ import type {
   CreateContentBootstrap,
   CreatePreviewLease,
   CreateStagedUpload,
+  DeleteArtifactStateEntry,
   DeleteArtifact,
   DeleteCommentReply,
   DeleteCommentThread,
@@ -114,6 +116,7 @@ import type {
   RelinkSourceBinding,
   UpdateCommentReply,
   UpdateCommentThread,
+  WriteArtifactStateEntry,
   PublicationSource,
   ProjectRepository,
   RenameProject,
@@ -447,6 +450,13 @@ const commentThreadRowSchema = z.object({
   state: commentThreadStateSchema,
   updatedAt: z.string(),
   versionId: z.string(),
+});
+const artifactStateRowSchema = z.object({
+  artifactId: z.string(),
+  key: z.string(),
+  projectId: z.string(),
+  updatedAt: z.string(),
+  valueJson: z.string(),
 });
 const commentReplyRowSchema = z.object({
   authorActorClientId: z.string().nullable(),
@@ -3638,6 +3648,65 @@ export class SqliteArtifactRepository implements
     );
   }
 
+  deleteArtifactStateEntry(command: DeleteArtifactStateEntry): Promise<void> {
+    return Promise.resolve().then(() => {
+      this.#database.prepare(`DELETE FROM artifact_state_entries
+        WHERE project_id = ? AND artifact_id = ? AND key = ?`)
+        .run(command.projectId, command.artifactId, command.key);
+    });
+  }
+
+  findArtifactStateEntry(
+    projectId: string,
+    artifactId: string,
+    key: string,
+  ): Promise<ArtifactStateEntry | null> {
+    return Promise.resolve().then(() => {
+      const row = artifactStateRowSchema.nullable().parse(
+        this.#database.prepare(`SELECT artifact_id AS artifactId, key,
+          project_id AS projectId, updated_at AS updatedAt, value_json AS valueJson
+          FROM artifact_state_entries WHERE project_id = ? AND artifact_id = ? AND key = ?`)
+          .get(projectId, artifactId, key) ?? null,
+      );
+      return row === null ? null : artifactStateEntryFromRow(row);
+    });
+  }
+
+  listArtifactStateEntries(
+    projectId: string,
+    artifactId: string,
+  ): Promise<readonly ArtifactStateEntry[]> {
+    return Promise.resolve().then(() =>
+      z.array(artifactStateRowSchema).parse(this.#database.prepare(`
+        SELECT artifact_id AS artifactId, key, project_id AS projectId,
+          updated_at AS updatedAt, value_json AS valueJson
+        FROM artifact_state_entries WHERE project_id = ? AND artifact_id = ?
+        ORDER BY key
+      `).all(projectId, artifactId)).map(artifactStateEntryFromRow),
+    );
+  }
+
+  writeArtifactStateEntry(command: WriteArtifactStateEntry): Promise<ArtifactStateEntry> {
+    return Promise.resolve().then(() => {
+      this.#database.prepare(`INSERT INTO artifact_state_entries (
+        project_id, artifact_id, key, value_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (artifact_id, key) DO UPDATE SET
+        value_json = excluded.value_json, updated_at = excluded.updated_at`)
+        .run(command.projectId, command.artifactId, command.key,
+          command.valueJson, command.updatedAt);
+      const entry = this.findArtifactStateEntry(
+        command.projectId,
+        command.artifactId,
+        command.key,
+      );
+      return entry.then((value) => {
+        if (value === null) throw new Error("The artifact state entry was not stored.");
+        return value;
+      });
+    }).then((entry) => entry);
+  }
+
   findIdempotentReply(
     projectId: string,
     idempotencyKey: string,
@@ -4875,6 +4944,17 @@ export class SqliteArtifactRepository implements
         PRIMARY KEY (artifact_id, tag)
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS artifact_state_entries (
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        key TEXT NOT NULL CHECK (length(key) BETWEEN 1 AND 200),
+        value_json TEXT NOT NULL CHECK (
+          json_valid(value_json) AND length(CAST(value_json AS BLOB)) <= 65536
+        ),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, key)
+      ) STRICT;
+
       CREATE TABLE IF NOT EXISTS idempotency_records (
         project_id TEXT NOT NULL REFERENCES projects(id),
         idempotency_key TEXT NOT NULL,
@@ -5924,6 +6004,18 @@ function commentAuthorFromRow(
     displayName: row.authorDisplayName,
     principalId: row.authorPrincipalId,
     principalKind: row.authorPrincipalKind,
+  };
+}
+
+function artifactStateEntryFromRow(
+  row: z.infer<typeof artifactStateRowSchema>,
+): ArtifactStateEntry {
+  return {
+    artifactId: row.artifactId,
+    key: row.key,
+    projectId: row.projectId,
+    updatedAt: row.updatedAt,
+    value: JSON.parse(row.valueJson),
   };
 }
 

@@ -91,6 +91,15 @@ export interface ArtifactRecord {
   readonly tags: readonly string[];
 }
 
+/** One durable JSON value shared by every saved version of an artifact. */
+export interface ArtifactStateEntry {
+  readonly artifactId: string;
+  readonly key: string;
+  readonly projectId: string;
+  readonly updatedAt: string;
+  readonly value: unknown;
+}
+
 /** An artifact record whose deletion state is known to be committed. */
 export interface ArtifactTombstone extends ArtifactRecord {
   readonly deletedAt: string;
