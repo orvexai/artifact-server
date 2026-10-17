@@ -82,6 +82,7 @@ describe("artifact comparisons", () => {
     const ambiguousBytes = textBytes("ambiguous rename bytes");
     const beforeFiles: readonly TestSiteFile[] = [
       file("index.html", "text/html; charset=utf-8", "same\nbefore\nmiddle\nold end\nlast\n"),
+      file("many-edits.txt", "text/plain", repeatedEdits("old")),
       file("removed.txt", "text/plain", "removed"),
       file("old-name.txt", "text/plain", "certain rename"),
       {bytes: ambiguousBytes, mediaType: "text/plain", path: "old-a.txt"},
@@ -106,6 +107,7 @@ describe("artifact comparisons", () => {
     ];
     const afterFiles: readonly TestSiteFile[] = [
       file("index.html", "text/html; charset=utf-8", "same\nafter\nmiddle\nnew end\nlast\n"),
+      file("many-edits.txt", "text/plain", repeatedEdits("new")),
       file("added.txt", "text/plain", "added"),
       file("new-name.txt", "text/plain", "certain rename"),
       {bytes: ambiguousBytes, mediaType: "text/plain", path: "new-a.txt"},
@@ -216,6 +218,7 @@ describe("artifact comparisons", () => {
       "index.html",
       "invalid-utf8.txt",
       "large.txt",
+      "many-edits.txt",
     ]);
 
     const indexChange = comparison.changed.find(
@@ -239,6 +242,20 @@ describe("artifact comparisons", () => {
         },
       ],
       kind: "text",
+    });
+    const manyEdits = comparison.changed.find(
+      ({after}) => after.path === "many-edits.txt",
+    );
+    expect(manyEdits?.detail.kind).toBe("text");
+    if (manyEdits?.detail.kind !== "text") {
+      throw new Error("Expected many-edits.txt to produce a text diff.");
+    }
+    expect(manyEdits.detail.changes).toHaveLength(260);
+    expect(manyEdits.detail.changes[0]).toEqual({
+      after: ["new-0"],
+      afterStartLine: 2,
+      before: ["old-0"],
+      beforeStartLine: 2,
     });
     const binaryChange = comparison.changed.find(
       ({after}) => after.path === "binary.dat",
@@ -293,6 +310,12 @@ function file(
   content: string,
 ): TestSiteFile {
   return {bytes: textBytes(content), mediaType, path: filePath};
+}
+
+function repeatedEdits(replacement: "old" | "new"): string {
+  return Array.from({length: 260}, (_, index) =>
+    `keep-${index}\n${replacement}-${index}`,
+  ).join("\n") + "\nend\n";
 }
 
 function textBytes(content: string): Uint8Array {

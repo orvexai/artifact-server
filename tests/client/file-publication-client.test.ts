@@ -298,11 +298,15 @@ describe("file publication client", () => {
       mediaTypeForPath("index.HTML"),
       mediaTypeForPath("document.pdf"),
       mediaTypeForPath("movie.mp4"),
+      mediaTypeForPath("assets/regular.woff2"),
+      mediaTypeForPath("assets/legacy.eot"),
       mediaTypeForPath("unknown.custom"),
     ]).toEqual([
       "text/html; charset=utf-8",
       "application/pdf",
       "video/mp4",
+      "font/woff2",
+      "application/vnd.ms-fontobject",
       "application/octet-stream",
     ]);
   });
