@@ -419,6 +419,8 @@ const artifactStateRowSchema = z.object({
   key: z.string(),
   projectId: z.string(),
   updatedAt: z.string(),
+  updatedByDisplayName: z.string(),
+  updatedByPrincipalId: z.string(),
   valueJson: z.string(),
 });
 const commentReplyRowSchema = z.object({
@@ -2795,6 +2797,8 @@ export class PostgresArtifactRepository implements
       const sql = yield* SqlClient;
       const rows = yield* sql`SELECT artifact_id AS "artifactId", key,
         project_id AS "projectId", updated_at AS "updatedAt",
+        updated_by_display_name AS "updatedByDisplayName",
+        updated_by_principal_id AS "updatedByPrincipalId",
         value_json::text AS "valueJson"
         FROM artifact_state_entries WHERE installation_id = ${installationId}
           AND project_id = ${projectId} AND artifact_id = ${artifactId}
@@ -2813,6 +2817,8 @@ export class PostgresArtifactRepository implements
       const sql = yield* SqlClient;
       const rows = yield* sql`SELECT artifact_id AS "artifactId", key,
         project_id AS "projectId", updated_at AS "updatedAt",
+        updated_by_display_name AS "updatedByDisplayName",
+        updated_by_principal_id AS "updatedByPrincipalId",
         value_json::text AS "valueJson"
         FROM artifact_state_entries WHERE installation_id = ${installationId}
           AND project_id = ${projectId} AND artifact_id = ${artifactId}
@@ -2829,15 +2835,21 @@ export class PostgresArtifactRepository implements
     return this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const rows = yield* sql`INSERT INTO artifact_state_entries (
-        installation_id, project_id, artifact_id, key, value_json, updated_at
+        installation_id, project_id, artifact_id, key, value_json, updated_at,
+        updated_by_display_name, updated_by_principal_id
       ) VALUES (
         ${installationId}, ${command.projectId}, ${command.artifactId},
-        ${command.key}, ${command.valueJson}::jsonb, ${command.updatedAt}
+        ${command.key}, ${command.valueJson}::jsonb, ${command.updatedAt},
+        ${command.updatedByDisplayName}, ${command.updatedByPrincipalId}
       ) ON CONFLICT (installation_id, project_id, artifact_id, key)
       DO UPDATE SET value_json = EXCLUDED.value_json,
-        updated_at = EXCLUDED.updated_at
+        updated_at = EXCLUDED.updated_at,
+        updated_by_display_name = EXCLUDED.updated_by_display_name,
+        updated_by_principal_id = EXCLUDED.updated_by_principal_id
       RETURNING artifact_id AS "artifactId", key,
         project_id AS "projectId", updated_at AS "updatedAt",
+        updated_by_display_name AS "updatedByDisplayName",
+        updated_by_principal_id AS "updatedByPrincipalId",
         value_json::text AS "valueJson"`;
       const row = artifactStateRowSchema.parse(rows[0]);
       return artifactStateEntryFromRow(row);
@@ -4852,6 +4864,10 @@ function artifactStateEntryFromRow(
     key: row.key,
     projectId: row.projectId,
     updatedAt: row.updatedAt,
+    updatedBy: {
+      displayName: row.updatedByDisplayName,
+      principalId: row.updatedByPrincipalId,
+    },
     value: JSON.parse(row.valueJson),
   };
 }

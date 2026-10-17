@@ -20,6 +20,7 @@ const entrySchema = z.object({
   key: z.string(),
   projectId: z.string(),
   updatedAt: z.string(),
+  updatedBy: z.object({displayName: z.string(), principalId: z.string()}).strict(),
   value: z.unknown(),
 }).strict();
 
@@ -43,69 +44,93 @@ export function configureArtifactStateCommand(
   connectionOptions(state.command("list <artifact-id>")
     .description("List the artifact's complete shared state.")
     .action(async (artifactId: string, options: ArtifactStateOptions) => {
-      const response = await stateRequest(options, artifactId);
-      const result = z.object({entries: z.array(entrySchema)}).parse(response);
+      const result = await stateRequest(
+        options,
+        z.object({entries: z.array(entrySchema)}),
+        artifactId,
+        undefined,
+      );
       console.log(JSON.stringify(result, null, 2));
     }));
 
   connectionOptions(state.command("get <artifact-id> <key>")
     .description("Read one state value.")
     .action(async (artifactId: string, key: string, options: ArtifactStateOptions) => {
-      const response = await stateRequest(options, artifactId, key);
-      const result = z.object({entry: entrySchema.nullable()}).parse(response);
+      const result = await stateRequest(
+        options,
+        z.object({entry: entrySchema.nullable()}),
+        artifactId,
+        key,
+      );
       console.log(JSON.stringify(result, null, 2));
     }));
 
   connectionOptions(state.command("set <artifact-id> <key> <json>")
     .description("Write one JSON state value.")
     .action(async (artifactId: string, key: string, value: string, options: ArtifactStateOptions) => {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(value);
-      } catch {
-        throw new Error("State value must be valid JSON.");
-      }
-      const response = await stateRequest(options, artifactId, key, "PUT", {value: parsed});
-      const result = z.object({entry: entrySchema}).parse(response);
+      const parsed = z.json().safeParse(parseJsonText(value));
+      if (!parsed.success) throw new Error("State value must be valid JSON.");
+      const result = await stateRequest(
+        options,
+        z.object({entry: entrySchema}),
+        artifactId,
+        key,
+        {jsonBody: JSON.stringify({value: parsed.data}), method: "PUT"},
+      );
       console.log(JSON.stringify(result, null, 2));
     }));
 
   connectionOptions(state.command("delete <artifact-id> <key>")
     .description("Delete one state value.")
     .action(async (artifactId: string, key: string, options: ArtifactStateOptions) => {
-      await stateRequest(options, artifactId, key, "DELETE");
+      await stateRequest(options, z.null(), artifactId, key, {method: "DELETE"});
       console.log(JSON.stringify({deleted: true}));
     }));
 }
 
-async function stateRequest(
+/** One state call: the HTTP method, and the JSON body for a write. */
+interface StateRequest {
+  readonly jsonBody?: string;
+  readonly method: "DELETE" | "GET" | "PUT";
+}
+
+async function stateRequest<T>(
   options: ArtifactStateOptions,
+  schema: z.ZodType<T>,
   artifactId: string,
-  key?: string,
-  method = "GET",
-  body?: unknown,
-): Promise<unknown> {
+  key: string | undefined,
+  call: StateRequest = {method: "GET"},
+): Promise<T> {
   if (artifactId.trim() === "") throw new Error("Artifact ID is required.");
-  const connection = await resolveCliServerConnection(options, "artifact state");
+  const connection = await resolveCliServerConnection(options, "state");
   const project = options.project === undefined
     ? ""
     : `?projectId=${encodeURIComponent(options.project)}`;
   const path = key === undefined
     ? `/api/v1/artifacts/${encodeURIComponent(artifactId)}/state${project}`
     : `/api/v1/artifacts/${encodeURIComponent(artifactId)}/state/${encodeURIComponent(key)}${project}`;
-  const response = await fetch(`${connection.origin}${path}`, {
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${Redacted.value(connection.apiToken)}`,
-      ...(body === undefined ? {} : {"Content-Type": "application/json"}),
-    },
-    method,
-    ...(body === undefined ? {} : {body: JSON.stringify(body)}),
+  const headers = new Headers({
+    Accept: "application/json",
+    Authorization: `Bearer ${Redacted.value(connection.apiToken)}`,
   });
-  const result: unknown = response.status === 204 ? null : await response.json();
+  const init: RequestInit = {headers, method: call.method};
+  if (call.jsonBody !== undefined) {
+    headers.set("Content-Type", "application/json");
+    init.body = call.jsonBody;
+  }
+  const response = await fetch(`${connection.origin}${path}`, init);
+  const payload: unknown = response.status === 204 ? null : await response.json();
   if (!response.ok) {
-    const failure = z.object({error: z.object({message: z.string()})}).safeParse(result);
+    const failure = z.object({error: z.object({message: z.string()})}).safeParse(payload);
     throw new Error(failure.success ? failure.data.error.message : "Artifact state request failed.");
   }
-  return result;
+  return schema.parse(payload);
+}
+
+function parseJsonText(text: string): z.core.util.JSONType | undefined {
+  try {
+    return z.json().parse(JSON.parse(text));
+  } catch {
+    return undefined;
+  }
 }

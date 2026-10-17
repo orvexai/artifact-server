@@ -232,6 +232,8 @@ export interface WriteArtifactStateEntry {
   readonly key: string;
   readonly projectId: string;
   readonly updatedAt: string;
+  readonly updatedByDisplayName: string;
+  readonly updatedByPrincipalId: string;
   readonly valueJson: string;
 }
 

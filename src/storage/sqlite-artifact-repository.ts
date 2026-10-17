@@ -456,6 +456,8 @@ const artifactStateRowSchema = z.object({
   key: z.string(),
   projectId: z.string(),
   updatedAt: z.string(),
+  updatedByDisplayName: z.string(),
+  updatedByPrincipalId: z.string(),
   valueJson: z.string(),
 });
 const commentReplyRowSchema = z.object({
@@ -3653,6 +3655,7 @@ export class SqliteArtifactRepository implements
       this.#database.prepare(`DELETE FROM artifact_state_entries
         WHERE project_id = ? AND artifact_id = ? AND key = ?`)
         .run(command.projectId, command.artifactId, command.key);
+      return undefined;
     });
   }
 
@@ -3664,7 +3667,9 @@ export class SqliteArtifactRepository implements
     return Promise.resolve().then(() => {
       const row = artifactStateRowSchema.nullable().parse(
         this.#database.prepare(`SELECT artifact_id AS artifactId, key,
-          project_id AS projectId, updated_at AS updatedAt, value_json AS valueJson
+          project_id AS projectId, updated_at AS updatedAt,
+          updated_by_display_name AS updatedByDisplayName,
+          updated_by_principal_id AS updatedByPrincipalId, value_json AS valueJson
           FROM artifact_state_entries WHERE project_id = ? AND artifact_id = ? AND key = ?`)
           .get(projectId, artifactId, key) ?? null,
       );
@@ -3679,7 +3684,9 @@ export class SqliteArtifactRepository implements
     return Promise.resolve().then(() =>
       z.array(artifactStateRowSchema).parse(this.#database.prepare(`
         SELECT artifact_id AS artifactId, key, project_id AS projectId,
-          updated_at AS updatedAt, value_json AS valueJson
+          updated_at AS updatedAt,
+          updated_by_display_name AS updatedByDisplayName,
+          updated_by_principal_id AS updatedByPrincipalId, value_json AS valueJson
         FROM artifact_state_entries WHERE project_id = ? AND artifact_id = ?
         ORDER BY key
       `).all(projectId, artifactId)).map(artifactStateEntryFromRow),
@@ -3689,12 +3696,16 @@ export class SqliteArtifactRepository implements
   writeArtifactStateEntry(command: WriteArtifactStateEntry): Promise<ArtifactStateEntry> {
     return Promise.resolve().then(() => {
       this.#database.prepare(`INSERT INTO artifact_state_entries (
-        project_id, artifact_id, key, value_json, updated_at
-      ) VALUES (?, ?, ?, ?, ?)
+        project_id, artifact_id, key, value_json, updated_at,
+        updated_by_display_name, updated_by_principal_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (artifact_id, key) DO UPDATE SET
-        value_json = excluded.value_json, updated_at = excluded.updated_at`)
+        value_json = excluded.value_json, updated_at = excluded.updated_at,
+        updated_by_display_name = excluded.updated_by_display_name,
+        updated_by_principal_id = excluded.updated_by_principal_id`)
         .run(command.projectId, command.artifactId, command.key,
-          command.valueJson, command.updatedAt);
+          command.valueJson, command.updatedAt,
+          command.updatedByDisplayName, command.updatedByPrincipalId);
       const entry = this.findArtifactStateEntry(
         command.projectId,
         command.artifactId,
@@ -4952,6 +4963,8 @@ export class SqliteArtifactRepository implements
           json_valid(value_json) AND length(CAST(value_json AS BLOB)) <= 65536
         ),
         updated_at TEXT NOT NULL,
+        updated_by_display_name TEXT NOT NULL,
+        updated_by_principal_id TEXT NOT NULL,
         PRIMARY KEY (artifact_id, key)
       ) STRICT;
 
@@ -6015,6 +6028,10 @@ function artifactStateEntryFromRow(
     key: row.key,
     projectId: row.projectId,
     updatedAt: row.updatedAt,
+    updatedBy: {
+      displayName: row.updatedByDisplayName,
+      principalId: row.updatedByPrincipalId,
+    },
     value: JSON.parse(row.valueJson),
   };
 }

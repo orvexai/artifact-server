@@ -224,6 +224,7 @@ const artifactStateEntrySchema = z.object({
   key: artifactStateKeySchema,
   projectId: z.string(),
   updatedAt: z.string(),
+  updatedBy: z.object({displayName: z.string(), principalId: z.string()}).strict(),
   value: z.unknown(),
 }).strict();
 const commentPathSchema = z.string().min(1).max(1_024);

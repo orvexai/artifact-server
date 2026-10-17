@@ -447,10 +447,11 @@ function makeArtifactCommentService(
           message: `An artifact may have at most ${maximumArtifactStateEntryCount} state keys.`,
         });
       }
+      // The written key counts at its new size whether or not it exists yet.
       const totalBytes = existing.reduce((sum, entry) => {
-        if (entry.key === key) return sum + valueBytes;
+        if (entry.key === key) return sum;
         return sum + Buffer.byteLength(JSON.stringify(entry.value), "utf8");
-      }, 0);
+      }, valueBytes);
       if (totalBytes > maximumArtifactStateTotalBytes) {
         return yield* new InvalidComment({
           message: `Artifact state may use at most ${maximumArtifactStateTotalBytes} bytes.`,
@@ -462,6 +463,8 @@ function makeArtifactCommentService(
         key,
         projectId: project.id,
         updatedAt: DateTime.formatIso(yield* dependencies.clock.now),
+        updatedByDisplayName: commentAuthor(command.principal).displayName,
+        updatedByPrincipalId: command.principal.id,
         valueJson,
       });
     },

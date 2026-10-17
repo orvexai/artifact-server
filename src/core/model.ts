@@ -97,6 +97,11 @@ export interface ArtifactStateEntry {
   readonly key: string;
   readonly projectId: string;
   readonly updatedAt: string;
+  /** Who last wrote the value, so readers can tell a human's choice from an agent's. */
+  readonly updatedBy: {
+    readonly displayName: string;
+    readonly principalId: string;
+  };
   readonly value: unknown;
 }
 

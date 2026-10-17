@@ -691,6 +691,8 @@ const addArtifactStateEntries = Effect.gen(function*() {
     key TEXT NOT NULL CHECK (length(key) BETWEEN 1 AND 200),
     value_json JSONB NOT NULL CHECK (octet_length(value_json::text) <= 65536),
     updated_at TEXT NOT NULL,
+    updated_by_display_name TEXT NOT NULL,
+    updated_by_principal_id TEXT NOT NULL,
     PRIMARY KEY (installation_id, project_id, artifact_id, key),
     FOREIGN KEY (installation_id, project_id, artifact_id)
       REFERENCES artifacts(installation_id, project_id, id) ON DELETE CASCADE

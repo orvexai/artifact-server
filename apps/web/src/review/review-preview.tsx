@@ -834,26 +834,12 @@ async function handleArtifactBridgeRequest(
   }
   requestTimes.push(now);
   try {
-    let result: unknown;
-    if (request.operation === "list") {
-      result = await api.artifactState(projectId, artifactId);
-    } else if (request.operation === "get") {
-      result = await api.artifactStateValue(projectId, artifactId, request.key);
-    } else if (request.operation === "set") {
-      result = await api.setArtifactStateValue(projectId, artifactId, request.key, request.value);
-    } else if (request.operation === "delete") {
-      await api.deleteArtifactStateValue(projectId, artifactId, request.key);
-      result = {deleted: true};
-    } else {
-      const created = await api.createComment(
-        projectId,
-        artifactId,
-        versionId,
-        {anchor: request.anchor, body: request.body, path: request.path},
-        `page-${request.id}`,
-      );
-      result = {threadId: created.thread.id};
-    }
+    const result = await runArtifactBridgeOperation(
+      request,
+      projectId,
+      artifactId,
+      versionId,
+    );
     postToFrame({id: request.id, ok: true, result, type: "as-artifact-bridge-response", v: reviewProtocolVersion});
   } catch (cause) {
     postToFrame({
@@ -863,5 +849,39 @@ async function handleArtifactBridgeRequest(
       type: "as-artifact-bridge-response",
       v: reviewProtocolVersion,
     });
+  }
+}
+
+async function runArtifactBridgeOperation(
+  request: ArtifactBridgeRequest,
+  projectId: string,
+  artifactId: string,
+  versionId: string,
+) {
+  switch (request.operation) {
+    case "list":
+      return api.artifactState(projectId, artifactId);
+    case "get":
+      return api.artifactStateValue(projectId, artifactId, request.key);
+    case "set":
+      return api.setArtifactStateValue(projectId, artifactId, request.key, request.value);
+    case "delete":
+      await api.deleteArtifactStateValue(projectId, artifactId, request.key);
+      return {deleted: true};
+    default: {
+      // A page script is untrusted; it posts as the viewer only with their consent.
+      const preview = request.body.length > 500 ? `${request.body.slice(0, 500)}…` : request.body;
+      if (!window.confirm(`This page wants to post a comment as you:\n\n${preview}`)) {
+        throw new Error("The viewer declined the comment.");
+      }
+      const created = await api.createComment(
+        projectId,
+        artifactId,
+        versionId,
+        {anchor: null, body: request.body, path: request.path},
+        `page-${request.id}`,
+      );
+      return {threadId: created.thread.id};
+    }
   }
 }

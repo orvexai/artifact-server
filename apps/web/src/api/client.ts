@@ -465,6 +465,10 @@ export const comparisonSchema: z.ZodType<ArtifactComparison> = z.object({
 });
 
 const commentAnchorSchema = z.json();
+const artifactStateValueSchema = z.json();
+
+/** One JSON value a page or agent stores in an artifact's shared state. */
+export type ArtifactStateValue = z.infer<typeof artifactStateValueSchema>;
 const commentThreadStateSchema = z.enum(["open", "resolved"]);
 
 const commentAuthorSchema = z.object({
@@ -516,6 +520,7 @@ const artifactStateEntrySchema = z.object({
   key: z.string(),
   projectId: z.string(),
   updatedAt: z.string(),
+  updatedBy: z.object({displayName: z.string(), principalId: z.string()}).strict(),
   value: z.unknown(),
 }).strict();
 
@@ -1241,7 +1246,7 @@ export const api = {
     projectId: string,
     artifactId: string,
     key: string,
-    value: unknown,
+    value: ArtifactStateValue,
   ) => request(
     z.object({entry: artifactStateEntrySchema}),
     `/api/v1/artifacts/${encodeURIComponent(artifactId)}/state/${encodeURIComponent(key)}?${projectQuery(projectId)}`,

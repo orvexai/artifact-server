@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { withBaseHref } from "./base-href.ts";
 import {
+  frameMessageSchema,
   hostMessageSchema,
   reviewAnchorFrom,
   reviewProtocolVersion,
@@ -61,7 +62,7 @@ const artifactBridgeScript = `<script>(() => {
   let sequence = 0;
   const pending = new Map();
   const request = (operation, fields = {}) => new Promise((resolve, reject) => {
-    const id = `page-${Date.now()}-${++sequence}-${Math.random().toString(36).slice(2)}`;
+    const id = "page-" + Date.now() + "-" + (++sequence) + "-" + Math.random().toString(36).slice(2);
     const timer = setTimeout(() => { pending.delete(id); reject(new Error("Artifact bridge timed out.")); }, 15000);
     pending.set(id, {resolve, reject, timer});
     window.parent.postMessage({type:"as-artifact-bridge-request", v:1, id, operation, ...fields}, "*");
