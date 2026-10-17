@@ -228,6 +228,11 @@ const artifactStateEntrySchema = z.object({
   value: z.unknown(),
 }).strict();
 const commentPathSchema = z.string().min(1).max(1_024);
+// Display-only name an agent gives itself on the comments it writes.
+const agentNameSchema = z.string().trim().min(1).max(80)
+  .regex(/^[^\p{Cc}]+$/u, "An agent name may not contain control characters.")
+  .optional()
+  .describe("Optional name for the agent writing this, e.g. \"PM agent 9571be74\". Shown as \"<name> (agent) for <signed-in user>\".");
 const commentStateSchema = z.enum([
   commentThreadStates.open,
   commentThreadStates.resolved,
@@ -417,6 +422,8 @@ function runMcpApplicationEffect<A, E>(
 export interface ArtifactMcpRequestIdentity {
   /** OAuth client identifier taken only from a verified bearer token. */
   readonly agentClientId: string | null;
+  /** Self-reported MCP name used only for display. */
+  readonly agentDisplayName?: string | null;
   readonly principal: Principal;
 }
 
@@ -439,6 +446,31 @@ export function createArtifactMcpServer(
       instructions: agentInstructions(dependencies.mode),
     },
   );
+
+  /**
+   * Keep the verified OAuth client as the durable actor and use the MCP
+   * client's self-reported name only as a display label. It is not used for
+   * authorization; older clients without per-request client info fall back
+   * to their verified client ID.
+   */
+  function clientDisplayName(agentName?: string): string {
+    if (identity.agentClientId === null) return identity.principal.displayName;
+    // A name the agent gives itself is display-only and always marked as an
+    // agent acting for the principal, so it can never pass as their own words.
+    if (agentName !== undefined) {
+      return `${agentName} (agent) for ${identity.principal.displayName}`;
+    }
+    const clientName = identity.agentDisplayName?.trim();
+    const actorName = clientName === undefined || clientName.length === 0
+      ? `MCP client ${identity.agentClientId}`
+      : clientName;
+    return `${actorName} for ${identity.principal.displayName}`;
+  }
+
+  function commentPrincipal(agentName?: string): Principal {
+    if (identity.agentClientId === null) return identity.principal;
+    return {...identity.principal, displayName: clientDisplayName(agentName)};
+  }
 
   /**
    * Register one tool and append the nudge pass to its results. The pass
@@ -1813,6 +1845,7 @@ export function createArtifactMcpServer(
       description:
         "Open one comment thread on one exact saved version, optionally on one manifest path inside it. The anchor is opaque client JSON; the server checks only its size and, when present, that a top-level point has x and y between 0 and 1.",
       inputSchema: z.object({
+        agentName: agentNameSchema,
         anchor: z.unknown().nullable().default(null),
         artifactId: artifactIdSchema,
         body: commentBodySchema,
@@ -1828,6 +1861,7 @@ export function createArtifactMcpServer(
       annotations: idempotentWriteAnnotations,
     },
     async ({
+      agentName,
       anchor,
       artifactId,
       body,
@@ -1845,7 +1879,7 @@ export function createArtifactMcpServer(
             body,
             idempotencyKey,
             path,
-            principal: identity.principal,
+            principal: commentPrincipal(agentName),
             projectId,
             versionId,
           })
@@ -1865,6 +1899,7 @@ export function createArtifactMcpServer(
       description:
         "Add one reply to an open comment thread. A resolved thread rejects replies until it is reopened; replies carry no anchor and cannot be replied to.",
       inputSchema: z.object({
+        agentName: agentNameSchema,
         artifactId: artifactIdSchema,
         body: commentBodySchema,
         idempotencyKey: idempotencyKeySchema,
@@ -1877,7 +1912,7 @@ export function createArtifactMcpServer(
       }).strict(),
       annotations: idempotentWriteAnnotations,
     },
-    async ({artifactId, body, idempotencyKey, projectId, threadId}) =>
+    async ({agentName, artifactId, body, idempotencyKey, projectId, threadId}) =>
       toolResult(async () => {
         const creation = await runMcpApplicationEffect(
           dependencies,
@@ -1886,7 +1921,7 @@ export function createArtifactMcpServer(
               artifactId,
               body,
               idempotencyKey,
-              principal: identity.principal,
+              principal: commentPrincipal(agentName),
               projectId,
               threadId,
             })
@@ -1903,6 +1938,7 @@ export function createArtifactMcpServer(
       description:
         "Close one comment thread as resolved, or reopen it by passing resolved false. Resolving records who resolved it and when.",
       inputSchema: z.object({
+        agentName: agentNameSchema,
         artifactId: artifactIdSchema,
         projectId: optionalProjectIdSchema,
         resolved: z.boolean(),
@@ -1911,13 +1947,13 @@ export function createArtifactMcpServer(
       outputSchema: z.object({thread: commentThreadSchema}).strict(),
       annotations: idempotentWriteAnnotations,
     },
-    async ({artifactId, projectId, resolved, threadId}) => toolResult(async () => ({
+    async ({agentName, artifactId, projectId, resolved, threadId}) => toolResult(async () => ({
       thread: commentThreadProjection(await runMcpApplicationEffect(
         dependencies,
         ArtifactCommentService.use((comments) =>
           comments.updateThread({
             artifactId,
-            principal: identity.principal,
+            principal: commentPrincipal(agentName),
             projectId,
             state: resolved
               ? commentThreadStates.resolved
@@ -2071,9 +2107,9 @@ export function createArtifactMcpServer(
             identity.principal.id,
             agentClientId,
           ),
-          displayName: identity.principal.displayName,
+          displayName: clientDisplayName(),
           kind: mailboxAgentKind,
-          principal: identity.principal,
+          principal: commentPrincipal(),
           workingDirectory: mailboxWorkingDirectory,
         })
       ),
