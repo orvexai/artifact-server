@@ -313,6 +313,46 @@ describe("hosted WorkOS MCP authorization", () => {
       .not.toContain("Claude Code");
   });
 
+  test("an agent that names itself is shown as that agent acting for the human", async () => {
+    expect.hasAssertions();
+    const published = await publishNew(server, installation, {
+      accessSetting: "account_required",
+      content: "<!doctype html><title>Self-named agent</title>",
+      idempotencyKey: "workos-mcp-agent-name-publish",
+      name: "Self-named agent",
+    });
+    const token = await issueToken({});
+    const created = await mcpTool(token, "comment_create", {
+      agentName: "PM agent 9571be74",
+      artifactId: published.body.artifact.id,
+      body: "Question from the PM agent.",
+      idempotencyKey: "workos-mcp-agent-name-comment",
+      projectId: published.body.artifact.projectId,
+      versionId: published.body.version.id,
+    });
+    expect(created.status).toBe(200);
+    const thread = commentThreadResponseSchema.parse(await created.json())
+      .result.structuredContent.thread;
+    expect(thread.author).toMatchObject({
+      actor: {clientId: "client_test", kind: "mcp-client"},
+      displayName: "PM agent 9571be74 (agent) for Artifact Administrator",
+      principalKind: "human",
+    });
+
+    const reply = await mcpTool(token, "comment_reply", {
+      agentName: "PM agent 9571be74",
+      artifactId: published.body.artifact.id,
+      body: "Follow-up from the PM agent.",
+      idempotencyKey: "workos-mcp-agent-name-reply",
+      projectId: published.body.artifact.projectId,
+      threadId: thread.id,
+    });
+    expect(reply.status).toBe(200);
+    expect(commentReplyResponseSchema.parse(await reply.json())
+      .result.structuredContent.reply.author.displayName)
+      .toBe("PM agent 9571be74 (agent) for Artifact Administrator");
+  });
+
   test("foundation: wrong token contracts fail closed and provider outages stay distinct", async () => {
     expect.hasAssertions();
     const wrongAudience = await mcpDiscovery(await issueToken({
