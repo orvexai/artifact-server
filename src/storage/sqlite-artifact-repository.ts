@@ -52,6 +52,7 @@ import {
   type ArtifactDeletion,
   type ArtifactPage,
   type ArtifactRecord,
+  type ArtifactStateEntry,
   type ArtifactState,
   type ArtifactTombstone,
   type ArtifactVersion,
@@ -68,6 +69,7 @@ import {
   type ManifestEntry,
   type PageCursor,
   type PublishedVersion,
+  type ProjectAuditEvent,
   type ProjectRecord,
   type RegisteredAgentPresence,
   type RegisteredAgentRecord,
@@ -96,6 +98,7 @@ import type {
   CreateContentBootstrap,
   CreatePreviewLease,
   CreateStagedUpload,
+  DeleteArtifactStateEntry,
   DeleteArtifact,
   DeleteCommentReply,
   DeleteCommentThread,
@@ -113,6 +116,7 @@ import type {
   RelinkSourceBinding,
   UpdateCommentReply,
   UpdateCommentThread,
+  WriteArtifactStateEntry,
   PublicationSource,
   ProjectRepository,
   RenameProject,
@@ -425,6 +429,7 @@ const commentThreadStateSchema = z.enum([
 const commentThreadRowSchema = z.object({
   anchorJson: z.string().nullable(),
   artifactId: z.string(),
+  authorActorClientId: z.string().nullable(),
   authorAuthorizedByPrincipalId: z.string().nullable(),
   authorDisplayName: z.string(),
   authorPrincipalId: z.string(),
@@ -437,6 +442,7 @@ const commentThreadRowSchema = z.object({
   projectId: z.string(),
   replyCount: z.number().int().nonnegative(),
   resolvedAt: z.string().nullable(),
+  resolvedByActorClientId: z.string().nullable(),
   resolvedByAuthorizedByPrincipalId: z.string().nullable(),
   resolvedByDisplayName: z.string().nullable(),
   resolvedByPrincipalId: z.string().nullable(),
@@ -445,7 +451,17 @@ const commentThreadRowSchema = z.object({
   updatedAt: z.string(),
   versionId: z.string(),
 });
+const artifactStateRowSchema = z.object({
+  artifactId: z.string(),
+  key: z.string(),
+  projectId: z.string(),
+  updatedAt: z.string(),
+  updatedByDisplayName: z.string(),
+  updatedByPrincipalId: z.string(),
+  valueJson: z.string(),
+});
 const commentReplyRowSchema = z.object({
+  authorActorClientId: z.string().nullable(),
   authorAuthorizedByPrincipalId: z.string().nullable(),
   authorDisplayName: z.string(),
   authorPrincipalId: z.string(),
@@ -1164,15 +1180,49 @@ export class SqliteArtifactRepository implements
   }
 
   setProjectArchive(command: SetProjectArchive): Promise<ProjectRecord> {
-    return Promise.resolve().then(() => {
+    return Promise.resolve().then(() => this.#transaction(() => {
       const result = this.#database.prepare(
         "UPDATE projects SET archived_at = ? WHERE id = ?",
       ).run(command.archivedAt, command.projectId);
       if (result.changes !== 1) {
         throw new ProjectNotFound({message: "The project does not exist."});
       }
+      this.#database.prepare(`
+        INSERT INTO project_archive_events (
+          installation_id, project_id, action, principal_id,
+          authorized_by_principal_id, actor_display_name, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        this.#installationId,
+        command.projectId,
+        command.action,
+        command.principalId,
+        command.authorizedByPrincipalId,
+        command.actorDisplayName,
+        command.createdAt,
+      );
       return this.#readProject(command.projectId);
-    });
+    }));
+  }
+
+  listProjectAuditEvents(projectId: string): Promise<readonly ProjectAuditEvent[]> {
+    return Promise.resolve().then(() => z.array(z.object({
+      action: z.enum(["archive", "unarchive"]),
+      actorDisplayName: z.string(),
+      authorizedByPrincipalId: z.string().nullable(),
+      createdAt: z.string(),
+      id: z.number().int(),
+      principalId: z.string(),
+      projectId: z.string(),
+    })).parse(this.#database.prepare(`
+      SELECT id, project_id AS projectId, action,
+        principal_id AS principalId,
+        authorized_by_principal_id AS authorizedByPrincipalId,
+        actor_display_name AS actorDisplayName, created_at AS createdAt
+      FROM project_archive_events
+      WHERE installation_id = ? AND project_id = ?
+      ORDER BY id DESC
+    `).all(this.#installationId, projectId)));
   }
 
   close(): void {
@@ -1394,7 +1444,7 @@ export class SqliteArtifactRepository implements
     this.#assertProjectActive(command.projectId);
     this.#assertStagedUploadReady(
       command.source,
-      command.manifest.digest,
+      command.sourceManifestDigest ?? command.manifest.digest,
       command.createdAt,
     );
 
@@ -2400,6 +2450,29 @@ export class SqliteArtifactRepository implements
     );
   }
 
+  findStagedUploadByFileCapability(
+    uploadId: string,
+    storageToken: string,
+  ): Promise<StagedUpload | null> {
+    return Promise.resolve().then(() => {
+      const owner = z.object({
+        principalId: z.string(),
+        projectId: z.string(),
+      }).nullable().parse(this.#database.prepare(`
+        SELECT upload.project_id AS projectId,
+          upload.principal_id AS principalId
+        FROM staged_uploads AS upload
+        JOIN staged_upload_files AS file ON file.upload_id = upload.id
+        WHERE upload.id = ? AND file.storage_token = ?
+      `).get(uploadId, storageToken) ?? null);
+      return owner === null ? null : this.#readStagedUploadOrNull(
+        owner.projectId,
+        uploadId,
+        owner.principalId,
+      );
+    });
+  }
+
   listExpiredStagedUploads(
     expiredBefore: string,
     limit: number,
@@ -2464,6 +2537,7 @@ export class SqliteArtifactRepository implements
              SET uploaded_at = ?
              WHERE upload_id = ?
                AND storage_token = ?
+               AND uploaded_at IS NULL
                AND EXISTS (
                  SELECT 1 FROM staged_uploads u
                  WHERE u.id = staged_upload_files.upload_id
@@ -2499,6 +2573,13 @@ export class SqliteArtifactRepository implements
           }
           if (upload.expiresAt <= uploadedAt) {
             throw new UploadExpired({message: "The staged upload has expired."});
+          }
+          if (upload.files.some((file) =>
+            file.storageToken === storageToken && file.uploadedAt !== null
+          )) {
+            throw new UploadFileNotFound({
+              message: "The staged upload file capability has already been used.",
+            });
           }
           throw new UploadFileNotFound({
             message: "The staged upload file does not exist.",
@@ -3180,13 +3261,14 @@ export class SqliteArtifactRepository implements
               id, installation_id, project_id, artifact_id, version_id, path,
               anchor_json, body, state, author_principal_id,
               author_principal_kind, author_display_name,
-              author_authorized_by_principal_id, resolved_at,
+              author_authorized_by_principal_id, author_actor_client_id, resolved_at,
               resolved_by_principal_id, resolved_by_principal_kind,
               resolved_by_display_name, resolved_by_authorized_by_principal_id,
+              resolved_by_actor_client_id,
               idempotency_key, created_at, updated_at
             ) VALUES (
-              ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?,
-              NULL, NULL, NULL, NULL, NULL, ?, ?, ?
+              ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?,
+              NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?
             )`,
           )
           .run(
@@ -3202,6 +3284,7 @@ export class SqliteArtifactRepository implements
             command.author.principalKind,
             command.author.displayName,
             command.author.authorizedByPrincipalId,
+            command.author.actor?.clientId ?? null,
             command.idempotencyKey,
             command.createdAt,
             command.createdAt,
@@ -3322,6 +3405,7 @@ export class SqliteArtifactRepository implements
                resolved_by_principal_kind = ?,
                resolved_by_display_name = ?,
                resolved_by_authorized_by_principal_id = ?,
+               resolved_by_actor_client_id = ?,
                updated_at = ?
              WHERE id = ? AND project_id = ? AND artifact_id = ?`,
           )
@@ -3344,6 +3428,9 @@ export class SqliteArtifactRepository implements
             command.state === null
               ? row.resolvedByAuthorizedByPrincipalId
               : resolution?.authorizedByPrincipalId ?? null,
+            command.state === null
+              ? row.resolvedByActorClientId
+              : resolution?.actor?.clientId ?? null,
             command.updatedAt,
             command.threadId,
             command.projectId,
@@ -3508,10 +3595,10 @@ export class SqliteArtifactRepository implements
             `INSERT INTO comment_replies (
               id, thread_id, project_id, body, author_principal_id,
               author_principal_kind, author_display_name,
-              author_authorized_by_principal_id, idempotency_key,
+              author_authorized_by_principal_id, author_actor_client_id, idempotency_key,
               created_at, updated_at
             )
-            SELECT ?, t.id, t.project_id, ?, ?, ?, ?, ?, ?, ?, ?
+            SELECT ?, t.id, t.project_id, ?, ?, ?, ?, ?, ?, ?, ?, ?
             FROM comment_threads t
             WHERE t.id = ? AND t.project_id = ? AND t.artifact_id = ?
               AND t.state = 'open'`,
@@ -3523,6 +3610,7 @@ export class SqliteArtifactRepository implements
             command.author.principalKind,
             command.author.displayName,
             command.author.authorizedByPrincipalId,
+            command.author.actor?.clientId ?? null,
             command.idempotencyKey,
             command.createdAt,
             command.createdAt,
@@ -3560,6 +3648,74 @@ export class SqliteArtifactRepository implements
         };
       }),
     );
+  }
+
+  deleteArtifactStateEntry(command: DeleteArtifactStateEntry): Promise<void> {
+    return Promise.resolve().then(() => {
+      this.#database.prepare(`DELETE FROM artifact_state_entries
+        WHERE project_id = ? AND artifact_id = ? AND key = ?`)
+        .run(command.projectId, command.artifactId, command.key);
+      return undefined;
+    });
+  }
+
+  findArtifactStateEntry(
+    projectId: string,
+    artifactId: string,
+    key: string,
+  ): Promise<ArtifactStateEntry | null> {
+    return Promise.resolve().then(() => {
+      const row = artifactStateRowSchema.nullable().parse(
+        this.#database.prepare(`SELECT artifact_id AS artifactId, key,
+          project_id AS projectId, updated_at AS updatedAt,
+          updated_by_display_name AS updatedByDisplayName,
+          updated_by_principal_id AS updatedByPrincipalId, value_json AS valueJson
+          FROM artifact_state_entries WHERE project_id = ? AND artifact_id = ? AND key = ?`)
+          .get(projectId, artifactId, key) ?? null,
+      );
+      return row === null ? null : artifactStateEntryFromRow(row);
+    });
+  }
+
+  listArtifactStateEntries(
+    projectId: string,
+    artifactId: string,
+  ): Promise<readonly ArtifactStateEntry[]> {
+    return Promise.resolve().then(() =>
+      z.array(artifactStateRowSchema).parse(this.#database.prepare(`
+        SELECT artifact_id AS artifactId, key, project_id AS projectId,
+          updated_at AS updatedAt,
+          updated_by_display_name AS updatedByDisplayName,
+          updated_by_principal_id AS updatedByPrincipalId, value_json AS valueJson
+        FROM artifact_state_entries WHERE project_id = ? AND artifact_id = ?
+        ORDER BY key
+      `).all(projectId, artifactId)).map(artifactStateEntryFromRow),
+    );
+  }
+
+  writeArtifactStateEntry(command: WriteArtifactStateEntry): Promise<ArtifactStateEntry> {
+    return Promise.resolve().then(() => {
+      this.#database.prepare(`INSERT INTO artifact_state_entries (
+        project_id, artifact_id, key, value_json, updated_at,
+        updated_by_display_name, updated_by_principal_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (artifact_id, key) DO UPDATE SET
+        value_json = excluded.value_json, updated_at = excluded.updated_at,
+        updated_by_display_name = excluded.updated_by_display_name,
+        updated_by_principal_id = excluded.updated_by_principal_id`)
+        .run(command.projectId, command.artifactId, command.key,
+          command.valueJson, command.updatedAt,
+          command.updatedByDisplayName, command.updatedByPrincipalId);
+      const entry = this.findArtifactStateEntry(
+        command.projectId,
+        command.artifactId,
+        command.key,
+      );
+      return entry.then((value) => {
+        if (value === null) throw new Error("The artifact state entry was not stored.");
+        return value;
+      });
+    }).then((entry) => entry);
   }
 
   findIdempotentReply(
@@ -4604,6 +4760,22 @@ export class SqliteArtifactRepository implements
       CREATE INDEX IF NOT EXISTS comment_replies_thread_created
         ON comment_replies (thread_id, created_at, id);
     `);
+    const threadColumns = this.#tableColumns("comment_threads");
+    if (!threadColumns.includes("author_actor_client_id")) {
+      this.#database.exec(
+        "ALTER TABLE comment_threads ADD COLUMN author_actor_client_id TEXT",
+      );
+    }
+    if (!threadColumns.includes("resolved_by_actor_client_id")) {
+      this.#database.exec(
+        "ALTER TABLE comment_threads ADD COLUMN resolved_by_actor_client_id TEXT",
+      );
+    }
+    if (!this.#tableColumns("comment_replies").includes("author_actor_client_id")) {
+      this.#database.exec(
+        "ALTER TABLE comment_replies ADD COLUMN author_actor_client_id TEXT",
+      );
+    }
   }
 
   #addAgentDispatchTablesIfMissing(): void {
@@ -4731,6 +4903,17 @@ export class SqliteArtifactRepository implements
         archived_at TEXT
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS project_archive_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        installation_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        action TEXT NOT NULL CHECK (action IN ('archive', 'unarchive')),
+        principal_id TEXT NOT NULL,
+        authorized_by_principal_id TEXT,
+        actor_display_name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
       CREATE TABLE IF NOT EXISTS artifacts (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES projects(id),
@@ -4770,6 +4953,19 @@ export class SqliteArtifactRepository implements
         artifact_id TEXT NOT NULL REFERENCES artifacts(id),
         tag TEXT NOT NULL,
         PRIMARY KEY (artifact_id, tag)
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS artifact_state_entries (
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        key TEXT NOT NULL CHECK (length(key) BETWEEN 1 AND 200),
+        value_json TEXT NOT NULL CHECK (
+          json_valid(value_json) AND length(CAST(value_json AS BLOB)) <= 65536
+        ),
+        updated_at TEXT NOT NULL,
+        updated_by_display_name TEXT NOT NULL,
+        updated_by_principal_id TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, key)
       ) STRICT;
 
       CREATE TABLE IF NOT EXISTS idempotency_records (
@@ -4878,6 +5074,8 @@ export class SqliteArtifactRepository implements
         ON artifact_tags (tag, artifact_id);
       CREATE INDEX IF NOT EXISTS actions_artifact_created
         ON actions (artifact_id, created_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS project_archive_events_project_created
+        ON project_archive_events (installation_id, project_id, created_at DESC, id DESC);
       CREATE INDEX IF NOT EXISTS manifest_entries_sha256
         ON manifest_entries (sha256);
       CREATE INDEX IF NOT EXISTS staged_uploads_expiry
@@ -5459,6 +5657,7 @@ export class SqliteArtifactRepository implements
       | "actions"
       | "artifacts"
       | "comment_threads"
+      | "comment_replies"
       | "content_bootstraps"
       | "content_sessions"
       | "git_history_project_settings"
@@ -5715,11 +5914,13 @@ const commentThreadColumns = `SELECT
     t.author_principal_kind AS authorPrincipalKind,
     t.author_display_name AS authorDisplayName,
     t.author_authorized_by_principal_id AS authorAuthorizedByPrincipalId,
+    t.author_actor_client_id AS authorActorClientId,
     t.resolved_at AS resolvedAt,
     t.resolved_by_principal_id AS resolvedByPrincipalId,
     t.resolved_by_principal_kind AS resolvedByPrincipalKind,
     t.resolved_by_display_name AS resolvedByDisplayName,
     t.resolved_by_authorized_by_principal_id AS resolvedByAuthorizedByPrincipalId,
+    t.resolved_by_actor_client_id AS resolvedByActorClientId,
     t.created_at AS createdAt,
     t.updated_at AS updatedAt,
     (SELECT COUNT(*) FROM comment_replies r WHERE r.thread_id = t.id) AS replyCount
@@ -5775,6 +5976,7 @@ const commentReplyColumns = `SELECT
     r.author_principal_kind AS authorPrincipalKind,
     r.author_display_name AS authorDisplayName,
     r.author_authorized_by_principal_id AS authorAuthorizedByPrincipalId,
+    r.author_actor_client_id AS authorActorClientId,
     r.created_at AS createdAt,
     r.updated_at AS updatedAt
   FROM comment_replies r`;
@@ -5808,10 +6010,29 @@ function commentAuthorFromRow(
   row: z.infer<typeof commentThreadRowSchema> | z.infer<typeof commentReplyRowSchema>,
 ): CommentAuthor {
   return {
+    actor: row.authorActorClientId === null
+      ? null
+      : {clientId: row.authorActorClientId, kind: "mcp-client"},
     authorizedByPrincipalId: row.authorAuthorizedByPrincipalId,
     displayName: row.authorDisplayName,
     principalId: row.authorPrincipalId,
     principalKind: row.authorPrincipalKind,
+  };
+}
+
+function artifactStateEntryFromRow(
+  row: z.infer<typeof artifactStateRowSchema>,
+): ArtifactStateEntry {
+  return {
+    artifactId: row.artifactId,
+    key: row.key,
+    projectId: row.projectId,
+    updatedAt: row.updatedAt,
+    updatedBy: {
+      displayName: row.updatedByDisplayName,
+      principalId: row.updatedByPrincipalId,
+    },
+    value: JSON.parse(row.valueJson),
   };
 }
 
@@ -5835,6 +6056,9 @@ function commentThreadFromRow(
         row.resolvedByDisplayName === null
       ? null
       : {
+        actor: row.resolvedByActorClientId === null
+          ? null
+          : {clientId: row.resolvedByActorClientId, kind: "mcp-client"},
         authorizedByPrincipalId: row.resolvedByAuthorizedByPrincipalId,
         displayName: row.resolvedByDisplayName,
         principalId: row.resolvedByPrincipalId,

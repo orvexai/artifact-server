@@ -8,10 +8,17 @@ import type {
 import type {InteractiveIdentityProvider} from "../application/interactive-login.js";
 import type {Clock} from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
+import type {GroupRolePolicy} from "../core/group-role-policy.js";
+import type {
+  DirectorySyncReport,
+  MemberDirectory,
+} from "../application/directory-sync.js";
+import {runDirectorySyncPass} from "../lifecycle/directory-sync.js";
 import {SystemClock, SystemIdGenerator} from "../core/system.js";
 import {createHttpApp} from "../http/create-http-app.js";
 import type {
   ApiOAuthResourceConfiguration,
+  DiscoveredOAuthResources,
   HttpAppDependencies,
   McpOAuthResourceConfiguration,
 } from "../http/create-http-app.js";
@@ -75,7 +82,10 @@ export interface ExternalStorageRuntimeConfig {
   readonly completedRequestLogSampleRate?: number;
   readonly contentDomain: string;
   readonly databaseUrl: Redacted.Redacted;
+  /** OIDC OAuth that turns on when the issuer is discovered, instead of the static resources. */
+  readonly discoveredOAuth?: DiscoveredOAuthResources;
   readonly externalApiBearerVerifier?: BearerCredentialVerifier;
+  readonly externalApiOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly externalMcpBearerVerifier?: BearerCredentialVerifier;
   readonly externalMcpOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly gitHistory?: NodeGitHistoryConfiguration;
@@ -83,6 +93,8 @@ export interface ExternalStorageRuntimeConfig {
   readonly gitHistoryHealthProbe?: GitHistoryProviderHealthProbe;
   /** Complete provider seam for conformance tests; production composes REST and Git. */
   readonly gitHistoryProvider?: GitHistoryProvider;
+  /** Issuer groups that admit people and set their role, when configured. */
+  readonly groupRolePolicy?: GroupRolePolicy | null;
   readonly installationId: string;
   readonly interactiveIdentityProvider?: InteractiveIdentityProvider;
   readonly localBootstrapCredential?: Redacted.Redacted;
@@ -91,6 +103,7 @@ export interface ExternalStorageRuntimeConfig {
   readonly postgresMaxConnections?: number;
   readonly runtimeLifecycle?: RuntimeLifecycle;
   readonly serviceVersion?: string;
+  readonly uploadUrlLifetimeMilliseconds?: number;
   readonly stagingCleanupPolicy?: StagingCleanupPolicy;
 }
 
@@ -99,6 +112,11 @@ export interface ExternalStorageRuntime {
   readonly app: ReturnType<typeof createHttpApp>;
   cleanupStaging(limit: number): Promise<ExpiredStagingCleanupReport>;
   close(): Promise<void>;
+  /** Make the members match one directory under the given group roles. */
+  syncDirectory(
+    directory: MemberDirectory,
+    policy: GroupRolePolicy,
+  ): Promise<DirectorySyncReport>;
 }
 
 /** Connect external providers, validate migrations, verify readiness, and build the app. */
@@ -165,8 +183,10 @@ export async function createExternalStorageRuntime(
       clock: runtimeClock,
       dispatches: repository,
       externalApiBearerVerifier: config.externalApiBearerVerifier ?? null,
+      externalApiOAuthVerifier: config.externalApiOAuthVerifier ?? null,
       externalMcpBearerVerifier: config.externalMcpBearerVerifier ?? null,
       externalMcpOAuthVerifier: config.externalMcpOAuthVerifier ?? null,
+      groupRolePolicy: config.groupRolePolicy ?? null,
       ids: new SystemIdGenerator(),
       identityRepository,
       installationId: config.installationId,
@@ -178,6 +198,11 @@ export async function createExternalStorageRuntime(
       staging,
       stagingCleanupPolicy,
     };
+    if (config.uploadUrlLifetimeMilliseconds !== undefined) {
+      Object.assign(applicationAdapters, {
+        uploadUrlLifetimeMilliseconds: config.uploadUrlLifetimeMilliseconds,
+      });
+    }
     if (gitHistoryProvider !== null) {
       Object.assign(applicationAdapters, {gitHistoryProvider});
     }
@@ -250,6 +275,12 @@ export async function createExternalStorageRuntime(
         mcpOAuthResource: config.mcpOAuthResource,
       };
     }
+    if (config.discoveredOAuth !== undefined) {
+      appDependencies = {
+        ...appDependencies,
+        discoveredOAuth: config.discoveredOAuth,
+      };
+    }
     const closeCleanupSchedule = stagingCleanupPolicy.schedule === "background"
       ? startStagingCleanupSchedule(readyRuntime, stagingCleanupPolicy)
       : null;
@@ -258,6 +289,8 @@ export async function createExternalStorageRuntime(
         ? appDependencies
         : {...appDependencies, runtimeLifecycle: config.runtimeLifecycle}),
       cleanupStaging: (limit) => runStagingCleanupPass(readyRuntime, limit),
+      syncDirectory: (directory, policy) =>
+        runDirectorySyncPass(readyRuntime, directory, policy),
       close: async () => {
         if (closeCleanupSchedule !== null) await closeCleanupSchedule();
         if (gitHistoryWorker !== null) await gitHistoryWorker.close();

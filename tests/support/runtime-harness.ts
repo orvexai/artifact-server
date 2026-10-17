@@ -23,9 +23,11 @@ import type {GitHistoryProvider} from
   "../../src/git-history/git-history-mirror.js";
 import type {
   ApiOAuthResourceConfiguration,
+  DiscoveredOAuthResources,
   McpOAuthResourceConfiguration,
 } from "../../src/http/create-http-app.js";
 import type {Clock} from "../../src/core/ports.js";
+import type {GroupRolePolicy} from "../../src/core/group-role-policy.js";
 import {localOwnerBrowserAccess} from "../../src/core/browser-access.js";
 import type {BrowserAccess} from "../../src/core/browser-access.js";
 import {defaultCompletedRequestLogSampleRate} from
@@ -90,12 +92,15 @@ export async function startTestServer(
     readonly clock?: Clock;
     readonly completedRequestLogSampleRate?: number;
     readonly developmentProxyCredential?: string;
+    readonly discoveredOAuth?: DiscoveredOAuthResources;
     readonly externalApiBearerVerifier?: BearerCredentialVerifier;
+    readonly externalApiOAuthVerifier?: ExternalMcpBearerVerifier;
     readonly externalMcpBearerVerifier?: BearerCredentialVerifier;
     readonly externalMcpOAuthVerifier?: ExternalMcpBearerVerifier;
     readonly gitHistory?: NodeGitHistoryConfiguration;
     readonly gitHistoryHealthProbe?: GitHistoryProviderHealthProbe;
     readonly gitHistoryProvider?: GitHistoryProvider;
+    readonly groupRolePolicy?: GroupRolePolicy;
     readonly hostname?: string;
     readonly interactiveIdentityProvider?: InteractiveIdentityProvider;
     readonly linkedFiles?: "off" | "on";
@@ -130,10 +135,19 @@ export async function startTestServer(
   if (options.apiOAuthResource !== undefined) {
     config = {...config, apiOAuthResource: options.apiOAuthResource};
   }
+  if (options.discoveredOAuth !== undefined) {
+    config = {...config, discoveredOAuth: options.discoveredOAuth};
+  }
   if (options.externalApiBearerVerifier !== undefined) {
     config = {
       ...config,
       externalApiBearerVerifier: options.externalApiBearerVerifier,
+    };
+  }
+  if (options.externalApiOAuthVerifier !== undefined) {
+    config = {
+      ...config,
+      externalApiOAuthVerifier: options.externalApiOAuthVerifier,
     };
   }
   if (options.developmentProxyCredential !== undefined) {
@@ -171,6 +185,9 @@ export async function startTestServer(
   }
   if (options.gitHistoryProvider !== undefined) {
     config = {...config, gitHistoryProvider: options.gitHistoryProvider};
+  }
+  if (options.groupRolePolicy !== undefined) {
+    config = {...config, groupRolePolicy: options.groupRolePolicy};
   }
   if (options.hostname !== undefined) {
     config = {...config, hostname: options.hostname};

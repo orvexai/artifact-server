@@ -1,6 +1,6 @@
 version: 1
 product: Artifact Server
-updated: "2026-08-26"
+updated: "2026-10-13"
 evidence_root: "../.."
 
 source:
@@ -1708,6 +1708,20 @@ requirements:
     status: implementing
     proof_gap: The local tests prove current-member and stable local-owner refusal, last-administrator refusal, and deactivation by a replacement administrator while another administrator remains. The concurrent last-administrator race and the complete replicated-deployment matrix remain unproved.
     depends_on: [AUTH-001, AUTH-023, AUTH-025]
+    evidence: []
+
+  - id: AUTH-029
+    kind: behavior
+    behavior: A configured generic OIDC issuer that cannot be discovered keeps the process alive but not ready, answers its OAuth endpoints as temporarily unavailable rather than unconfigured, and keeps retrying discovery with capped, jittered backoff and single-flight on-demand attempts until API OAuth, MCP OAuth, and the OAuth metadata documents turn on in the same process; a discovery document that contradicts the configuration is reported once, leaves OAuth off with the process ready, and is not retried.
+    owner: authorization
+    source: {file: decisions/0029-oidc-discovery-retry-and-readiness.md, anchor: decision}
+    acceptance:
+      behavior: {id: AUTH-029-B, description: "Start the server while the issuer answers discovery with 503; /health stays 200, /ready answers 503 with an unavailable identity component, the protected-resource and authorization-server documents and OAuth bearers on /api and /mcp answer 503 with Retry-After while managed keys keep working, and after the issuer recovers background discovery makes /ready 200 and the same process serves the metadata and accepts the access tokens it refused."}
+      failure: {id: AUTH-029-F, description: "An unreadable discovery answer never makes the process ready or makes its OAuth endpoints answer as unconfigured, a burst of requests during an outage reaches the issuer with one discovery attempt, and a document naming another issuer is reported as misconfigured, stays ready with OAuth off and no resource_metadata challenge, and is never retried."}
+    deployments: [single_server, kubernetes]
+    status: implementing
+    proof_gap: The local conformance suite proves outage-then-recovery readiness, metadata, bearer, burst, CLI refresh, and misconfiguration behavior against the Node runtime and a real HTTP fake issuer, and unit tests prove the backoff bounds and failure classification. No recorded evidence report carries these IDs yet, and a Kubernetes rolling update held at readiness by an unavailable issuer and completed after its recovery remains unproved.
+    depends_on: [AUTH-021, AUTH-025, MCP-013, OPS-001]
     evidence: []
 
   - id: SEC-001
@@ -4871,3 +4885,39 @@ requirements:
         result: pass
         run: project/evidence/browser.json
         recorded_at: "2026-08-24T03:47:04.897Z"
+
+  - id: PRV-006
+    kind: behavior
+    behavior: The Artifact Server review interface renders a Markdown entry as a sanitized, theme-following reader document through the HTML annotation frame, with comments anchored to the Markdown path and a bounded-size fallback.
+    owner: web-application
+    source: {file: media-preview-spec.md, anchor: conformance-requirements}
+    acceptance:
+      behavior: {id: PRV-006-B, description: "Open text/markdown, text/x-markdown, and .md-labelled text/plain entries and observe GFM headings with stable ids, tables, task lists, fenced code, and content-host-relative images in the Review palette across a live theme switch, with in-page fragment links, annotate mode, and an element comment stored against the Markdown path."}
+      failure: {id: PRV-006-F, description: "Authored scripts, event handlers, javascript: URLs, frames, objects, forms, form controls, and styles never survive into the reader document; other text/plain stays unsupported; a Markdown file over 2 MiB is not fetched and settles into the typed fallback with open and download actions."}
+    deployments: *all
+    status: behavior_verified
+    depends_on: [CMT-014, PRV-004, PRV-005]
+    evidence:
+      - deployment: local
+        tests: [PRV-006-B, PRV-006-F]
+        result: pass
+        run: project/evidence/browser.json
+        recorded_at: "2026-10-13T19:02:34.370Z"
+
+  - id: PRV-007
+    kind: behavior
+    behavior: The Artifact Server review interface renders a PDF entry in the browser's own PDF viewer, framed from the exact version's preview-lease content host and never from the application origin, with an application frame policy limited to itself and content hosts and a typed fallback.
+    owner: web-application
+    source: {file: media-preview-spec.md, anchor: conformance-requirements}
+    acceptance:
+      behavior: {id: PRV-007-B, description: "Open a declared application/pdf entry and observe an unsandboxed, titled frame whose source is the entry on the exact version's lease content host, a cookie-less framed navigation answered 200 with application/pdf, inline disposition, and no framing refusal, the browser PDF viewer loaded in that frame, and an application-shell policy of frame-src 'self' plus content hosts only."}
+      failure: {id: PRV-007-F, description: "The same-origin media route still refuses PDF bytes, a .pdf path with another declared type stays unsupported, a lease that cannot be issued settles into the typed fallback with retry, open, and download, and a frame the browser never displays still settles with the same actions."}
+    deployments: *all
+    status: behavior_verified
+    depends_on: [CMT-018, PRV-003, PRV-004, PRV-005]
+    evidence:
+      - deployment: local
+        tests: [PRV-007-B, PRV-007-F]
+        result: pass
+        run: project/evidence/browser.json
+        recorded_at: "2026-10-13T20:31:17.084Z"

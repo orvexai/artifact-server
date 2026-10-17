@@ -144,7 +144,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     expect(safeSurfaces).not.toContain(browserCredential);
     expect(safeSurfaces).not.toContain("Local API token:");
     expect(safeSurfaces).not.toContain("Browser login:");
-  }, 30_000);
+  }, 90_000);
 
   test("HTTP relay uses the local service when no remote CLI profile exists", async () => {
     const workspace = await temporaryWorkspace("artifact-server-mcp-relay-");

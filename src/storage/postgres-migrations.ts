@@ -655,6 +655,50 @@ const addArtifactSearchName = Effect.gen(function*() {
   );
 });
 
+const addCommentActorAttribution = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE comment_threads
+    ADD COLUMN author_actor_client_id TEXT,
+    ADD COLUMN resolved_by_actor_client_id TEXT`);
+  yield* sql.unsafe(`ALTER TABLE comment_replies
+    ADD COLUMN author_actor_client_id TEXT`);
+});
+
+const addProjectArchiveAudit = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`CREATE TABLE project_archive_events (
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    installation_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('archive', 'unarchive')),
+    principal_id TEXT NOT NULL,
+    authorized_by_principal_id TEXT,
+    actor_display_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (installation_id, project_id)
+      REFERENCES projects(installation_id, id)
+  )`);
+  yield* sql.unsafe(`CREATE INDEX project_archive_events_project_created
+    ON project_archive_events (installation_id, project_id, created_at DESC, id DESC)`);
+});
+
+const addArtifactStateEntries = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`CREATE TABLE artifact_state_entries (
+    installation_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    key TEXT NOT NULL CHECK (length(key) BETWEEN 1 AND 200),
+    value_json JSONB NOT NULL CHECK (octet_length(value_json::text) <= 65536),
+    updated_at TEXT NOT NULL,
+    updated_by_display_name TEXT NOT NULL,
+    updated_by_principal_id TEXT NOT NULL,
+    PRIMARY KEY (installation_id, project_id, artifact_id, key),
+    FOREIGN KEY (installation_id, project_id, artifact_id)
+      REFERENCES artifacts(installation_id, project_id, id) ON DELETE CASCADE
+  )`);
+});
+
 const migrationLoader = Migrator.fromRecord({
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -667,10 +711,13 @@ const migrationLoader = Migrator.fromRecord({
   "0009_git_history_mirror": addGitHistoryMirror,
   "0010_agent_capabilities": widenRegisteredAgentKind,
   "0011_artifact_search_name": addArtifactSearchName,
+  "0012_comment_actor_attribution": addCommentActorAttribution,
+  "0013_project_archive_audit": addProjectArchiveAudit,
+  "0014_artifact_state_entries": addArtifactStateEntries,
 });
 
 /** Schema revision required by this Artifact Server build. */
-export const requiredPostgresSchemaVersion = 11;
+export const requiredPostgresSchemaVersion = 14;
 
 /** Migration compatibility observed without changing Postgres. */
 export interface PostgresMigrationStatus {
@@ -758,6 +805,15 @@ export const readPostgresMigrationStatus = Effect.gen(function*() {
   }, {
     migration_id: 11,
     name: "artifact_search_name",
+  }, {
+    migration_id: 12,
+    name: "comment_actor_attribution",
+  }, {
+    migration_id: 13,
+    name: "project_archive_audit",
+  }, {
+    migration_id: 14,
+    name: "artifact_state_entries",
   }] as const;
   const observedRequiredHistory = rows.filter(
     (row) => row.migration_id <= requiredPostgresSchemaVersion,

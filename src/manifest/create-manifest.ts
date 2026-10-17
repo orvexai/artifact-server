@@ -34,6 +34,7 @@ const inlineApplicationMediaTypes = new Set([
   "application/javascript",
   "application/json",
   "application/pdf",
+  "application/vnd.ms-fontobject",
   "application/xhtml+xml",
   "application/xml",
 ]);
@@ -176,6 +177,7 @@ function portableCaseFold(candidate: string): string {
 function dispositionFor(mediaType: string): FileDisposition {
   const essence = mediaType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
   return essence.startsWith("audio/") ||
+      essence.startsWith("font/") ||
       essence.startsWith("image/") ||
       essence.startsWith("text/") ||
       essence.startsWith("video/") ||

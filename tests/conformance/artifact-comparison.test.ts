@@ -38,12 +38,12 @@ const comparisonSchema = z.object({
       z.object({
         afterLineCount: z.number(),
         beforeLineCount: z.number(),
-        change: z.object({
+        changes: z.array(z.object({
           after: z.array(z.string()),
           afterStartLine: z.number(),
           before: z.array(z.string()),
           beforeStartLine: z.number(),
-        }).nullable(),
+        })),
         kind: z.literal("text"),
       }),
       z.object({
@@ -81,7 +81,8 @@ describe("artifact comparisons", () => {
   test("AUTH-004-B DIF-001-B DIF-002-B DIF-002-F DIF-003-B DIF-003-F DIF-004-B DIF-004-F DIF-005-B DIF-005-F: public content exposes no history while authenticated comparisons work without Git", async () => {
     const ambiguousBytes = textBytes("ambiguous rename bytes");
     const beforeFiles: readonly TestSiteFile[] = [
-      file("index.html", "text/html; charset=utf-8", "same\nbefore\nend\n"),
+      file("index.html", "text/html; charset=utf-8", "same\nbefore\nmiddle\nold end\nlast\n"),
+      file("many-edits.txt", "text/plain", repeatedEdits("old")),
       file("removed.txt", "text/plain", "removed"),
       file("old-name.txt", "text/plain", "certain rename"),
       {bytes: ambiguousBytes, mediaType: "text/plain", path: "old-a.txt"},
@@ -105,7 +106,8 @@ describe("artifact comparisons", () => {
       file("unchanged.txt", "text/plain", "unchanged"),
     ];
     const afterFiles: readonly TestSiteFile[] = [
-      file("index.html", "text/html; charset=utf-8", "same\nafter\nend\n"),
+      file("index.html", "text/html; charset=utf-8", "same\nafter\nmiddle\nnew end\nlast\n"),
+      file("many-edits.txt", "text/plain", repeatedEdits("new")),
       file("added.txt", "text/plain", "added"),
       file("new-name.txt", "text/plain", "certain rename"),
       {bytes: ambiguousBytes, mediaType: "text/plain", path: "new-a.txt"},
@@ -216,21 +218,44 @@ describe("artifact comparisons", () => {
       "index.html",
       "invalid-utf8.txt",
       "large.txt",
+      "many-edits.txt",
     ]);
 
     const indexChange = comparison.changed.find(
       ({after}) => after.path === "index.html",
     );
     expect(indexChange?.detail).toEqual({
-      afterLineCount: 4,
-      beforeLineCount: 4,
-      change: {
-        after: ["after"],
-        afterStartLine: 2,
-        before: ["before"],
-        beforeStartLine: 2,
-      },
+      afterLineCount: 6,
+      beforeLineCount: 6,
+      changes: [
+        {
+          after: ["after"],
+          afterStartLine: 2,
+          before: ["before"],
+          beforeStartLine: 2,
+        },
+        {
+          after: ["new end"],
+          afterStartLine: 4,
+          before: ["old end"],
+          beforeStartLine: 4,
+        },
+      ],
       kind: "text",
+    });
+    const manyEdits = comparison.changed.find(
+      ({after}) => after.path === "many-edits.txt",
+    );
+    expect(manyEdits?.detail.kind).toBe("text");
+    if (manyEdits?.detail.kind !== "text") {
+      throw new Error("Expected many-edits.txt to produce a text diff.");
+    }
+    expect(manyEdits.detail.changes).toHaveLength(260);
+    expect(manyEdits.detail.changes[0]).toEqual({
+      after: ["new-0"],
+      afterStartLine: 2,
+      before: ["old-0"],
+      beforeStartLine: 2,
     });
     const binaryChange = comparison.changed.find(
       ({after}) => after.path === "binary.dat",
@@ -285,6 +310,12 @@ function file(
   content: string,
 ): TestSiteFile {
   return {bytes: textBytes(content), mediaType, path: filePath};
+}
+
+function repeatedEdits(replacement: "old" | "new"): string {
+  return Array.from({length: 260}, (_, index) =>
+    `keep-${index}\n${replacement}-${index}`,
+  ).join("\n") + "\nend\n";
 }
 
 function textBytes(content: string): Uint8Array {

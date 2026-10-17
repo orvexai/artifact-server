@@ -37,6 +37,7 @@ export function SettingsProjects({
   projects,
 }: ProjectSettingsSharedProps) {
   const [createOpen, setCreateOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [name, setName] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Error | null>(null);
@@ -45,6 +46,10 @@ export function SettingsProjects({
     if (left.archivedAt !== null && right.archivedAt === null) return 1;
     return left.name.localeCompare(right.name);
   });
+  const archivedCount = orderedProjects.filter((project) => project.archivedAt !== null).length;
+  const visibleProjects = showArchived
+    ? orderedProjects
+    : orderedProjects.filter((project) => project.archivedAt === null);
 
   const createProject = async (): Promise<void> => {
     if (pending || name.trim() === "") return;
@@ -112,61 +117,79 @@ export function SettingsProjects({
         title="Projects"
       />
 
-      {orderedProjects.length === 0 ? (
-        <StatePanel
-          description="Create a project to begin organizing artifacts in this installation."
-          title="No projects"
-        />
-      ) : (
-        <div className="overflow-x-auto border">
-          <table className="w-full min-w-2xl text-left text-sm">
-            <thead className="border-b bg-muted/50 text-xs tracking-widest text-muted-foreground uppercase">
-              <tr>
-                <th className="px-4 py-3 font-semibold">Project</th>
-                <th className="px-4 py-3 font-semibold">State</th>
-                <th className="px-4 py-3 font-semibold">Created</th>
-                <th className="px-4 py-3 text-right font-semibold">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {orderedProjects.map((project) => (
-                <tr className="border-b last:border-b-0" key={project.id}>
-                  <td className="px-4 py-4">
-                    <a className="font-heading font-semibold hover:underline" href={projectSettingsHref(project.id)}>
-                      {project.name}
-                    </a>
-                    <code className="mt-1 block max-w-80 truncate font-mono text-xs text-muted-foreground" title={project.id}>
-                      {project.id}
-                    </code>
-                  </td>
-                  <td className="px-4 py-4">
-                    <StatusBadge tone={project.archivedAt === null ? "primary" : "neutral"}>
-                      {project.archivedAt === null ? "Active" : "Archived"}
-                    </StatusBadge>
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap text-muted-foreground">
-                    {formatTimestamp(project.createdAt)}
-                  </td>
-                  <td className="px-4 py-4">
-                    <div className="flex justify-end gap-2">
-                      <ButtonLink
-                        href={`/review?project=${encodeURIComponent(project.id)}`}
-                        size="sm"
-                        variant="outline"
-                      >
-                        Open artifacts
-                      </ButtonLink>
-                      <ButtonLink href={projectSettingsHref(project.id)} size="sm">
-                        Settings
-                      </ButtonLink>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {archivedCount === 0 ? null : (
+        <div className="flex justify-end">
+          <Button
+            aria-controls="settings-project-table"
+            aria-pressed={showArchived}
+            onClick={() => setShowArchived((visible) => !visible)}
+            type="button"
+            variant="outline"
+          >
+            {showArchived ? "Hide archived" : `Show archived (${archivedCount})`}
+          </Button>
         </div>
       )}
+
+      <div id="settings-project-table">
+        {visibleProjects.length === 0 ? (
+          <StatePanel
+            description={archivedCount > 0
+              ? "There are no active projects. Show archived projects to view their history or restore one."
+              : "Create a project to begin organizing artifacts in this installation."}
+            title={archivedCount > 0 ? "No active projects" : "No projects"}
+          />
+        ) : (
+          <div className="overflow-x-auto border">
+            <table className="w-full min-w-2xl text-left text-sm">
+              <thead className="border-b bg-muted/50 text-xs tracking-widest text-muted-foreground uppercase">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">Project</th>
+                  <th className="px-4 py-3 font-semibold">State</th>
+                  <th className="px-4 py-3 font-semibold">Created</th>
+                  <th className="px-4 py-3 text-right font-semibold">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleProjects.map((project) => (
+                  <tr className="border-b last:border-b-0" key={project.id}>
+                    <td className="px-4 py-4">
+                      <a className="font-heading font-semibold hover:underline" href={projectSettingsHref(project.id)}>
+                        {project.name}
+                      </a>
+                      <code className="mt-1 block max-w-80 truncate font-mono text-xs text-muted-foreground" title={project.id}>
+                        {project.id}
+                      </code>
+                    </td>
+                    <td className="px-4 py-4">
+                      <StatusBadge tone={project.archivedAt === null ? "primary" : "neutral"}>
+                        {project.archivedAt === null ? "Active" : "Archived"}
+                      </StatusBadge>
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-muted-foreground">
+                      {formatTimestamp(project.createdAt)}
+                    </td>
+                    <td className="px-4 py-4">
+                      <div className="flex justify-end gap-2">
+                        <ButtonLink
+                          href={`/review?project=${encodeURIComponent(project.id)}`}
+                          size="sm"
+                          variant="outline"
+                        >
+                          Open artifacts
+                        </ButtonLink>
+                        <ButtonLink href={projectSettingsHref(project.id)} size="sm">
+                          Settings
+                        </ButtonLink>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

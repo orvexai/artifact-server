@@ -56,6 +56,7 @@ import {
   PublishArtifactService,
 } from "../application/publish-artifact.js";
 import {
+  defaultUploadUrlLifetimeMilliseconds,
   type StagedUploadDependencies,
   StagedUploadService,
 } from "../application/staged-upload.js";
@@ -124,6 +125,7 @@ import type {
   StagedUploadRepository,
   StagingStore,
 } from "../core/ports.js";
+import type {GroupRolePolicy} from "../core/group-role-policy.js";
 import type {IdentityRepository} from "../core/identity-ports.js";
 import type { ManifestEntry } from "../core/model.js";
 import {randomBase64Url} from "../core/random.js";
@@ -147,8 +149,11 @@ export interface ApplicationAdapters {
   readonly bootstrapAdministratorEmail: string;
   readonly clock: Clock;
   readonly externalApiBearerVerifier: BearerCredentialVerifier | null;
+  readonly externalApiOAuthVerifier: ExternalMcpBearerVerifier | null;
   readonly externalMcpBearerVerifier: BearerCredentialVerifier | null;
   readonly externalMcpOAuthVerifier: ExternalMcpBearerVerifier | null;
+  /** Issuer groups that admit people and set their role; absent keeps admission manual. */
+  readonly groupRolePolicy?: GroupRolePolicy | null;
   /**
    * Agent-dispatch persistence. Every backend implements the dispatch tables,
    * so omitting the slot is a compile error rather than a runtime failure.
@@ -158,6 +163,7 @@ export interface ApplicationAdapters {
   readonly identityRepository: IdentityRepository;
   readonly installationId: string;
   readonly interactiveIdentityProvider: InteractiveIdentityProvider | null;
+  readonly uploadUrlLifetimeMilliseconds?: number;
   /** Live optional-provider state used to guard project enablement. */
   readonly gitHistory?: GitHistoryCapabilityReader;
   /** Optional managed provider used only after application authorization. */
@@ -277,11 +283,22 @@ export function createApplicationLayer(
           try: () => adapters.repository.findCurrentVersion(projectId, artifactId),
           catch: (cause) => repositoryFailure("findCurrentVersion", cause),
         }),
+      findVersionRecord: (projectId, artifactId, versionId) =>
+        Effect.tryPromise({
+          try: () => adapters.repository.findVersionRecord(
+            projectId,
+            artifactId,
+            versionId,
+          ),
+          catch: (cause) => repositoryFailure("findVersionRecord", cause),
+        }),
     },
   };
   const stagedDependencies: StagedUploadDependencies = {
     clock,
     ids: adapters.ids,
+    uploadUrlLifetimeMilliseconds: adapters.uploadUrlLifetimeMilliseconds ??
+      defaultUploadUrlLifetimeMilliseconds,
     staging: {
       open: (uploadId, storageToken) =>
         Effect.tryPromise({
@@ -326,6 +343,14 @@ export function createApplicationLayer(
               uploadId,
               principalId,
             ),
+          catch: (cause) => repositoryFailure("findStagedUpload", cause),
+        }),
+      findStagedUploadByFileCapability: (uploadId, storageToken) =>
+        Effect.tryPromise({
+          try: () => adapters.repository.findStagedUploadByFileCapability(
+            uploadId,
+            storageToken,
+          ),
           catch: (cause) => repositoryFailure("findStagedUpload", cause),
         }),
       listExpiredStagedUploads: (expiredBefore, limit) =>
@@ -399,6 +424,10 @@ export function createApplicationLayer(
       listProjects: () => Effect.tryPromise({
         try: () => adapters.repository.listProjects(),
         catch: (cause) => repositoryFailure("listProjects", cause),
+      }),
+      listProjectAuditEvents: (projectId) => Effect.tryPromise({
+        try: () => adapters.repository.listProjectAuditEvents(projectId),
+        catch: (cause) => repositoryFailure("listProjectAuditEvents", cause),
       }),
       renameProject: (command) => Effect.tryPromise({
         try: () => adapters.repository.renameProject(command),
@@ -538,6 +567,10 @@ export function createApplicationLayer(
         "createCommentThread",
         () => adapters.repository.createThread(command),
       ),
+      deleteStateEntry: (command) => commentEffect(
+        "deleteArtifactStateEntry",
+        () => adapters.repository.deleteArtifactStateEntry(command),
+      ),
       deleteReply: (command) => commentEffect(
         "deleteCommentReply",
         () => adapters.repository.deleteReply(command),
@@ -549,6 +582,10 @@ export function createApplicationLayer(
       findArtifact: (projectId, artifactId) => commentEffect(
         "findArtifact",
         () => adapters.repository.findArtifact(projectId, artifactId),
+      ),
+      findStateEntry: (projectId, artifactId, key) => commentEffect(
+        "findArtifactStateEntry",
+        () => adapters.repository.findArtifactStateEntry(projectId, artifactId, key),
       ),
       findVersionRecord: (projectId, artifactId, versionId) => commentEffect(
         "findVersionRecord",
@@ -570,6 +607,10 @@ export function createApplicationLayer(
         "listCommentThreads",
         () => adapters.repository.listThreads(command),
       ),
+      listStateEntries: (projectId, artifactId) => commentEffect(
+        "listArtifactStateEntries",
+        () => adapters.repository.listArtifactStateEntries(projectId, artifactId),
+      ),
       updateReply: (command) => commentEffect(
         "updateCommentReply",
         () => adapters.repository.updateReply(command),
@@ -577,6 +618,10 @@ export function createApplicationLayer(
       updateThread: (command) => commentEffect(
         "updateCommentThread",
         () => adapters.repository.updateThread(command),
+      ),
+      writeStateEntry: (command) => commentEffect(
+        "writeArtifactStateEntry",
+        () => adapters.repository.writeArtifactStateEntry(command),
       ),
       versionContainsPath: (projectId, versionId, path) => commentEffect(
         "versionContainsPath",
@@ -760,6 +805,7 @@ export function createApplicationLayer(
   const identityLayer = InstallationAccessService.layer({
     bootstrapAdministratorEmail: adapters.bootstrapAdministratorEmail,
     clock: adapters.clock,
+    groupRolePolicy: adapters.groupRolePolicy ?? null,
     ids: {
       apiKeyId: () => `key_${randomUUID()}`,
       memberId: () => `member_${randomUUID()}`,
@@ -876,6 +922,16 @@ export function createApplicationLayer(
             revokedAt,
           ),
         ),
+      setMemberRole: (installationId, memberId, role, updatedAt) =>
+        identityEffectWithNotFound(
+          "setMemberRole",
+          () => identityRepository.setMemberRole(
+            installationId,
+            memberId,
+            role,
+            updatedAt,
+          ),
+        ),
     },
     secrets: {
       digest: digestIdentitySecret,
@@ -888,22 +944,44 @@ export function createApplicationLayer(
     InstallationAccessService.use((installationAccess) => {
       const authenticateBearerWith = (
         externalVerifier: BearerCredentialVerifier | null,
-      ): BearerCredentialVerifier["verify"] => (credential) => {
+        externalOAuthVerifier: ExternalMcpBearerVerifier | null,
+      ): BearerCredentialVerifier["verify"] => Effect.fn(
+        "AuthenticationService.authenticateApiBearer",
+      )(function*(credential) {
         const raw = Redacted.value(credential);
         if (
           adapters.apiToken !== null
           && credentialsEqual(raw, Redacted.value(adapters.apiToken))
         ) {
-          return Effect.succeed(localPrincipal);
+          return localPrincipal;
         }
         if (raw.startsWith("as_key_")) {
-          return installationAccess.authenticateManagedApiKey(credential);
+          return yield* installationAccess.authenticateManagedApiKey(credential);
         }
-        if (externalVerifier !== null) return externalVerifier.verify(credential);
-        return Effect.fail(new AuthenticationRequired({
+        if (externalVerifier !== null) {
+          return yield* externalVerifier.verify(credential);
+        }
+        if (externalOAuthVerifier !== null) {
+          const verified = yield* externalOAuthVerifier.verify(credential);
+          let principal = yield* installationAccess.authenticateExternalSubject(
+            verified.provider,
+            verified.subject,
+          );
+          if (principal === null) {
+            const identity = yield* externalOAuthVerifier.resolveIdentity(
+              verified,
+              credential,
+            );
+            principal = yield* installationAccess.authenticateExternalIdentity(
+              identity,
+            );
+          }
+          return principal;
+        }
+        return yield* Effect.fail(new AuthenticationRequired({
           message: "A valid Artifact Server API key is required.",
         }));
-      };
+      });
       const authenticateMcpBearer = Effect.fn(
         "AuthenticationService.authenticateMcpBearer",
       )(function*(credential: Redacted.Redacted) {
@@ -942,6 +1020,8 @@ export function createApplicationLayer(
           }));
         }
         const verified = yield* verifier.verify(credential);
+        // Under an issuer group policy this answers null, so every token's
+        // groups are evaluated again and a removed group takes effect at once.
         let principal = yield* installationAccess.authenticateExternalSubject(
           verified.provider,
           verified.subject,
@@ -951,8 +1031,9 @@ export function createApplicationLayer(
           principal = yield* installationAccess.authenticateExternalIdentity(identity);
         }
         return {
-          clientId: verified.clientId ?? verified.subject,
+          clientId: verified.clientId,
           expiresAt: verified.expiresAt,
+          oauthClientId: verified.clientId,
           principal,
           // The exact resource-bound audience grants access to this MCP
           // endpoint. WorkOS does not issue a separate product scope.
@@ -962,6 +1043,7 @@ export function createApplicationLayer(
       return Effect.succeed(AuthenticationService.of({
         authenticateApiBearer: authenticateBearerWith(
           adapters.externalApiBearerVerifier,
+          adapters.externalApiOAuthVerifier,
         ),
         authenticateApplicationSession: installationAccess.authenticateSession,
         authenticateMcpBearer,

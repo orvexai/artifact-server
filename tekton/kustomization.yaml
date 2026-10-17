@@ -1,0 +1,15 @@
+---
+# Orvex CI for the orvexai/artifact-server fork (branch `orvex`), synced into
+# tekton-pipelines by my-idp-apps applications/eu-central-1/artifact-server-ci.yaml.
+#
+# Deliberately excluded:
+#   - artifact-server-build-pipelinerun.yaml (manual one-shot run via generateName;
+#                                             `kubectl create -f`, not synced by ArgoCD)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: tekton-pipelines
+
+resources:
+  - artifact-server-build-pipeline.yaml
+  - trigger.yaml

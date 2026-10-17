@@ -259,6 +259,8 @@ const createCommentThreadSchema = z.object({
   body: commentBodySchema,
   path: manifestEntryPathSchema.optional(),
 }).strict();
+const artifactStateWriteSchema = z.object({value: z.unknown()}).strict();
+const artifactStateKeySchema = z.string().min(1).max(200);
 const updateCommentThreadSchema = z.object({
   anchor: z.unknown().optional(),
   body: commentBodySchema.optional(),
@@ -478,6 +480,11 @@ export interface HttpAppDependencies {
   readonly contentDomain: string;
   /** Server-only credential accepted from the co-launched Vite proxy. */
   readonly developmentProxyCredential?: Redacted.Redacted;
+  /**
+   * API and MCP OAuth that appear once the configured issuer is discovered.
+   * Used instead of `apiOAuthResource` and `mcpOAuthResource`, never beside them.
+   */
+  readonly discoveredOAuth?: DiscoveredOAuthResources;
   /** Secret-free optional Git state exposed through authenticated discovery. */
   readonly gitHistory?: GitHistoryCapabilityReader;
   /**
@@ -505,10 +512,44 @@ export interface McpOAuthResourceConfiguration {
   readonly resource: string;
 }
 
+/**
+ * API and MCP OAuth that wait for the configured issuer to be discovered.
+ *
+ * While the issuer is undiscovered, every OAuth endpoint answers 503 with
+ * Retry-After rather than pretending OAuth is not configured, and readiness
+ * reports the identity component unavailable. Once enabled, the resources
+ * behave exactly like a static `apiOAuthResource` and `mcpOAuthResource`.
+ */
+export interface DiscoveredOAuthResources {
+  readonly current: () => DiscoveredOAuthState;
+  /** The `<origin>/mcp` resource, known before discovery, naming its metadata route. */
+  readonly mcpResource: string;
+  /** Ask for a discovery attempt now; joins or skips one that is running or just ran. */
+  readonly refresh: () => Promise<DiscoveredOAuthState>;
+}
+
+/** Discovery outcome as the HTTP boundary sees it. */
+export type DiscoveredOAuthState =
+  | {readonly retryAfterSeconds: number; readonly status: "discovering"}
+  | {
+    readonly api: ApiOAuthResourceConfiguration;
+    readonly mcp: McpOAuthResourceConfiguration;
+    readonly status: "enabled";
+  }
+  | {readonly status: "misconfigured"};
+
 /** Machine-readable result of one declared runtime dependency probe. */
 export interface ReadinessComponent {
   readonly latencyMilliseconds: number;
   readonly status: "ready" | "unavailable";
+}
+
+/**
+ * Readiness of the configured issuer's OAuth contract. Only an undiscovered
+ * issuer is unavailable; a misconfigured one keeps OAuth off and stays ready.
+ */
+export interface IdentityReadinessComponent extends ReadinessComponent {
+  readonly oauth: DiscoveredOAuthState["status"];
 }
 
 /** Current readiness of the runtime dependencies required to serve requests. */
@@ -556,7 +597,7 @@ export function createHttpApp(
     gitHistory,
     linkedArtifacts: dependencies.linkedArtifacts === true,
     mode: dependencies.trustedApplicationOrigin === null ? "local" : "remote",
-    oauthResource: dependencies.mcpOAuthResource?.resource ?? null,
+    oauthResource: () => currentMcpOAuthResource(dependencies)?.resource ?? null,
   });
   const boundedJsonBody = bodyLimit({
     maxSize: maximumJsonRequestBytes,
@@ -600,39 +641,51 @@ export function createHttpApp(
       ),
   });
 
-  if (dependencies.mcpOAuthResource !== undefined) {
-    const resourceServerUrl = new URL(
-      dependencies.mcpOAuthResource.resource,
-    );
-    const metadataOptions = {
-      oauthMetadata:
-        dependencies.mcpOAuthResource.authorizationServerMetadata,
-      resourceName: "Artifact Server MCP",
-      resourceServerUrl,
-    };
-    const protectedMetadata = {
-      ...buildOAuthProtectedResourceMetadata(metadataOptions),
-      bearer_methods_supported: ["header"],
-    };
-    const protectedMetadataPath = new URL(
-      getOAuthProtectedResourceMetadataUrl(resourceServerUrl),
-    ).pathname;
-    app.get(
-      protectedMetadataPath,
-      (context) => context.json(protectedMetadata),
-    );
+  const discoveredOAuth = dependencies.discoveredOAuth;
+  if (discoveredOAuth !== undefined) {
+    const discoveringMetadataPaths = new Set([
+      apiProtectedResourceMetadataPath,
+      authorizationServerMetadataPath,
+      protectedResourceMetadataPath(discoveredOAuth.mcpResource),
+    ]);
+    // Until the issuer is discovered its metadata is temporarily unavailable,
+    // not absent: a client that read 404 here would conclude this server
+    // offers no OAuth at all and stop trying.
+    app.use("*", async (context, next) => {
+      if (
+        discoveredOAuth.current().status !== "discovering" ||
+        !discoveringMetadataPaths.has(withoutTrailingSlash(context.req.path))
+      ) {
+        return next();
+      }
+      const state = await discoveredOAuth.refresh();
+      if (state.status === "discovering") {
+        context.res = oauthDiscoveringResponse(state.retryAfterSeconds);
+        return;
+      }
+      await next();
+    });
+  }
+
+  const mcpResourceUrl = dependencies.mcpOAuthResource?.resource ??
+    discoveredOAuth?.mcpResource;
+  if (mcpResourceUrl !== undefined) {
+    app.get(protectedResourceMetadataPath(mcpResourceUrl), (context, next) => {
+      const mcpOAuth = currentMcpOAuthResource(dependencies);
+      if (mcpOAuth === undefined) return next();
+      return context.json({
+        ...buildOAuthProtectedResourceMetadata(mcpMetadataOptions(mcpOAuth)),
+        bearer_methods_supported: ["header"],
+      });
+    });
   }
 
   app.use("*", async (context, next) => {
-    if (dependencies.mcpOAuthResource !== undefined) {
+    const mcpOAuth = currentMcpOAuthResource(dependencies);
+    if (mcpOAuth !== undefined) {
       const response = oauthMetadataResponse(
         context.req.raw,
-        {
-          oauthMetadata:
-            dependencies.mcpOAuthResource.authorizationServerMetadata,
-          resourceName: "Artifact Server MCP",
-          resourceServerUrl: new URL(dependencies.mcpOAuthResource.resource),
-        },
+        mcpMetadataOptions(mcpOAuth),
       );
       if (response !== undefined) {
         context.res = response;
@@ -799,6 +852,12 @@ export function createHttpApp(
 
   app.use("/api/*", async (context, next) => {
     const authorization = context.req.header("authorization");
+    if (
+      authorization === undefined &&
+      isMcpUploadCapabilityRequest(context)
+    ) {
+      return next();
+    }
     if (authorization !== undefined) {
       const parsed = bearerSchema.safeParse(authorization);
       if (!parsed.success) {
@@ -806,13 +865,25 @@ export function createHttpApp(
           message: "A valid Artifact Server API key is required.",
         });
       }
+      const undiscovered = await oauthDiscoveryGate(dependencies, parsed.data);
+      if (undiscovered !== null) {
+        return apiDiscoveringResponse(undiscovered.retryAfterSeconds);
+      }
+      const credential = Redacted.make(parsed.data, {label: "bearer-credential"});
       const principal = await runHttpApplicationEffect(
         context,
         dependencies,
         AuthenticationService.use((authentication) =>
-          authentication.authenticateApiBearer(
-            Redacted.make(parsed.data, {label: "bearer-credential"}),
-          )
+          isStagedUploadFileRequest(context)
+            // An MCP upload plan tells the agent to PUT each file with the
+            // bearer it used on /mcp, so this one route accepts exactly the
+            // credentials /mcp accepts, including a hosted OAuth access token
+            // for the <origin>/mcp resource. Every other API route keeps the
+            // API-credential contract.
+            ? authentication.authenticateMcpBearer(credential).pipe(
+              Effect.map((authenticated) => authenticated.principal),
+            )
+            : authentication.authenticateApiBearer(credential)
         ),
       );
       context.set("authenticationMethod", "bearer");
@@ -850,19 +921,28 @@ export function createHttpApp(
     return next();
   });
 
-  app.all("/mcp", boundedMcpBody, (context) =>
-    mcp.fetch(requestWithRequestId(context)));
+  app.all("/mcp", boundedMcpBody, async (context) => {
+    const undiscovered = await oauthDiscoveryGate(
+      dependencies,
+      presentedBearer(context.req.header("authorization")),
+    );
+    if (undiscovered !== null) {
+      return oauthDiscoveringResponse(undiscovered.retryAfterSeconds);
+    }
+    return mcp.fetch(requestWithRequestId(context));
+  });
 
   app.get("/health", (context) =>
     context.json({status: "ok" as const}),
   );
 
-  app.get("/.well-known/oauth-protected-resource/api", (context) => {
-    if (dependencies.apiOAuthResource === undefined) return context.notFound();
+  app.get(apiProtectedResourceMetadataPath, (context) => {
+    const apiOAuth = currentApiOAuthResource(dependencies);
+    if (apiOAuth === undefined) return context.notFound();
     return context.json({
-      authorization_servers: dependencies.apiOAuthResource.authorizationServers,
+      authorization_servers: apiOAuth.authorizationServers,
       bearer_methods_supported: ["header"],
-      resource: dependencies.apiOAuthResource.resource,
+      resource: apiOAuth.resource,
       scopes_supported: ["artifactserver"],
     });
   });
@@ -872,13 +952,37 @@ export function createHttpApp(
     if (lifecycle !== "ready") {
       return context.json({lifecycle, status: "not_ready" as const}, 503);
     }
+    const identity = identityReadiness(dependencies);
     if (dependencies.readiness === undefined) {
-      return context.json({lifecycle, status: "ready" as const});
+      if (identity === null) {
+        return context.json({lifecycle, status: "ready" as const});
+      }
+      const status = identity.status === "ready"
+        ? "ready" as const
+        : "not_ready" as const;
+      return context.json(
+        {components: {identity}, lifecycle, status},
+        status === "ready" ? 200 : 503,
+      );
     }
     const report = await dependencies.readiness();
+    if (identity === null) {
+      return context.json(
+        {...report, lifecycle},
+        report.status === "ready" ? 200 : 503,
+      );
+    }
+    const status = report.status === "ready" && identity.status === "ready"
+      ? "ready" as const
+      : "not_ready" as const;
     return context.json(
-      {...report, lifecycle},
-      report.status === "ready" ? 200 : 503,
+      {
+        ...report,
+        components: {...report.components, identity},
+        lifecycle,
+        status,
+      },
+      status === "ready" ? 200 : 503,
     );
   });
 
@@ -1439,6 +1543,20 @@ export function createHttpApp(
     return context.json({project});
   });
 
+  app.get("/api/v1/projects/:projectId/audit", async (context) => {
+    const events = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      ProjectManagementService.use((management) =>
+        management.listAuditEvents({
+          principal: context.get("principal"),
+          projectId: projectIdSchema.parse(context.req.param("projectId")),
+        })
+      ),
+    );
+    return context.json({events});
+  });
+
   app.patch(
     "/api/v1/projects/:projectId",
     boundedJsonBody,
@@ -1829,6 +1947,67 @@ export function createHttpApp(
     ));
   });
 
+  app.get("/api/v1/artifacts/:artifactId/state", async (context) => {
+    const entries = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      ArtifactCommentService.use((comments) => comments.listState({
+        artifactId: context.req.param("artifactId"),
+        principal: context.get("principal"),
+        projectId: requestedProjectId(context),
+      })),
+    );
+    return context.json({entries});
+  });
+
+  app.get("/api/v1/artifacts/:artifactId/state/:key", async (context) => {
+    const entry = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      ArtifactCommentService.use((comments) => comments.getState({
+        artifactId: context.req.param("artifactId"),
+        key: artifactStateKeySchema.parse(context.req.param("key")),
+        principal: context.get("principal"),
+        projectId: requestedProjectId(context),
+      })),
+    );
+    return context.json({entry});
+  });
+
+  app.put(
+    "/api/v1/artifacts/:artifactId/state/:key",
+    boundedJsonBody,
+    async (context) => {
+      const body = artifactStateWriteSchema.parse(await context.req.json());
+      const entry = await runHttpApplicationEffect(
+        context,
+        dependencies,
+        ArtifactCommentService.use((comments) => comments.setState({
+          artifactId: context.req.param("artifactId"),
+          key: artifactStateKeySchema.parse(context.req.param("key")),
+          principal: context.get("principal"),
+          projectId: requestedProjectId(context),
+          value: body.value,
+        })),
+      );
+      return context.json({entry});
+    },
+  );
+
+  app.delete("/api/v1/artifacts/:artifactId/state/:key", async (context) => {
+    await runHttpApplicationEffect(
+      context,
+      dependencies,
+      ArtifactCommentService.use((comments) => comments.deleteState({
+        artifactId: context.req.param("artifactId"),
+        key: artifactStateKeySchema.parse(context.req.param("key")),
+        principal: context.get("principal"),
+        projectId: requestedProjectId(context),
+      })),
+    );
+    return context.body(null, 204);
+  });
+
   app.post(
     "/api/v1/artifacts/:artifactId/versions/:versionId/comments",
     boundedJsonBody,
@@ -2217,6 +2396,34 @@ export function createHttpApp(
     });
   });
 
+  app.put(
+    "/api/v1/mcp-uploads/:uploadId/files/:storageToken",
+    async (context) => {
+      const upload = await runHttpApplicationEffect(
+        context,
+        dependencies,
+        StagedUploadService.use((stagedUploads) =>
+          stagedUploads.uploadFileWithCapability({
+            body: context.req.raw.body ?? emptyByteStream(),
+            storageToken: context.req.param("storageToken"),
+            uploadId: context.req.param("uploadId"),
+          })
+        ),
+      );
+      const file = upload.files.find(
+        (candidate) => candidate.storageToken === context.req.param("storageToken"),
+      );
+      if (file === undefined) {
+        throw new Error("A staged file disappeared after it was marked as uploaded.");
+      }
+      return context.json({
+        path: file.entry.path,
+        status: "verified" as const,
+        uploadId: upload.id,
+      });
+    },
+  );
+
   app.post(
     "/api/v1/uploads/:uploadId/commit",
     boundedJsonBody,
@@ -2525,15 +2732,131 @@ function apiBearerChallenge(
   context: {readonly req: {readonly path: string}},
   dependencies: HttpAppDependencies,
 ): string {
+  const apiOAuth = currentApiOAuthResource(dependencies);
   if (
-    dependencies.apiOAuthResource === undefined
+    apiOAuth === undefined
     || !context.req.path.startsWith("/api/")
   ) return "Bearer";
-  const metadata = new URL(
-    "/.well-known/oauth-protected-resource/api",
-    dependencies.apiOAuthResource.resource,
-  );
+  const metadata = new URL(apiProtectedResourceMetadataPath, apiOAuth.resource);
   return `Bearer resource_metadata="${metadata.toString()}" scope="artifactserver"`;
+}
+
+const apiProtectedResourceMetadataPath =
+  "/.well-known/oauth-protected-resource/api";
+const authorizationServerMetadataPath = "/.well-known/oauth-authorization-server";
+const managedApiKeyPrefix = "as_key_";
+const oauthDiscoveringMessage =
+  "Artifact Server has not discovered its OIDC issuer yet, so OAuth is temporarily unavailable. API keys keep working; retry OAuth after the Retry-After delay.";
+
+/** The API OAuth resource in force right now, static or discovered. */
+function currentApiOAuthResource(
+  dependencies: HttpAppDependencies,
+): ApiOAuthResourceConfiguration | undefined {
+  if (dependencies.apiOAuthResource !== undefined) {
+    return dependencies.apiOAuthResource;
+  }
+  const state = dependencies.discoveredOAuth?.current();
+  return state?.status === "enabled" ? state.api : undefined;
+}
+
+/** The MCP OAuth resource in force right now, static or discovered. */
+function currentMcpOAuthResource(
+  dependencies: HttpAppDependencies,
+): McpOAuthResourceConfiguration | undefined {
+  if (dependencies.mcpOAuthResource !== undefined) {
+    return dependencies.mcpOAuthResource;
+  }
+  const state = dependencies.discoveredOAuth?.current();
+  return state?.status === "enabled" ? state.mcp : undefined;
+}
+
+function mcpMetadataOptions(resource: McpOAuthResourceConfiguration) {
+  return {
+    oauthMetadata: resource.authorizationServerMetadata,
+    resourceName: "Artifact Server MCP",
+    resourceServerUrl: new URL(resource.resource),
+  };
+}
+
+/** RFC 9728 path-aware metadata path for one protected resource URL. */
+function protectedResourceMetadataPath(resource: string): string {
+  return new URL(getOAuthProtectedResourceMetadataUrl(new URL(resource)))
+    .pathname;
+}
+
+function withoutTrailingSlash(path: string): string {
+  return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
+}
+
+function presentedBearer(authorization: string | undefined): string | null {
+  const match = /^Bearer\s+(\S+)$/iu.exec(authorization?.trim() ?? "");
+  return match?.[1] ?? null;
+}
+
+/**
+ * While a configured issuer is still undiscovered, a request that would need
+ * OAuth asks for one more attempt and, if the issuer is still unknown, is
+ * answered as temporarily unavailable instead of being judged as if OAuth were
+ * not configured. Managed API keys never need the issuer and always pass.
+ */
+async function oauthDiscoveryGate(
+  dependencies: HttpAppDependencies,
+  bearer: string | null,
+): Promise<{readonly retryAfterSeconds: number} | null> {
+  const discovered = dependencies.discoveredOAuth;
+  if (
+    discovered === undefined ||
+    discovered.current().status !== "discovering" ||
+    bearer?.startsWith(managedApiKeyPrefix) === true
+  ) {
+    return null;
+  }
+  const state = await discovered.refresh();
+  return state.status === "discovering" ? state : null;
+}
+
+function discoveringHeaders(retryAfterSeconds: number): HeadersInit {
+  return {
+    "Cache-Control": "no-store",
+    "Retry-After": String(retryAfterSeconds),
+  };
+}
+
+/** RFC 6749 `temporarily_unavailable`, for OAuth metadata and MCP clients. */
+function oauthDiscoveringResponse(retryAfterSeconds: number): Response {
+  return Response.json(
+    {
+      error: "temporarily_unavailable",
+      error_description: oauthDiscoveringMessage,
+    },
+    {headers: discoveringHeaders(retryAfterSeconds), status: 503},
+  );
+}
+
+/** The ordinary API failure shape, for HTTP API clients. */
+function apiDiscoveringResponse(retryAfterSeconds: number): Response {
+  return Response.json(
+    {
+      error: {
+        code: errorCodes.identityProviderUnavailable,
+        message: oauthDiscoveringMessage,
+      },
+    },
+    {headers: discoveringHeaders(retryAfterSeconds), status: 503},
+  );
+}
+
+function identityReadiness(
+  dependencies: HttpAppDependencies,
+): IdentityReadinessComponent | null {
+  const discovered = dependencies.discoveredOAuth;
+  if (discovered === undefined) return null;
+  const oauth = discovered.current().status;
+  return {
+    latencyMilliseconds: 0,
+    oauth,
+    status: oauth === "discovering" ? "unavailable" : "ready",
+  };
 }
 
 function setApplicationSessionCookies(
@@ -4009,9 +4332,7 @@ function isContentBootstrapRequest(requestUrl: URL): boolean {
  * content hosts. The frame still cannot reach the trusted application origin.
  */
 function reviewFrameContentSecurityPolicy(contentDomain: string): string {
-  const httpContent = `http://*.${contentDomain}:*`;
-  const httpsContent = `https://*.${contentDomain}`;
-  const contentSources = `${httpContent} ${httpsContent}`;
+  const contentSources = contentHostSources(contentDomain);
   return [
     "default-src 'none'",
     `script-src 'self' 'unsafe-inline' ${contentSources}`,
@@ -4024,7 +4345,41 @@ function reviewFrameContentSecurityPolicy(contentDomain: string): string {
     "font-src * data:",
     "media-src * data: blob:",
     `connect-src ${contentSources}`,
+    // The review frame hosts the isolated artifact document in a sandboxed
+    // srcdoc iframe. Without this explicit source, default-src 'none' blocks
+    // the nested frame and Chrome displays its broken-document placeholder.
+    "frame-src 'self'",
     "frame-ancestors 'self'",
+  ].join("; ");
+}
+
+/**
+ * Every exact-version content host: `https` on its default port, plus `http`
+ * on any port for loopback and local installations.
+ */
+function contentHostSources(contentDomain: string): string {
+  return `http://*.${contentDomain}:* https://*.${contentDomain}`;
+}
+
+/**
+ * The trusted application document. It may frame only itself (the review
+ * frame) and the isolated content hosts, where Review shows a PDF entry in the
+ * browser's own viewer through a preview lease. Artifact bytes are never framed
+ * from the application origin, and nothing may frame the application.
+ */
+function applicationContentSecurityPolicy(contentDomain: string): string {
+  return [
+    "default-src 'self'",
+    "base-uri 'none'",
+    "connect-src 'self'",
+    "font-src 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    `frame-src 'self' ${contentHostSources(contentDomain)}`,
+    "img-src 'self' data:",
+    "object-src 'none'",
+    "script-src 'self'",
+    "style-src 'self'",
   ].join("; ");
 }
 
@@ -4046,7 +4401,7 @@ async function serveWebAsset(
       : "no-cache, must-revalidate",
     "Content-Security-Policy": kind === "review-frame"
       ? reviewFrameContentSecurityPolicy(dependencies.contentDomain)
-      : "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'",
+      : applicationContentSecurityPolicy(dependencies.contentDomain),
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
   });
@@ -4092,4 +4447,20 @@ function redirectToReview(
     requestUrl.searchParams.set(name, value);
   }
   return context.redirect(`/review?${requestUrl.searchParams.toString()}`, 308);
+}
+
+const stagedUploadFilePath = /^\/api\/v1\/uploads\/[^/]+\/files\/[^/]+$/u;
+const mcpUploadCapabilityPath =
+  /^\/api\/v1\/mcp-uploads\/[^/]+\/files\/[^/]+$/u;
+
+/** Whether this request writes one file of a staged upload plan. */
+function isStagedUploadFileRequest(context: Context): boolean {
+  return context.req.method === "PUT"
+    && stagedUploadFilePath.test(context.req.path);
+}
+
+/** Whether this request presents a scoped MCP upload URL capability. */
+function isMcpUploadCapabilityRequest(context: Context): boolean {
+  return context.req.method === "PUT"
+    && mcpUploadCapabilityPath.test(context.req.path);
 }

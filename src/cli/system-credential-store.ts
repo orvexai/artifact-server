@@ -78,7 +78,10 @@ export function createSystemCredentialStore(
         "ARTIFACT_SERVER_CREDENTIAL_HELPER must be an absolute executable path.",
       );
     }
-    return helperStore(helper, environment);
+    const helperCredentialStore = helperStore(helper, environment);
+    return selectedStore === "keyring"
+      ? helperCredentialStore
+      : withFileFallback(helperCredentialStore, fileStore);
   }
 
   let nativeStore: CliCredentialStoreOperations;

@@ -1,5 +1,6 @@
 import {
   createMcpHandler,
+  CLIENT_INFO_META_KEY,
   type AuthInfo,
   OAuthError,
   OAuthErrorCode,
@@ -63,7 +64,8 @@ export interface McpHttpAdapterDependencies {
   readonly gitHistory: GitHistoryCapabilityReader;
   readonly linkedArtifacts?: boolean;
   readonly mode: ArtifactMcpServerDependencies["mode"];
-  readonly oauthResource: string | null;
+  /** The OAuth protected resource in force for this request, if any. */
+  readonly oauthResource: () => string | null;
 }
 
 /** Stateless MCP HTTP adapter mounted by every Artifact Server deployment. */
@@ -77,10 +79,21 @@ export function createMcpHttpAdapter(
   dependencies: McpHttpAdapterDependencies,
 ): McpHttpAdapter {
   const handler = createMcpHandler(
-    (context) => {
+    async (context) => {
       const principal = principalSchema.parse(
         context.authInfo?.extra?.["artifactServerPrincipal"],
       );
+      const agentClientId = z.string().min(1).nullable().parse(
+        context.authInfo?.extra?.["artifactServerOAuthClientId"] ?? null,
+      );
+      const agentDisplayName = z.string().trim().min(1).max(120).nullable()
+        .parse(context.authInfo?.extra?.["artifactServerMcpClientName"] ?? null);
+      const attributedPrincipal = agentClientId === null
+        ? principal
+        : {
+          ...principal,
+          actorClientId: agentClientId,
+        };
       const serverDependencies: ArtifactMcpServerDependencies = {
         applicationOrigin: dependencies.applicationOrigin
           ?? requestOrigin(context.requestInfo),
@@ -93,7 +106,7 @@ export function createMcpHttpAdapter(
       };
       return createArtifactMcpServer(
         serverDependencies,
-        {principal},
+        {agentClientId, agentDisplayName, principal: attributedPrincipal},
         context,
       );
     },
@@ -116,20 +129,57 @@ export function createMcpHttpAdapter(
             authenticateToken(dependencies, token, requestId),
         },
       };
-      if (dependencies.oauthResource !== null) {
+      const oauthResource = dependencies.oauthResource();
+      if (oauthResource !== null) {
         bearerOptions = {
           ...bearerOptions,
           resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(
-            new URL(dependencies.oauthResource),
+            new URL(oauthResource),
           ),
         };
       }
       const authenticate = requireBearerAuth(bearerOptions);
       const auth = await authenticate(request);
       if (auth instanceof Response) return auth;
-      return handler.fetch(request, {authInfo: auth});
+      const agentDisplayName = await mcpClientDisplayName(request);
+      const attributedAuth = agentDisplayName === null
+        ? auth
+        : {
+          ...auth,
+          extra: {
+            ...auth.extra,
+            artifactServerMcpClientName: agentDisplayName,
+          },
+        };
+      return handler.fetch(request, {authInfo: attributedAuth});
     },
   };
+}
+
+/** Read MCP client identity for display only; it never supplies authorization. */
+async function mcpClientDisplayName(
+  request: Request | undefined,
+): Promise<string | null> {
+  if (request === undefined || request.method !== "POST") return null;
+  try {
+    const body: unknown = await request.clone().json();
+    const envelope = z.object({
+      params: z.record(z.string(), z.unknown()),
+    }).passthrough().safeParse(body);
+    if (!envelope.success) return null;
+    const meta = z.record(z.string(), z.unknown()).safeParse(
+      envelope.data.params["_meta"],
+    );
+    if (!meta.success) return null;
+    const clientInfo = z.object({
+      name: z.string().trim().min(1).max(120),
+    }).passthrough().safeParse(
+      meta.data[CLIENT_INFO_META_KEY],
+    );
+    return clientInfo.success ? clientInfo.data.name : null;
+  } catch {
+    return null;
+  }
 }
 
 async function authenticateToken(
@@ -150,7 +200,10 @@ async function authenticateToken(
     return {
       clientId: authenticated.clientId,
       expiresAt: authenticated.expiresAt,
-      extra: {artifactServerPrincipal: authenticated.principal},
+      extra: {
+        artifactServerOAuthClientId: authenticated.oauthClientId ?? null,
+        artifactServerPrincipal: authenticated.principal,
+      },
       scopes: [...authenticated.scopes],
       token,
     };

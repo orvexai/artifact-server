@@ -43,6 +43,7 @@ describe("content access lifecycle", () => {
       clock,
       dispatches: repository,
       externalApiBearerVerifier: null,
+      externalApiOAuthVerifier: null,
       externalMcpBearerVerifier: null,
       externalMcpOAuthVerifier: null,
       ids: new SystemIdGenerator(),

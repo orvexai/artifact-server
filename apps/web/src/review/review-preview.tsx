@@ -11,9 +11,22 @@ import {
   frameMessageSchema,
   reviewProtocolVersion,
   type HostMessage,
+  type ArtifactBridgeRequest,
   type ReviewAnchor,
   type ReviewAnnotation,
 } from "@/review-frame/protocol";
+import {contentHostEntryUrl, documentBaseUrl} from "./content-host-url.ts";
+import {
+  markdownPreviewByteLimit,
+  markdownPreviewLimitLabel,
+  previewKindOf,
+} from "./preview-kind.ts";
+
+/**
+ * Which document the annotation frame shows: an HTML entry as authored, or a
+ * Markdown entry converted into a sanitized reader document first.
+ */
+type AnnotatedDocumentKind = "html" | "markdown";
 
 interface PreviewDocument {
   readonly baseHref: string;
@@ -104,15 +117,28 @@ export function ReviewPreview({
       />
     );
   }
-  const mediaType = mediaTypeEssence(entry.mediaType);
+  const kind = previewKindOf(entry);
   const identity = `${version.version.id}:${entry.path}`;
-  if (mediaType === "text/html") {
+  if (kind === "markdown" && entry.size > markdownPreviewByteLimit) {
+    return (
+      <TerminalPreviewState
+        actions={commonActions}
+        description={`This Markdown file is larger than the ${markdownPreviewLimitLabel} inline preview limit. Open the raw artifact or download the file to read it.`}
+        mediaType={entry.mediaType}
+        path={entry.path}
+        size={entry.size}
+        title="Preview not supported"
+      />
+    );
+  }
+  if (kind === "html" || kind === "markdown") {
     return (
       <HtmlPreview
         actions={commonActions}
         annotateModeActive={annotateModeActive}
         annotations={annotations}
         artifactId={artifactId}
+        documentKind={kind}
         entry={entry}
         isLight={isLight}
         key={identity}
@@ -127,7 +153,20 @@ export function ReviewPreview({
       />
     );
   }
-  if (mediaType.startsWith("image/")) {
+  if (kind === "pdf") {
+    return (
+      <PdfPreview
+        actions={commonActions}
+        artifactId={artifactId}
+        artifactName={artifactName}
+        entry={entry}
+        key={identity}
+        projectId={projectId}
+        versionId={version.version.id}
+      />
+    );
+  }
+  if (kind === "image") {
     return (
       <NativeMediaPreview
         actions={commonActions}
@@ -150,7 +189,7 @@ export function ReviewPreview({
       />
     );
   }
-  if (mediaType.startsWith("video/")) {
+  if (kind === "video") {
     return (
       <NativeMediaPreview
         actions={commonActions}
@@ -190,6 +229,7 @@ function HtmlPreview({
   annotateModeActive,
   annotations,
   artifactId,
+  documentKind,
   entry,
   isLight,
   onAnnotateModeChange,
@@ -205,6 +245,7 @@ function HtmlPreview({
   readonly annotateModeActive: boolean;
   readonly annotations: readonly ReviewAnnotation[];
   readonly artifactId: string;
+  readonly documentKind: AnnotatedDocumentKind;
   readonly entry: PreviewEntry;
   readonly isLight: boolean;
   readonly onAnnotateModeChange: (active: boolean) => void;
@@ -226,6 +267,7 @@ function HtmlPreview({
   const [error, setError] = useState<Error | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const initialisedRef = useRef(false);
+  const bridgeRequestTimesRef = useRef<number[]>([]);
 
   const postToFrame = useCallback((message: HostMessage): void => {
     const frame = frameRef.current?.contentWindow;
@@ -243,7 +285,7 @@ function HtmlPreview({
             artifactId,
             version.version.id,
             entry.path,
-          ),
+          ).then((source) => annotatedDocument(documentKind, source, entry.path)),
           api.previewLease(projectId, artifactId, version.version.id).then(
             (lease) => {
               if (lease.versionId !== version.version.id) {
@@ -272,15 +314,33 @@ function HtmlPreview({
     return () => {
       current = false;
     };
-  }, [artifactId, entry.path, projectId, version.version.id]);
+  }, [artifactId, documentKind, entry.path, projectId, version.version.id]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent<unknown>): void => {
       if (event.source !== frameRef.current?.contentWindow) return;
       if (event.origin !== window.location.origin) return;
+      let messageBytes: number;
+      try {
+        messageBytes = new TextEncoder().encode(JSON.stringify(event.data)).byteLength;
+      } catch {
+        return;
+      }
+      if (messageBytes > 70 * 1_024) return;
       const parsed = frameMessageSchema.safeParse(event.data);
       if (!parsed.success) return;
       const message = parsed.data;
+      if (message.type === "as-artifact-bridge-request") {
+        void handleArtifactBridgeRequest(
+          message,
+          projectId,
+          artifactId,
+          version.version.id,
+          postToFrame,
+          bridgeRequestTimesRef.current,
+        );
+        return;
+      }
       if (message.type === "as-review-ready") {
         setFrameReady(true);
         return;
@@ -318,6 +378,9 @@ function HtmlPreview({
     onSubmitAnnotation,
     onUnanchoredChange,
     postToFrame,
+    projectId,
+    artifactId,
+    version.version.id,
   ]);
 
   useEffect(() => {
@@ -407,12 +470,20 @@ function HtmlPreview({
   );
 }
 
-function documentBaseUrl(versionBaseUrl: string, entryPath: string): string {
-  const entryUrl = new URL(
-    entryPath.split("/").map(encodeURIComponent).join("/"),
-    versionBaseUrl,
-  );
-  return new URL(".", entryUrl).toString();
+/**
+ * The document the frame annotates. Markdown is rendered and sanitized here,
+ * in the application, so the frame and its sandbox only ever receive the
+ * finished reader document. The renderer loads on first use, keeping marked
+ * and DOMPurify out of the initial Review bundle.
+ */
+async function annotatedDocument(
+  kind: AnnotatedDocumentKind,
+  source: string,
+  path: string,
+): Promise<string> {
+  if (kind === "html") return source;
+  const {renderMarkdownDocument} = await import("./markdown-document.ts");
+  return renderMarkdownDocument(source, path);
 }
 
 function NativeMediaPreview({
@@ -513,8 +584,123 @@ function NativeMediaPreview({
   );
 }
 
-function mediaTypeEssence(mediaType: string): string {
-  return mediaType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+/**
+ * How long a PDF frame may stay unloaded before Review offers the open and
+ * download actions. Browser PDF viewers load their viewer document well before
+ * a large file finishes streaming, so this only fires when the browser will not
+ * show the PDF inline (for example when it is set to download PDFs instead).
+ */
+const pdfFrameStallMilliseconds = 15_000;
+
+/**
+ * A PDF entry in the browser's own PDF viewer. The frame loads the entry from
+ * the version's isolated content host through a short-lived preview lease, so
+ * the bytes never become an application-origin document and the request needs
+ * no cookie. The frame is not sandboxed: browser PDF viewers refuse to run in
+ * sandboxed frames, and the content host is already a separate origin from
+ * Review.
+ */
+function PdfPreview({
+  actions,
+  artifactId,
+  artifactName,
+  entry,
+  projectId,
+  versionId,
+}: {
+  readonly actions: PreviewActions;
+  readonly artifactId: string;
+  readonly artifactName: string;
+  readonly entry: PreviewEntry;
+  readonly projectId: string;
+  readonly versionId: string;
+}) {
+  const [attempt, setAttempt] = useState(0);
+  const [source, setSource] = useState<string | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const [status, setStatus] = useState<"loading" | "ready" | "stalled">("loading");
+  const accessibleName = `${artifactName} — ${entry.path}`;
+
+  useEffect(() => {
+    let current = true;
+    void (async () => {
+      try {
+        const lease = await api.previewLease(projectId, artifactId, versionId);
+        if (lease.versionId !== versionId) {
+          throw new Error("The preview lease resolved a different version.");
+        }
+        if (current) setSource(contentHostEntryUrl(lease.baseUrl, entry.path));
+      } catch (cause) {
+        if (!current) return;
+        setError(
+          cause instanceof Error ? cause : new Error("PDF preview failed."),
+        );
+      }
+    })();
+    return () => {
+      current = false;
+    };
+  }, [artifactId, attempt, entry.path, projectId, versionId]);
+
+  useEffect(() => {
+    if (source === null || status !== "loading") return undefined;
+    const timer = window.setTimeout(
+      () => setStatus("stalled"),
+      pdfFrameStallMilliseconds,
+    );
+    return () => window.clearTimeout(timer);
+  }, [source, status]);
+
+  const retry = (): void => {
+    setError(null);
+    setSource(null);
+    setStatus("loading");
+    setAttempt((current) => current + 1);
+  };
+
+  if (error !== null) {
+    return (
+      <TerminalPreviewState
+        actions={actions}
+        description={error.message}
+        mediaType={entry.mediaType}
+        onRetry={retry}
+        path={entry.path}
+        size={entry.size}
+        title="PDF preview unavailable"
+      />
+    );
+  }
+  return (
+    <div className="as-pdf-preview" data-status={status}>
+      {source === null ? null : (
+        <iframe
+          className="as-pdf-preview__frame"
+          onLoad={() => setStatus("ready")}
+          referrerPolicy="no-referrer"
+          src={source}
+          title={accessibleName}
+        />
+      )}
+      {status === "loading" ? (
+        <div className="as-media-preview__loading" role="status">
+          <span aria-hidden="true" className="as-preview-state__mark" />
+          <strong>Loading preview</strong>
+          <small>{entry.path}</small>
+        </div>
+      ) : null}
+      {status === "stalled" ? (
+        <div className="as-media-preview__loading as-pdf-preview__stalled" role="status">
+          <strong>The PDF has not appeared yet</strong>
+          <p>
+            This browser may not show PDFs inline. Open the raw artifact or
+            download the file to read it.
+          </p>
+          <PreviewActionButtons actions={actions} onRetry={retry} />
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function reviewThemeTokens() {
@@ -581,23 +767,35 @@ function TerminalPreviewState({
           <div><dt>Size</dt><dd>{formatBytes(size)}</dd></div>
         )}
       </dl>
-      <div className="as-preview-state__actions">
-        {onRetry === undefined ? null : (
-          <button className="as-button" onClick={onRetry} type="button">Retry preview</button>
-        )}
-        <button
-          className="as-button as-button--primary"
-          disabled={actions.opening}
-          onClick={actions.onOpenRawArtifact}
-          type="button"
-        >
-          <HugeiconsIcon aria-hidden="true" icon={ExternalLinkIcon} strokeWidth={1.8} />
-          {actions.opening ? "Opening…" : "Open raw artifact"}
-        </button>
-        {actions.downloadUrl === null ? null : (
-          <a className="as-button" download href={actions.downloadUrl}>Download file</a>
-        )}
-      </div>
+      <PreviewActionButtons actions={actions} onRetry={onRetry} />
+    </div>
+  );
+}
+
+function PreviewActionButtons({
+  actions,
+  onRetry,
+}: {
+  readonly actions: PreviewActions;
+  readonly onRetry?: (() => void) | undefined;
+}) {
+  return (
+    <div className="as-preview-state__actions">
+      {onRetry === undefined ? null : (
+        <button className="as-button" onClick={onRetry} type="button">Retry preview</button>
+      )}
+      <button
+        className="as-button as-button--primary"
+        disabled={actions.opening}
+        onClick={actions.onOpenRawArtifact}
+        type="button"
+      >
+        <HugeiconsIcon aria-hidden="true" icon={ExternalLinkIcon} strokeWidth={1.8} />
+        {actions.opening ? "Opening…" : "Open raw artifact"}
+      </button>
+      {actions.downloadUrl === null ? null : (
+        <a className="as-button" download href={actions.downloadUrl}>Download file</a>
+      )}
     </div>
   );
 }
@@ -616,4 +814,74 @@ function PreviewState({
       <p>{description}</p>
     </div>
   );
+}
+
+async function handleArtifactBridgeRequest(
+  request: ArtifactBridgeRequest,
+  projectId: string,
+  artifactId: string,
+  versionId: string,
+  postToFrame: (message: HostMessage) => void,
+  requestTimes: number[],
+): Promise<void> {
+  const now = Date.now();
+  while (requestTimes[0] !== undefined && requestTimes[0] < now - 60_000) {
+    requestTimes.shift();
+  }
+  if (requestTimes.length >= 30) {
+    postToFrame({error: "Artifact bridge request limit exceeded.", id: request.id, ok: false, type: "as-artifact-bridge-response", v: reviewProtocolVersion});
+    return;
+  }
+  requestTimes.push(now);
+  try {
+    const result = await runArtifactBridgeOperation(
+      request,
+      projectId,
+      artifactId,
+      versionId,
+    );
+    postToFrame({id: request.id, ok: true, result, type: "as-artifact-bridge-response", v: reviewProtocolVersion});
+  } catch (cause) {
+    postToFrame({
+      error: cause instanceof Error ? cause.message.slice(0, 500) : "Artifact bridge request failed.",
+      id: request.id,
+      ok: false,
+      type: "as-artifact-bridge-response",
+      v: reviewProtocolVersion,
+    });
+  }
+}
+
+async function runArtifactBridgeOperation(
+  request: ArtifactBridgeRequest,
+  projectId: string,
+  artifactId: string,
+  versionId: string,
+) {
+  switch (request.operation) {
+    case "list":
+      return api.artifactState(projectId, artifactId);
+    case "get":
+      return api.artifactStateValue(projectId, artifactId, request.key);
+    case "set":
+      return api.setArtifactStateValue(projectId, artifactId, request.key, request.value);
+    case "delete":
+      await api.deleteArtifactStateValue(projectId, artifactId, request.key);
+      return {deleted: true};
+    default: {
+      // A page script is untrusted; it posts as the viewer only with their consent.
+      const preview = request.body.length > 500 ? `${request.body.slice(0, 500)}…` : request.body;
+      if (!window.confirm(`This page wants to post a comment as you:\n\n${preview}`)) {
+        throw new Error("The viewer declined the comment.");
+      }
+      const created = await api.createComment(
+        projectId,
+        artifactId,
+        versionId,
+        {anchor: null, body: request.body, path: request.path},
+        `page-${request.id}`,
+      );
+      return {threadId: created.thread.id};
+    }
+  }
 }

@@ -1,7 +1,7 @@
 /**
  * NDG-002 — nudges are principal-scoped and leave typed results untouched.
  * A nudge is derived strictly from the caller's own mailbox agent, so a
- * second principal calling the same tools sees none of the first's counts;
+ * second OAuth client calling the same tools sees none of the first's counts;
  * and `structuredContent` and every existing content item are byte-identical
  * with and without a pending nudge, which only ever appends one bounded
  * trailing text item that quotes no untrusted text.
@@ -15,14 +15,12 @@ import {
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
 
-import {principalCapabilities} from "../../src/core/identity.js";
 import {
   ApiClient,
   dispatchCreationSchema,
-  issueApiKey,
-  signInAdministrator,
 } from "../support/agent-dispatch.js";
 import {publishNew, type PublishResponse} from "../support/publishing.js";
+import {createTestMcpOAuthVerifier} from "../support/mcp-oauth.js";
 import {
   createTestInstallation,
   removeTestInstallation,
@@ -32,6 +30,8 @@ import {
 } from "../support/runtime-harness.js";
 
 const protocolVersion = "2026-07-28";
+const firstMcpToken = "ndg-002-first-mcp-oauth-token";
+const secondMcpToken = "ndg-002-second-mcp-oauth-token";
 const nudgeHeading = "— artifact server —";
 const maximumNudgeCharacters = 400;
 const hostileNote =
@@ -63,7 +63,12 @@ describe("nudge isolation on MCP tool results", () => {
 
   beforeEach(async () => {
     installation = await createTestInstallation();
-    server = await startTestServer(installation);
+    server = await startTestServer(installation, {
+      externalMcpOAuthVerifier: createTestMcpOAuthVerifier({
+        [firstMcpToken]: "nudge-client-a",
+        [secondMcpToken]: "nudge-client-b",
+      }),
+    });
     client = new ApiClient(server, installation.apiToken);
     published = (await publishNew(server, installation, {
       accessSetting: "account_required",
@@ -83,13 +88,13 @@ describe("nudge isolation on MCP tool results", () => {
     expect.hasAssertions();
     const thread = await openThread("Adjust the palette.", "ndg-002-thread-palette");
     const registered = inboxAnswerSchema.parse(
-      (await callTool(installation.apiToken, "dispatch_inbox", {
+      (await callTool(firstMcpToken, "dispatch_inbox", {
         agentName: "Isolated Claude",
         operation: "list",
       })).structuredContent,
     );
 
-    const quiet = await callTool(installation.apiToken, "project_list", {});
+    const quiet = await callTool(firstMcpToken, "project_list", {});
     expect(quiet.isError).not.toBe(true);
     expect(quiet.content).toHaveLength(1);
 
@@ -103,7 +108,7 @@ describe("nudge isolation on MCP tool results", () => {
     expect(sent.status).toBe(201);
     dispatchCreationSchema.parse(await sent.json());
 
-    const nudged = await callTool(installation.apiToken, "project_list", {});
+    const nudged = await callTool(firstMcpToken, "project_list", {});
     expect(nudged.isError).not.toBe(true);
     // Typed consumers see exactly what they saw before: the structured
     // result and the original text item are unchanged byte for byte.
@@ -121,11 +126,11 @@ describe("nudge isolation on MCP tool results", () => {
     expect(nudge).not.toMatch(/[‪-‮⁦-⁩​-‏⁠﻿]/u);
   });
 
-  test("NDG-002-F: a second principal calling the same tools sees none of the first principal's counts, with or without a mailbox agent of its own", async () => {
+  test("NDG-002-F: a second OAuth client sees none of the first client's counts, with or without its own mailbox", async () => {
     expect.hasAssertions();
     const thread = await openThread("Swap the logo.", "ndg-002-foreign-thread");
     const first = inboxAnswerSchema.parse(
-      (await callTool(installation.apiToken, "dispatch_inbox", {
+      (await callTool(firstMcpToken, "dispatch_inbox", {
         agentName: "First mailbox",
         operation: "list",
       })).structuredContent,
@@ -138,39 +143,27 @@ describe("nudge isolation on MCP tool results", () => {
     });
     expect(sent.status).toBe(201);
 
-    const administratorCookies = await signInAdministrator(server, installation);
-    const secondToken = await issueApiKey(
-      server,
-      administratorCookies,
-      [
-        principalCapabilities.connectAgents,
-        principalCapabilities.readArtifacts,
-        principalCapabilities.writeComments,
-      ],
-      "Second nudge principal",
-    );
-
-    // The first principal is nudged about its queue...
-    const firstView = await callTool(installation.apiToken, "project_list", {});
+    // The first OAuth client is nudged about its queue...
+    const firstView = await callTool(firstMcpToken, "project_list", {});
     expect(firstView.content).toHaveLength(2);
     expect(firstView.content[1]?.text).toContain("1 review bundle is queued");
 
-    // ...the second principal, with no mailbox agent, sees nothing...
-    const unregistered = await callTool(secondToken, "project_list", {});
+    // ...the second OAuth client, with no mailbox agent, sees nothing...
+    const unregistered = await callTool(secondMcpToken, "project_list", {});
     expect(unregistered.isError).not.toBe(true);
     expect(unregistered.content).toHaveLength(1);
     expect(unregistered.content[0]?.text).not.toContain(nudgeHeading);
 
     // ...and still nothing once it has its own, empty, mailbox agent.
     const foreign = inboxAnswerSchema.parse(
-      (await callTool(secondToken, "dispatch_inbox", {
+      (await callTool(secondMcpToken, "dispatch_inbox", {
         agentName: null,
         operation: "list",
       })).structuredContent,
     );
     expect(foreign.agent.id).not.toBe(first.agent.id);
     expect(foreign.inbox).toEqual([]);
-    const registered = await callTool(secondToken, "project_list", {});
+    const registered = await callTool(secondMcpToken, "project_list", {});
     expect(registered.isError).not.toBe(true);
     expect(registered.content).toHaveLength(1);
     expect(registered.content[0]?.text).not.toContain(nudgeHeading);

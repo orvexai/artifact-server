@@ -69,6 +69,17 @@ export interface ProjectRecord {
   readonly name: string;
 }
 
+/** One attributed project lifecycle event. */
+export interface ProjectAuditEvent {
+  readonly action: "archive" | "unarchive";
+  readonly actorDisplayName: string;
+  readonly authorizedByPrincipalId: string | null;
+  readonly createdAt: string;
+  readonly id: number;
+  readonly principalId: string;
+  readonly projectId: string;
+}
+
 export interface ArtifactRecord {
   readonly accessSetting: AccessSetting;
   readonly createdAt: string;
@@ -78,6 +89,20 @@ export interface ArtifactRecord {
   readonly name: string;
   readonly projectId: string;
   readonly tags: readonly string[];
+}
+
+/** One durable JSON value shared by every saved version of an artifact. */
+export interface ArtifactStateEntry {
+  readonly artifactId: string;
+  readonly key: string;
+  readonly projectId: string;
+  readonly updatedAt: string;
+  /** Who last wrote the value, so readers can tell a human's choice from an agent's. */
+  readonly updatedBy: {
+    readonly displayName: string;
+    readonly principalId: string;
+  };
+  readonly value: unknown;
 }
 
 /** An artifact record whose deletion state is known to be committed. */
@@ -277,6 +302,11 @@ export type CommentThreadState =
 
 /** The principal attribution copied onto a comment when it was written. */
 export interface CommentAuthor {
+  /** Verified MCP client acting for the permission principal, when present. */
+  readonly actor?: {
+    readonly clientId: string;
+    readonly kind: "mcp-client";
+  } | null;
   readonly authorizedByPrincipalId: string | null;
   readonly displayName: string;
   readonly principalId: string;

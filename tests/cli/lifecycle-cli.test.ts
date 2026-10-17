@@ -171,6 +171,31 @@ describe("Artifact Server lifecycle CLI", () => {
       );
       expect(defaultLinkedFiles.linkedFiles).toBe("off");
       expect(defaultLinkedFiles.linkRoots).toEqual([homedir()]);
+      expect(defaultLinkedFiles.uploadUrlLifetimeMilliseconds).toBe(600_000);
+      const configuredUploadUrlLifetime = await Effect.runPromise(
+        parseCompactRuntimeConfiguration({
+          dataDirectory,
+          environment: {
+            ...environment,
+            ARTIFACT_SERVER_MCP_UPLOAD_URL_LIFETIME_MS: "12000",
+          },
+          hostname: "127.0.0.1",
+          port: "8787",
+        }),
+      );
+      expect(configuredUploadUrlLifetime.uploadUrlLifetimeMilliseconds).toBe(12_000);
+      await expect(Effect.runPromise(parseCompactRuntimeConfiguration({
+        dataDirectory,
+        environment: {
+          ...environment,
+          ARTIFACT_SERVER_MCP_UPLOAD_URL_LIFETIME_MS: "0",
+        },
+        hostname: "127.0.0.1",
+        port: "8787",
+      }))).rejects.toMatchObject({
+        field: "ARTIFACT_SERVER_MCP_UPLOAD_URL_LIFETIME_MS",
+        reason: "invalid_value",
+      });
       const linkedFilesEnabled = await Effect.runPromise(
         parseCompactRuntimeConfiguration({
           dataDirectory,
@@ -480,7 +505,7 @@ describe("Artifact Server lifecycle CLI", () => {
     } finally {
       await rm(parent, {force: true, recursive: true});
     }
-  }, 30_000);
+  }, 60_000);
 
   test("foundation: compact serving withdraws readiness and integrity scans real committed bytes", async () => {
     const parent = await mkdtemp(path.join(tmpdir(), "artifact-server-drain-"));

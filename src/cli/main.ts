@@ -31,6 +31,9 @@ import {configureCliAuthCommands} from "./cli-auth-commands.js";
 import {configureLinkCommand} from "./link-command.js";
 import {configureMcpOnboardingCommands} from "./mcp-onboarding-commands.js";
 import {configurePublishCommand} from "./publish-command.js";
+import {configureCommentsCommand} from "./comments-command.js";
+import {configureArtifactStateCommand} from "./artifact-state-command.js";
+import {configureDownloadCommand} from "./download-command.js";
 import {configureGitHistoryCommands} from "./git-history-commands.js";
 import {waitForProcessSignal} from "./wait-for-process-signal.js";
 import {configureOpenManagementCommand} from "./open-management-command.js";
@@ -62,6 +65,9 @@ const program = new Command()
   .name("artifactserver")
   .description("Run Artifact Server.")
   .version(packageMetadata.version)
+  // Root options apply only before the subcommand, so a subcommand's own
+  // `--version <id>` (comments list) is not taken as the CLI version flag.
+  .enablePositionalOptions()
   .showHelpAfterError();
 
 const defaultUserDataDirectory = path.join(homedir(), ".artifact-server");
@@ -70,6 +76,15 @@ configureCliAuthCommands(program, {
   defaultProfileDirectory: defaultUserDataDirectory,
 });
 configurePublishCommand(program, {
+  defaultProfileDirectory: defaultUserDataDirectory,
+});
+configureCommentsCommand(program, {
+  defaultProfileDirectory: defaultUserDataDirectory,
+});
+configureArtifactStateCommand(program, {
+  defaultProfileDirectory: defaultUserDataDirectory,
+});
+configureDownloadCommand(program, {
   defaultProfileDirectory: defaultUserDataDirectory,
 });
 configureGitHistoryCommands(program, {

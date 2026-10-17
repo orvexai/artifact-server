@@ -1,0 +1,40 @@
+---
+# Manual one-shot build (not synced by ArgoCD):
+#   kubectl create -f tekton/artifact-server-build-pipelinerun.yaml
+# Set revision and image-tag to the commit you want built.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: artifact-server-build-manual-
+  namespace: tekton-pipelines
+  labels:
+    app.kubernetes.io/name: artifact-server-build
+    tekton.dev/pipeline: artifact-server-build
+spec:
+  pipelineRef:
+    name: artifact-server-build
+  params:
+    - name: revision
+      value: orvex
+    - name: image-tag
+      value: orvex-manual
+  taskRunTemplate:
+    serviceAccountName: tekton-smoke-test-builder
+    podTemplate:
+      securityContext:
+        fsGroup: 1000
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          # cephfs: an ext4 block volume has lost+found, which git-clone
+          # refuses as a non-empty destination.
+          accessModes:
+            - ReadWriteMany
+          resources:
+            requests:
+              storage: 5Gi
+          storageClassName: rook-cephfs
+    - name: dockerconfig
+      secret:
+        secretName: tekton-harbor-credentials

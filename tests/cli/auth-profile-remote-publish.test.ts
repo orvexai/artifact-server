@@ -400,6 +400,7 @@ describe("authenticated CLI profiles and remote publication", () => {
         ["auth", "logout", "first", "--profile-data", profileData],
         {
           ...environment,
+          ARTIFACT_SERVER_CREDENTIAL_STORE: "keyring",
           ARTIFACT_SERVER_CREDENTIAL_HELPER: path.join(
             temporaryDirectory,
             "missing-helper",
@@ -441,10 +442,11 @@ describe("authenticated CLI profiles and remote publication", () => {
         "--profile-data",
         profileData,
       ], environment);
-      expect({exitCode: login.exitCode, stderr: login.stderr}).toEqual({
-        exitCode: 0,
-        stderr: "",
-      });
+      expect(login.exitCode).toBe(0);
+      // The address is always printed so sign-in never depends on the opener.
+      expect(login.stderr).toContain("If it does not open, visit:");
+      expect(login.stderr).toContain(`${oauth.origin}/authorize?`);
+      expect(login.stderr).not.toContain("oauth-access-one");
       expect(profileOutputSchema.parse(JSON.parse(login.stdout))).toMatchObject({
         authentication: "oauth",
         name: "browser-team",
@@ -453,9 +455,12 @@ describe("authenticated CLI profiles and remote publication", () => {
       expect(oauth.observations).toMatchObject({
         authorizationCount: 1,
         codeExchangeCount: 1,
-        registrationCount: 1,
+        lastClientId: "artifact-server",
+        registrationCount: 0,
       });
       expect(oauth.observations.pkceVerified).toBe(true);
+      expect(oauth.observations.lastRedirectUri)
+        .toBe("http://127.0.0.1:45678/oauth/callback");
       expect(login.stdout).not.toContain("oauth-access-one");
       expect(login.stdout).not.toContain("oauth-refresh-one");
 
@@ -505,7 +510,182 @@ describe("authenticated CLI profiles and remote publication", () => {
       await rm(temporaryDirectory, {force: true, recursive: true});
     }
   }, 30_000);
+
+  test("fails fast with the authorization URL when no browser can be opened", async () => {
+    const temporaryDirectory = await mkdtemp(
+      path.join(tmpdir(), "artifact-server-cli-no-browser-"),
+    );
+    const browser = path.join(temporaryDirectory, "no-browser.mjs");
+    const environment = await credentialHelperEnvironment(
+      path.join(temporaryDirectory, "credential-helper.mjs"),
+      path.join(temporaryDirectory, "credential-helper.json"),
+    );
+    // Mirrors xdg-open on a host without a graphical session.
+    await writeFile(browser, "#!/usr/bin/env node\nprocess.exit(3);\n", {mode: 0o700});
+    environment["ARTIFACT_SERVER_BROWSER_COMMAND"] = browser;
+    const oauth = await startOAuthFixture();
+    try {
+      const startedAt = Date.now();
+      const login = await runCli([
+        "auth",
+        "login",
+        oauth.origin,
+        "--profile-data",
+        path.join(temporaryDirectory, "profiles"),
+      ], environment);
+      expect(Date.now() - startedAt).toBeLessThan(15_000);
+      expect(login.exitCode).not.toBe(0);
+      expect(login.stderr).toContain(`${oauth.origin}/authorize?`);
+      expect(login.stderr).toContain("No browser could be opened on this machine");
+      expect(login.stderr).toContain("exited with code 3");
+      expect(login.stderr).toContain("--headless");
+      expect(oauth.observations.codeExchangeCount).toBe(0);
+    } finally {
+      await oauth.stop();
+      await rm(temporaryDirectory, {force: true, recursive: true});
+    }
+  }, 30_000);
+
+  test("completes headless login from a pasted redirect URL", async () => {
+    const temporaryDirectory = await mkdtemp(
+      path.join(tmpdir(), "artifact-server-cli-headless-paste-"),
+    );
+    const environment = await credentialHelperEnvironment(
+      path.join(temporaryDirectory, "credential-helper.mjs"),
+      path.join(temporaryDirectory, "credential-helper.json"),
+    );
+    const oauth = await startOAuthFixture();
+    try {
+      const login = startCliSession([
+        "auth",
+        "login",
+        oauth.origin,
+        "--headless",
+        "--profile-data",
+        path.join(temporaryDirectory, "profiles"),
+      ], environment);
+      const authorizationUrl = await login.authorizationUrl();
+      // A browser on another machine cannot reach this loopback listener, so
+      // the person copies the redirect from the address bar instead.
+      const authorization = await fetch(authorizationUrl, {redirect: "manual"});
+      const redirect = authorization.headers.get("location");
+      expect(redirect).toMatch(/^http:\/\/127\.0\.0\.1:45678\/oauth\/callback\?/u);
+      login.writeLine(redirect ?? "");
+      const result = await login.finished;
+      expect(result.exitCode).toBe(0);
+      expect(profileOutputSchema.parse(JSON.parse(result.stdout))).toMatchObject({
+        authentication: "oauth",
+        status: "authenticated",
+      });
+      expect(oauth.observations.pkceVerified).toBe(true);
+      expect(result.stderr).not.toContain("Standard input closed");
+    } finally {
+      await oauth.stop();
+      await rm(temporaryDirectory, {force: true, recursive: true});
+    }
+  }, 30_000);
+
+  // An agent runs the command with standard input closed; a person may still
+  // sign in with a browser on this machine.
+  test.each([
+    {closeInput: false, input: "open"},
+    {closeInput: true, input: "closed"},
+  ])("completes headless login from the loopback callback with $input standard input", async ({closeInput}) => {
+    const temporaryDirectory = await mkdtemp(
+      path.join(tmpdir(), "artifact-server-cli-headless-loopback-"),
+    );
+    const environment = await credentialHelperEnvironment(
+      path.join(temporaryDirectory, "credential-helper.mjs"),
+      path.join(temporaryDirectory, "credential-helper.json"),
+    );
+    const oauth = await startOAuthFixture();
+    try {
+      const login = startCliSession([
+        "auth",
+        "login",
+        oauth.origin,
+        "--headless",
+        "--profile-data",
+        path.join(temporaryDirectory, "profiles"),
+      ], environment);
+      if (closeInput) login.closeInput();
+      const authorizationUrl = await login.authorizationUrl();
+      const browser = await fetch(authorizationUrl, {redirect: "follow"});
+      expect(browser.ok).toBe(true);
+      const result = await login.finished;
+      expect(result.exitCode).toBe(0);
+      expect(profileOutputSchema.parse(JSON.parse(result.stdout))).toMatchObject({
+        authentication: "oauth",
+        status: "authenticated",
+      });
+      expect(result.stderr.includes("Standard input closed")).toBe(closeInput);
+    } finally {
+      await oauth.stop();
+      await rm(temporaryDirectory, {force: true, recursive: true});
+    }
+  }, 30_000);
 });
+
+interface CliSession {
+  readonly finished: Promise<ProcessResult>;
+  authorizationUrl(): Promise<string>;
+  closeInput(): void;
+  writeLine(line: string): void;
+}
+
+/** Run the CLI with standard input left open, like a person at a terminal. */
+function startCliSession(
+  argumentsToPass: readonly string[],
+  environment: NodeJS.ProcessEnv,
+): CliSession {
+  const child = spawn(cliExecutable, [cliEntrypoint, ...argumentsToPass], {
+    cwd: repositoryRoot,
+    env: environment,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  const stderrListeners = new Set<() => void>();
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk: string) => {
+    stderr += chunk;
+    for (const listener of stderrListeners) listener();
+  });
+  const finished = new Promise<ProcessResult>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code) => {
+      for (const listener of stderrListeners) listener();
+      resolve({exitCode: code ?? -1, stderr, stdout});
+    });
+  });
+  return {
+    finished,
+    authorizationUrl: () => new Promise((resolve, reject) => {
+      const check = () => {
+        const match = /https?:\/\/\S+\/authorize\?\S+/u.exec(stderr);
+        if (match !== null) {
+          stderrListeners.delete(check);
+          resolve(match[0]);
+        } else if (child.exitCode !== null) {
+          stderrListeners.delete(check);
+          reject(new Error(`CLI exited before printing an authorization URL: ${stderr}`));
+        }
+      };
+      stderrListeners.add(check);
+      check();
+    }),
+    closeInput: () => {
+      child.stdin.end();
+    },
+    writeLine: (line) => {
+      child.stdin.write(`${line}\n`, "utf8");
+    },
+  };
+}
 
 interface ProcessResult {
   readonly exitCode: number;
@@ -731,6 +911,8 @@ interface OAuthFixtureObservations {
   authorizationCount: number;
   codeExchangeCount: number;
   lastSessionBearer: string | null;
+  lastClientId: string | null;
+  lastRedirectUri: string | null;
   pkceVerified: boolean;
   refreshCount: number;
   registrationCount: number;
@@ -751,6 +933,8 @@ async function startOAuthFixture(): Promise<OAuthFixture> {
     authorizationCount: 0,
     codeExchangeCount: 0,
     lastSessionBearer: null,
+    lastClientId: null,
+    lastRedirectUri: null,
     pkceVerified: false,
     refreshCount: 0,
     registrationCount: 0,
@@ -796,6 +980,7 @@ async function startOAuthFixture(): Promise<OAuthFixture> {
       const registration = z.object({
         redirect_uris: z.array(z.url()).min(1),
       }).passthrough().parse(JSON.parse(await readTextBody(request)));
+      observations.lastRedirectUri = registration.redirect_uris[0] ?? null;
       sendJson(response, 201, {
         client_id: "artifactserver-cli-test-client",
         redirect_uris: registration.redirect_uris,
@@ -807,6 +992,8 @@ async function startOAuthFixture(): Promise<OAuthFixture> {
       observations.authorizationCount += 1;
       codeChallenge = target.searchParams.get("code_challenge");
       expectedRedirect = target.searchParams.get("redirect_uri");
+      observations.lastRedirectUri = expectedRedirect;
+      observations.lastClientId = target.searchParams.get("client_id");
       const state = target.searchParams.get("state");
       if (
         codeChallenge === null

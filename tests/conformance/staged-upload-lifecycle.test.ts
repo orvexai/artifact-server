@@ -48,6 +48,7 @@ describe("staged upload lifecycle", () => {
       clock,
       dispatches: repository,
       externalApiBearerVerifier: null,
+      externalApiOAuthVerifier: null,
       externalMcpBearerVerifier: null,
       externalMcpOAuthVerifier: null,
       ids: new SystemIdGenerator(),
@@ -124,6 +125,7 @@ describe("staged upload lifecycle", () => {
           clock,
           dispatches: foreignRepository,
           externalApiBearerVerifier: null,
+          externalApiOAuthVerifier: null,
           externalMcpBearerVerifier: null,
           externalMcpOAuthVerifier: null,
           ids: new SystemIdGenerator(),
@@ -174,6 +176,60 @@ describe("staged upload lifecycle", () => {
     } finally {
       foreignIdentityRepository.close();
       foreignRepository.close();
+    }
+  });
+
+  test("staged upload URLs use the 10 minute default and accept a configured lifetime", async () => {
+    const bytes = new TextEncoder().encode("short-lived upload");
+    const file = {
+      mediaType: "text/plain",
+      path: "proof.txt",
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      size: bytes.byteLength,
+    };
+    const defaultUpload = await runStaged(runtime, (service) =>
+      service.createUpload({
+        entryPath: file.path,
+        files: [file],
+        principal: testPrincipal("lifetime-default"),
+      })
+    );
+    expect(Date.parse(defaultUpload.expiresAt) - Date.parse(defaultUpload.createdAt))
+      .toBe(10 * 60 * 1_000);
+
+    const configuredRuntime = ManagedRuntime.make(createLocalApplicationLayer({
+      apiToken: Redacted.make("test-api-token"),
+      blobs,
+      bootstrapAdministratorEmail: "admin@example.test",
+      clock,
+      dispatches: repository,
+      externalApiBearerVerifier: null,
+      externalApiOAuthVerifier: null,
+      externalMcpBearerVerifier: null,
+      externalMcpOAuthVerifier: null,
+      ids: new SystemIdGenerator(),
+      identityRepository,
+      installationId: "test-installation",
+      interactiveIdentityProvider: null,
+      localBootstrapCredential: null,
+      protectBootstrapAdministrator: false,
+      repository,
+      staging,
+      uploadUrlLifetimeMilliseconds: 12_000,
+    }));
+    try {
+      await configuredRuntime.context();
+      const configuredUpload = await runStaged(configuredRuntime, (service) =>
+        service.createUpload({
+          entryPath: file.path,
+          files: [file],
+          principal: testPrincipal("lifetime-configured"),
+        })
+      );
+      expect(Date.parse(configuredUpload.expiresAt) - Date.parse(configuredUpload.createdAt))
+        .toBe(12_000);
+    } finally {
+      await configuredRuntime.dispose();
     }
   });
 

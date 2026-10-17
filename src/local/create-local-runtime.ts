@@ -10,10 +10,17 @@ import type {
 import type { InteractiveIdentityProvider } from "../application/interactive-login.js";
 import type { Clock } from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
+import type {GroupRolePolicy} from "../core/group-role-policy.js";
+import type {
+  DirectorySyncReport,
+  MemberDirectory,
+} from "../application/directory-sync.js";
+import {runDirectorySyncPass} from "../lifecycle/directory-sync.js";
 import { SystemClock, SystemIdGenerator } from "../core/system.js";
 import { createHttpApp } from "../http/create-http-app.js";
 import type {
   ApiOAuthResourceConfiguration,
+  DiscoveredOAuthResources,
   HttpAppDependencies,
   McpOAuthResourceConfiguration,
 } from "../http/create-http-app.js";
@@ -90,10 +97,15 @@ export interface LocalRuntimeConfig {
   readonly dataDirectory: string;
   /** Server-only credential shared with a co-launched development proxy. */
   readonly developmentProxyCredential?: string;
+  /** OIDC OAuth that turns on when the issuer is discovered, instead of the static resources. */
+  readonly discoveredOAuth?: DiscoveredOAuthResources;
   readonly externalApiBearerVerifier?: BearerCredentialVerifier;
+  readonly externalApiOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly externalMcpBearerVerifier?: BearerCredentialVerifier;
   readonly externalMcpOAuthVerifier?: ExternalMcpBearerVerifier;
   readonly gitHistory?: NodeGitHistoryConfiguration;
+  /** Issuer groups that admit people and set their role, when configured. */
+  readonly groupRolePolicy?: GroupRolePolicy | null;
   /** Optional provider seam for real-boundary tests; production composes REST. */
   readonly gitHistoryHealthProbe?: GitHistoryProviderHealthProbe;
   /** Complete provider seam for conformance tests; production composes REST and Git. */
@@ -109,6 +121,7 @@ export interface LocalRuntimeConfig {
   readonly runtimeLifecycle?: RuntimeLifecycle;
   readonly installationId?: string;
   readonly serviceVersion?: string;
+  readonly uploadUrlLifetimeMilliseconds?: number;
   readonly stagingCleanupPolicy?: StagingCleanupPolicy;
   /** Overrides the compiled web bundle directory; used by tests. */
   readonly webAssetsRoot?: string;
@@ -118,6 +131,11 @@ export interface LocalRuntime {
   readonly app: ReturnType<typeof createHttpApp>;
   cleanupStaging(limit: number): Promise<ExpiredStagingCleanupReport>;
   close(): Promise<void>;
+  /** Make the members match one directory under the given group roles. */
+  syncDirectory(
+    directory: MemberDirectory,
+    policy: GroupRolePolicy,
+  ): Promise<DirectorySyncReport>;
 }
 
 export async function createLocalRuntime(
@@ -221,8 +239,10 @@ export async function createLocalRuntime(
     clock: runtimeClock,
     dispatches: repository,
     externalApiBearerVerifier: config.externalApiBearerVerifier ?? null,
+      externalApiOAuthVerifier: config.externalApiOAuthVerifier ?? null,
     externalMcpBearerVerifier: config.externalMcpBearerVerifier ?? null,
     externalMcpOAuthVerifier: config.externalMcpOAuthVerifier ?? null,
+    groupRolePolicy: config.groupRolePolicy ?? null,
     ids: new SystemIdGenerator(),
     identityRepository,
     installationId,
@@ -239,6 +259,11 @@ export async function createLocalRuntime(
     staging,
     stagingCleanupPolicy,
   };
+  if (config.uploadUrlLifetimeMilliseconds !== undefined) {
+    Object.assign(applicationAdapters, {
+      uploadUrlLifetimeMilliseconds: config.uploadUrlLifetimeMilliseconds,
+    });
+  }
   if (gitHistoryProvider !== null) {
     Object.assign(applicationAdapters, {gitHistoryProvider});
   }
@@ -321,6 +346,12 @@ export async function createLocalRuntime(
         mcpOAuthResource: config.mcpOAuthResource,
       };
     }
+    if (config.discoveredOAuth !== undefined) {
+      appDependencies = {
+        ...appDependencies,
+        discoveredOAuth: config.discoveredOAuth,
+      };
+    }
     const app = createHttpApp(config.runtimeLifecycle === undefined
       ? appDependencies
       : {...appDependencies, runtimeLifecycle: config.runtimeLifecycle});
@@ -331,6 +362,8 @@ export async function createLocalRuntime(
     return {
       app,
       cleanupStaging: (limit) => runStagingCleanupPass(applicationRuntime, limit),
+      syncDirectory: (directory, policy) =>
+        runDirectorySyncPass(applicationRuntime, directory, policy),
       close: async () => {
         if (closeCleanupSchedule !== null) await closeCleanupSchedule();
         if (gitHistoryWorker !== null) await gitHistoryWorker.close();

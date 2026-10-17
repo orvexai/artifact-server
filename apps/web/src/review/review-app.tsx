@@ -50,6 +50,7 @@ import {
   type ArtifactDetails,
   type ArtifactPage,
   type ArtifactVersion,
+  type ComparedFile,
   type Project,
   type Session,
   type Version,
@@ -63,6 +64,8 @@ import {
 } from "@/lib/presentation";
 import artifactServerAnimationUrl from "./assets/artifact-server.svg";
 import {ArtifactMark} from "./artifact-mark.tsx";
+import {markdownPreviewByteLimit, previewKindOf} from "./preview-kind.ts";
+import {ComparedFileLines} from "./review-comparison.tsx";
 import {
   useReviewComments,
   ReviewCommentsInspector,
@@ -966,6 +969,7 @@ function ArtifactReview({
     && session.principal.membershipRole === "administrator"
   ) || session.principal.capabilities.includes("artifact:manage:any");
   const previewKind = reviewPreviewKind(selectedVersion, selectedPath);
+  const annotatablePreview = previewKind === "html" || previewKind === "markdown";
   const download = reviewDownload(
     projectId,
     selectedArtifactId,
@@ -1630,7 +1634,7 @@ function ArtifactReview({
                   inert={focusControlsCollapsed}
                   role="toolbar"
                 >
-                  {previewKind === "html" && canComment ? (
+                  {annotatablePreview && canComment ? (
                     <button
                       aria-pressed={htmlAnnotateModeActive}
                       className="as-button as-focus-controls__button"
@@ -1757,7 +1761,7 @@ function ArtifactReview({
               <h1>{details?.artifact.name ?? selectedItem?.artifact.name ?? "Artifact Server"}</h1>
             </div>
             <div className="as-preview-header__actions">
-              {previewKind === "html" && canComment ? (
+              {annotatablePreview && canComment ? (
                 <IconButton
                   active={htmlAnnotateModeActive}
                   label={htmlAnnotateModeActive
@@ -2053,21 +2057,9 @@ function reviewDownload(
 ): ReviewDownload | null {
   if (artifactId === null || version === null) return null;
   const entries = version.manifest.entries;
-  const onlyEntry = entries.length === 1 ? entries[0] : undefined;
-  if (onlyEntry !== undefined) {
-    return {
-      href: api.versionFileUrl(
-        projectId,
-        artifactId,
-        version.version.id,
-        onlyEntry.path,
-      ),
-      title: `Download ${onlyEntry.path}`,
-    };
-  }
   return {
     href: api.versionArchiveUrl(projectId, artifactId, version.version.id),
-    title: `Download ${entries.length} files as a ZIP`,
+    title: `Download all ${entries.length} source ${entries.length === 1 ? "file" : "files"} as a ZIP`,
   };
 }
 
@@ -2080,22 +2072,22 @@ function ReviewDownloadControl({
 }) {
   if (download === null) {
     return (
-      <button aria-label="Download" className={className} disabled type="button">
+      <button aria-label="Download source" className={className} disabled type="button">
         <HugeiconsIcon aria-hidden="true" icon={Download04Icon} strokeWidth={1.8} />
-        <span className="as-button__label">Download</span>
+        <span className="as-button__label">Download source</span>
       </button>
     );
   }
   return (
     <a
-      aria-label="Download"
+      aria-label="Download source"
       className={className}
       download
       href={download.href}
       title={download.title}
     >
       <HugeiconsIcon aria-hidden="true" icon={Download04Icon} strokeWidth={1.8} />
-      <span className="as-button__label">Download</span>
+      <span className="as-button__label">Download source</span>
     </a>
   );
 }
@@ -2441,11 +2433,15 @@ function ComparisonInspector({
 }) {
   if (error !== null) return <InlineState description={error.message} title="Comparison unavailable" />;
   if (comparison === null) return <InlineState description="Choose two versions from Versions." title="No comparison" />;
-  const changedEntries = [
-    ...comparison.added.map((entry) => ({kind: "Added", path: entry.path})),
-    ...comparison.changed.map((entry) => ({kind: "Changed", path: entry.after.path})),
-    ...comparison.removed.map((entry) => ({kind: "Removed", path: entry.path})),
-    ...comparison.renamed.map((entry) => ({kind: "Renamed", path: `${entry.from.path} → ${entry.to.path}`})),
+  const changedEntries: readonly {
+    readonly file: ComparedFile | null;
+    readonly kind: string;
+    readonly path: string;
+  }[] = [
+    ...comparison.added.map((entry) => ({file: null, kind: "Added", path: entry.path})),
+    ...comparison.changed.map((entry) => ({file: entry, kind: "Changed", path: entry.after.path})),
+    ...comparison.removed.map((entry) => ({file: null, kind: "Removed", path: entry.path})),
+    ...comparison.renamed.map((entry) => ({file: null, kind: "Renamed", path: `${entry.from.path} → ${entry.to.path}`})),
   ];
   return (
     <div className="as-inspector-stack">
@@ -2462,7 +2458,11 @@ function ComparisonInspector({
         {changedEntries.length === 0 ? <p className="as-inspector-empty">These versions have the same files.</p> : (
           <ol className="as-comparison-list">
             {changedEntries.map((entry) => (
-              <li key={`${entry.kind}-${entry.path}`}><span>{entry.kind}</span><code>{entry.path}</code></li>
+              <li key={`${entry.kind}-${entry.path}`}>
+                <span>{entry.kind}</span>
+                <code>{entry.path}</code>
+                {entry.file === null ? null : <ComparedFileLines file={entry.file} />}
+              </li>
             ))}
           </ol>
         )}
@@ -2777,19 +2777,17 @@ function reviewHref(location: ReviewLocation): string {
 function reviewPreviewKind(
   version: ArtifactVersion | null,
   selectedPath: string | null,
-): "html" | "media" | "other" {
+): "html" | "markdown" | "media" | "other" | "pdf" {
   if (version === null) return "other";
   const path = selectedPath ?? version.manifest.entryPath;
-  const mediaType = version.manifest.entries
-    .find((entry) => entry.path === path)
-    ?.mediaType.split(";", 1)[0]
-    ?.trim()
-    .toLowerCase();
-  if (mediaType === "text/html") return "html";
-  if (mediaType?.startsWith("image/") || mediaType?.startsWith("video/")) {
-    return "media";
-  }
-  return "other";
+  const entry = version.manifest.entries.find((candidate) => candidate.path === path);
+  if (entry === undefined) return "other";
+  const kind = previewKindOf(entry);
+  if (kind === "image" || kind === "video") return "media";
+  // An oversized Markdown file settles into the typed fallback, which has
+  // nothing to annotate.
+  if (kind === "markdown" && entry.size > markdownPreviewByteLimit) return "other";
+  return kind;
 }
 
 function compactId(value: string): string {

@@ -42,6 +42,7 @@ import {
   type ArtifactDeletion,
   type ArtifactPage,
   type ArtifactRecord,
+  type ArtifactStateEntry,
   type ArtifactState,
   type ArtifactTombstone,
   type ArtifactVersion,
@@ -60,6 +61,7 @@ import {
   defaultProjectId,
   defaultProjectName,
   type PublishedVersion,
+  type ProjectAuditEvent,
   type ProjectRecord,
   type RegisteredAgentPresence,
   type RegisteredAgentRecord,
@@ -89,6 +91,7 @@ import type {
   DeleteArtifact,
   DeleteCommentReply,
   DeleteCommentThread,
+  DeleteArtifactStateEntry,
   ExchangeContentBootstrap,
   ExpiredStagedUpload,
   ListAgentDispatches,
@@ -107,6 +110,7 @@ import type {
   StagedUploadRepository,
   UpdateCommentReply,
   UpdateCommentThread,
+  WriteArtifactStateEntry,
 } from "../core/ports.js";
 import {principalKinds, type PrincipalKind} from "../core/identity.js";
 import type {
@@ -388,6 +392,7 @@ const commentThreadStateSchema = z.enum([
 const commentThreadRowSchema = z.object({
   anchorJson: z.string().nullable(),
   artifactId: z.string(),
+  authorActorClientId: z.string().nullable(),
   authorAuthorizedByPrincipalId: z.string().nullable(),
   authorDisplayName: z.string(),
   authorPrincipalId: z.string(),
@@ -400,6 +405,7 @@ const commentThreadRowSchema = z.object({
   projectId: z.string(),
   replyCount: nonnegativeIntegerSchema,
   resolvedAt: z.string().nullable(),
+  resolvedByActorClientId: z.string().nullable(),
   resolvedByAuthorizedByPrincipalId: z.string().nullable(),
   resolvedByDisplayName: z.string().nullable(),
   resolvedByPrincipalId: z.string().nullable(),
@@ -408,8 +414,18 @@ const commentThreadRowSchema = z.object({
   updatedAt: z.string(),
   versionId: z.string(),
 });
+const artifactStateRowSchema = z.object({
+  artifactId: z.string(),
+  key: z.string(),
+  projectId: z.string(),
+  updatedAt: z.string(),
+  updatedByDisplayName: z.string(),
+  updatedByPrincipalId: z.string(),
+  valueJson: z.string(),
+});
 const commentReplyRowSchema = z.object({
   authorAuthorizedByPrincipalId: z.string().nullable(),
+  authorActorClientId: z.string().nullable(),
   authorDisplayName: z.string(),
   authorPrincipalId: z.string(),
   authorPrincipalKind: commentPrincipalKindSchema,
@@ -508,6 +524,7 @@ interface ChangedCommentThreadValues {
   readonly anchorJson: string | null;
   readonly body: string;
   readonly resolvedAt: string | null;
+  readonly resolvedByActorClientId: string | null;
   readonly resolvedByAuthorizedByPrincipalId: string | null;
   readonly resolvedByDisplayName: string | null;
   readonly resolvedByPrincipalId: string | null;
@@ -1205,18 +1222,55 @@ export class PostgresArtifactRepository implements
 
   async setProjectArchive(command: SetProjectArchive): Promise<ProjectRecord> {
     const installationId = this.#installationId;
-    const rows = await this.#database.run(Effect.gen(function*() {
+    return this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
-      return yield* sql`UPDATE projects SET archived_at = ${command.archivedAt}
-        WHERE installation_id = ${installationId} AND id = ${command.projectId}
-        RETURNING installation_id AS "installationId", id, name,
-          created_at AS "createdAt", archived_at AS "archivedAt"`;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        const rows = yield* sql`UPDATE projects SET archived_at = ${command.archivedAt}
+          WHERE installation_id = ${installationId} AND id = ${command.projectId}
+          RETURNING installation_id AS "installationId", id, name,
+            created_at AS "createdAt", archived_at AS "archivedAt"`;
+        const project = projectRowSchema.nullable().parse(rows[0] ?? null);
+        if (project === null) {
+          return yield* new ProjectNotFound({message: "The project does not exist."});
+        }
+        yield* sql`INSERT INTO project_archive_events (
+          installation_id, project_id, action, principal_id,
+          authorized_by_principal_id, actor_display_name, created_at
+        ) VALUES (
+          ${installationId}, ${command.projectId}, ${command.action},
+          ${command.principalId}, ${command.authorizedByPrincipalId},
+          ${command.actorDisplayName}, ${command.createdAt}
+        )`;
+        return project;
+      }));
     }));
-    const project = projectRowSchema.nullable().parse(rows[0] ?? null);
-    if (project === null) {
-      throw new ProjectNotFound({message: "The project does not exist."});
-    }
-    return project;
+  }
+
+  async listProjectAuditEvents(
+    projectId: string,
+  ): Promise<readonly ProjectAuditEvent[]> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(`
+        SELECT id, project_id AS "projectId", action,
+          principal_id AS "principalId",
+          authorized_by_principal_id AS "authorizedByPrincipalId",
+          actor_display_name AS "actorDisplayName", created_at AS "createdAt"
+        FROM project_archive_events
+        WHERE installation_id = $1 AND project_id = $2
+        ORDER BY created_at DESC, id DESC
+      `, [installationId, projectId]);
+      return z.array(z.object({
+        action: z.enum(["archive", "unarchive"]),
+        actorDisplayName: z.string(),
+        authorizedByPrincipalId: z.string().nullable(),
+        createdAt: z.string(),
+        id: z.number().int(),
+        principalId: z.string(),
+        projectId: z.string(),
+      })).parse(rows);
+    }));
   }
 
   /** The owning Postgres database closes the process pool. */
@@ -1328,7 +1382,7 @@ export class PostgresArtifactRepository implements
         yield* this.#assertProjectActive(command.projectId);
         yield* this.#assertStagedUploadReady(
           command.source,
-          command.manifest.digest,
+          command.sourceManifestDigest ?? command.manifest.digest,
           command.createdAt,
         );
         const currentRows = yield* sql.unsafe<{currentVersionId: string}>(
@@ -2148,6 +2202,36 @@ export class PostgresArtifactRepository implements
     ));
   }
 
+  async findStagedUploadByFileCapability(
+    uploadId: string,
+    storageToken: string,
+  ): Promise<StagedUpload | null> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen({self: this}, function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(`
+        SELECT upload.project_id AS "projectId",
+          upload.principal_id AS "principalId"
+        FROM staged_uploads AS upload
+        JOIN staged_upload_files AS file
+          ON file.installation_id = upload.installation_id
+          AND file.upload_id = upload.id
+        WHERE upload.installation_id = $1
+          AND upload.id = $2 AND file.storage_token = $3
+      `, [installationId, uploadId, storageToken]);
+      const owner = z.object({
+        principalId: z.string(),
+        projectId: z.string(),
+      }).nullable().parse(rows[0] ?? null);
+      if (owner === null) return null;
+      return yield* this.#readStagedUploadOrNull(
+        owner.projectId,
+        uploadId,
+        owner.principalId,
+      );
+    }));
+  }
+
   async listExpiredStagedUploads(
     expiredBefore: string,
     limit: number,
@@ -2220,6 +2304,7 @@ export class PostgresArtifactRepository implements
           WHERE file.installation_id = ${installationId}
             AND file.upload_id = ${uploadId}
             AND file.storage_token = ${storageToken}
+            AND file.uploaded_at IS NULL
             AND upload.installation_id = file.installation_id
             AND upload.project_id = ${projectId}
             AND upload.id = file.upload_id
@@ -2246,6 +2331,13 @@ export class PostgresArtifactRepository implements
           if (upload.expiresAt <= uploadedAt) {
             return yield* new UploadExpired({
               message: "The staged upload has expired.",
+            });
+          }
+          if (upload.files.some((file) =>
+            file.storageToken === storageToken && file.uploadedAt !== null
+          )) {
+            return yield* new UploadFileNotFound({
+              message: "The staged upload file capability has already been used.",
             });
           }
           return yield* new UploadFileNotFound({
@@ -2291,9 +2383,10 @@ export class PostgresArtifactRepository implements
           installation_id, project_id, id, artifact_id, version_id, path,
           anchor_json, body, state, author_principal_id,
           author_principal_kind, author_display_name,
-          author_authorized_by_principal_id, resolved_at,
+          author_authorized_by_principal_id, author_actor_client_id, resolved_at,
           resolved_by_principal_id, resolved_by_principal_kind,
           resolved_by_display_name, resolved_by_authorized_by_principal_id,
+          resolved_by_actor_client_id,
           idempotency_key, created_at, updated_at
         ) VALUES (
           ${installationId}, ${command.projectId}, ${command.id},
@@ -2302,7 +2395,8 @@ export class PostgresArtifactRepository implements
           ${command.author.principalId}, ${command.author.principalKind},
           ${command.author.displayName},
           ${command.author.authorizedByPrincipalId},
-          NULL, NULL, NULL, NULL, NULL,
+          ${command.author.actor?.clientId ?? null},
+          NULL, NULL, NULL, NULL, NULL, NULL,
           ${command.idempotencyKey}, ${command.createdAt}, ${command.createdAt}
         )`;
         const createAction = commentActionIdentity(command.id);
@@ -2418,6 +2512,7 @@ export class PostgresArtifactRepository implements
             resolved_by_authorized_by_principal_id = ${
           next.resolvedByAuthorizedByPrincipalId
         },
+            resolved_by_actor_client_id = ${next.resolvedByActorClientId},
             updated_at = ${command.updatedAt}
           WHERE installation_id = ${installationId} AND id = ${command.threadId}
             AND project_id = ${command.projectId}
@@ -2618,15 +2713,16 @@ export class PostgresArtifactRepository implements
           `INSERT INTO comment_replies (
             installation_id, project_id, id, thread_id, body,
             author_principal_id, author_principal_kind, author_display_name,
-            author_authorized_by_principal_id, idempotency_key,
+            author_authorized_by_principal_id, author_actor_client_id,
+            idempotency_key,
             created_at, updated_at
           )
           SELECT thread.installation_id, thread.project_id, $2::text, thread.id,
             $3::text, $4::text, $5::text, $6::text, $7::text, $8::text,
-            $9::text, $9::text
+            $9::text, $10::text, $10::text
           FROM comment_threads thread
-          WHERE thread.installation_id = $1 AND thread.id = $10
-            AND thread.project_id = $11 AND thread.artifact_id = $12
+          WHERE thread.installation_id = $1 AND thread.id = $11
+            AND thread.project_id = $12 AND thread.artifact_id = $13
             AND thread.state = 'open'
           RETURNING id`,
           [
@@ -2637,6 +2733,7 @@ export class PostgresArtifactRepository implements
             command.author.principalKind,
             command.author.displayName,
             command.author.authorizedByPrincipalId,
+            command.author.actor?.clientId ?? null,
             command.idempotencyKey,
             command.createdAt,
             command.threadId,
@@ -2675,6 +2772,87 @@ export class PostgresArtifactRepository implements
           reply: commentReplyFromRow(yield* this.#readReplyRow(command.id)),
         };
       }));
+    }));
+  }
+
+  async deleteArtifactStateEntry(command: DeleteArtifactStateEntry): Promise<void> {
+    const installationId = this.#installationId;
+    await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      yield* sql`DELETE FROM artifact_state_entries
+        WHERE installation_id = ${installationId}
+          AND project_id = ${command.projectId}
+          AND artifact_id = ${command.artifactId}
+          AND key = ${command.key}`;
+    }));
+  }
+
+  async findArtifactStateEntry(
+    projectId: string,
+    artifactId: string,
+    key: string,
+  ): Promise<ArtifactStateEntry | null> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`SELECT artifact_id AS "artifactId", key,
+        project_id AS "projectId", updated_at AS "updatedAt",
+        updated_by_display_name AS "updatedByDisplayName",
+        updated_by_principal_id AS "updatedByPrincipalId",
+        value_json::text AS "valueJson"
+        FROM artifact_state_entries WHERE installation_id = ${installationId}
+          AND project_id = ${projectId} AND artifact_id = ${artifactId}
+          AND key = ${key}`;
+      const row = artifactStateRowSchema.nullable().parse(rows[0] ?? null);
+      return row === null ? null : artifactStateEntryFromRow(row);
+    }));
+  }
+
+  async listArtifactStateEntries(
+    projectId: string,
+    artifactId: string,
+  ): Promise<readonly ArtifactStateEntry[]> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`SELECT artifact_id AS "artifactId", key,
+        project_id AS "projectId", updated_at AS "updatedAt",
+        updated_by_display_name AS "updatedByDisplayName",
+        updated_by_principal_id AS "updatedByPrincipalId",
+        value_json::text AS "valueJson"
+        FROM artifact_state_entries WHERE installation_id = ${installationId}
+          AND project_id = ${projectId} AND artifact_id = ${artifactId}
+        ORDER BY key`;
+      return z.array(artifactStateRowSchema).parse(rows)
+        .map(artifactStateEntryFromRow);
+    }));
+  }
+
+  async writeArtifactStateEntry(
+    command: WriteArtifactStateEntry,
+  ): Promise<ArtifactStateEntry> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`INSERT INTO artifact_state_entries (
+        installation_id, project_id, artifact_id, key, value_json, updated_at,
+        updated_by_display_name, updated_by_principal_id
+      ) VALUES (
+        ${installationId}, ${command.projectId}, ${command.artifactId},
+        ${command.key}, ${command.valueJson}::jsonb, ${command.updatedAt},
+        ${command.updatedByDisplayName}, ${command.updatedByPrincipalId}
+      ) ON CONFLICT (installation_id, project_id, artifact_id, key)
+      DO UPDATE SET value_json = EXCLUDED.value_json,
+        updated_at = EXCLUDED.updated_at,
+        updated_by_display_name = EXCLUDED.updated_by_display_name,
+        updated_by_principal_id = EXCLUDED.updated_by_principal_id
+      RETURNING artifact_id AS "artifactId", key,
+        project_id AS "projectId", updated_at AS "updatedAt",
+        updated_by_display_name AS "updatedByDisplayName",
+        updated_by_principal_id AS "updatedByPrincipalId",
+        value_json::text AS "valueJson"`;
+      const row = artifactStateRowSchema.parse(rows[0]);
+      return artifactStateEntryFromRow(row);
     }));
   }
 
@@ -4575,12 +4753,14 @@ const commentThreadColumns = `SELECT
     thread.author_principal_kind AS "authorPrincipalKind",
     thread.author_display_name AS "authorDisplayName",
     thread.author_authorized_by_principal_id AS "authorAuthorizedByPrincipalId",
+    thread.author_actor_client_id AS "authorActorClientId",
     thread.resolved_at AS "resolvedAt",
     thread.resolved_by_principal_id AS "resolvedByPrincipalId",
     thread.resolved_by_principal_kind AS "resolvedByPrincipalKind",
     thread.resolved_by_display_name AS "resolvedByDisplayName",
     thread.resolved_by_authorized_by_principal_id
       AS "resolvedByAuthorizedByPrincipalId",
+    thread.resolved_by_actor_client_id AS "resolvedByActorClientId",
     thread.created_at AS "createdAt",
     thread.updated_at AS "updatedAt",
     (SELECT COUNT(*) FROM comment_replies reply
@@ -4597,6 +4777,7 @@ const commentReplyColumns = `SELECT
     reply.author_principal_kind AS "authorPrincipalKind",
     reply.author_display_name AS "authorDisplayName",
     reply.author_authorized_by_principal_id AS "authorAuthorizedByPrincipalId",
+    reply.author_actor_client_id AS "authorActorClientId",
     reply.created_at AS "createdAt",
     reply.updated_at AS "updatedAt"
   FROM comment_replies reply`;
@@ -4638,6 +4819,7 @@ function changedThreadValues(
         : serializeCommentAnchor(command.anchor),
       body: command.body ?? row.body,
       resolvedAt: row.resolvedAt,
+      resolvedByActorClientId: row.resolvedByActorClientId,
       resolvedByAuthorizedByPrincipalId: row.resolvedByAuthorizedByPrincipalId,
       resolvedByDisplayName: row.resolvedByDisplayName,
       resolvedByPrincipalId: row.resolvedByPrincipalId,
@@ -4651,6 +4833,7 @@ function changedThreadValues(
       : serializeCommentAnchor(command.anchor),
     body: command.body ?? row.body,
     resolvedAt: command.state.resolvedAt,
+    resolvedByActorClientId: resolution?.actor?.clientId ?? null,
     resolvedByAuthorizedByPrincipalId: resolution?.authorizedByPrincipalId ?? null,
     resolvedByDisplayName: resolution?.displayName ?? null,
     resolvedByPrincipalId: resolution?.principalId ?? null,
@@ -4663,10 +4846,29 @@ function commentAuthorFromRow(
   row: z.infer<typeof commentThreadRowSchema> | z.infer<typeof commentReplyRowSchema>,
 ): CommentAuthor {
   return {
+    actor: row.authorActorClientId === null
+      ? null
+      : {clientId: row.authorActorClientId, kind: "mcp-client"},
     authorizedByPrincipalId: row.authorAuthorizedByPrincipalId,
     displayName: row.authorDisplayName,
     principalId: row.authorPrincipalId,
     principalKind: row.authorPrincipalKind,
+  };
+}
+
+function artifactStateEntryFromRow(
+  row: z.infer<typeof artifactStateRowSchema>,
+): ArtifactStateEntry {
+  return {
+    artifactId: row.artifactId,
+    key: row.key,
+    projectId: row.projectId,
+    updatedAt: row.updatedAt,
+    updatedBy: {
+      displayName: row.updatedByDisplayName,
+      principalId: row.updatedByPrincipalId,
+    },
+    value: JSON.parse(row.valueJson),
   };
 }
 
@@ -4690,6 +4892,9 @@ function commentThreadFromRow(
         row.resolvedByDisplayName === null
       ? null
       : {
+        actor: row.resolvedByActorClientId === null
+          ? null
+          : {clientId: row.resolvedByActorClientId, kind: "mcp-client"},
         authorizedByPrincipalId: row.resolvedByAuthorizedByPrincipalId,
         displayName: row.resolvedByDisplayName,
         principalId: row.resolvedByPrincipalId,

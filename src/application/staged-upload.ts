@@ -45,7 +45,7 @@ import {
   ProjectManagementService,
 } from "./project-management.js";
 
-const uploadLifetimeMilliseconds = 60 * 60 * 1_000;
+export const defaultUploadUrlLifetimeMilliseconds = 10 * 60 * 1_000;
 
 /** Input for creating a principal-bound staged upload. */
 export interface CreateStagedUploadCommand {
@@ -98,6 +98,11 @@ export interface StagedUploadRepositoryPort {
     uploadId: string,
     principalId: string,
   ): Effect.Effect<StagedUpload | null, ArtifactRepositoryFailure>;
+  /** Resolve an upload from its unguessable, file-scoped upload capability. */
+  findStagedUploadByFileCapability(
+    uploadId: string,
+    storageToken: string,
+  ): Effect.Effect<StagedUpload | null, ArtifactRepositoryFailure>;
   markStagedFileUploaded(
     projectId: string,
     uploadId: string,
@@ -142,6 +147,7 @@ export interface StagingStoragePort {
 export interface StagedUploadDependencies {
   readonly clock: ApplicationClock;
   readonly ids: IdGenerator;
+  readonly uploadUrlLifetimeMilliseconds: number;
   readonly staging: StagingStoragePort;
   readonly uploads: StagedUploadRepositoryPort;
 }
@@ -170,6 +176,9 @@ interface StagedUploadOperations {
   ) => Effect.Effect<StagedUpload, StagedUploadFailure>;
   readonly uploadFile: (
     command: UploadStagedFileCommand,
+  ) => Effect.Effect<StagedUpload, StagedUploadFailure>;
+  readonly uploadFileWithCapability: (
+    command: Pick<UploadStagedFileCommand, "body" | "storageToken" | "uploadId">,
   ) => Effect.Effect<StagedUpload, StagedUploadFailure>;
 }
 
@@ -243,7 +252,7 @@ function makeStagedUploadService(
       return yield* dependencies.uploads.createStagedUpload({
         createdAt: DateTime.formatIso(created),
         expiresAt: DateTime.formatIso(
-          DateTime.addDuration(created, uploadLifetimeMilliseconds),
+          DateTime.addDuration(created, dependencies.uploadUrlLifetimeMilliseconds),
         ),
         files: manifest.entries.map((entry) => ({
           entry,
@@ -303,6 +312,51 @@ function makeStagedUploadService(
       );
     },
   );
+
+  const uploadFileWithCapability = Effect.fn(
+    "StagedUploadService.uploadFileWithCapability",
+  )(function*(command: Pick<
+    UploadStagedFileCommand,
+    "body" | "storageToken" | "uploadId"
+  >): Effect.fn.Return<StagedUpload, StagedUploadFailure> {
+    const upload = yield* dependencies.uploads.findStagedUploadByFileCapability(
+      command.uploadId,
+      command.storageToken,
+    );
+    if (upload === null) {
+      return yield* new UploadFileNotFound({
+        message: "The staged upload file capability is invalid.",
+      });
+    }
+    const file = upload.files.find(
+      (candidate) => candidate.storageToken === command.storageToken,
+    );
+    if (file === undefined || file.uploadedAt !== null) {
+      return yield* new UploadFileNotFound({
+        message: "The staged upload file capability has already been used.",
+      });
+    }
+    const startedAt = yield* dependencies.clock.now;
+    yield* ensureUploadAcceptsFiles(upload, startedAt);
+    const signal = abortSignalUntil(upload.expiresAt, startedAt);
+    yield* dependencies.staging.put({
+      body: command.body,
+      sha256: file.entry.sha256,
+      signal,
+      size: file.entry.size,
+      storageToken: file.storageToken,
+      uploadId: upload.id,
+    }).pipe(Effect.catch((error) => Effect.fail(signal.aborted
+      ? new UploadExpired({message: "The staged upload has expired."})
+      : error)));
+    return yield* dependencies.uploads.markStagedFileUploaded(
+      upload.projectId,
+      upload.id,
+      upload.principalId,
+      file.storageToken,
+      DateTime.formatIso(yield* dependencies.clock.now),
+    );
+  });
 
   const publicationSource = (
     upload: StagedUpload,
@@ -419,7 +473,12 @@ function makeStagedUploadService(
     },
   );
 
-  return StagedUploadService.of({commitUpload, createUpload, uploadFile});
+  return StagedUploadService.of({
+    commitUpload,
+    createUpload,
+    uploadFile,
+    uploadFileWithCapability,
+  });
 }
 
 function abortSignalUntil(expiresAt: string, now: DateTime.Utc): AbortSignal {

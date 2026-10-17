@@ -32,6 +32,10 @@ const commentThreadSchema = z.object({
   anchor: z.unknown(),
   artifactId: z.string(),
   author: z.object({
+    actor: z.object({
+      clientId: z.string(),
+      kind: z.literal("mcp-client"),
+    }).nullable(),
     authorizedByPrincipalId: z.string().nullable(),
     displayName: z.string(),
     principalId: z.string(),

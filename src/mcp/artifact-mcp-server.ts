@@ -78,6 +78,7 @@ import {
   maximumUploadPlanRequestBytes,
 } from "../core/publishing-limits.js";
 import {
+  AuthenticationRequired,
   AgentNotFound,
   InvalidComment,
   InvalidDispatch,
@@ -106,7 +107,7 @@ import {
   type ToolResultNudgeFacts,
 } from "./tool-result-nudges.js";
 
-const serverVersion = "0.1.3";
+const serverVersion = "0.1.4";
 const maximumListedArtifacts = 100;
 const maximumTextDiffBytes = 256 * 1_024;
 const accessSettingSchema = z.enum([
@@ -217,7 +218,21 @@ const commentReplyIdSchema = z.string().min(1).max(200);
 // The comment service is the single body authority: it measures the trimmed
 // body and answers with INVALID_COMMENT, so the wire schema only fixes the type.
 const commentBodySchema = z.string();
+const artifactStateKeySchema = z.string().min(1).max(200);
+const artifactStateEntrySchema = z.object({
+  artifactId: z.string(),
+  key: artifactStateKeySchema,
+  projectId: z.string(),
+  updatedAt: z.string(),
+  updatedBy: z.object({displayName: z.string(), principalId: z.string()}).strict(),
+  value: z.unknown(),
+}).strict();
 const commentPathSchema = z.string().min(1).max(1_024);
+// Display-only name an agent gives itself on the comments it writes.
+const agentNameSchema = z.string().trim().min(1).max(80)
+  .regex(/^[^\p{Cc}]+$/u, "An agent name may not contain control characters.")
+  .optional()
+  .describe("Optional name for the agent writing this, e.g. \"PM agent 9571be74\". Shown as \"<name> (agent) for <signed-in user>\".");
 const commentStateSchema = z.enum([
   commentThreadStates.open,
   commentThreadStates.resolved,
@@ -228,6 +243,10 @@ const dispatchedThreadFilterSchema = z.enum([
   dispatchedThreadFilters.only,
 ]);
 const commentAuthorSchema = z.object({
+  actor: z.object({
+    clientId: z.string().min(1),
+    kind: z.literal("mcp-client"),
+  }).strict().nullable(),
   authorizedByPrincipalId: z.string().nullable(),
   displayName: z.string(),
   principalId: z.string(),
@@ -259,7 +278,6 @@ const commentReplySchema = z.object({
   updatedAt: z.string(),
 }).strict();
 const mailboxAgentKind = "mcp-mailbox";
-const defaultMailboxAgentName = "mailbox agent";
 /** A mailbox agent runs wherever its MCP client runs; no directory is known. */
 const mailboxWorkingDirectory = "(mcp mailbox)";
 /** Bound every cursor walk so a server bug can never spin the loop forever. */
@@ -288,7 +306,8 @@ async function collectCursorPages<T>(
   await collect(null);
   return collected;
 }
-const mailboxAgentNameSchema = z.string().trim().min(1).max(120);
+const mailboxAgentNameSchema = z.string().trim().min(1).max(120)
+  .describe("Legacy caller label. Ignored; the server derives agent identity from verified OAuth context.");
 const mailboxDispatchIdSchema = z.string().min(1).max(200);
 const mailboxAnchorSchema = z.object({originalText: z.string()}).loose();
 const mailboxAgentSchema = z.object({
@@ -401,6 +420,10 @@ function runMcpApplicationEffect<A, E>(
 
 /** Values attached to one already authenticated MCP request. */
 export interface ArtifactMcpRequestIdentity {
+  /** OAuth client identifier taken only from a verified bearer token. */
+  readonly agentClientId: string | null;
+  /** Self-reported MCP name used only for display. */
+  readonly agentDisplayName?: string | null;
   readonly principal: Principal;
 }
 
@@ -423,6 +446,31 @@ export function createArtifactMcpServer(
       instructions: agentInstructions(dependencies.mode),
     },
   );
+
+  /**
+   * Keep the verified OAuth client as the durable actor and use the MCP
+   * client's self-reported name only as a display label. It is not used for
+   * authorization; older clients without per-request client info fall back
+   * to their verified client ID.
+   */
+  function clientDisplayName(agentName?: string): string {
+    if (identity.agentClientId === null) return identity.principal.displayName;
+    // A name the agent gives itself is display-only and always marked as an
+    // agent acting for the principal, so it can never pass as their own words.
+    if (agentName !== undefined) {
+      return `${agentName} (agent) for ${identity.principal.displayName}`;
+    }
+    const clientName = identity.agentDisplayName?.trim();
+    const actorName = clientName === undefined || clientName.length === 0
+      ? `MCP client ${identity.agentClientId}`
+      : clientName;
+    return `${actorName} for ${identity.principal.displayName}`;
+  }
+
+  function commentPrincipal(agentName?: string): Principal {
+    if (identity.agentClientId === null) return identity.principal;
+    return {...identity.principal, displayName: clientDisplayName(agentName)};
+  }
 
   /**
    * Register one tool and append the nudge pass to its results. The pass
@@ -494,7 +542,11 @@ export function createArtifactMcpServer(
   async function gatherNudgeFacts(
     progress: NudgeProgressThread | null,
   ): Promise<ToolResultNudgeFacts | null> {
-    const connectionKey = mailboxConnectionKey(identity.principal.id);
+    if (identity.agentClientId === null) return null;
+    const connectionKey = mailboxConnectionKey(
+      identity.principal.id,
+      identity.agentClientId,
+    );
     const agents = await runMcpApplicationEffect(
       dependencies,
       AgentDispatchService.use((registry) =>
@@ -1080,6 +1132,56 @@ export function createArtifactMcpServer(
   );
 
   registerNudgedTool(
+    "artifact_download",
+    {
+      title: "Download artifact source",
+      description:
+        "Return a clickable, authenticated ZIP download URL for the complete source of one exact immutable artifact version. Open the URL in the user's signed-in browser; it does not expose or embed credentials.",
+      inputSchema: z.object({
+        artifactId: artifactIdSchema,
+        projectId: optionalProjectIdSchema,
+        versionId: versionIdSchema,
+      }).strict(),
+      outputSchema: z.object({
+        archiveUrl: z.url(),
+        artifactId: z.string(),
+        reviewUrl: z.url(),
+        versionId: z.string(),
+      }).strict(),
+      annotations: readOnlyAnnotations,
+    },
+    async ({artifactId, projectId, versionId}) => toolResult(async () => {
+      const saved = await runMcpApplicationEffect(
+        dependencies,
+        ArtifactManagementService.use((management) =>
+          management.getVersion({
+            artifactId,
+            principal: identity.principal,
+            projectId,
+            versionId,
+          })
+        ),
+      );
+      const archiveUrl = new URL(
+        `/api/v1/artifacts/${encodeURIComponent(artifactId)}/versions/${encodeURIComponent(versionId)}/archive`,
+        applicationUrl,
+      );
+      archiveUrl.searchParams.set("projectId", saved.version.projectId);
+      return {
+        archiveUrl: archiveUrl.toString(),
+        artifactId,
+        reviewUrl: artifactReviewUrl(
+          applicationUrl,
+          saved.version.projectId,
+          artifactId,
+          saved.version.id,
+        ),
+        versionId: saved.version.id,
+      };
+    }),
+  );
+
+  registerNudgedTool(
     "artifact_diff",
     {
       title: "Compare saved versions",
@@ -1101,12 +1203,12 @@ export function createArtifactMcpServer(
             z.object({
               afterLineCount: z.number().int().nonnegative(),
               beforeLineCount: z.number().int().nonnegative(),
-              change: z.object({
+              changes: z.array(z.object({
                 after: z.array(z.string()),
                 afterStartLine: z.number().int().nonnegative(),
                 before: z.array(z.string()),
                 beforeStartLine: z.number().int().nonnegative(),
-              }).strict().nullable(),
+              }).strict()),
               kind: z.literal("text"),
             }).strict(),
             z.object({
@@ -1190,7 +1292,7 @@ export function createArtifactMcpServer(
     {
       title: "Begin a file upload",
       description:
-        "Begin publishing actual files. Supply relative paths, byte sizes, SHA-256 fingerprints, media types, and the entry file. Upload each file to its returned URL, then call artifact_commit_upload. Do not send file bytes through MCP.",
+        "Begin publishing actual files. Supply relative paths, byte sizes, SHA-256 fingerprints, media types, and the entry file. PUT each file to its returned short-lived, single-use upload URL without an Authorization header, then call artifact_commit_upload. Do not send file bytes through MCP.",
       inputSchema: z.object({
         entryPath: z.string().min(1).max(1_024),
         files: z.array(declaredFileSchema).min(1).max(maximumDeclaredFiles),
@@ -1204,10 +1306,7 @@ export function createArtifactMcpServer(
         }).strict(),
         expiresAt: z.string(),
         files: z.array(z.object({
-          authorization: z.object({
-            credential: z.literal("reuse_the_mcp_bearer_credential"),
-            scheme: z.literal("Bearer"),
-          }).strict(),
+          authorization: z.literal("short_lived_single_use_upload_url"),
           method: z.literal("PUT"),
           path: z.string(),
           size: z.number().int().nonnegative(),
@@ -1549,6 +1648,112 @@ export function createArtifactMcpServer(
   );
 
   registerNudgedTool(
+    "artifact_state_list",
+    {
+      title: "List artifact state",
+      description: "Read the bounded JSON key/value state shared across every saved version of one artifact.",
+      inputSchema: z.object({
+        artifactId: artifactIdSchema,
+        projectId: optionalProjectIdSchema,
+      }).strict(),
+      outputSchema: z.object({entries: z.array(artifactStateEntrySchema)}).strict(),
+      annotations: readOnlyAnnotations,
+    },
+    async ({artifactId, projectId}) => toolResult(async () => {
+      const entries = await runMcpApplicationEffect(
+        dependencies,
+        ArtifactCommentService.use((comments) => comments.listState({
+          artifactId,
+          principal: identity.principal,
+          projectId,
+        })),
+      );
+      return {entries};
+    }),
+  );
+
+  registerNudgedTool(
+    "artifact_state_get",
+    {
+      title: "Get artifact state value",
+      description: "Read one JSON value by key from the state shared across all versions of an artifact.",
+      inputSchema: z.object({
+        artifactId: artifactIdSchema,
+        key: artifactStateKeySchema,
+        projectId: optionalProjectIdSchema,
+      }).strict(),
+      outputSchema: z.object({entry: artifactStateEntrySchema.nullable()}).strict(),
+      annotations: readOnlyAnnotations,
+    },
+    async ({artifactId, key, projectId}) => toolResult(async () => ({
+      entry: await runMcpApplicationEffect(
+        dependencies,
+        ArtifactCommentService.use((comments) => comments.getState({
+          artifactId,
+          key,
+          principal: identity.principal,
+          projectId,
+        })),
+      ),
+    })),
+  );
+
+  registerNudgedTool(
+    "artifact_state_set",
+    {
+      title: "Set artifact state value",
+      description: "Write one bounded JSON value under a stable key shared across every saved version of an artifact.",
+      inputSchema: z.object({
+        artifactId: artifactIdSchema,
+        key: artifactStateKeySchema,
+        projectId: optionalProjectIdSchema,
+        value: z.unknown(),
+      }).strict(),
+      outputSchema: z.object({entry: artifactStateEntrySchema}).strict(),
+      annotations: idempotentWriteAnnotations,
+    },
+    async ({artifactId, key, projectId, value}) => toolResult(async () => ({
+      entry: await runMcpApplicationEffect(
+        dependencies,
+        ArtifactCommentService.use((comments) => comments.setState({
+          artifactId,
+          key,
+          principal: identity.principal,
+          projectId,
+          value,
+        })),
+      ),
+    })),
+  );
+
+  registerNudgedTool(
+    "artifact_state_delete",
+    {
+      title: "Delete artifact state value",
+      description: "Delete one state key shared across all saved versions of an artifact.",
+      inputSchema: z.object({
+        artifactId: artifactIdSchema,
+        key: artifactStateKeySchema,
+        projectId: optionalProjectIdSchema,
+      }).strict(),
+      outputSchema: z.object({deleted: z.literal(true)}).strict(),
+      annotations: idempotentWriteAnnotations,
+    },
+    async ({artifactId, key, projectId}) => toolResult(async () => {
+      await runMcpApplicationEffect(
+        dependencies,
+        ArtifactCommentService.use((comments) => comments.deleteState({
+          artifactId,
+          key,
+          principal: identity.principal,
+          projectId,
+        })),
+      );
+      return {deleted: true};
+    }),
+  );
+
+  registerNudgedTool(
     "comment_list",
     {
       title: "List comment threads",
@@ -1640,6 +1845,7 @@ export function createArtifactMcpServer(
       description:
         "Open one comment thread on one exact saved version, optionally on one manifest path inside it. The anchor is opaque client JSON; the server checks only its size and, when present, that a top-level point has x and y between 0 and 1.",
       inputSchema: z.object({
+        agentName: agentNameSchema,
         anchor: z.unknown().nullable().default(null),
         artifactId: artifactIdSchema,
         body: commentBodySchema,
@@ -1655,6 +1861,7 @@ export function createArtifactMcpServer(
       annotations: idempotentWriteAnnotations,
     },
     async ({
+      agentName,
       anchor,
       artifactId,
       body,
@@ -1672,7 +1879,7 @@ export function createArtifactMcpServer(
             body,
             idempotencyKey,
             path,
-            principal: identity.principal,
+            principal: commentPrincipal(agentName),
             projectId,
             versionId,
           })
@@ -1692,6 +1899,7 @@ export function createArtifactMcpServer(
       description:
         "Add one reply to an open comment thread. A resolved thread rejects replies until it is reopened; replies carry no anchor and cannot be replied to.",
       inputSchema: z.object({
+        agentName: agentNameSchema,
         artifactId: artifactIdSchema,
         body: commentBodySchema,
         idempotencyKey: idempotencyKeySchema,
@@ -1704,7 +1912,7 @@ export function createArtifactMcpServer(
       }).strict(),
       annotations: idempotentWriteAnnotations,
     },
-    async ({artifactId, body, idempotencyKey, projectId, threadId}) =>
+    async ({agentName, artifactId, body, idempotencyKey, projectId, threadId}) =>
       toolResult(async () => {
         const creation = await runMcpApplicationEffect(
           dependencies,
@@ -1713,7 +1921,7 @@ export function createArtifactMcpServer(
               artifactId,
               body,
               idempotencyKey,
-              principal: identity.principal,
+              principal: commentPrincipal(agentName),
               projectId,
               threadId,
             })
@@ -1730,6 +1938,7 @@ export function createArtifactMcpServer(
       description:
         "Close one comment thread as resolved, or reopen it by passing resolved false. Resolving records who resolved it and when.",
       inputSchema: z.object({
+        agentName: agentNameSchema,
         artifactId: artifactIdSchema,
         projectId: optionalProjectIdSchema,
         resolved: z.boolean(),
@@ -1738,13 +1947,13 @@ export function createArtifactMcpServer(
       outputSchema: z.object({thread: commentThreadSchema}).strict(),
       annotations: idempotentWriteAnnotations,
     },
-    async ({artifactId, projectId, resolved, threadId}) => toolResult(async () => ({
+    async ({agentName, artifactId, projectId, resolved, threadId}) => toolResult(async () => ({
       thread: commentThreadProjection(await runMcpApplicationEffect(
         dependencies,
         ArtifactCommentService.use((comments) =>
           comments.updateThread({
             artifactId,
-            principal: identity.principal,
+            principal: commentPrincipal(agentName),
             projectId,
             state: resolved
               ? commentThreadStates.resolved
@@ -1886,27 +2095,36 @@ export function createArtifactMcpServer(
     ),
   );
 
-  const registerMailboxAgent = (agentName: string | null) =>
-    runMcpApplicationEffect(
+  const registerMailboxAgent = (_agentName: string | null) => {
+    const agentClientId = requiredMailboxClientId(identity.agentClientId);
+    return runMcpApplicationEffect(
       dependencies,
       AgentDispatchService.use((agents) =>
         agents.registerAgent({
           agentSessionId: null,
           capabilities: {beacon: false, evidence: agentEvidenceKinds.mailbox},
-          connectionKey: mailboxConnectionKey(identity.principal.id),
-          displayName: agentName ?? defaultMailboxAgentName,
+          connectionKey: mailboxConnectionKey(
+            identity.principal.id,
+            agentClientId,
+          ),
+          displayName: clientDisplayName(),
           kind: mailboxAgentKind,
-          principal: identity.principal,
+          principal: commentPrincipal(),
           workingDirectory: mailboxWorkingDirectory,
         })
       ),
     );
+  };
 
   /** Reports never register: without a prior list or claim, nothing is held. */
   const requireRegisteredMailboxAgent = async (): Promise<
     RegisteredAgentRecord
   > => {
-    const connectionKey = mailboxConnectionKey(identity.principal.id);
+    const agentClientId = requiredMailboxClientId(identity.agentClientId);
+    const connectionKey = mailboxConnectionKey(
+      identity.principal.id,
+      agentClientId,
+    );
     const agents = await runMcpApplicationEffect(
       dependencies,
       AgentDispatchService.use((registry) =>
@@ -2113,7 +2331,7 @@ export function createArtifactMcpServer(
     {
       title: "Agent dispatch inbox",
       description:
-        "This caller's mailbox for annotation bundles a reviewer dispatched to it. list registers the caller as a passive mailbox-tier agent and shows its queued dispatches; claim takes the oldest queued dispatch and returns the rendered bundle message; delivered and failed report the outcome of a claimed dispatch. After reporting delivered, address every thread in the bundle: comment_reply with what you did, then comment_resolve.",
+        "This caller's mailbox for annotation bundles a reviewer dispatched to it. list registers the caller as a passive mailbox-tier agent and shows its queued dispatches; claim takes the oldest queued dispatch and returns the rendered bundle message; delivered and failed report the outcome of a claimed dispatch. OAuth callers are attributed to the verified OAuth client for the human principal, and caller labels do not set agent identity. After reporting delivered, address every thread in the bundle: comment_reply with what you did, then comment_resolve.",
       inputSchema: z.discriminatedUnion("operation", [
         z.object({
           agentName: mailboxAgentNameSchema.nullable().default(null),
@@ -2324,11 +2542,11 @@ function agentInstructions(mode: "local" | "remote"): string {
     "Artifact Server stores actual files as immutable versions. It does not accept inline HTML, CSS, JavaScript, base64, or invented file contents through MCP.",
     "Start with artifact_capabilities when you do not know this installation's limits.",
     "Artifacts belong to projects. Omit projectId only when the installation has one active project; otherwise call project_list and choose explicitly.",
-    "For publishing, inspect the selected file or finished directory on the client, compute each relative path, byte length, media type, and SHA-256 fingerprint, call artifact_create_upload, PUT the exact bytes to every returned uploadUrl using the same bearer credential, then call artifact_commit_upload.",
+    "For publishing, inspect the selected file or finished directory on the client, compute each relative path, byte length, media type, and SHA-256 fingerprint, call artifact_create_upload, PUT the exact bytes to every returned uploadUrl without an Authorization header (each URL is a short-lived, single-use capability), then call artifact_commit_upload.",
     "After publishing, always give the user links.review first so they can see the exact version full screen and comment. Mention links.version second when the raw artifact is useful. Do not put content bootstrap URLs or credentials in chat.",
     "When publishing a new version, first call artifact_get and pass its current version ID as expectedCurrentVersionId. On conflict, inspect the new current version before retrying.",
     "Use a stable application idempotency key when retrying the same mutation. Use a new key only for an intentional new operation.",
-    "Reviewers leave comment threads on an artifact version. Use comment_list and comment_get to read them, comment_create, comment_reply, and comment_update to write, comment_resolve to close or reopen a thread, and comment_delete to remove one you own; deleting a thread also deletes its replies. Sent comments cannot be deleted while their dispatch is queued, claimed, or delivered. comment_clear removes every resolved thread — or all threads — on one artifact at once and reports how many sent comments it skipped.",
+    "Artifact page state persists across saved versions: use artifact_state_list/get to read it and artifact_state_set/delete to write or remove keys. Reviewers leave comment threads on an artifact version. Use comment_list and comment_get to read them, comment_create, comment_reply, and comment_update to write, comment_resolve to close or reopen a thread, and comment_delete to remove one you own; deleting a thread also deletes its replies. Sent comments cannot be deleted while their dispatch is queued, claimed, or delivered. comment_clear removes every resolved thread — or all threads — on one artifact at once and reports how many sent comments it skipped.",
     "comment_list hides threads an agent dispatch currently holds unless you pass dispatched: \"include\" or \"only\"; comment_get still reads a dispatched thread directly by id.",
     "dispatch_inbox is this caller's mailbox for annotation bundles a reviewer dispatched to it: list registers the caller as a mailbox-tier agent and shows its queued dispatches, claim takes the oldest one as a rendered message, and delivered or failed reports the outcome. Address a delivered bundle's threads with comment_reply, then comment_resolve.",
     "artifact_get returns the current complete manifest, current.links.review for exact full-screen Review, and links.artifact for the moving latest version. artifact_open returns reviewUrl for exact full-screen Review and browserUrl for raw immutable content. Prefer the Review URL for human handoff, and never describe browserUrl as a Review link. A remote server never opens a browser on the server machine.",
@@ -2394,15 +2612,12 @@ function uploadPlan(
     },
     expiresAt: upload.expiresAt,
     files: upload.files.map((file) => ({
-      authorization: {
-        credential: "reuse_the_mcp_bearer_credential" as const,
-        scheme: "Bearer" as const,
-      },
+      authorization: "short_lived_single_use_upload_url" as const,
       method: "PUT" as const,
       path: file.entry.path,
       size: file.entry.size,
       uploadUrl: new URL(
-        `/api/v1/uploads/${upload.id}/files/${file.storageToken}?projectId=${encodeURIComponent(upload.projectId)}`,
+        `/api/v1/mcp-uploads/${upload.id}/files/${file.storageToken}`,
         applicationUrl,
       ).toString(),
     })),
@@ -2507,15 +2722,28 @@ interface MailboxAnswer {
 }
 
 /**
- * The mailbox registration identity: stable per principal, so every
- * dispatch_inbox caller reclaims one agent row, and never guessable from
- * another principal's id reading the agent listing.
+ * The mailbox registration identity is stable per verified OAuth client and
+ * principal, so an agent reclaims its own row without caller labels.
  */
-function mailboxConnectionKey(principalId: string): string {
+function mailboxConnectionKey(
+  principalId: string,
+  agentClientId: string,
+): string {
   const digest = createHash("sha256")
     .update(principalId, "utf8")
+    .update("\0", "utf8")
+    .update(agentClientId, "utf8")
     .digest("hex");
   return `mcp-mailbox:${digest.slice(0, 32)}`;
+}
+
+function requiredMailboxClientId(agentClientId: string | null): string {
+  if (agentClientId === null) {
+    throw new AuthenticationRequired({
+      message: "Mailbox access requires an OAuth token with a verified client identifier.",
+    });
+  }
+  return agentClientId;
 }
 
 function mailboxAgentProjection(agent: RegisteredAgentRecord) {

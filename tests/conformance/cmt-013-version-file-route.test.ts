@@ -70,6 +70,11 @@ const siteFiles: readonly TestSiteFile[] = [
     mediaType: "image/png",
     path: "assets/pixel.png",
   },
+  {
+    bytes: new Uint8Array([0, 1, 2, 3]),
+    mediaType: "font/woff2",
+    path: "assets/review.woff2",
+  },
 ];
 
 describe("version file route for the review viewer", () => {
@@ -95,6 +100,7 @@ describe("version file route for the review viewer", () => {
     expect(entries.map((entry) => entry.path).toSorted()).toEqual([
       "assets/app.js",
       "assets/pixel.png",
+      "assets/review.woff2",
       "index.html",
     ]);
 
@@ -217,6 +223,14 @@ describe("version file route for the review viewer", () => {
 
     const publicBytes = await fetchVersion(server, published.links.version);
     expect(publicBytes.status).toBe(200);
+    const publicFont = await fetchVersion(
+      server,
+      `${published.links.version}assets/review.woff2`,
+    );
+    expect(publicFont.status).toBe(200);
+    expect(publicFont.headers.get("content-type")).toBe("font/woff2");
+    expect(publicFont.headers.get("content-disposition")).toBe("inline");
+    await publicFont.arrayBuffer();
     const publicFileRoute = await fetchVersion(
       server,
       `${published.links.version.replace(/\/$/u, "")}${filePath(published, "index.html")}`,

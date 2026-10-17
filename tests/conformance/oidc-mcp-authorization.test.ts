@@ -1,4 +1,7 @@
+import {createHash} from "node:crypto";
 import {createServer, type Server} from "node:http";
+import path from "node:path";
+import {DatabaseSync} from "node:sqlite";
 
 import {
   CLIENT_CAPABILITIES_META_KEY,
@@ -15,6 +18,7 @@ import {
 } from "jose";
 import {Effect, Predicate, Redacted} from "effect";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
+import {z} from "zod";
 
 import {createOidcHostedAuthentication} from
   "../../src/identity/oidc-hosted-authentication.js";
@@ -37,6 +41,14 @@ const realmPath = "/realms/artifact";
 const resource = "https://staging.artifactserver.test/mcp";
 const subject = "9f1d2c3b-0000-4000-8000-artifactserver";
 const userEmail = "administrator@example.test";
+const administratorGroup = "artifact-admins";
+const memberGroup = "artifact-users";
+const memberRowSchema = z.object({
+  email: z.string(),
+  id: z.string(),
+  role: z.string(),
+  status: z.string(),
+});
 
 describe("generic OIDC MCP authorization", () => {
   let installation: TestInstallation;
@@ -335,14 +347,293 @@ describe("generic OIDC MCP authorization", () => {
       .rejects.toThrow("for another resource");
     await expect(verifiedSubject(hosted.externalMcpOAuthVerifier, await
       issueToken({idToken: true}))).rejects.toThrow("ID token is not");
+    await expect(verifiedSubject(hosted.externalMcpOAuthVerifier, await
+      issueToken({clientIdentity: false})))
+      .rejects.toThrow("must identify its OAuth client");
+  });
+
+  test("hosted OIDC config verifies the API audience and publishes matching metadata", async () => {
+    const applicationOrigin = server.baseUrl;
+    const port = server.port;
+    await server.stop();
+    const hosted = await createOidcHostedAuthentication({
+      apiJwksUri: `${issuer}/api-jwks`,
+      applicationOrigin,
+      clientId: "artifact-server",
+      clientSecret: null,
+      issuer,
+      scopes: "openid email profile",
+    });
+    provider.setKeysStatus(503);
+    server = await startTestServer(installation, {
+      applicationOrigin,
+      apiOAuthResource: hosted.apiOAuthResource,
+      bootstrapAdministratorEmail: userEmail,
+      externalApiOAuthVerifier: hosted.externalApiOAuthVerifier,
+      port,
+    });
+
+    const metadata = await fetch(
+      `${server.baseUrl}/.well-known/oauth-protected-resource/api`,
+    );
+    expect(metadata.status).toBe(200);
+    expect(await metadata.json()).toMatchObject({
+      authorization_servers: [issuer],
+      resource: `${applicationOrigin}/api`,
+    });
+
+    const accepted = await fetch(`${server.baseUrl}/api/v1/session`, {
+      headers: {Authorization: `Bearer ${await issueToken({
+        audience: hosted.apiOAuthResource.resource,
+      })}`},
+    });
+    expect(accepted.status).toBe(200);
+    const wrongAudience = await fetch(`${server.baseUrl}/api/v1/session`, {
+      headers: {Authorization: `Bearer ${await issueToken({})}`},
+    });
+    expect(wrongAudience.status).toBe(401);
+  });
+
+  test("an OIDC MCP upload URL uploads once without exposing the access token", async () => {
+    const token = await issueToken({});
+    const bytes = new TextEncoder().encode("<!doctype html><title>oidc</title>\n");
+    const plan = await callTool(token, "artifact_create_upload", {
+      entryPath: "index.html",
+      files: [declaredFile("index.html", "text/html", bytes)],
+    }, uploadPlanSchema);
+
+    const [file] = plan.files;
+    expect(file?.authorization).toBe("short_lived_single_use_upload_url");
+    const uploaded = await putPlanFile(plan.files[0]?.uploadUrl, bytes);
+    expect(uploaded.status).toBe(200);
+    const replayed = await putPlanFile(plan.files[0]?.uploadUrl, bytes);
+    expect([400, 404, 409, 410]).toContain(replayed.status);
+
+    const published = await callTool(token, "artifact_commit_upload", {
+      idempotencyKey: `oidc-upload-${crypto.randomUUID()}`,
+      target: {kind: "new_artifact", name: "OIDC upload"},
+      uploadId: plan.uploadId,
+    }, publishedVersionSchema);
+    expect(published.links.review).toContain("/review");
+  });
+
+  test("an OIDC access token cannot open other API routes or the ordinary upload endpoint", async () => {
+    const token = await issueToken({});
+    const bytes = new TextEncoder().encode("hostile\n");
+    const declared = {
+      entryPath: "index.html",
+      files: [declaredFile("index.html", "text/plain", bytes)],
+    };
+
+    // The short-lived upload URL is the only unauthenticated write capability;
+    // the rest of the API keeps its API-credential contract.
+    const keys = await fetch(`${server.baseUrl}/api/v1/api-keys`, {
+      headers: {Authorization: `Bearer ${token}`},
+    });
+    expect(keys.status).toBe(401);
+    const restCreate = await fetch(`${server.baseUrl}/api/v1/uploads`, {
+      body: JSON.stringify(declared),
+      headers: {Authorization: `Bearer ${token}`, "Content-Type": "application/json"},
+      method: "POST",
+    });
+    expect(restCreate.status).toBe(401);
+
+  });
+
+  async function callTool<Output>(
+    token: string,
+    name: string,
+    parameters: ToolArguments,
+    output: z.ZodType<Output>,
+  ): Promise<Output> {
+    const response = await fetch(`${server.baseUrl}/mcp`, {
+      body: JSON.stringify({
+        id: crypto.randomUUID(),
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          _meta: {
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+            [CLIENT_INFO_META_KEY]: {name: "oidc-auth-test", version: "1"},
+            [PROTOCOL_VERSION_META_KEY]: protocolVersion,
+          },
+          arguments: parameters,
+          name,
+        },
+      }),
+      headers: {
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": protocolVersion,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": name,
+      },
+      method: "POST",
+    });
+    expect(response.status).toBe(200);
+    const body = z.object({
+      result: z.object({
+        isError: z.boolean().optional(),
+        structuredContent: z.unknown(),
+      }).loose(),
+    }).loose().parse(await response.json());
+    expect(body.result.isError ?? false).toBe(false);
+    return output.parse(body.result.structuredContent);
+  }
+
+  /** PUT to the plan's URL path on this test server, whatever its origin. */
+  function putPlanFile(
+    uploadUrl: string | undefined,
+    bytes: Uint8Array,
+  ): Promise<Response> {
+    if (uploadUrl === undefined) throw new Error("The upload plan has no file.");
+    const planned = new URL(uploadUrl);
+    return fetch(new URL(`${planned.pathname}${planned.search}`, server.baseUrl), {
+      body: Buffer.from(bytes),
+      method: "PUT",
+    });
+  }
+
+  test("without group roles a groups claim, even a malformed one, changes nothing", async () => {
+    expect.hasAssertions();
+    expect((await mcpDiscovery(await issueToken({groups: ["unrelated"]})))
+      .status).toBe(200);
+    expect((await mcpDiscovery(await issueToken({groups: "not-a-list"})))
+      .status).toBe(200);
+    expect(members(installation)).toEqual([expect.objectContaining({
+      email: userEmail,
+      role: "administrator",
+      status: "active",
+    })]);
+  });
+
+  describe("with issuer group roles", () => {
+    beforeEach(async () => {
+      // Replace the plain server before anyone has signed in.
+      await server.stop();
+      const authorizationServer = await loadOidcAuthorizationServer(issuer);
+      server = await startTestServer(installation, {
+        bootstrapAdministratorEmail: userEmail,
+        externalMcpOAuthVerifier: new OidcMcpBearerVerifier({
+          audience: resource,
+          groupsClaim: "groups",
+          issuer,
+          jwksUri: authorizationServer.jwksUri,
+          userInfoEndpoint: authorizationServer.userInfoEndpoint,
+        }),
+        groupRolePolicy: {
+          administratorGroups: [administratorGroup],
+          memberGroups: [memberGroup],
+        },
+        mcpOAuthResource: {
+          authorizationServerMetadata: authorizationServer.metadata,
+          resource,
+        },
+      });
+    });
+
+    test("groups admit a member or an administrator and every later token re-applies them", async () => {
+      expect.hasAssertions();
+      expect((await mcpDiscovery(await issueToken({groups: [memberGroup]})))
+        .status).toBe(200);
+      const [admitted] = members(installation);
+      expect(admitted).toMatchObject({role: "member", status: "active"});
+
+      // Promotion and demotion follow the groups of each presented token.
+      expect((await mcpDiscovery(await issueToken({
+        groups: [memberGroup, administratorGroup],
+      }))).status).toBe(200);
+      expect(members(installation)).toEqual([
+        {...admitted, role: "administrator"},
+      ]);
+      expect((await mcpDiscovery(await issueToken({groups: [memberGroup]})))
+        .status).toBe(200);
+      expect(members(installation)).toEqual([{...admitted, role: "member"}]);
+    });
+
+    test("a person in no admitted group is refused and their membership deactivated", async () => {
+      expect.hasAssertions();
+      expect((await mcpDiscovery(await issueToken({
+        groups: [administratorGroup],
+      }))).status).toBe(200);
+      const [admitted] = members(installation);
+      expect(admitted).toMatchObject({role: "administrator", status: "active"});
+
+      // Group names compare exactly, so a differently cased group is no group.
+      expect((await mcpDiscovery(await issueToken({
+        groups: ["Artifact-Admins", "unrelated"],
+      }))).status).toBe(401);
+      // The last administrator leaves too: the issuer decides who administers.
+      expect(members(installation)).toEqual([
+        {...admitted, role: "member", status: "inactive"},
+      ]);
+      expect((await mcpDiscovery(await issueToken({}))).status).toBe(401);
+
+      // Returning to a group restores the same member rather than a new one.
+      expect((await mcpDiscovery(await issueToken({groups: [memberGroup]})))
+        .status).toBe(200);
+      expect(members(installation)).toEqual([
+        {...admitted, role: "member", status: "active"},
+      ]);
+    });
+
+    test("the bootstrap email admits no one outside the groups", async () => {
+      expect.hasAssertions();
+      // Without a policy this verified bootstrap email would become the first
+      // administrator of the empty installation.
+      expect((await mcpDiscovery(await issueToken({}))).status).toBe(401);
+      expect((await mcpDiscovery(await issueToken({groups: []}))).status)
+        .toBe(401);
+      expect(members(installation)).toEqual([]);
+      // Verified email is still required before any group counts.
+      expect((await mcpDiscovery(await issueToken({
+        emailVerified: false,
+        groups: [administratorGroup],
+      }))).status).toBe(401);
+      expect(members(installation)).toEqual([]);
+    });
+
+    test("a malformed groups claim is refused as a provider failure", async () => {
+      expect.hasAssertions();
+      expect((await mcpDiscovery(await issueToken({groups: administratorGroup})))
+        .status).toBe(500);
+      expect((await mcpDiscovery(await issueToken({
+        groups: [administratorGroup, 7],
+      }))).status).toBe(500);
+      expect(members(installation)).toEqual([]);
+    });
+
+    test("a lean token takes its groups from userinfo on every call", async () => {
+      expect.hasAssertions();
+      provider.setUserInfoGroups([administratorGroup]);
+      expect((await mcpDiscovery(await issueToken({profile: false}))).status)
+        .toBe(200);
+      expect(members(installation)).toEqual([
+        expect.objectContaining({role: "administrator", status: "active"}),
+      ]);
+      provider.setUserInfoGroups(null);
+      // With userinfo silent, the token's own claim decides.
+      expect((await mcpDiscovery(await issueToken({
+        groups: [memberGroup],
+        profile: false,
+      }))).status).toBe(200);
+      expect(members(installation)).toEqual([
+        expect.objectContaining({role: "member", status: "active"}),
+      ]);
+      expect(provider.userInfoRequests()).toBe(2);
+    });
   });
 
   async function issueToken(options: {
     readonly audience?: string | string[];
+    readonly clientIdentity?: boolean;
     /** `null` leaves the claim out. */
     readonly emailVerified?: boolean | null;
     readonly expiresAt?: number;
     readonly extraClaims?: Readonly<Record<string, number | string>>;
+    /** The `groups` claim, malformed shapes included; left out unless given. */
+    readonly groups?: readonly (number | string)[] | string;
     readonly idToken?: boolean;
     readonly issuer?: string;
     readonly profile?: boolean;
@@ -355,6 +646,10 @@ describe("generic OIDC MCP authorization", () => {
       azp: "artifact-server",
       scope: "openid profile email",
     };
+    if (options.clientIdentity === false) {
+      delete claims["azp"];
+      delete claims["client_id"];
+    }
     if (options.profile !== false) {
       Object.assign(claims, {
         email: userEmail,
@@ -368,6 +663,7 @@ describe("generic OIDC MCP authorization", () => {
     if (options.extraClaims !== undefined) {
       Object.assign(claims, options.extraClaims);
     }
+    if (options.groups !== undefined) claims["groups"] = options.groups;
     if (options.idToken === true) claims["typ"] = "ID";
     const token = new SignJWT(claims)
       .setProtectedHeader(options.type === undefined
@@ -419,6 +715,37 @@ describe("generic OIDC MCP authorization", () => {
   }
 });
 
+type ToolArgument =
+  | number
+  | string
+  | readonly ToolArgument[]
+  | {readonly [key: string]: ToolArgument};
+
+interface ToolArguments {
+  readonly [key: string]: ToolArgument;
+}
+
+const publishedVersionSchema = z.object({
+  links: z.object({review: z.string()}).loose(),
+}).loose();
+
+const uploadPlanSchema = z.object({
+  files: z.array(z.object({
+    authorization: z.literal("short_lived_single_use_upload_url"),
+    uploadUrl: z.string(),
+  }).loose()).min(1),
+  uploadId: z.string(),
+}).loose();
+
+function declaredFile(manifestPath: string, mediaType: string, bytes: Uint8Array) {
+  return {
+    mediaType,
+    path: manifestPath,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    size: bytes.byteLength,
+  };
+}
+
 function verifiedSubject(
   verifier: ExternalMcpBearerVerifier,
   token: string,
@@ -430,10 +757,28 @@ function verifiedSubject(
   );
 }
 
+function members(
+  installation: TestInstallation,
+): readonly z.infer<typeof memberRowSchema>[] {
+  const database = new DatabaseSync(
+    path.join(installation.dataDirectory, "artifact-server.db"),
+    {readOnly: true},
+  );
+  try {
+    return database
+      .prepare("SELECT id, email, role, status FROM installation_members ORDER BY created_at")
+      .all()
+      .map((row) => memberRowSchema.parse(row));
+  } finally {
+    database.close();
+  }
+}
+
 interface ProviderBoundary {
   readonly issuer: string;
   close(): Promise<void>;
   setKeysStatus(status: number): void;
+  setUserInfoGroups(groups: readonly string[] | null): void;
   setUserInfoStatus(status: number): void;
   userInfoRequests(): number;
 }
@@ -442,6 +787,7 @@ async function startProviderBoundary(options: {
   readonly jwk: JWK;
 }): Promise<ProviderBoundary> {
   let keysStatus = 200;
+  let userInfoGroups: readonly string[] | null = null;
   let userInfoRequestCount = 0;
   let userInfoStatus = 200;
   let issuer = "";
@@ -461,6 +807,11 @@ async function startProviderBoundary(options: {
       response.end(JSON.stringify({keys: [options.jwk]}));
       return;
     }
+    if (request.url === `${realmPath}/api-jwks`) {
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({keys: [options.jwk]}));
+      return;
+    }
     if (request.url === `${realmPath}/protocol/openid-connect/userinfo`) {
       userInfoRequestCount += 1;
       if (userInfoStatus !== 200) {
@@ -474,13 +825,15 @@ async function startProviderBoundary(options: {
         return;
       }
       response.setHeader("Content-Type", "application/json");
-      response.end(JSON.stringify({
+      const profile: JWTPayload = {
         email: userEmail,
         email_verified: true,
         family_name: "Administrator",
         given_name: "Artifact",
         sub: subject,
-      }));
+      };
+      if (userInfoGroups !== null) profile["groups"] = userInfoGroups;
+      response.end(JSON.stringify(profile));
       return;
     }
     response.statusCode = 404;
@@ -497,6 +850,9 @@ async function startProviderBoundary(options: {
     issuer,
     setKeysStatus: (status) => {
       keysStatus = status;
+    },
+    setUserInfoGroups: (groups) => {
+      userInfoGroups = groups;
     },
     setUserInfoStatus: (status) => {
       userInfoStatus = status;
