@@ -31,6 +31,7 @@ import {configureCliAuthCommands} from "./cli-auth-commands.js";
 import {configureLinkCommand} from "./link-command.js";
 import {configureMcpOnboardingCommands} from "./mcp-onboarding-commands.js";
 import {configurePublishCommand} from "./publish-command.js";
+import {configureDownloadCommand} from "./download-command.js";
 import {configureGitHistoryCommands} from "./git-history-commands.js";
 import {waitForProcessSignal} from "./wait-for-process-signal.js";
 import {configureOpenManagementCommand} from "./open-management-command.js";
@@ -70,6 +71,9 @@ configureCliAuthCommands(program, {
   defaultProfileDirectory: defaultUserDataDirectory,
 });
 configurePublishCommand(program, {
+  defaultProfileDirectory: defaultUserDataDirectory,
+});
+configureDownloadCommand(program, {
   defaultProfileDirectory: defaultUserDataDirectory,
 });
 configureGitHistoryCommands(program, {

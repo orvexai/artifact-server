@@ -1080,6 +1080,56 @@ export function createArtifactMcpServer(
   );
 
   registerNudgedTool(
+    "artifact_download",
+    {
+      title: "Download artifact source",
+      description:
+        "Return a clickable, authenticated ZIP download URL for the complete source of one exact immutable artifact version. Open the URL in the user's signed-in browser; it does not expose or embed credentials.",
+      inputSchema: z.object({
+        artifactId: artifactIdSchema,
+        projectId: optionalProjectIdSchema,
+        versionId: versionIdSchema,
+      }).strict(),
+      outputSchema: z.object({
+        archiveUrl: z.url(),
+        artifactId: z.string(),
+        reviewUrl: z.url(),
+        versionId: z.string(),
+      }).strict(),
+      annotations: readOnlyAnnotations,
+    },
+    async ({artifactId, projectId, versionId}) => toolResult(async () => {
+      const saved = await runMcpApplicationEffect(
+        dependencies,
+        ArtifactManagementService.use((management) =>
+          management.getVersion({
+            artifactId,
+            principal: identity.principal,
+            projectId,
+            versionId,
+          })
+        ),
+      );
+      const archiveUrl = new URL(
+        `/api/v1/artifacts/${encodeURIComponent(artifactId)}/versions/${encodeURIComponent(versionId)}/archive`,
+        applicationUrl,
+      );
+      archiveUrl.searchParams.set("projectId", saved.version.projectId);
+      return {
+        archiveUrl: archiveUrl.toString(),
+        artifactId,
+        reviewUrl: artifactReviewUrl(
+          applicationUrl,
+          saved.version.projectId,
+          artifactId,
+          saved.version.id,
+        ),
+        versionId: saved.version.id,
+      };
+    }),
+  );
+
+  registerNudgedTool(
     "artifact_diff",
     {
       title: "Compare saved versions",
