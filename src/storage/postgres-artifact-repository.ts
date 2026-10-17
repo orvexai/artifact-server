@@ -42,6 +42,7 @@ import {
   type ArtifactDeletion,
   type ArtifactPage,
   type ArtifactRecord,
+  type ArtifactStateEntry,
   type ArtifactState,
   type ArtifactTombstone,
   type ArtifactVersion,
@@ -90,6 +91,7 @@ import type {
   DeleteArtifact,
   DeleteCommentReply,
   DeleteCommentThread,
+  DeleteArtifactStateEntry,
   ExchangeContentBootstrap,
   ExpiredStagedUpload,
   ListAgentDispatches,
@@ -108,6 +110,7 @@ import type {
   StagedUploadRepository,
   UpdateCommentReply,
   UpdateCommentThread,
+  WriteArtifactStateEntry,
 } from "../core/ports.js";
 import {principalKinds, type PrincipalKind} from "../core/identity.js";
 import type {
@@ -410,6 +413,15 @@ const commentThreadRowSchema = z.object({
   state: commentThreadStateSchema,
   updatedAt: z.string(),
   versionId: z.string(),
+});
+const artifactStateRowSchema = z.object({
+  artifactId: z.string(),
+  key: z.string(),
+  projectId: z.string(),
+  updatedAt: z.string(),
+  updatedByDisplayName: z.string(),
+  updatedByPrincipalId: z.string(),
+  valueJson: z.string(),
 });
 const commentReplyRowSchema = z.object({
   authorAuthorizedByPrincipalId: z.string().nullable(),
@@ -2763,6 +2775,87 @@ export class PostgresArtifactRepository implements
     }));
   }
 
+  async deleteArtifactStateEntry(command: DeleteArtifactStateEntry): Promise<void> {
+    const installationId = this.#installationId;
+    await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      yield* sql`DELETE FROM artifact_state_entries
+        WHERE installation_id = ${installationId}
+          AND project_id = ${command.projectId}
+          AND artifact_id = ${command.artifactId}
+          AND key = ${command.key}`;
+    }));
+  }
+
+  async findArtifactStateEntry(
+    projectId: string,
+    artifactId: string,
+    key: string,
+  ): Promise<ArtifactStateEntry | null> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`SELECT artifact_id AS "artifactId", key,
+        project_id AS "projectId", updated_at AS "updatedAt",
+        updated_by_display_name AS "updatedByDisplayName",
+        updated_by_principal_id AS "updatedByPrincipalId",
+        value_json::text AS "valueJson"
+        FROM artifact_state_entries WHERE installation_id = ${installationId}
+          AND project_id = ${projectId} AND artifact_id = ${artifactId}
+          AND key = ${key}`;
+      const row = artifactStateRowSchema.nullable().parse(rows[0] ?? null);
+      return row === null ? null : artifactStateEntryFromRow(row);
+    }));
+  }
+
+  async listArtifactStateEntries(
+    projectId: string,
+    artifactId: string,
+  ): Promise<readonly ArtifactStateEntry[]> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`SELECT artifact_id AS "artifactId", key,
+        project_id AS "projectId", updated_at AS "updatedAt",
+        updated_by_display_name AS "updatedByDisplayName",
+        updated_by_principal_id AS "updatedByPrincipalId",
+        value_json::text AS "valueJson"
+        FROM artifact_state_entries WHERE installation_id = ${installationId}
+          AND project_id = ${projectId} AND artifact_id = ${artifactId}
+        ORDER BY key`;
+      return z.array(artifactStateRowSchema).parse(rows)
+        .map(artifactStateEntryFromRow);
+    }));
+  }
+
+  async writeArtifactStateEntry(
+    command: WriteArtifactStateEntry,
+  ): Promise<ArtifactStateEntry> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`INSERT INTO artifact_state_entries (
+        installation_id, project_id, artifact_id, key, value_json, updated_at,
+        updated_by_display_name, updated_by_principal_id
+      ) VALUES (
+        ${installationId}, ${command.projectId}, ${command.artifactId},
+        ${command.key}, ${command.valueJson}::jsonb, ${command.updatedAt},
+        ${command.updatedByDisplayName}, ${command.updatedByPrincipalId}
+      ) ON CONFLICT (installation_id, project_id, artifact_id, key)
+      DO UPDATE SET value_json = EXCLUDED.value_json,
+        updated_at = EXCLUDED.updated_at,
+        updated_by_display_name = EXCLUDED.updated_by_display_name,
+        updated_by_principal_id = EXCLUDED.updated_by_principal_id
+      RETURNING artifact_id AS "artifactId", key,
+        project_id AS "projectId", updated_at AS "updatedAt",
+        updated_by_display_name AS "updatedByDisplayName",
+        updated_by_principal_id AS "updatedByPrincipalId",
+        value_json::text AS "valueJson"`;
+      const row = artifactStateRowSchema.parse(rows[0]);
+      return artifactStateEntryFromRow(row);
+    }));
+  }
+
   async findIdempotentReply(
     projectId: string,
     idempotencyKey: string,
@@ -4760,6 +4853,22 @@ function commentAuthorFromRow(
     displayName: row.authorDisplayName,
     principalId: row.authorPrincipalId,
     principalKind: row.authorPrincipalKind,
+  };
+}
+
+function artifactStateEntryFromRow(
+  row: z.infer<typeof artifactStateRowSchema>,
+): ArtifactStateEntry {
+  return {
+    artifactId: row.artifactId,
+    key: row.key,
+    projectId: row.projectId,
+    updatedAt: row.updatedAt,
+    updatedBy: {
+      displayName: row.updatedByDisplayName,
+      principalId: row.updatedByPrincipalId,
+    },
+    value: JSON.parse(row.valueJson),
   };
 }
 

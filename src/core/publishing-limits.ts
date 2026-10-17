@@ -7,6 +7,15 @@ export const maximumUploadPlanRequestBytes = 16 * 1_024 * 1_024;
 /** Maximum characters accepted in one comment thread or reply body. */
 export const maximumCommentBodyCharacters = 8_192;
 
+/** Maximum distinct keys retained for one artifact's shared state. */
+export const maximumArtifactStateEntryCount = 128;
+
+/** Maximum UTF-8 JSON bytes stored for one artifact-state value. */
+export const maximumArtifactStateEntryBytes = 64 * 1_024;
+
+/** Maximum UTF-8 JSON bytes across one artifact's complete state. */
+export const maximumArtifactStateTotalBytes = 1 * 1_024 * 1_024;
+
 /** Maximum serialized JSON bytes accepted for one comment anchor. */
 export const maximumCommentAnchorBytes = 16_384;
 

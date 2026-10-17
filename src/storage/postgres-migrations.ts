@@ -682,6 +682,23 @@ const addProjectArchiveAudit = Effect.gen(function*() {
     ON project_archive_events (installation_id, project_id, created_at DESC, id DESC)`);
 });
 
+const addArtifactStateEntries = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`CREATE TABLE artifact_state_entries (
+    installation_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    key TEXT NOT NULL CHECK (length(key) BETWEEN 1 AND 200),
+    value_json JSONB NOT NULL CHECK (octet_length(value_json::text) <= 65536),
+    updated_at TEXT NOT NULL,
+    updated_by_display_name TEXT NOT NULL,
+    updated_by_principal_id TEXT NOT NULL,
+    PRIMARY KEY (installation_id, project_id, artifact_id, key),
+    FOREIGN KEY (installation_id, project_id, artifact_id)
+      REFERENCES artifacts(installation_id, project_id, id) ON DELETE CASCADE
+  )`);
+});
+
 const migrationLoader = Migrator.fromRecord({
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -696,10 +713,11 @@ const migrationLoader = Migrator.fromRecord({
   "0011_artifact_search_name": addArtifactSearchName,
   "0012_comment_actor_attribution": addCommentActorAttribution,
   "0013_project_archive_audit": addProjectArchiveAudit,
+  "0014_artifact_state_entries": addArtifactStateEntries,
 });
 
 /** Schema revision required by this Artifact Server build. */
-export const requiredPostgresSchemaVersion = 13;
+export const requiredPostgresSchemaVersion = 14;
 
 /** Migration compatibility observed without changing Postgres. */
 export interface PostgresMigrationStatus {

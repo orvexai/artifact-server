@@ -465,6 +465,10 @@ export const comparisonSchema: z.ZodType<ArtifactComparison> = z.object({
 });
 
 const commentAnchorSchema = z.json();
+const artifactStateValueSchema = z.json();
+
+/** One JSON value a page or agent stores in an artifact's shared state. */
+export type ArtifactStateValue = z.infer<typeof artifactStateValueSchema>;
 const commentThreadStateSchema = z.enum(["open", "resolved"]);
 
 const commentAuthorSchema = z.object({
@@ -511,6 +515,14 @@ const commentThreadDetailsSchema = z.object({
   replies: z.array(commentReplySchema),
   thread: commentThreadSchema,
 });
+const artifactStateEntrySchema = z.object({
+  artifactId: z.string(),
+  key: z.string(),
+  projectId: z.string(),
+  updatedAt: z.string(),
+  updatedBy: z.object({displayName: z.string(), principalId: z.string()}).strict(),
+  value: z.unknown(),
+}).strict();
 
 const createdCommentThreadSchema = z.object({
   replayed: z.boolean(),
@@ -1221,6 +1233,32 @@ export const api = {
       headers: mutationHeaders(idempotencyKey),
       method: "POST",
     },
+  ),
+  artifactState: (projectId: string, artifactId: string) => request(
+    z.object({entries: z.array(artifactStateEntrySchema)}),
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/state?${projectQuery(projectId)}`,
+  ).then(({entries}) => entries),
+  artifactStateValue: (projectId: string, artifactId: string, key: string) => request(
+    z.object({entry: artifactStateEntrySchema.nullable()}),
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/state/${encodeURIComponent(key)}?${projectQuery(projectId)}`,
+  ).then(({entry}) => entry),
+  setArtifactStateValue: (
+    projectId: string,
+    artifactId: string,
+    key: string,
+    value: ArtifactStateValue,
+  ) => request(
+    z.object({entry: artifactStateEntrySchema}),
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/state/${encodeURIComponent(key)}?${projectQuery(projectId)}`,
+    {body: JSON.stringify({value}), headers: mutationHeaders(), method: "PUT"},
+  ).then(({entry}) => entry),
+  deleteArtifactStateValue: (
+    projectId: string,
+    artifactId: string,
+    key: string,
+  ) => requestNoContent(
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/state/${encodeURIComponent(key)}?${projectQuery(projectId)}`,
+    {headers: mutationHeaders(), method: "DELETE"},
   ),
   updateComment: (
     projectId: string,

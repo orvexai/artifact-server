@@ -218,6 +218,15 @@ const commentReplyIdSchema = z.string().min(1).max(200);
 // The comment service is the single body authority: it measures the trimmed
 // body and answers with INVALID_COMMENT, so the wire schema only fixes the type.
 const commentBodySchema = z.string();
+const artifactStateKeySchema = z.string().min(1).max(200);
+const artifactStateEntrySchema = z.object({
+  artifactId: z.string(),
+  key: artifactStateKeySchema,
+  projectId: z.string(),
+  updatedAt: z.string(),
+  updatedBy: z.object({displayName: z.string(), principalId: z.string()}).strict(),
+  value: z.unknown(),
+}).strict();
 const commentPathSchema = z.string().min(1).max(1_024);
 const commentStateSchema = z.enum([
   commentThreadStates.open,
@@ -1607,6 +1616,112 @@ export function createArtifactMcpServer(
   );
 
   registerNudgedTool(
+    "artifact_state_list",
+    {
+      title: "List artifact state",
+      description: "Read the bounded JSON key/value state shared across every saved version of one artifact.",
+      inputSchema: z.object({
+        artifactId: artifactIdSchema,
+        projectId: optionalProjectIdSchema,
+      }).strict(),
+      outputSchema: z.object({entries: z.array(artifactStateEntrySchema)}).strict(),
+      annotations: readOnlyAnnotations,
+    },
+    async ({artifactId, projectId}) => toolResult(async () => {
+      const entries = await runMcpApplicationEffect(
+        dependencies,
+        ArtifactCommentService.use((comments) => comments.listState({
+          artifactId,
+          principal: identity.principal,
+          projectId,
+        })),
+      );
+      return {entries};
+    }),
+  );
+
+  registerNudgedTool(
+    "artifact_state_get",
+    {
+      title: "Get artifact state value",
+      description: "Read one JSON value by key from the state shared across all versions of an artifact.",
+      inputSchema: z.object({
+        artifactId: artifactIdSchema,
+        key: artifactStateKeySchema,
+        projectId: optionalProjectIdSchema,
+      }).strict(),
+      outputSchema: z.object({entry: artifactStateEntrySchema.nullable()}).strict(),
+      annotations: readOnlyAnnotations,
+    },
+    async ({artifactId, key, projectId}) => toolResult(async () => ({
+      entry: await runMcpApplicationEffect(
+        dependencies,
+        ArtifactCommentService.use((comments) => comments.getState({
+          artifactId,
+          key,
+          principal: identity.principal,
+          projectId,
+        })),
+      ),
+    })),
+  );
+
+  registerNudgedTool(
+    "artifact_state_set",
+    {
+      title: "Set artifact state value",
+      description: "Write one bounded JSON value under a stable key shared across every saved version of an artifact.",
+      inputSchema: z.object({
+        artifactId: artifactIdSchema,
+        key: artifactStateKeySchema,
+        projectId: optionalProjectIdSchema,
+        value: z.unknown(),
+      }).strict(),
+      outputSchema: z.object({entry: artifactStateEntrySchema}).strict(),
+      annotations: idempotentWriteAnnotations,
+    },
+    async ({artifactId, key, projectId, value}) => toolResult(async () => ({
+      entry: await runMcpApplicationEffect(
+        dependencies,
+        ArtifactCommentService.use((comments) => comments.setState({
+          artifactId,
+          key,
+          principal: identity.principal,
+          projectId,
+          value,
+        })),
+      ),
+    })),
+  );
+
+  registerNudgedTool(
+    "artifact_state_delete",
+    {
+      title: "Delete artifact state value",
+      description: "Delete one state key shared across all saved versions of an artifact.",
+      inputSchema: z.object({
+        artifactId: artifactIdSchema,
+        key: artifactStateKeySchema,
+        projectId: optionalProjectIdSchema,
+      }).strict(),
+      outputSchema: z.object({deleted: z.literal(true)}).strict(),
+      annotations: idempotentWriteAnnotations,
+    },
+    async ({artifactId, key, projectId}) => toolResult(async () => {
+      await runMcpApplicationEffect(
+        dependencies,
+        ArtifactCommentService.use((comments) => comments.deleteState({
+          artifactId,
+          key,
+          principal: identity.principal,
+          projectId,
+        })),
+      );
+      return {deleted: true};
+    }),
+  );
+
+  registerNudgedTool(
     "comment_list",
     {
       title: "List comment threads",
@@ -2395,7 +2510,7 @@ function agentInstructions(mode: "local" | "remote"): string {
     "After publishing, always give the user links.review first so they can see the exact version full screen and comment. Mention links.version second when the raw artifact is useful. Do not put content bootstrap URLs or credentials in chat.",
     "When publishing a new version, first call artifact_get and pass its current version ID as expectedCurrentVersionId. On conflict, inspect the new current version before retrying.",
     "Use a stable application idempotency key when retrying the same mutation. Use a new key only for an intentional new operation.",
-    "Reviewers leave comment threads on an artifact version. Use comment_list and comment_get to read them, comment_create, comment_reply, and comment_update to write, comment_resolve to close or reopen a thread, and comment_delete to remove one you own; deleting a thread also deletes its replies. Sent comments cannot be deleted while their dispatch is queued, claimed, or delivered. comment_clear removes every resolved thread — or all threads — on one artifact at once and reports how many sent comments it skipped.",
+    "Artifact page state persists across saved versions: use artifact_state_list/get to read it and artifact_state_set/delete to write or remove keys. Reviewers leave comment threads on an artifact version. Use comment_list and comment_get to read them, comment_create, comment_reply, and comment_update to write, comment_resolve to close or reopen a thread, and comment_delete to remove one you own; deleting a thread also deletes its replies. Sent comments cannot be deleted while their dispatch is queued, claimed, or delivered. comment_clear removes every resolved thread — or all threads — on one artifact at once and reports how many sent comments it skipped.",
     "comment_list hides threads an agent dispatch currently holds unless you pass dispatched: \"include\" or \"only\"; comment_get still reads a dispatched thread directly by id.",
     "dispatch_inbox is this caller's mailbox for annotation bundles a reviewer dispatched to it: list registers the caller as a mailbox-tier agent and shows its queued dispatches, claim takes the oldest one as a rendered message, and delivered or failed reports the outcome. Address a delivered bundle's threads with comment_reply, then comment_resolve.",
     "artifact_get returns the current complete manifest, current.links.review for exact full-screen Review, and links.artifact for the moving latest version. artifact_open returns reviewUrl for exact full-screen Review and browserUrl for raw immutable content. Prefer the Review URL for human handoff, and never describe browserUrl as a Review link. A remote server never opens a browser on the server machine.",
