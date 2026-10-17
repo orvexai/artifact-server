@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { withBaseHref } from "./base-href.ts";
 import {
+  frameMessageSchema,
   hostMessageSchema,
   reviewAnchorFrom,
   reviewProtocolVersion,
@@ -51,10 +52,42 @@ function sessionFrom(init: ReviewInit): ReviewSession {
     annotateModeActive: init.annotateModeActive ?? true,
     annotations: init.annotations.map(toAnnotation),
     entryPath: init.entryPath,
-    html: withBaseHref(init.html, init.baseHref),
+    html: withArtifactBridge(withBaseHref(init.html, init.baseHref)),
     readOnly: init.readOnly,
     supportsAnnotateMode: init.annotateModeActive !== undefined,
   };
+}
+
+const artifactBridgeScript = `<script>(() => {
+  let sequence = 0;
+  const pending = new Map();
+  const request = (operation, fields = {}) => new Promise((resolve, reject) => {
+    const id = "page-" + Date.now() + "-" + (++sequence) + "-" + Math.random().toString(36).slice(2);
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error("Artifact bridge timed out.")); }, 15000);
+    pending.set(id, {resolve, reject, timer});
+    window.parent.postMessage({type:"as-artifact-bridge-request", v:1, id, operation, ...fields}, "*");
+  });
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (message?.type !== "as-artifact-bridge-response" || message.v !== 1 || typeof message.id !== "string") return;
+    const call = pending.get(message.id);
+    if (!call) return;
+    clearTimeout(call.timer);
+    pending.delete(message.id);
+    if (message.ok === true) call.resolve(message.result);
+    else call.reject(new Error(typeof message.error === "string" ? message.error : "Artifact bridge request failed."));
+  });
+  Object.defineProperty(window, "artifactServer", {configurable:false, value:Object.freeze({
+    state:Object.freeze({list:() => request("list"), get:(key) => request("get", {key}), set:(key, value) => request("set", {key, value}), delete:(key) => request("delete", {key})}),
+    comments:Object.freeze({create:(body, options = {}) => request("comment_create", {body, ...options})})
+  })});
+})();</script>`;
+
+function withArtifactBridge(html: string): string {
+  return /<\/body\s*>/iu.test(html)
+    ? html.replace(/<\/body\s*>/iu, `${artifactBridgeScript}</body>`)
+    : `${html}${artifactBridgeScript}`;
 }
 
 /** Adopt the host's palette so the viewer chrome and the sandbox agree. */
@@ -92,6 +125,11 @@ export function ReviewFrame(): React.ReactNode {
       const parsed = hostMessageSchema.safeParse(event.data);
       if (!parsed.success) return;
       const message = parsed.data;
+      if (message.type === "as-artifact-bridge-response") {
+        const contentFrame = document.querySelector("iframe");
+        contentFrame?.contentWindow?.postMessage(message, "*");
+        return;
+      }
       if (message.type === "as-review-init") {
         applyTheme(message);
         paintedIdsRef.current = new Set(
@@ -128,6 +166,18 @@ export function ReviewFrame(): React.ReactNode {
     return () => {
       window.removeEventListener("message", onMessage);
     };
+  }, [send]);
+
+  useEffect(() => {
+    const onContentMessage = (event: MessageEvent<unknown>): void => {
+      const contentFrame = document.querySelector("iframe");
+      if (contentFrame?.contentWindow !== event.source || event.origin !== "null") return;
+      const parsed = frameMessageSchema.safeParse(event.data);
+      if (!parsed.success || parsed.data.type !== "as-artifact-bridge-request") return;
+      send(parsed.data);
+    };
+    window.addEventListener("message", onContentMessage);
+    return () => window.removeEventListener("message", onContentMessage);
   }, [send]);
 
   // The viewer paints marks for its initial prop set when the bridge reports

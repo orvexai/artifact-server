@@ -70,7 +70,7 @@ describe("listArtifactComments", () => {
           author: {
             actor: {clientId: "artifact-server", kind: "mcp-client"},
             authorizedByPrincipalId: null,
-            displayName: "MCP client artifact-server for Reviewer",
+            displayName: "Claude Code for Reviewer",
             principalId: "human-reviewer-1",
             principalKind: "human",
           },
@@ -100,14 +100,14 @@ describe("listArtifactComments", () => {
     expect(items[0]?.author).toEqual({
       actor: {clientId: "artifact-server", kind: "mcp-client"},
       authorizedByPrincipalId: null,
-      displayName: "MCP client artifact-server for Reviewer",
+      displayName: "Claude Code for Reviewer",
       principalId: "human-reviewer-1",
       principalKind: "human",
     });
     expect(items[0]?.replies?.[0]?.author).toEqual({
       actor: {clientId: "artifact-server", kind: "mcp-client"},
       authorizedByPrincipalId: null,
-      displayName: "MCP client artifact-server for Reviewer",
+      displayName: "Claude Code for Reviewer",
       principalId: "human-reviewer-1",
       principalKind: "human",
     });
@@ -121,7 +121,7 @@ function thread(id: string) {
     author: {
       actor: {clientId: "artifact-server", kind: "mcp-client"},
       authorizedByPrincipalId: null,
-      displayName: "MCP client artifact-server for Reviewer",
+      displayName: "Claude Code for Reviewer",
       principalId: "human-reviewer-1",
       principalKind: "human",
     },

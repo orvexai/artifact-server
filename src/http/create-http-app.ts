@@ -259,6 +259,8 @@ const createCommentThreadSchema = z.object({
   body: commentBodySchema,
   path: manifestEntryPathSchema.optional(),
 }).strict();
+const artifactStateWriteSchema = z.object({value: z.unknown()}).strict();
+const artifactStateKeySchema = z.string().min(1).max(200);
 const updateCommentThreadSchema = z.object({
   anchor: z.unknown().optional(),
   body: commentBodySchema.optional(),
@@ -1943,6 +1945,67 @@ export function createHttpApp(
       responseApplicationUrl(context, dependencies),
       page,
     ));
+  });
+
+  app.get("/api/v1/artifacts/:artifactId/state", async (context) => {
+    const entries = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      ArtifactCommentService.use((comments) => comments.listState({
+        artifactId: context.req.param("artifactId"),
+        principal: context.get("principal"),
+        projectId: requestedProjectId(context),
+      })),
+    );
+    return context.json({entries});
+  });
+
+  app.get("/api/v1/artifacts/:artifactId/state/:key", async (context) => {
+    const entry = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      ArtifactCommentService.use((comments) => comments.getState({
+        artifactId: context.req.param("artifactId"),
+        key: artifactStateKeySchema.parse(context.req.param("key")),
+        principal: context.get("principal"),
+        projectId: requestedProjectId(context),
+      })),
+    );
+    return context.json({entry});
+  });
+
+  app.put(
+    "/api/v1/artifacts/:artifactId/state/:key",
+    boundedJsonBody,
+    async (context) => {
+      const body = artifactStateWriteSchema.parse(await context.req.json());
+      const entry = await runHttpApplicationEffect(
+        context,
+        dependencies,
+        ArtifactCommentService.use((comments) => comments.setState({
+          artifactId: context.req.param("artifactId"),
+          key: artifactStateKeySchema.parse(context.req.param("key")),
+          principal: context.get("principal"),
+          projectId: requestedProjectId(context),
+          value: body.value,
+        })),
+      );
+      return context.json({entry});
+    },
+  );
+
+  app.delete("/api/v1/artifacts/:artifactId/state/:key", async (context) => {
+    await runHttpApplicationEffect(
+      context,
+      dependencies,
+      ArtifactCommentService.use((comments) => comments.deleteState({
+        artifactId: context.req.param("artifactId"),
+        key: artifactStateKeySchema.parse(context.req.param("key")),
+        principal: context.get("principal"),
+        projectId: requestedProjectId(context),
+      })),
+    );
+    return context.body(null, 204);
   });
 
   app.post(

@@ -11,6 +11,7 @@ import {
   frameMessageSchema,
   reviewProtocolVersion,
   type HostMessage,
+  type ArtifactBridgeRequest,
   type ReviewAnchor,
   type ReviewAnnotation,
 } from "@/review-frame/protocol";
@@ -266,6 +267,7 @@ function HtmlPreview({
   const [error, setError] = useState<Error | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const initialisedRef = useRef(false);
+  const bridgeRequestTimesRef = useRef<number[]>([]);
 
   const postToFrame = useCallback((message: HostMessage): void => {
     const frame = frameRef.current?.contentWindow;
@@ -318,9 +320,27 @@ function HtmlPreview({
     const onMessage = (event: MessageEvent<unknown>): void => {
       if (event.source !== frameRef.current?.contentWindow) return;
       if (event.origin !== window.location.origin) return;
+      let messageBytes: number;
+      try {
+        messageBytes = new TextEncoder().encode(JSON.stringify(event.data)).byteLength;
+      } catch {
+        return;
+      }
+      if (messageBytes > 70 * 1_024) return;
       const parsed = frameMessageSchema.safeParse(event.data);
       if (!parsed.success) return;
       const message = parsed.data;
+      if (message.type === "as-artifact-bridge-request") {
+        void handleArtifactBridgeRequest(
+          message,
+          projectId,
+          artifactId,
+          version.version.id,
+          postToFrame,
+          bridgeRequestTimesRef.current,
+        );
+        return;
+      }
       if (message.type === "as-review-ready") {
         setFrameReady(true);
         return;
@@ -358,6 +378,9 @@ function HtmlPreview({
     onSubmitAnnotation,
     onUnanchoredChange,
     postToFrame,
+    projectId,
+    artifactId,
+    version.version.id,
   ]);
 
   useEffect(() => {
@@ -791,4 +814,74 @@ function PreviewState({
       <p>{description}</p>
     </div>
   );
+}
+
+async function handleArtifactBridgeRequest(
+  request: ArtifactBridgeRequest,
+  projectId: string,
+  artifactId: string,
+  versionId: string,
+  postToFrame: (message: HostMessage) => void,
+  requestTimes: number[],
+): Promise<void> {
+  const now = Date.now();
+  while (requestTimes[0] !== undefined && requestTimes[0] < now - 60_000) {
+    requestTimes.shift();
+  }
+  if (requestTimes.length >= 30) {
+    postToFrame({error: "Artifact bridge request limit exceeded.", id: request.id, ok: false, type: "as-artifact-bridge-response", v: reviewProtocolVersion});
+    return;
+  }
+  requestTimes.push(now);
+  try {
+    const result = await runArtifactBridgeOperation(
+      request,
+      projectId,
+      artifactId,
+      versionId,
+    );
+    postToFrame({id: request.id, ok: true, result, type: "as-artifact-bridge-response", v: reviewProtocolVersion});
+  } catch (cause) {
+    postToFrame({
+      error: cause instanceof Error ? cause.message.slice(0, 500) : "Artifact bridge request failed.",
+      id: request.id,
+      ok: false,
+      type: "as-artifact-bridge-response",
+      v: reviewProtocolVersion,
+    });
+  }
+}
+
+async function runArtifactBridgeOperation(
+  request: ArtifactBridgeRequest,
+  projectId: string,
+  artifactId: string,
+  versionId: string,
+) {
+  switch (request.operation) {
+    case "list":
+      return api.artifactState(projectId, artifactId);
+    case "get":
+      return api.artifactStateValue(projectId, artifactId, request.key);
+    case "set":
+      return api.setArtifactStateValue(projectId, artifactId, request.key, request.value);
+    case "delete":
+      await api.deleteArtifactStateValue(projectId, artifactId, request.key);
+      return {deleted: true};
+    default: {
+      // A page script is untrusted; it posts as the viewer only with their consent.
+      const preview = request.body.length > 500 ? `${request.body.slice(0, 500)}…` : request.body;
+      if (!window.confirm(`This page wants to post a comment as you:\n\n${preview}`)) {
+        throw new Error("The viewer declined the comment.");
+      }
+      const created = await api.createComment(
+        projectId,
+        artifactId,
+        versionId,
+        {anchor: null, body: request.body, path: request.path},
+        `page-${request.id}`,
+      );
+      return {threadId: created.thread.id};
+    }
+  }
 }

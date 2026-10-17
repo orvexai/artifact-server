@@ -283,6 +283,15 @@ export function createApplicationLayer(
           try: () => adapters.repository.findCurrentVersion(projectId, artifactId),
           catch: (cause) => repositoryFailure("findCurrentVersion", cause),
         }),
+      findVersionRecord: (projectId, artifactId, versionId) =>
+        Effect.tryPromise({
+          try: () => adapters.repository.findVersionRecord(
+            projectId,
+            artifactId,
+            versionId,
+          ),
+          catch: (cause) => repositoryFailure("findVersionRecord", cause),
+        }),
     },
   };
   const stagedDependencies: StagedUploadDependencies = {
@@ -558,6 +567,10 @@ export function createApplicationLayer(
         "createCommentThread",
         () => adapters.repository.createThread(command),
       ),
+      deleteStateEntry: (command) => commentEffect(
+        "deleteArtifactStateEntry",
+        () => adapters.repository.deleteArtifactStateEntry(command),
+      ),
       deleteReply: (command) => commentEffect(
         "deleteCommentReply",
         () => adapters.repository.deleteReply(command),
@@ -569,6 +582,10 @@ export function createApplicationLayer(
       findArtifact: (projectId, artifactId) => commentEffect(
         "findArtifact",
         () => adapters.repository.findArtifact(projectId, artifactId),
+      ),
+      findStateEntry: (projectId, artifactId, key) => commentEffect(
+        "findArtifactStateEntry",
+        () => adapters.repository.findArtifactStateEntry(projectId, artifactId, key),
       ),
       findVersionRecord: (projectId, artifactId, versionId) => commentEffect(
         "findVersionRecord",
@@ -590,6 +607,10 @@ export function createApplicationLayer(
         "listCommentThreads",
         () => adapters.repository.listThreads(command),
       ),
+      listStateEntries: (projectId, artifactId) => commentEffect(
+        "listArtifactStateEntries",
+        () => adapters.repository.listArtifactStateEntries(projectId, artifactId),
+      ),
       updateReply: (command) => commentEffect(
         "updateCommentReply",
         () => adapters.repository.updateReply(command),
@@ -597,6 +618,10 @@ export function createApplicationLayer(
       updateThread: (command) => commentEffect(
         "updateCommentThread",
         () => adapters.repository.updateThread(command),
+      ),
+      writeStateEntry: (command) => commentEffect(
+        "writeArtifactStateEntry",
+        () => adapters.repository.writeArtifactStateEntry(command),
       ),
       versionContainsPath: (projectId, versionId, path) => commentEffect(
         "versionContainsPath",

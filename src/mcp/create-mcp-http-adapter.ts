@@ -1,5 +1,6 @@
 import {
   createMcpHandler,
+  CLIENT_INFO_META_KEY,
   type AuthInfo,
   OAuthError,
   OAuthErrorCode,
@@ -78,19 +79,20 @@ export function createMcpHttpAdapter(
   dependencies: McpHttpAdapterDependencies,
 ): McpHttpAdapter {
   const handler = createMcpHandler(
-    (context) => {
+    async (context) => {
       const principal = principalSchema.parse(
         context.authInfo?.extra?.["artifactServerPrincipal"],
       );
       const agentClientId = z.string().min(1).nullable().parse(
         context.authInfo?.extra?.["artifactServerOAuthClientId"] ?? null,
       );
+      const agentDisplayName = z.string().trim().min(1).max(120).nullable()
+        .parse(context.authInfo?.extra?.["artifactServerMcpClientName"] ?? null);
       const attributedPrincipal = agentClientId === null
         ? principal
         : {
           ...principal,
           actorClientId: agentClientId,
-          displayName: `MCP client ${agentClientId} for ${principal.displayName}`,
         };
       const serverDependencies: ArtifactMcpServerDependencies = {
         applicationOrigin: dependencies.applicationOrigin
@@ -104,7 +106,7 @@ export function createMcpHttpAdapter(
       };
       return createArtifactMcpServer(
         serverDependencies,
-        {agentClientId, principal: attributedPrincipal},
+        {agentClientId, agentDisplayName, principal: attributedPrincipal},
         context,
       );
     },
@@ -139,9 +141,45 @@ export function createMcpHttpAdapter(
       const authenticate = requireBearerAuth(bearerOptions);
       const auth = await authenticate(request);
       if (auth instanceof Response) return auth;
-      return handler.fetch(request, {authInfo: auth});
+      const agentDisplayName = await mcpClientDisplayName(request);
+      const attributedAuth = agentDisplayName === null
+        ? auth
+        : {
+          ...auth,
+          extra: {
+            ...auth.extra,
+            artifactServerMcpClientName: agentDisplayName,
+          },
+        };
+      return handler.fetch(request, {authInfo: attributedAuth});
     },
   };
+}
+
+/** Read MCP client identity for display only; it never supplies authorization. */
+async function mcpClientDisplayName(
+  request: Request | undefined,
+): Promise<string | null> {
+  if (request === undefined || request.method !== "POST") return null;
+  try {
+    const body: unknown = await request.clone().json();
+    const envelope = z.object({
+      params: z.record(z.string(), z.unknown()),
+    }).passthrough().safeParse(body);
+    if (!envelope.success) return null;
+    const meta = z.record(z.string(), z.unknown()).safeParse(
+      envelope.data.params["_meta"],
+    );
+    if (!meta.success) return null;
+    const clientInfo = z.object({
+      name: z.string().trim().min(1).max(120),
+    }).passthrough().safeParse(
+      meta.data[CLIENT_INFO_META_KEY],
+    );
+    return clientInfo.success ? clientInfo.data.name : null;
+  } catch {
+    return null;
+  }
 }
 
 async function authenticateToken(

@@ -34,6 +34,7 @@ const inlineApplicationMediaTypes = new Set([
   "application/javascript",
   "application/json",
   "application/pdf",
+  "application/vnd.ms-fontobject",
   "application/xhtml+xml",
   "application/xml",
 ]);

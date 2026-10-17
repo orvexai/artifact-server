@@ -10,6 +10,7 @@ import type {
   ArtifactState,
   ArtifactVersion,
   ArtifactRecord,
+  ArtifactStateEntry,
   CanonicalManifest,
   CommentAuthor,
   DispatchedThreadFilter,
@@ -127,6 +128,8 @@ export interface CommitArtifactVersion {
   readonly idempotencyKey: string;
   readonly inputDigest: string;
   readonly manifest: CanonicalManifest;
+  /** Digest of the staged input manifest when the committed manifest carries earlier files forward. */
+  readonly sourceManifestDigest?: string;
   readonly principalId: string;
   readonly projectId: string;
   readonly authorizedByPrincipalId: string | null;
@@ -220,6 +223,26 @@ export interface CreateCommentThread {
   readonly path: string | null;
   readonly projectId: string;
   readonly versionId: string;
+}
+
+/** Values used to store one per-artifact JSON state entry. */
+export interface WriteArtifactStateEntry {
+  readonly artifactId: string;
+  readonly installationId: string;
+  readonly key: string;
+  readonly projectId: string;
+  readonly updatedAt: string;
+  readonly updatedByDisplayName: string;
+  readonly updatedByPrincipalId: string;
+  readonly valueJson: string;
+}
+
+/** Values used to remove one per-artifact JSON state entry. */
+export interface DeleteArtifactStateEntry {
+  readonly artifactId: string;
+  readonly installationId: string;
+  readonly key: string;
+  readonly projectId: string;
 }
 
 /** Values used to read one bounded page of comment threads on one artifact. */
@@ -337,6 +360,12 @@ export interface CommentRepository {
   createThread(command: CreateCommentThread): Promise<CommentThreadCreation>;
   deleteReply(command: DeleteCommentReply): Promise<void>;
   deleteThread(command: DeleteCommentThread): Promise<CommentThreadDeletion>;
+  deleteArtifactStateEntry(command: DeleteArtifactStateEntry): Promise<void>;
+  findArtifactStateEntry(
+    projectId: string,
+    artifactId: string,
+    key: string,
+  ): Promise<ArtifactStateEntry | null>;
   findIdempotentReply(
     projectId: string,
     idempotencyKey: string,
@@ -352,8 +381,13 @@ export interface CommentRepository {
   ): Promise<CommentThreadRecord | null>;
   listReplies(threadId: string): Promise<readonly CommentReplyRecord[]>;
   listThreads(command: ListCommentThreads): Promise<CommentThreadPage>;
+  listArtifactStateEntries(
+    projectId: string,
+    artifactId: string,
+  ): Promise<readonly ArtifactStateEntry[]>;
   updateReply(command: UpdateCommentReply): Promise<CommentReplyRecord>;
   updateThread(command: UpdateCommentThread): Promise<CommentThreadRecord>;
+  writeArtifactStateEntry(command: WriteArtifactStateEntry): Promise<ArtifactStateEntry>;
   /** Determine whether one saved version's manifest declares one exact path. */
   versionContainsPath(
     projectId: string,

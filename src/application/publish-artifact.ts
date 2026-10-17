@@ -22,6 +22,7 @@ import {
 import type { Principal } from "../core/identity.js";
 import type {
   AccessSetting,
+  ArtifactVersion,
   CanonicalManifest,
   PublishedVersion,
 } from "../core/model.js";
@@ -34,6 +35,7 @@ import type {
   StoredBlob,
 } from "../core/ports.js";
 import type {ManifestFailure} from "./parse-manifest.js";
+import {parseManifest} from "./parse-manifest.js";
 import {
   type AuthorizationOperations,
   AuthorizationService,
@@ -117,6 +119,11 @@ export interface PublishArtifactRepository {
     projectId: string,
     artifactId: string,
   ): Effect.Effect<PublishedVersion | null, ArtifactRepositoryFailure>;
+  findVersionRecord(
+    projectId: string,
+    artifactId: string,
+    versionId: string,
+  ): Effect.Effect<ArtifactVersion | null, ArtifactRepositoryFailure>;
 }
 
 /** Immutable blob capability required by publication. */
@@ -290,10 +297,22 @@ function makePublishArtifactService(
       command.principal,
     );
     const idempotencyKey = yield* parseIdempotencyKey(command.idempotencyKey);
+    const baseVersion = yield* dependencies.repository.findVersionRecord(
+      command.projectId,
+      command.artifactId,
+      command.expectedCurrentVersionId,
+    );
+    const manifest = baseVersion === null
+      ? command.manifest
+      : yield* parseManifest({
+        entryPath: baseVersion.manifest.entryPath,
+        files: mergeManifestFiles(baseVersion.manifest, command.manifest),
+        routingMode: baseVersion.manifest.routingMode,
+      });
     const inputDigest = artifactVersionInputDigest({
       artifactId: command.artifactId,
       expectedCurrentVersionId: command.expectedCurrentVersionId,
-      manifest: command.manifest,
+      manifest,
       principalId: command.principal.id,
       projectId: command.projectId,
     });
@@ -321,7 +340,8 @@ function makePublishArtifactService(
       expectedCurrentVersionId: command.expectedCurrentVersionId,
       idempotencyKey,
       inputDigest,
-      manifest: command.manifest,
+      manifest,
+      sourceManifestDigest: command.manifest.digest,
       principalId: command.principal.id,
       projectId: command.projectId,
       authorizedByPrincipalId: command.principal.authorizedByPrincipalId,
@@ -374,6 +394,27 @@ function artifactVersionInputDigest(input: ArtifactVersionDigestInput): string {
     projectId: input.projectId,
   });
   return createHash("sha256").update(canonicalInput).digest("hex");
+}
+
+function mergeManifestFiles(
+  base: CanonicalManifest,
+  changed: CanonicalManifest,
+): readonly {
+  readonly mediaType: string;
+  readonly path: string;
+  readonly sha256: string;
+  readonly size: number;
+}[] {
+  const filesByPath = new Map(
+    base.entries.map((entry) => [entry.path, entry] as const),
+  );
+  for (const entry of changed.entries) filesByPath.set(entry.path, entry);
+  return [...filesByPath.values()].map(({mediaType, path, sha256, size}) => ({
+    mediaType,
+    path,
+    sha256,
+    size,
+  }));
 }
 
 function publicationSourcesByPath(

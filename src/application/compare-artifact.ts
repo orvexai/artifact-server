@@ -275,7 +275,10 @@ function changedLineRegions(
   before: readonly string[],
   after: readonly string[],
 ): readonly TextLineChange[] {
-  const maxEditDistance = 512;
+  // Keep enough edit history for sizeable files with many small, separated
+  // edits. The per-file byte limit bounds line count; this cap avoids
+  // unbounded quadratic trace growth for complete rewrites.
+  const maxEditDistance = 1_024;
   let frontier = new Map<number, number>([[1, 0]]);
   const trace: Map<number, number>[] = [];
   let distance = 0;

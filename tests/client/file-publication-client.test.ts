@@ -90,18 +90,49 @@ describe("file publication client", () => {
     await Promise.all([
       writeFile(path.join(sitePath, "home.html"), "<h1>Complete client site</h1>"),
       writeFile(path.join(sitePath, "assets/app.js"), "document.body.dataset.ready = 'yes';"),
+      writeFile(path.join(sitePath, "data.json"), "{\"revision\":1}"),
     ]);
     const site = await executeClient(
       server.baseUrl,
       installation.apiToken,
       {
-        ...newArtifactCommand(sitePath, "account_required"),
+        ...newArtifactCommand(sitePath, "public_link"),
         entryPath: "home.html",
       },
     );
     expect(site.success).toBe(true);
     if (!site.success) return;
     expect(site.result.version.entryPath).toBe("home.html");
+
+    const updatedData = "{\"revision\":2}";
+    const dataPath = path.join(sitePath, "data.json");
+    await writeFile(dataPath, updatedData);
+    const partialSiteVersion = await executeClient(
+      server.baseUrl,
+      installation.apiToken,
+      {
+        idempotencyKey: randomUUID(),
+        inputPath: dataPath,
+        target: {
+          artifactId: site.result.artifact.id,
+          expectedCurrentVersionId: site.result.version.id,
+          kind: "new_version",
+        },
+      },
+    );
+    if (!partialSiteVersion.success) throw partialSiteVersion.error;
+    expect(partialSiteVersion.result.version).toMatchObject({
+      entryPath: "home.html",
+      number: 2,
+    });
+    const carriedHome = await fetchLoopbackContent(
+      new URL("home.html", partialSiteVersion.result.links.version),
+    );
+    expect(await carriedHome.text()).toBe("<h1>Complete client site</h1>");
+    const updatedDataResponse = await fetchLoopbackContent(
+      new URL("data.json", partialSiteVersion.result.links.version),
+    );
+    expect(await updatedDataResponse.text()).toBe(updatedData);
 
     const secondReport = Buffer.from("%PDF-1.4\nsecond client version\n%%EOF\n");
     await writeFile(reportPath, secondReport);
@@ -298,11 +329,15 @@ describe("file publication client", () => {
       mediaTypeForPath("index.HTML"),
       mediaTypeForPath("document.pdf"),
       mediaTypeForPath("movie.mp4"),
+      mediaTypeForPath("assets/regular.woff2"),
+      mediaTypeForPath("assets/legacy.eot"),
       mediaTypeForPath("unknown.custom"),
     ]).toEqual([
       "text/html; charset=utf-8",
       "application/pdf",
       "video/mp4",
+      "font/woff2",
+      "application/vnd.ms-fontobject",
       "application/octet-stream",
     ]);
   });
