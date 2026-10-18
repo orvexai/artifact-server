@@ -95,7 +95,9 @@ artifactserver_version=$(node -p \
   "$artifactserver_repository/package.json")
 artifactserver_archive="$artifactserver_output/artifact-server-${artifactserver_version}-node.tar.gz"
 
-tar -czf "$artifactserver_archive" \
+chmod 0755 "$artifactserver_stage/dist/cli/main.js"
+# pnpm stages node_modules as hard links; plain files keep safe extractors happy.
+tar --hard-dereference -czf "$artifactserver_archive" \
   -C "$artifactserver_stage_parent" artifactserver
 node "$artifactserver_repository/scripts/local-package-metadata.mjs" manifest \
   "$artifactserver_archive" \
