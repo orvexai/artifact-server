@@ -699,7 +699,7 @@ const addArtifactStateEntries = Effect.gen(function*() {
   )`);
 });
 
-const migrationLoader = Migrator.fromRecord({
+const postgresMigrations = {
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
   "0003_spa_routing": addSpaRouting,
@@ -714,10 +714,24 @@ const migrationLoader = Migrator.fromRecord({
   "0012_comment_actor_attribution": addCommentActorAttribution,
   "0013_project_archive_audit": addProjectArchiveAudit,
   "0014_artifact_state_entries": addArtifactStateEntries,
-});
+};
+
+const migrationLoader = Migrator.fromRecord(postgresMigrations);
+
+/** Migration history this build expects, derived from the loader's keys. */
+export const expectedPostgresMigrationHistory = Object.keys(postgresMigrations)
+  .map((key) => {
+    const separator = key.indexOf("_");
+    return {
+      migration_id: Number(key.slice(0, separator)),
+      name: key.slice(separator + 1),
+    };
+  })
+  .toSorted((left, right) => left.migration_id - right.migration_id);
 
 /** Schema revision required by this Artifact Server build. */
-export const requiredPostgresSchemaVersion = 14;
+export const requiredPostgresSchemaVersion =
+  expectedPostgresMigrationHistory.at(-1)?.migration_id ?? 0;
 
 /** Migration compatibility observed without changing Postgres. */
 export interface PostgresMigrationStatus {
@@ -772,49 +786,7 @@ export const readPostgresMigrationStatus = Effect.gen(function*() {
     ORDER BY migration_id
   `.withoutTransform;
   const currentVersion = rows.at(-1)?.migration_id ?? 0;
-  const expectedHistory = [{
-    migration_id: 1,
-    name: "initial_shared_schema",
-  }, {
-    migration_id: 2,
-    name: "project_scoped_artifacts",
-  }, {
-    migration_id: 3,
-    name: "spa_routing",
-  }, {
-    migration_id: 4,
-    name: "comment_threads",
-  }, {
-    migration_id: 5,
-    name: "login_attempt_nonce",
-  }, {
-    migration_id: 6,
-    name: "agent_dispatch",
-  }, {
-    migration_id: 7,
-    name: "git_history_provider_identity",
-  }, {
-    migration_id: 8,
-    name: "project_git_history_setting",
-  }, {
-    migration_id: 9,
-    name: "git_history_mirror",
-  }, {
-    migration_id: 10,
-    name: "agent_capabilities",
-  }, {
-    migration_id: 11,
-    name: "artifact_search_name",
-  }, {
-    migration_id: 12,
-    name: "comment_actor_attribution",
-  }, {
-    migration_id: 13,
-    name: "project_archive_audit",
-  }, {
-    migration_id: 14,
-    name: "artifact_state_entries",
-  }] as const;
+  const expectedHistory = expectedPostgresMigrationHistory;
   const observedRequiredHistory = rows.filter(
     (row) => row.migration_id <= requiredPostgresSchemaVersion,
   );
