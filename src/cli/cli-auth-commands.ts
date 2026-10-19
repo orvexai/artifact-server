@@ -68,7 +68,7 @@ export function configureCliAuthCommands(
     .description("Sign the CLI in to one exact Artifact Server origin.")
     .argument("<server>", "Artifact Server origin")
     .addOption(new Option("--name <profile>", "saved profile name"))
-    .addOption(new Option("--headless", "print the OAuth URL and paste the authorization code back").default(false))
+    .addOption(new Option("--headless", "sign in from another computer: open the printed link there, then paste back the 127.0.0.1 address the browser ends on").default(false))
     .addOption(
       new Option(
         "--api-key-stdin",
