@@ -203,8 +203,8 @@ async function waitForAuthorizationResponse(
   }
   if (acceptPaste) {
     process.stderr.write(wait.headless || early.kind === "browser_failed"
-      ? "Open the URL above in any browser, sign in, then paste the authorization code or the full redirect URL: "
-      : "Waiting for the browser. If it runs on another machine, paste the final redirect URL here: ");
+      ? "Paste the 127.0.0.1 address from your browser here: "
+      : `Waiting for the browser. If you signed in on another computer, copy the http://127.0.0.1:${cliOAuthCallbackPort}/... address its error page shows and paste it here: `);
   }
   const abort = new AbortController();
   let answered = false;
@@ -477,8 +477,15 @@ class ArtifactServerOAuthProvider implements OAuthClientProvider {
     }
     if (this.#headless) {
       process.stderr.write(`
-Open this authorization URL on a machine with a browser:
-${terminalLink(url)}
+Sign in to Artifact Server from any computer with a browser:
+
+  1. Open this link (click it, or copy it into your browser):
+     ${terminalLink(url)}
+  2. Sign in. Your browser then tries to open an address starting with
+     http://127.0.0.1:${cliOAuthCallbackPort}/oauth/callback and shows an error such as
+     "This site can't be reached". That is expected: the address is meant
+     for this machine, not the computer your browser runs on.
+  3. Copy the whole address from the browser's address bar and paste it below.
 
 `);
       return Promise.resolve();
