@@ -2570,6 +2570,20 @@ requirements:
         run: project/evidence/browser.json
         recorded_at: "2026-09-03T16:09:11.243Z"
 
+  - id: CMT-022
+    kind: behavior
+    behavior: Review keeps an HTML entry's same-document navigation inside the sandboxed reviewed document in standard and full-screen modes, although the injected content-host base would otherwise turn fragment links and History API URLs into navigations away from it.
+    owner: artifact-comments
+    source: {file: artifact-comments-spec.md, anchor: conformance-requirements-to-add}
+    acceptance:
+      behavior: {id: CMT-022-B, description: "In standard and focus Review, interact-mode clicks on fragment links, an SVG fragment link, a link naming the entry file, an empty fragment, and the current fragment again scroll the about:srcdoc document with hashchange and no Content Security Policy refusal, while History API replaceState and pushState to this document's fragments succeed."}
+      failure: {id: CMT-022-F, description: "Page-handled clicks, links to another file, and History URLs naming another file keep their browser behavior; the frame stays sandboxed allow-scripts with an opaque origin and relative CSS and images still load from the version content host."}
+    deployments: *all
+    status: implementing
+    proof_gap: tests/browser/review-html-navigation.spec.ts passes CMT-022-B and CMT-022-F in Chromium, and CMT-022-B in Firefox, but the regenerated browser evidence cannot be recorded while the unrelated CMT-021 browser test still fails on the renamed Download source control. Firefox cannot load lease-host images in the local harness for any Review test, and WebKit was not run.
+    depends_on: [CMT-014, CMT-018]
+    evidence: []
+
   - id: ADM-001
     kind: behavior
     behavior: Artifact Server ships one canonical React application for Review and settings, plus the isolated Review frame; every former application route redirects to the equivalent canonical destination without serving or loading a legacy application bundle.

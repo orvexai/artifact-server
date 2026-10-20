@@ -52,7 +52,7 @@ function sessionFrom(init: ReviewInit): ReviewSession {
     annotateModeActive: init.annotateModeActive ?? true,
     annotations: init.annotations.map(toAnnotation),
     entryPath: init.entryPath,
-    html: withArtifactBridge(withBaseHref(init.html, init.baseHref)),
+    html: withArtifactBridge(withBaseHref(init.html, init.baseHref, init.entryPath)),
     readOnly: init.readOnly,
     supportsAnnotateMode: init.annotateModeActive !== undefined,
   };
