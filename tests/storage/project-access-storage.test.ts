@@ -86,10 +86,10 @@ describe("project access storage (SQLite)", () => {
     await repository.setProjectAccessMode(installationId, defaultProject, "restricted");
     await grant("g-old", "manager");
     readWrite((database) => database.exec("UPDATE directory_group_members SET provider = NULL"));
-    for (const name of ["ada", "cat"]) {
-      expect((await repository.findProjectAccess(installationId, defaultProject, `mem_${name}`))
-        ?.grantRoles).toEqual([]);
-    }
+    const before = await Promise.all(["ada", "cat"].map((name) =>
+      repository.findProjectAccess(installationId, defaultProject, `mem_${name}`)
+    ));
+    expect(before.map((access) => access?.grantRoles)).toEqual([[], []]);
     // The next sync records the provider and the unbound member matches again.
     await groups([group("g-old", [["user-ada", "ada"], ["user-imposter", "cat"]])]);
     expect((await repository.findProjectAccess(installationId, defaultProject, "mem_ada"))
