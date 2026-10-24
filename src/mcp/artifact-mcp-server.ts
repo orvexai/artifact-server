@@ -34,6 +34,7 @@ import {
   type LinkArtifactCommand,
   type LinkedPublication,
 } from "../application/linked-artifacts.js";
+import {listDirectoryGroups} from "../application/directory-groups.js";
 import {ProjectManagementService} from "../application/project-management.js";
 import {ProjectGitHistoryService} from
   "../application/project-git-history.js";
@@ -693,6 +694,32 @@ export function createArtifactMcpServer(
           projects.listProjects(identity.principal)
         ),
       )).map(projectProjection),
+    })),
+  );
+
+  registerNudgedTool(
+    "group_list",
+    {
+      title: "List groups",
+      description:
+        "List the identity-provider groups this installation copies, by full path, with member counts. Groups are managed in the identity provider, not here.",
+      inputSchema: z.object({}).strict(),
+      outputSchema: z.object({
+        groups: z.array(z.object({
+          id: z.string(),
+          memberCount: z.number().int().nonnegative(),
+          name: z.string(),
+          path: z.string(),
+          syncedAt: z.string(),
+        }).strict()),
+      }).strict(),
+      annotations: readOnlyAnnotations,
+    },
+    () => toolResult(async () => ({
+      groups: [...await runMcpApplicationEffect(
+        dependencies,
+        listDirectoryGroups(identity.principal),
+      )],
     })),
   );
 
