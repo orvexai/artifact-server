@@ -47,6 +47,8 @@ export interface ProjectAccessRecord {
   readonly accessMode: ProjectAccessMode;
   /** The grant roles reaching this member through its directory groups. */
   readonly grantRoles: readonly ProjectGrantRole[];
+  /** True when this member created the project, which makes it a manager. */
+  readonly isCreator: boolean;
   /** Null when the principal is not a stored member. */
   readonly member: {
     readonly role: MembershipRole;
@@ -68,7 +70,8 @@ export type ProjectAccess =
  * key, the bootstrap key) keeps full reach. Every human principal, whether a
  * browser session, an MCP client, or an API key issued for that member, is
  * judged as the member in `principal.id`, by its current stored role and
- * status rather than by what the credential carries.
+ * status rather than by what the credential carries. The member who created
+ * a project manages it.
  */
 export function resolveProjectAccess(
   principal: Principal,
@@ -87,7 +90,7 @@ export function resolveProjectAccess(
   if (member.role === membershipRoles.administrator) {
     return {mode: "restricted", role: "administrator"};
   }
-  let best: ProjectRole | null = null;
+  let best: ProjectRole | null = record.isCreator ? "manager" : null;
   for (const role of record.grantRoles) {
     if (best === null || roleRank[role] > roleRank[best]) best = role;
   }

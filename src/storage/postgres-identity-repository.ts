@@ -121,6 +121,10 @@ const directoryGroupRowSchema = z.object({
 });
 const projectAccessModeSchema = z.enum(["installation", "restricted"]);
 const projectGrantRoleSchema = z.enum(["viewer", "editor", "manager"]);
+const projectAccessRowSchema = z.object({
+  access_mode: projectAccessModeSchema,
+  created_by_member_id: z.string().nullable(),
+});
 const projectGroupGrantRowSchema = z.object({
   grantedAt: z.string(),
   grantedByPrincipalId: z.string(),
@@ -254,12 +258,13 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     return this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const projects = yield* sql.unsafe<object>(
-        "SELECT access_mode FROM projects WHERE installation_id = $1 AND id = $2",
+        "SELECT access_mode, created_by_member_id FROM projects WHERE installation_id = $1 AND id = $2",
         [installationId, projectId],
       );
       if (projects.length === 0) return null;
-      const accessMode = z.object({access_mode: projectAccessModeSchema})
-        .parse(projects[0]).access_mode;
+      const project = projectAccessRowSchema.parse(projects[0]);
+      const accessMode = project.access_mode;
+      const isCreator = project.created_by_member_id === memberId;
       const members = yield* sql.unsafe<object>(
         `SELECT email, role, status FROM installation_members
          WHERE installation_id = $1 AND id = $2`,
@@ -272,6 +277,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         return {
           accessMode,
           grantRoles: [],
+          isCreator,
           member: member === null ? null : {role: member.role, status: member.status},
         };
       }
@@ -303,6 +309,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         accessMode,
         grantRoles: z.array(z.object({role: projectGrantRoleSchema})).parse(grants)
           .map((row) => row.role),
+        isCreator,
         member: {role: member.role, status: member.status},
       };
     }));

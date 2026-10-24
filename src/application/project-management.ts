@@ -14,7 +14,7 @@ import {
   ProjectNotFound,
   ProjectSelectionRequired,
 } from "../core/errors.js";
-import type {Principal} from "../core/identity.js";
+import {principalKinds, type Principal} from "../core/identity.js";
 import type {ProjectAuditEvent, ProjectRecord} from "../core/model.js";
 import type {
   CreateProject,
@@ -212,6 +212,10 @@ function makeProjectManagementService(
       const project = yield* dependencies.repository.createProject({
         archivedAt: null,
         createdAt: DateTime.formatIso(yield* dependencies.clock.now),
+        // A service key creates a project with no managing member.
+        createdByMemberId: command.principal.kind === principalKinds.human
+          ? command.principal.id
+          : null,
         id: dependencies.ids.projectId(),
         installationId: dependencies.installationId,
         name,

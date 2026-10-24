@@ -119,6 +119,7 @@ import type {
   WriteArtifactStateEntry,
   PublicationSource,
   ProjectRepository,
+  CreateProject,
   RenameProject,
   RestoreArtifactVersion,
   SetProjectArchive,
@@ -580,18 +581,20 @@ export class SqliteArtifactRepository implements
     this.#migrate(installationId);
   }
 
-  createProject(command: ProjectRecord): Promise<ProjectRecord> {
+  createProject(command: CreateProject): Promise<ProjectRecord> {
     return Promise.resolve().then(() => {
       try {
         this.#database.prepare(`
-          INSERT INTO projects (id, installation_id, name, created_at, archived_at)
-          VALUES (?, ?, ?, ?, ?)
+          INSERT INTO projects (
+            id, installation_id, name, created_at, archived_at, created_by_member_id
+          ) VALUES (?, ?, ?, ?, ?, ?)
         `).run(
           command.id,
           this.#installationId,
           command.name,
           command.createdAt,
           command.archivedAt,
+          command.createdByMemberId,
         );
       } catch (cause) {
         if (isSqliteConstraint(cause)) {
@@ -5108,9 +5111,14 @@ export class SqliteArtifactRepository implements
   }
 
   #addProjectAccessModeIfMissing(): void {
-    if (this.#tableColumns("projects").includes("access_mode")) return;
-    this.#database.exec(`ALTER TABLE projects ADD COLUMN access_mode TEXT NOT NULL
-      DEFAULT 'installation' CHECK (access_mode IN ('installation', 'restricted'))`);
+    const columns = this.#tableColumns("projects");
+    if (!columns.includes("access_mode")) {
+      this.#database.exec(`ALTER TABLE projects ADD COLUMN access_mode TEXT NOT NULL
+        DEFAULT 'installation' CHECK (access_mode IN ('installation', 'restricted'))`);
+    }
+    if (!columns.includes("created_by_member_id")) {
+      this.#database.exec("ALTER TABLE projects ADD COLUMN created_by_member_id TEXT");
+    }
   }
 
   #addArtifactSearchNameIfMissing(): void {

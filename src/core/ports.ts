@@ -629,7 +629,10 @@ export interface CreateStagedUpload {
 }
 
 /** Values persisted when creating one project. */
-export type CreateProject = ProjectRecord;
+export interface CreateProject extends ProjectRecord {
+  /** The member who created it, who manages it once it is restricted. */
+  readonly createdByMemberId: string | null;
+}
 
 /** Values used to change one project's label. */
 export interface RenameProject {

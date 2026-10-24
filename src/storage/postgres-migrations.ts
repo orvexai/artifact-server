@@ -747,6 +747,12 @@ const addProjectAccess = Effect.gen(function*() {
     ON project_group_grants (installation_id, group_id)`);
 });
 
+const addProjectCreator = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  // The member who created a project manages it once it is restricted.
+  yield* sql.unsafe("ALTER TABLE projects ADD COLUMN created_by_member_id TEXT");
+});
+
 const postgresMigrations = {
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -764,6 +770,7 @@ const postgresMigrations = {
   "0014_artifact_state_entries": addArtifactStateEntries,
   "0015_directory_groups": addDirectoryGroups,
   "0016_project_access": addProjectAccess,
+  "0017_project_creator": addProjectCreator,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

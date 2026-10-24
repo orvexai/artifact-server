@@ -47,7 +47,7 @@ describe("project access storage (SQLite)", () => {
 
   test("an existing project stays open to every member", async () => {
     expect(await repository.findProjectAccess(installationId, defaultProject, "nobody"))
-      .toEqual({accessMode: "installation", grantRoles: [], member: null});
+      .toEqual({accessMode: "installation", grantRoles: [], isCreator: false, member: null});
     expect(await repository.findProjectAccess(installationId, "prj_missing", "nobody"))
       .toBeNull();
   });
@@ -114,6 +114,44 @@ describe("project access storage (SQLite)", () => {
     expect(await repository.listProjectGroupGrants(installationId, defaultProject)).toEqual([]);
   });
 
+  test("the member recorded as creator is reported as the creator", async () => {
+    await Promise.all(["ada", "bob"].map(admit));
+    await repository.setProjectAccessMode(installationId, defaultProject, "restricted");
+    readWrite((database) => database.prepare(
+      "UPDATE projects SET created_by_member_id = ? WHERE id = ?",
+    ).run("mem_ada", defaultProject));
+    expect(await repository.findProjectAccess(installationId, defaultProject, "mem_ada"))
+      .toMatchObject({grantRoles: [], isCreator: true});
+    expect(await repository.findProjectAccess(installationId, defaultProject, "mem_bob"))
+      .toMatchObject({grantRoles: [], isCreator: false});
+  });
+
+  test("a project created with a service key has no managing creator", async () => {
+    repository.close();
+    const runtime = await openRuntime();
+    let projectId: string;
+    try {
+      const response = await runtime.app.request("http://localhost/api/v1/projects", {
+        body: JSON.stringify({name: "Service project"}),
+        headers: {
+          Authorization: `Bearer ${installation.apiToken}`,
+          "Content-Type": "application/json",
+          "Idempotency-Key": "create-service-project",
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(201);
+      projectId = z.object({project: z.object({id: z.string()})}).parse(await response.json())
+        .project.id;
+    } finally {
+      await runtime.close();
+    }
+    repository = new SqliteIdentityRepository(databasePath);
+    expect(readOnly((database) => database.prepare(
+      "SELECT access_mode, created_by_member_id FROM projects WHERE id = ?",
+    ).get(projectId))).toEqual({access_mode: "installation", created_by_member_id: null});
+  });
+
   test("an unknown group or project is refused", async () => {
     await expect(repository.putProjectGroupGrant(installationId, {
       grantedAt: "t",
@@ -132,13 +170,14 @@ describe("project access storage (SQLite)", () => {
       DROP TABLE project_group_grants;
       ALTER TABLE directory_group_members DROP COLUMN provider;
       ALTER TABLE projects DROP COLUMN access_mode;
+      ALTER TABLE projects DROP COLUMN created_by_member_id;
       PRAGMA user_version = 14;
     `));
     await (await openRuntime()).close();
     repository = new SqliteIdentityRepository(databasePath);
     expect(readOnly((database) =>
       database.prepare("PRAGMA user_version").get()
-    )).toEqual({user_version: 15});
+    )).toEqual({user_version: 16});
     expect(await repository.findProjectAccess(installationId, defaultProject, "nobody"))
       .toMatchObject({accessMode: "installation"});
     await groups([group("g-a", [])]);

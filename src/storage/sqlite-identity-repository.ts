@@ -47,6 +47,10 @@ const directoryGroupRowSchema = z.object({
 });
 const projectAccessModeSchema = z.enum(["installation", "restricted"]);
 const projectGrantRoleSchema = z.enum(["viewer", "editor", "manager"]);
+const projectAccessRowSchema = z.object({
+  access_mode: projectAccessModeSchema,
+  created_by_member_id: z.string().nullable(),
+});
 const projectGroupGrantRowSchema = z.object({
   grantedAt: z.string(),
   grantedByPrincipalId: z.string(),
@@ -267,11 +271,12 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     memberId: string,
   ): Promise<ProjectAccessRecord | null> {
     const project = this.#database.prepare(
-      "SELECT access_mode FROM projects WHERE installation_id = ? AND id = ?",
+      "SELECT access_mode, created_by_member_id FROM projects WHERE installation_id = ? AND id = ?",
     ).get(installationId, projectId);
     if (project === undefined) return null;
-    const accessMode = z.object({access_mode: projectAccessModeSchema})
-      .parse(project).access_mode;
+    const projectRow = projectAccessRowSchema.parse(project);
+    const accessMode = projectRow.access_mode;
+    const isCreator = projectRow.created_by_member_id === memberId;
     const row = this.#database.prepare(
       "SELECT email, role, status FROM installation_members WHERE installation_id = ? AND id = ?",
     ).get(installationId, memberId);
@@ -280,6 +285,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       return {
         accessMode,
         grantRoles: [],
+        isCreator,
         member: member === null ? null : {role: member.role, status: member.status},
       };
     }
@@ -308,6 +314,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       accessMode,
       grantRoles: z.array(z.object({role: projectGrantRoleSchema})).parse(grants)
         .map((grant) => grant.role),
+      isCreator,
       member: {role: member.role, status: member.status},
     };
   }
