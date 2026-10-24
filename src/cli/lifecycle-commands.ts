@@ -18,7 +18,7 @@ import {
 } from "../identity/oidc-hosted-authentication.js";
 import {createWorkOsHostedAuthentication} from
   "../identity/workos-hosted-authentication.js";
-import {KeycloakDirectory} from "../identity/keycloak-directory.js";
+import {KeycloakDirectory, type KeycloakDirectoryConfig} from "../identity/keycloak-directory.js";
 import {
   checkCompactIntegrity,
   checkExternalStorageIntegrity,
@@ -166,12 +166,17 @@ function configureMaintenance(program: Command): void {
           "maintenance sync-directory requires OIDC group roles (ARTIFACT_SERVER_OIDC_MEMBER_GROUPS or ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS) and the ARTIFACT_SERVER_OIDC_DIRECTORY_* settings.",
         );
       }
-      const directory = new KeycloakDirectory({
+      const directoryConfig: KeycloakDirectoryConfig = {
         adminBaseUrl: directorySettings.adminBaseUrl,
         clientId: directorySettings.clientId,
         clientSecret: directorySettings.clientSecret,
         issuer: oidc.issuer,
-      });
+      };
+      const directory = new KeycloakDirectory(
+        directorySettings.tokenEndpoint === undefined
+          ? directoryConfig
+          : {...directoryConfig, tokenEndpoint: directorySettings.tokenEndpoint},
+      );
       const runtime = configuration.deploymentMode === "compact"
         ? await createLocalRuntime({
           ...compactMaintenanceConfig(configuration),

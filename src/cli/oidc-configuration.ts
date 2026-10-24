@@ -6,7 +6,7 @@ import {
   type OidcGroupRoles,
 } from "../identity/oidc-groups-claim.js";
 import {defaultOidcScopes} from "../identity/oidc-identity-provider.js";
-import {keycloakAdminBaseUrl} from "../identity/keycloak-directory.js";
+import {keycloakAdminBaseUrl, keycloakInternalEndpoints} from "../identity/keycloak-directory.js";
 import {
   isLocalOidcIssuer,
   normalizeOidcEndpoint,
@@ -25,6 +25,7 @@ const oidcEnvironmentSchema = z.object({
   ARTIFACT_SERVER_OIDC_API_JWKS_URI: z.url().optional(),
   ARTIFACT_SERVER_OIDC_CLIENT_ID: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID: z.string().min(1).optional(),
+  ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL: z.url().optional(),
   ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_GROUPS_CLAIM: z.string().trim().min(1).optional(),
   ARTIFACT_SERVER_OIDC_ISSUER: z.string().min(1).optional(),
@@ -35,11 +36,13 @@ const oidcEnvironmentSchema = z.object({
 
 /** A directory that lists group members before they ever sign in. */
 export interface OidcDirectoryConfiguration {
-  /** Admin REST base derived from the realm issuer. */
+  /** Admin REST base, from the realm issuer or the internal Keycloak URL. */
   readonly adminBaseUrl: string;
   readonly clientId: string;
   readonly clientSecret: Redacted.Redacted;
   readonly provider: "keycloak";
+  /** Set with an internal Keycloak URL; otherwise discovery names it. */
+  readonly tokenEndpoint?: string;
 }
 
 /** Complete optional generic OIDC browser-login configuration. */
@@ -225,7 +228,17 @@ function oidcDirectory(
       "Keycloak directory sync requires ARTIFACT_SERVER_OIDC_ISSUER in the form <base>/realms/<realm>.",
     );
   }
-  return {adminBaseUrl, clientId, clientSecret, provider};
+  const keycloakUrl = parsed.ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL;
+  if (keycloakUrl === undefined) {
+    return {adminBaseUrl, clientId, clientSecret, provider};
+  }
+  const internal = keycloakInternalEndpoints(issuer, keycloakUrl);
+  if (internal === null) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL must be a Keycloak base URL such as http://keycloak-service.keycloak.svc:8080.",
+    );
+  }
+  return {...internal, clientId, clientSecret, provider};
 }
 
 /** Split one comma-separated list of exact, case-sensitive group names. */

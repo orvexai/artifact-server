@@ -36,8 +36,11 @@ export interface RunningStubKeycloak {
   readonly groups: Map<string, StubKeycloakUser[]>;
   readonly issuer: string;
   adminRequests(): readonly StubKeycloakAdminRequest[];
-  /** Answer the members page starting at `first` with this status instead. */
-  failMembersPage(first: number | null, status?: number): void;
+  /**
+   * Answer the members page starting at `first` with this status instead,
+   * for the next `times` requests of that page (every request when omitted).
+   */
+  failMembersPage(first: number | null, status?: number, times?: number): void;
   setTokenStatus(status: number): void;
   stop(): Promise<void>;
   tokenRequests(): number;
@@ -51,7 +54,8 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
   const groupIds = new Map<string, string>();
   const adminRequests: StubKeycloakAdminRequest[] = [];
   const issuedTokens = new Set<string>();
-  let failingPage: {readonly first: number; readonly status: number} | null = null;
+  let failingPage: {readonly first: number; remaining: number; readonly status: number} | null =
+    null;
   let tokenRequestCount = 0;
   let tokenStatus = 200;
   let issuer = "";
@@ -147,7 +151,8 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
       }
       const first = Number(query.first ?? "0");
       const max = Number(query.max ?? "100");
-      if (failingPage !== null && failingPage.first === first) {
+      if (failingPage !== null && failingPage.first === first && failingPage.remaining > 0) {
+        failingPage.remaining -= 1;
         json(failingPage.status, JSON.stringify({error: "server_error"}));
         return;
       }
@@ -167,8 +172,8 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
     adminRequests: () => adminRequests,
     clientId,
     clientSecret,
-    failMembersPage: (first, status = 500) => {
-      failingPage = first === null ? null : {first, status};
+    failMembersPage: (first, status = 500, times = Number.POSITIVE_INFINITY) => {
+      failingPage = first === null ? null : {first, remaining: times, status};
     },
     groups,
     issuer,

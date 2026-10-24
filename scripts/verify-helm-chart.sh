@@ -60,6 +60,22 @@ if [[ "$artifactserver_directory_sync" != *"name: artifact-server-sync-directory
   echo "Helm did not render the directory sync CronJob." >&2
   exit 1
 fi
+if [[ "$artifactserver_directory_sync" == *"ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL"* ]]; then
+  echo "Helm rendered an internal Keycloak URL nobody configured." >&2
+  exit 1
+fi
+if [[ "$(helm template artifact-server "$artifactserver_chart" --kube-version 1.36.0 \
+  "${artifactserver_values[@]}" \
+  --set identity.oidcIssuer=https://idp.example.test/realms/main \
+  --set 'identity.oidcMemberGroups={artifact-users}' \
+  --set identity.oidcDirectoryClientId=artifact-server-directory \
+  --set identity.oidcDirectoryKeycloakUrl=http://keycloak-service.keycloak.svc:8080 \
+  --set secret.keys.oidcDirectoryClientSecret=oidc-directory-client-secret \
+  --set configuration.postgresConnectionBudget=23)" \
+  != *'value: "http://keycloak-service.keycloak.svc:8080"'* ]]; then
+  echo "Helm did not pass the internal Keycloak URL to the directory sync." >&2
+  exit 1
+fi
 if [[ "$(helm template artifact-server "$artifactserver_chart" --kube-version 1.36.0 \
   "${artifactserver_values[@]}")" == *"sync-directory"* ]]; then
   echo "Helm rendered a directory sync CronJob without a directory client." >&2

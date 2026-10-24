@@ -14,7 +14,9 @@ import {
 import type {OidcGroupRoles} from "../../src/identity/oidc-groups-claim.js";
 import {
   KeycloakDirectory,
+  isClusterServiceUrl,
   keycloakAdminBaseUrl,
+  keycloakInternalEndpoints,
 } from "../../src/identity/keycloak-directory.js";
 import {createOidcIdentityProvider} from
   "../../src/identity/oidc-identity-provider.js";
@@ -222,6 +224,65 @@ describe("Keycloak directory sync", () => {
     expect(members(installation)).toEqual(baseline);
   });
 
+  test("a brief Keycloak fault is retried, but a refused request is not", async () => {
+    keycloak.groups.set(administrators, [keycloakUser("ada")]);
+    keycloak.groups.set(users, [keycloakUser("bob")]);
+    keycloak.failMembersPage(0, 503, 2);
+    await expect(sync()).resolves.toMatchObject({admitted: 2});
+    keycloak.failMembersPage(null);
+
+    const before = keycloak.adminRequests().length;
+    keycloak.failMembersPage(0, 403);
+    await expect(sync()).rejects.toThrow("returned HTTP 403.");
+    // One members request for the first group, then the run stops: no retries.
+    expect(keycloak.adminRequests().length - before).toBe(2);
+    keycloak.failMembersPage(null);
+
+    const beforeOutage = keycloak.adminRequests().length;
+    keycloak.failMembersPage(0, 503);
+    await expect(sync()).rejects.toThrow("returned HTTP 503.");
+    // The group lookup, then exactly three attempts at its first page.
+    expect(keycloak.adminRequests().length - beforeOutage).toBe(4);
+  });
+
+  test("an internal Keycloak URL replaces the public admin base and token endpoint", () => {
+    expect(keycloakInternalEndpoints(
+      "https://idp.example.test/realms/main",
+      "http://keycloak-service.keycloak.svc:8080",
+    )).toEqual({
+      adminBaseUrl: "http://keycloak-service.keycloak.svc:8080/admin/realms/main",
+      tokenEndpoint:
+        "http://keycloak-service.keycloak.svc:8080/realms/main/protocol/openid-connect/token",
+    });
+    expect(keycloakInternalEndpoints("https://idp.example.test", "http://k.svc")).toBeNull();
+    expect(keycloakInternalEndpoints(
+      "https://idp.example.test/realms/main",
+      "http://user:pw@k.svc",
+    )).toBeNull();
+    expect(isClusterServiceUrl("http://keycloak-service.keycloak.svc:8080")).toBe(true);
+    expect(isClusterServiceUrl("http://keycloak.keycloak.svc.cluster.local")).toBe(true);
+    expect(isClusterServiceUrl("http://idp.example.test")).toBe(false);
+    expect(() => new KeycloakDirectory({
+      adminBaseUrl: "http://idp.example.test/admin/realms/main",
+      clientId: "c",
+      clientSecret: Redacted.make("s"),
+      issuer: "https://idp.example.test/realms/main",
+    })).toThrow("must be an HTTPS URL or an in-cluster service URL");
+    for (const unsafe of [
+      "http://user:pw@keycloak.keycloak.svc/admin/realms/main",
+      "http://keycloak.keycloak.svc/admin/realms/main#x",
+      " http://keycloak.keycloak.svc/admin/realms/main",
+    ]) {
+      expect(isClusterServiceUrl(unsafe)).toBe(false);
+      expect(() => new KeycloakDirectory({
+        adminBaseUrl: unsafe,
+        clientId: "c",
+        clientSecret: Redacted.make("s"),
+        issuer: "https://idp.example.test/realms/main",
+      })).toThrow("The Keycloak admin URL must be an HTTPS URL or an in-cluster service URL.");
+    }
+  });
+
   test("a member the sync admitted binds to the OIDC subject at first login and keeps the role", async () => {
     keycloak.groups.set(administrators, [keycloakUser("ada")]);
     keycloak.groups.set(users, [keycloakUser("bob")]);
@@ -307,6 +368,7 @@ describe("Keycloak directory sync", () => {
         clientId: keycloak.clientId,
         clientSecret: Redacted.make(secret),
         issuer: keycloak.issuer,
+        retryBaseDelayMilliseconds: 0,
       }), groupRoles);
     } finally {
       await runtime.close();

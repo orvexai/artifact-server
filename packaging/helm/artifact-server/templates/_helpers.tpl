@@ -244,6 +244,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
   value: {{ .Values.identity.oidcDirectoryClientId | quote }}
 - name: ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET_FILE
   value: /run/secrets/artifact-server/oidc-directory-client-secret
+{{- if .Values.identity.oidcDirectoryKeycloakUrl }}
+- name: ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL
+  value: {{ .Values.identity.oidcDirectoryKeycloakUrl | quote }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- if .Values.identity.workosClientId }}
