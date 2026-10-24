@@ -236,6 +236,13 @@ describe("Keycloak directory sync", () => {
     await expect(sync()).rejects.toThrow("returned HTTP 403.");
     // One members request for the first group, then the run stops: no retries.
     expect(keycloak.adminRequests().length - before).toBe(2);
+    keycloak.failMembersPage(null);
+
+    const beforeOutage = keycloak.adminRequests().length;
+    keycloak.failMembersPage(0, 503);
+    await expect(sync()).rejects.toThrow("returned HTTP 503.");
+    // The group lookup, then exactly three attempts at its first page.
+    expect(keycloak.adminRequests().length - beforeOutage).toBe(4);
   });
 
   test("an internal Keycloak URL replaces the public admin base and token endpoint", () => {
@@ -261,6 +268,19 @@ describe("Keycloak directory sync", () => {
       clientSecret: Redacted.make("s"),
       issuer: "https://idp.example.test/realms/main",
     })).toThrow("must be an HTTPS URL or an in-cluster service URL");
+    for (const unsafe of [
+      "http://user:pw@keycloak.keycloak.svc/admin/realms/main",
+      "http://keycloak.keycloak.svc/admin/realms/main#x",
+      " http://keycloak.keycloak.svc/admin/realms/main",
+    ]) {
+      expect(isClusterServiceUrl(unsafe)).toBe(false);
+      expect(() => new KeycloakDirectory({
+        adminBaseUrl: unsafe,
+        clientId: "c",
+        clientSecret: Redacted.make("s"),
+        issuer: "https://idp.example.test/realms/main",
+      })).toThrow("The Keycloak admin URL must be an HTTPS URL or an in-cluster service URL.");
+    }
   });
 
   test("a member the sync admitted binds to the OIDC subject at first login and keeps the role", async () => {

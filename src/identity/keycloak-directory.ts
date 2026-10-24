@@ -63,7 +63,8 @@ export function keycloakAdminBaseUrl(issuer: string): string | null {
  * reached at a different base URL than the public issuer, such as its
  * in-cluster service. Returns null when the issuer is not
  * `<base>/realms/<realm>` or the base URL is not a plain origin with an
- * optional path.
+ * optional path. Only the realm is taken from the issuer: a Keycloak served
+ * under a path such as `/auth` needs that path in `keycloakUrl` too.
  */
 export function keycloakInternalEndpoints(
   issuer: string,
@@ -88,11 +89,20 @@ export function keycloakInternalEndpoints(
   };
 }
 
-/** True for a Kubernetes service host, where in-cluster plain HTTP is accepted. */
+/**
+ * True for a plain-HTTP URL whose host is a Kubernetes service, where the
+ * client secret may travel unencrypted inside the cluster. Any `*.svc` host
+ * in any namespace qualifies; the URL comes from operator configuration.
+ * Credentials, a query, or a fragment in the URL disqualify it.
+ */
 export function isClusterServiceUrl(value: string): boolean {
+  if (value !== value.trim()) return false;
   try {
     const url = new URL(value);
-    return url.protocol === "http:" && clusterServiceHostPattern.test(url.hostname);
+    return url.protocol === "http:" &&
+      clusterServiceHostPattern.test(url.hostname) &&
+      url.username === "" && url.password === "" &&
+      url.search === "" && url.hash === "";
   } catch {
     return false;
   }
@@ -319,8 +329,12 @@ export class KeycloakDirectory implements MemberDirectory {
         try {
           const body: Schema.Json = await response.json();
           return body;
-        } catch {
-          throw new HttpStatusFailure(`${subject} returned invalid JSON.`, false);
+        } catch (cause) {
+          // Only a malformed body is final; a timeout or reset mid-body retries.
+          if (cause instanceof SyntaxError) {
+            throw new HttpStatusFailure(`${subject} returned invalid JSON.`, false);
+          }
+          throw cause;
         }
       },
       catch: (cause) =>

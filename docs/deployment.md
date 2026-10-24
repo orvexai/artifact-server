@@ -228,7 +228,7 @@ subject at their first sign-in, by verified email, exactly as other members do.
 | `ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER` | `identity.oidcDirectoryProvider` | `keycloak`, the only provider. The chart defaults it. |
 | `ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID` | `identity.oidcDirectoryClientId` | The confidential client the sync authenticates as. |
 | `ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET` or `_FILE` | `secret.keys.oidcDirectoryClientSecret` | Its client secret. |
-| `ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL` | `identity.oidcDirectoryKeycloakUrl` | Optional. The Keycloak base URL the sync calls instead of the issuer host, such as `http://keycloak-service.keycloak.svc:8080`. Plain HTTP is accepted only for a Kubernetes `.svc` host. |
+| `ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL` | `identity.oidcDirectoryKeycloakUrl` | Optional. The Keycloak base URL the sync calls instead of the issuer host, such as `http://keycloak-service.keycloak.svc:8080`. Plain HTTP is accepted only for a Kubernetes `.svc` host, so the client secret travels unencrypted inside the cluster. Include any Keycloak path prefix such as `/auth`. |
 
 These settings require the group lists above, and the issuer must have the form
 `<base>/realms/<realm>`; the admin API is then `<base>/admin/realms/<realm>`.
