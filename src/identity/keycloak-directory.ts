@@ -14,6 +14,10 @@ export const keycloakDirectoryPageSize = 100;
 /** Refuse a group so large that reading it all is no longer a bounded pass. */
 const maximumPagesPerGroup = 1_000;
 const requestTimeoutMilliseconds = 10_000;
+/** Attempts per request; only a timeout, network fault or HTTP 5xx is retried. */
+const requestAttempts = 3;
+const retryBaseDelayMilliseconds = 500;
+const clusterServiceHostPattern = /\.svc(?:\.cluster\.local)?$/u;
 const realmPathPattern = /^(?<prefix>(?:\/[^/]+)*)\/realms\/(?<realm>[^/]+)$/u;
 
 const tokenResponse = Schema.Struct({access_token: Schema.NonEmptyString});
@@ -54,6 +58,46 @@ export function keycloakAdminBaseUrl(issuer: string): string | null {
   return `${url.origin}${prefix}/admin/realms/${realm}`;
 }
 
+/**
+ * Derive the admin REST base and token endpoint for one realm when Keycloak is
+ * reached at a different base URL than the public issuer, such as its
+ * in-cluster service. Returns null when the issuer is not
+ * `<base>/realms/<realm>` or the base URL is not a plain origin with an
+ * optional path.
+ */
+export function keycloakInternalEndpoints(
+  issuer: string,
+  keycloakUrl: string,
+): {readonly adminBaseUrl: string; readonly tokenEndpoint: string} | null {
+  const publicAdmin = keycloakAdminBaseUrl(issuer);
+  if (publicAdmin === null) return null;
+  const realm = publicAdmin.slice(publicAdmin.lastIndexOf("/") + 1);
+  let base: URL;
+  try {
+    base = new URL(keycloakUrl);
+  } catch {
+    return null;
+  }
+  if (base.search !== "" || base.hash !== "" || base.username !== "" || base.password !== "") {
+    return null;
+  }
+  const root = `${base.origin}${base.pathname.replace(/\/+$/u, "")}`;
+  return {
+    adminBaseUrl: `${root}/admin/realms/${realm}`,
+    tokenEndpoint: `${root}/realms/${realm}/protocol/openid-connect/token`,
+  };
+}
+
+/** True for a Kubernetes service host, where in-cluster plain HTTP is accepted. */
+export function isClusterServiceUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" && clusterServiceHostPattern.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export interface KeycloakDirectoryConfig {
   /** Admin REST base, as {@link keycloakAdminBaseUrl} derives it. */
   readonly adminBaseUrl: string;
@@ -62,6 +106,10 @@ export interface KeycloakDirectoryConfig {
   readonly fetch?: typeof globalThis.fetch;
   /** The realm issuer whose discovery document names the token endpoint. */
   readonly issuer: string;
+  /** Token endpoint to use instead of the issuer's discovery document. */
+  readonly tokenEndpoint?: string;
+  /** Pause between retries; tests pass 0. */
+  readonly retryBaseDelayMilliseconds?: number;
 }
 
 /**
@@ -75,13 +123,25 @@ export class KeycloakDirectory implements MemberDirectory {
   readonly #clientSecret: Redacted.Redacted;
   readonly #fetch: typeof globalThis.fetch;
   readonly #issuer: string;
+  readonly #retryBaseDelayMilliseconds: number;
+  readonly #tokenEndpoint: string | undefined;
 
   constructor(config: KeycloakDirectoryConfig) {
     const allowLocalHttp = isLocalOidcIssuer(config.issuer);
-    const adminBaseUrl = normalizeOidcEndpoint(config.adminBaseUrl, allowLocalHttp);
+    const adminBaseUrl = clusterOrNormalized(config.adminBaseUrl, allowLocalHttp);
     if (adminBaseUrl === null) {
-      throw new Error("The Keycloak admin URL must be an HTTPS URL.");
+      throw new Error("The Keycloak admin URL must be an HTTPS URL or an in-cluster service URL.");
     }
+    let tokenEndpoint: string | undefined;
+    if (config.tokenEndpoint !== undefined) {
+      const normalized = clusterOrNormalized(config.tokenEndpoint, allowLocalHttp);
+      if (normalized === null) {
+        throw new Error("The Keycloak token URL must be an HTTPS URL or an in-cluster service URL.");
+      }
+      tokenEndpoint = normalized;
+    }
+    this.#tokenEndpoint = tokenEndpoint;
+    this.#retryBaseDelayMilliseconds = config.retryBaseDelayMilliseconds ?? retryBaseDelayMilliseconds;
     this.#adminBaseUrl = adminBaseUrl.replace(/\/+$/u, "");
     this.#clientId = config.clientId;
     this.#clientSecret = config.clientSecret;
@@ -104,7 +164,7 @@ export class KeycloakDirectory implements MemberDirectory {
 
   readonly #accessToken = Effect.fn("KeycloakDirectory.accessToken")(
     function*(this: KeycloakDirectory) {
-      const tokenEndpoint = yield* Effect.tryPromise({
+      const tokenEndpoint = this.#tokenEndpoint ?? (yield* Effect.tryPromise({
         try: async () => {
           const server = await loadOidcAuthorizationServer(this.#issuer, {
             fetch: this.#fetch,
@@ -112,7 +172,7 @@ export class KeycloakDirectory implements MemberDirectory {
           return server.metadata.token_endpoint;
         },
         catch: () => unavailable("The Keycloak discovery document could not be read."),
-      });
+      }));
       const response = yield* this.#request(tokenEndpoint, {
         body: new URLSearchParams({
           client_id: this.#clientId,
@@ -211,12 +271,34 @@ export class KeycloakDirectory implements MemberDirectory {
     }, subject);
   }
 
-  /** One bounded request whose JSON answer is returned only on HTTP 200. */
+  /**
+   * One bounded request whose JSON answer is returned only on HTTP 200. A
+   * timeout, network fault or HTTP 5xx is retried with backoff; any other
+   * answer fails at once.
+   */
   #request(
     url: string,
     init: RequestInit,
     subject: string,
   ): Effect.Effect<Schema.Json, DirectoryUnavailable> {
+    const attempt = (number: number): Effect.Effect<Schema.Json, DirectoryUnavailable> =>
+      this.#requestOnce(url, init, subject).pipe(
+        Effect.catch((failure) =>
+          failure.retryable && number < requestAttempts
+            ? Effect.sleep(this.#retryBaseDelayMilliseconds * 2 ** (number - 1)).pipe(
+              Effect.andThen(attempt(number + 1)),
+            )
+            : Effect.fail(unavailable(failure.message))
+        ),
+      );
+    return attempt(1);
+  }
+
+  #requestOnce(
+    url: string,
+    init: RequestInit,
+    subject: string,
+  ): Effect.Effect<Schema.Json, {readonly message: string; readonly retryable: boolean}> {
     return Effect.tryPromise({
       try: async (signal) => {
         const response = await this.#fetch(url, {
@@ -229,19 +311,37 @@ export class KeycloakDirectory implements MemberDirectory {
           ]),
         });
         if (response.status !== 200) {
-          throw new Error(`${subject} returned HTTP ${response.status}.`);
+          throw new HttpStatusFailure(
+            `${subject} returned HTTP ${response.status}.`,
+            response.status >= 500,
+          );
         }
-        const body: Schema.Json = await response.json();
-        return body;
+        try {
+          const body: Schema.Json = await response.json();
+          return body;
+        } catch {
+          throw new HttpStatusFailure(`${subject} returned invalid JSON.`, false);
+        }
       },
       catch: (cause) =>
-        unavailable(
-          cause instanceof Error && cause.message.startsWith(subject)
-            ? cause.message
-            : `${subject} failed.`,
-        ),
+        cause instanceof HttpStatusFailure
+          ? {message: cause.message, retryable: cause.retryable}
+          : {message: `${subject} failed after ${requestAttempts} attempts.`, retryable: true},
     });
   }
+}
+
+class HttpStatusFailure extends Error {
+  readonly retryable: boolean;
+
+  constructor(message: string, retryable: boolean) {
+    super(message);
+    this.retryable = retryable;
+  }
+}
+
+function clusterOrNormalized(value: string, allowLocalHttp: boolean): string | null {
+  return isClusterServiceUrl(value) ? value : normalizeOidcEndpoint(value, allowLocalHttp);
 }
 
 function unavailable(message: string): DirectoryUnavailable {

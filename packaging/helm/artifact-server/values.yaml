@@ -57,6 +57,9 @@ identity:
   # must name its client secret.
   # oidcDirectoryProvider: keycloak
   # oidcDirectoryClientId: artifact-server-directory
+  # Reach Keycloak for the sync at its in-cluster service instead of the
+  # public issuer host, as Docmost's SCIM sync does.
+  # oidcDirectoryKeycloakUrl: http://keycloak-service.keycloak.svc:8080
 
 serviceAccount:
   create: true
@@ -143,7 +146,8 @@ cleanup:
 directorySync:
   schedule: "*/10 * * * *"
   activeDeadlineSeconds: 300
-  backoffLimit: 0
+  # Each Keycloak request already retries briefly; this retries a whole run.
+  backoffLimit: 2
 
 ingress:
   enabled: false
