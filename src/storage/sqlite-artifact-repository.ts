@@ -5099,11 +5099,18 @@ export class SqliteArtifactRepository implements
     this.#widenRegisteredAgentsIfNeeded();
     this.#addSourceBindingColumnsIfMissing();
     this.#addGitHistoryMirrorTablesIfMissing();
+    this.#addProjectAccessModeIfMissing();
     this.#database.exec(`
       CREATE INDEX IF NOT EXISTS projects_active_created
         ON projects (archived_at, created_at, id);
     `);
     this.#database.exec(`PRAGMA user_version = ${requiredSqliteSchemaVersion};`);
+  }
+
+  #addProjectAccessModeIfMissing(): void {
+    if (this.#tableColumns("projects").includes("access_mode")) return;
+    this.#database.exec(`ALTER TABLE projects ADD COLUMN access_mode TEXT NOT NULL
+      DEFAULT 'installation' CHECK (access_mode IN ('installation', 'restricted'))`);
   }
 
   #addArtifactSearchNameIfMissing(): void {
@@ -5662,6 +5669,7 @@ export class SqliteArtifactRepository implements
       | "content_sessions"
       | "git_history_project_settings"
       | "idempotency_records"
+      | "projects"
       | "staged_uploads"
       | "versions",
   ): readonly string[] {

@@ -907,6 +907,10 @@ export function createApplicationLayer(
         "listDirectoryGroups",
         () => identityRepository.listDirectoryGroups(installationId),
       ),
+      findProjectAccess: (installationId, projectId, memberId) => identityEffect(
+        "findProjectAccess",
+        () => identityRepository.findProjectAccess(installationId, projectId, memberId),
+      ),
       revokeApiKey: (installationId, keyId, revokedAt) => identityEffectWithNotFound(
         "revokeApiKey",
         () => identityRepository.revokeApiKey(installationId, keyId, revokedAt),

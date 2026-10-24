@@ -1,5 +1,10 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
+import {
+  type ProjectAccess,
+  type ProjectAccessRecord,
+  resolveProjectAccess,
+} from "../core/project-access.js";
 import type {
   DirectoryGroupApplyResult,
   DirectoryGroupSnapshot,
@@ -61,6 +66,11 @@ export interface InstallationIdentityRepository {
   readonly listDirectoryGroups: (
     installationId: string,
   ) => Effect.Effect<readonly StoredDirectoryGroup[], IdentityRepositoryFailure>;
+  readonly findProjectAccess: (
+    installationId: string,
+    projectId: string,
+    memberId: string,
+  ) => Effect.Effect<ProjectAccessRecord | null, IdentityRepositoryFailure>;
   readonly admitMember: (
     command: {
       readonly createdAt: string;
@@ -356,6 +366,14 @@ export interface InstallationAccessOperations {
     readonly StoredDirectoryGroup[],
     IdentityRepositoryFailure
   >;
+  /**
+   * The access one principal has to one project, read fresh on every call,
+   * or null when the project does not exist in this installation.
+   */
+  readonly projectAccess: (
+    principal: Principal,
+    projectId: string,
+  ) => Effect.Effect<ProjectAccess | null, IdentityRepositoryFailure>;
   readonly revokeApiKey: (
     principal: Principal,
     keyId: string,
@@ -567,6 +585,18 @@ function makeInstallationAccessService(
     return yield* dependencies.repository.listDirectoryGroups(
       dependencies.installationId,
     );
+  });
+
+  const projectAccess = Effect.fn(
+    "InstallationAccessService.projectAccess",
+  )(function*(principal: Principal, projectId: string) {
+    if (principal.installationId !== dependencies.installationId) return null;
+    const record = yield* dependencies.repository.findProjectAccess(
+      dependencies.installationId,
+      projectId,
+      principal.id,
+    );
+    return record === null ? null : resolveProjectAccess(principal, record);
   });
 
   const reconcileDirectoryMembers = Effect.fn(
@@ -1062,6 +1092,7 @@ function makeInstallationAccessService(
     reconcileDirectoryMembers,
     applyDirectoryGroups,
     listDirectoryGroups,
+    projectAccess,
     revokeApiKey,
     revokeSession,
     rotateApiKey,

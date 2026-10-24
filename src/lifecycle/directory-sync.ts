@@ -28,8 +28,9 @@ export function runDirectoryGroupSyncPass(
   runtime: ApplicationRuntime,
   directory: GroupDirectory,
   syncedAt: string,
+  provider: string,
 ): Promise<DirectoryGroupSyncReport> {
-  return runtime.runPromise(syncDirectoryGroups(directory, syncedAt).pipe(
+  return runtime.runPromise(syncDirectoryGroups(directory, syncedAt, provider).pipe(
     Effect.mapError((error) => new Error(`${error._tag}: ${error.message}`)),
   ));
 }

@@ -26,6 +26,8 @@ export interface DirectoryGroupObservation extends DirectoryGroupRecord {
  */
 export interface DirectoryGroupSnapshot {
   readonly groups: readonly DirectoryGroupObservation[];
+  /** The identity provider whose user ids the member subjects are. */
+  readonly provider: string;
   readonly syncedAt: string;
 }
 

@@ -29,6 +29,11 @@ import {
   type StoredDirectoryGroup,
 } from "../core/directory-groups.js";
 import type {
+  ProjectAccessMode,
+  ProjectAccessRecord,
+  ProjectGroupGrant,
+} from "../core/project-access.js";
+import type {
   AdmitMemberRecord,
   BindExternalIdentityRecord,
   BootstrapManagedApiKeyRepository,
@@ -39,6 +44,20 @@ const directoryGroupRowSchema = z.object({
   id: z.string(),
   name: z.string(),
   path: z.string(),
+});
+const projectAccessModeSchema = z.enum(["installation", "restricted"]);
+const projectGrantRoleSchema = z.enum(["viewer", "editor", "manager"]);
+const projectGroupGrantRowSchema = z.object({
+  grantedAt: z.string(),
+  grantedByPrincipalId: z.string(),
+  groupId: z.string(),
+  projectId: z.string(),
+  role: projectGrantRoleSchema,
+});
+const accessMemberRowSchema = z.object({
+  email: z.string(),
+  role: z.enum(["administrator", "member"]),
+  status: z.enum(["active", "inactive"]),
 });
 const storedDirectoryGroupRowSchema = z.object({
   id: z.string(),
@@ -192,8 +211,9 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
             ELSE excluded.synced_at END
       `);
       const insertMember = this.#database.prepare(`
-        INSERT INTO directory_group_members (installation_id, group_id, subject, email)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO directory_group_members (
+          installation_id, group_id, subject, email, provider
+        ) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT DO NOTHING
       `);
       for (const group of snapshot.groups) {
@@ -208,7 +228,13 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         if (group.members === null) continue;
         deleteMembers.run(installationId, group.id);
         for (const member of group.members) {
-          insertMember.run(installationId, group.id, member.subject, member.email);
+          insertMember.run(
+            installationId,
+            group.id,
+            member.subject,
+            member.email,
+            snapshot.provider,
+          );
         }
       }
       this.#database.exec("COMMIT;");
@@ -233,6 +259,122 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       ORDER BY g.path ASC
     `).all(installationId);
     return z.array(storedDirectoryGroupRowSchema).parse(rows);
+  }
+
+  async findProjectAccess(
+    installationId: string,
+    projectId: string,
+    memberId: string,
+  ): Promise<ProjectAccessRecord | null> {
+    const project = this.#database.prepare(
+      "SELECT access_mode FROM projects WHERE installation_id = ? AND id = ?",
+    ).get(installationId, projectId);
+    if (project === undefined) return null;
+    const accessMode = z.object({access_mode: projectAccessModeSchema})
+      .parse(project).access_mode;
+    const row = this.#database.prepare(
+      "SELECT email, role, status FROM installation_members WHERE installation_id = ? AND id = ?",
+    ).get(installationId, memberId);
+    const member = row === undefined ? null : accessMemberRowSchema.parse(row);
+    if (accessMode === "installation" || member === null) {
+      return {
+        accessMode,
+        grantRoles: [],
+        member: member === null ? null : {role: member.role, status: member.status},
+      };
+    }
+    // A group member is this member through its external identity for the
+    // row's provider, or by verified email only when the member has none.
+    const grants = this.#database.prepare(`
+      SELECT DISTINCT g.role FROM project_group_grants g
+      JOIN directory_group_members d
+        ON d.installation_id = g.installation_id AND d.group_id = g.group_id
+      WHERE g.installation_id = ? AND g.project_id = ? AND (
+        EXISTS (
+          SELECT 1 FROM external_identities e
+          WHERE e.member_id = ? AND e.provider = d.provider AND e.subject = d.subject
+        ) OR (
+          d.email = ? AND NOT EXISTS (
+            SELECT 1 FROM external_identities e
+            WHERE e.member_id = ? AND e.provider = d.provider
+          )
+        )
+      )
+    `).all(installationId, projectId, memberId, member.email, memberId);
+    return {
+      accessMode,
+      grantRoles: z.array(z.object({role: projectGrantRoleSchema})).parse(grants)
+        .map((grant) => grant.role),
+      member: {role: member.role, status: member.status},
+    };
+  }
+
+  async listProjectGroupGrants(
+    installationId: string,
+    projectId: string,
+  ): Promise<readonly ProjectGroupGrant[]> {
+    const rows = this.#database.prepare(`
+      SELECT project_id AS projectId, group_id AS groupId, role,
+        granted_at AS grantedAt, granted_by_principal_id AS grantedByPrincipalId
+      FROM project_group_grants
+      WHERE installation_id = ? AND project_id = ?
+      ORDER BY group_id ASC
+    `).all(installationId, projectId);
+    return z.array(projectGroupGrantRowSchema).parse(rows);
+  }
+
+  async putProjectGroupGrant(
+    installationId: string,
+    grant: ProjectGroupGrant,
+  ): Promise<void> {
+    try {
+      this.#database.prepare(`
+        INSERT INTO project_group_grants (
+          installation_id, project_id, group_id, role, granted_at,
+          granted_by_principal_id
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (installation_id, project_id, group_id) DO UPDATE SET
+          role = excluded.role, granted_at = excluded.granted_at,
+          granted_by_principal_id = excluded.granted_by_principal_id
+      `).run(
+        installationId,
+        grant.projectId,
+        grant.groupId,
+        grant.role,
+        grant.grantedAt,
+        grant.grantedByPrincipalId,
+      );
+    } catch (cause) {
+      if (isSqliteConstraint(cause)) {
+        throw new IdentityNotFound({message: "The project or group does not exist."});
+      }
+      throw cause;
+    }
+  }
+
+  async removeProjectGroupGrant(
+    installationId: string,
+    projectId: string,
+    groupId: string,
+  ): Promise<boolean> {
+    const result = this.#database.prepare(`
+      DELETE FROM project_group_grants
+      WHERE installation_id = ? AND project_id = ? AND group_id = ?
+    `).run(installationId, projectId, groupId);
+    return Number(result.changes) > 0;
+  }
+
+  async setProjectAccessMode(
+    installationId: string,
+    projectId: string,
+    accessMode: ProjectAccessMode,
+  ): Promise<void> {
+    const result = this.#database.prepare(
+      "UPDATE projects SET access_mode = ? WHERE installation_id = ? AND id = ?",
+    ).run(accessMode, installationId, projectId);
+    if (Number(result.changes) === 0) {
+      throw new IdentityNotFound({message: "The project does not exist."});
+    }
   }
 
   async admitMember(command: AdmitMemberRecord): Promise<InstallationMember> {
@@ -874,6 +1016,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         group_id TEXT NOT NULL,
         subject TEXT NOT NULL,
         email TEXT,
+        provider TEXT,
         PRIMARY KEY (installation_id, group_id, subject),
         FOREIGN KEY (installation_id, group_id)
           REFERENCES directory_groups(installation_id, id) ON DELETE CASCADE
@@ -881,6 +1024,21 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
 
       CREATE INDEX IF NOT EXISTS directory_group_members_by_subject
         ON directory_group_members (installation_id, subject);
+
+      CREATE TABLE IF NOT EXISTS project_group_grants (
+        installation_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        group_id TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('viewer', 'editor', 'manager')),
+        granted_at TEXT NOT NULL,
+        granted_by_principal_id TEXT NOT NULL,
+        PRIMARY KEY (installation_id, project_id, group_id),
+        FOREIGN KEY (installation_id, group_id)
+          REFERENCES directory_groups(installation_id, id) ON DELETE CASCADE
+      ) STRICT;
+
+      CREATE INDEX IF NOT EXISTS project_group_grants_by_group
+        ON project_group_grants (installation_id, group_id);
 
       CREATE TABLE IF NOT EXISTS git_history_project_settings (
         project_id TEXT PRIMARY KEY REFERENCES projects(id),
@@ -891,6 +1049,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       ) STRICT;
     `);
     this.#addLoginAttemptNonceIfMissing();
+    this.#addDirectoryGroupMemberProviderIfMissing();
     this.#database.exec(`PRAGMA user_version = ${requiredSqliteSchemaVersion};`);
   }
 
@@ -899,7 +1058,12 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     this.#database.exec("ALTER TABLE login_attempts ADD COLUMN nonce TEXT");
   }
 
-  #tableColumns(table: "login_attempts"): readonly string[] {
+  #addDirectoryGroupMemberProviderIfMissing(): void {
+    if (this.#tableColumns("directory_group_members").includes("provider")) return;
+    this.#database.exec("ALTER TABLE directory_group_members ADD COLUMN provider TEXT");
+  }
+
+  #tableColumns(table: "directory_group_members" | "login_attempts"): readonly string[] {
     const rows = this.#database.prepare(`PRAGMA table_info(${table})`).all();
     const columns = z.array(z.object({name: z.string()})).parse(rows);
     return columns.map((column) => column.name);

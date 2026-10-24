@@ -1,4 +1,5 @@
 import {base64url, createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey} from "jose";
+import {oidcIdentityProviderName} from "../core/project-access.js";
 import {Effect, Redacted} from "effect";
 import {z} from "zod";
 
@@ -191,7 +192,7 @@ export class OidcIdentityProvider implements InteractiveIdentityProvider {
         email: claims.data.email,
         emailVerified: claims.data.email_verified !== false,
         groups,
-        provider: `oidc:${this.#issuer}`,
+        provider: oidcIdentityProviderName(this.#issuer),
         subject: claims.data.sub,
       };
       return identity;

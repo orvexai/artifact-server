@@ -17,6 +17,7 @@ import {
   keycloakAdminBaseUrl,
 } from "../../src/identity/keycloak-directory.js";
 import {createLocalRuntime} from "../../src/local/create-local-runtime.js";
+import {oidcIdentityProviderName} from "../../src/core/project-access.js";
 import {
   createTestInstallation,
   removeTestInstallation,
@@ -219,7 +220,7 @@ describe("Keycloak directory group sync", () => {
         clientSecret: Redacted.make(keycloak.clientSecret),
         issuer: keycloak.issuer,
         retryBaseDelayMilliseconds: 0,
-      }), syncedAt);
+      }), syncedAt, oidcIdentityProviderName(keycloak.issuer));
     } finally {
       await runtime.close();
     }
