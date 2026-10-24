@@ -4,6 +4,11 @@ import type {
   StoredDirectoryGroup,
 } from "./directory-groups.js";
 import type {
+  ProjectAccessMode,
+  ProjectAccessRecord,
+  ProjectGroupGrant,
+} from "./project-access.js";
+import type {
   ApplicationSession,
   InstallationMember,
   LoginAttempt,
@@ -97,6 +102,40 @@ export interface IdentityRepository {
   listDirectoryGroups(
     installationId: string,
   ): Promise<readonly StoredDirectoryGroup[]>;
+  /**
+   * Read one project's access mode and the grant roles that reach one member
+   * through directory groups, or null when the project does not exist. A
+   * group member matches through the member's external identity for the
+   * member row's provider, or by verified email only when the member has no
+   * identity for that provider.
+   */
+  findProjectAccess(
+    installationId: string,
+    projectId: string,
+    memberId: string,
+  ): Promise<ProjectAccessRecord | null>;
+  /** Every group grant on one project, ordered by group id. */
+  listProjectGroupGrants(
+    installationId: string,
+    projectId: string,
+  ): Promise<readonly ProjectGroupGrant[]>;
+  /** Create or replace one group's grant on one project. */
+  putProjectGroupGrant(
+    installationId: string,
+    grant: ProjectGroupGrant,
+  ): Promise<void>;
+  /** Remove one group's grant on one project; false when there was none. */
+  removeProjectGroupGrant(
+    installationId: string,
+    projectId: string,
+    groupId: string,
+  ): Promise<boolean>;
+  /** Set one project's access mode; IdentityNotFound when it does not exist. */
+  setProjectAccessMode(
+    installationId: string,
+    projectId: string,
+    accessMode: ProjectAccessMode,
+  ): Promise<void>;
   listMembers(installationId: string): Promise<readonly InstallationMember[]>;
   revokeApiKey(
     installationId: string,

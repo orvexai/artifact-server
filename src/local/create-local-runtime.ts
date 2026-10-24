@@ -145,6 +145,7 @@ export interface LocalRuntime {
   syncDirectoryGroups(
     directory: GroupDirectory,
     syncedAt: string,
+    provider: string,
   ): Promise<DirectoryGroupSyncReport>;
 }
 
@@ -374,8 +375,8 @@ export async function createLocalRuntime(
       cleanupStaging: (limit) => runStagingCleanupPass(applicationRuntime, limit),
       syncDirectory: (directory, policy) =>
         runDirectorySyncPass(applicationRuntime, directory, policy),
-      syncDirectoryGroups: (directory, syncedAt) =>
-        runDirectoryGroupSyncPass(applicationRuntime, directory, syncedAt),
+      syncDirectoryGroups: (directory, syncedAt, provider) =>
+        runDirectoryGroupSyncPass(applicationRuntime, directory, syncedAt, provider),
       close: async () => {
         if (closeCleanupSchedule !== null) await closeCleanupSchedule();
         if (gitHistoryWorker !== null) await gitHistoryWorker.close();

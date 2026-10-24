@@ -1,5 +1,6 @@
 import path from "node:path";
 
+import {oidcIdentityProviderName} from "../core/project-access.js";
 import {type Command, Option} from "commander";
 import {Redacted} from "effect";
 
@@ -194,6 +195,7 @@ function configureMaintenance(program: Command): void {
         const groupSync = await runtime.syncDirectoryGroups(
           directory,
           new Date().toISOString(),
+          oidcIdentityProviderName(oidc.issuer),
         );
         console.log(JSON.stringify({groupSync}));
         // A kept group may hold someone Keycloak removed: fail the Job so

@@ -178,6 +178,7 @@ export interface DirectoryGroupSyncReport {
 export const syncDirectoryGroups = Effect.fn("syncDirectoryGroups")(function*(
   directory: GroupDirectory,
   syncedAt: string,
+  provider: string,
 ) {
   const listed = yield* directory.listAllGroups();
   const groups: DirectoryGroupObservation[] = [];
@@ -204,7 +205,7 @@ export const syncDirectoryGroups = Effect.fn("syncDirectoryGroups")(function*(
     });
   }
   const applied = yield* InstallationAccessService.use((access) =>
-    access.applyDirectoryGroups({groups, syncedAt})
+    access.applyDirectoryGroups({groups, provider, syncedAt})
   );
   // Field order is the order operators read the one-line summary in.
   const report: DirectoryGroupSyncReport = {

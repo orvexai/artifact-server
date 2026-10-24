@@ -15,6 +15,11 @@ import {
   IdentityNotFound,
   LoginAttemptRejected,
 } from "../core/errors.js";
+import {
+  type ProjectAccessMode,
+  type ProjectAccessRecord,
+  type ProjectGroupGrant,
+} from "../core/project-access.js";
 import type {
   AdmitMemberRecord,
   BindExternalIdentityRecord,
@@ -114,6 +119,20 @@ const directoryGroupRowSchema = z.object({
   name: z.string(),
   path: z.string(),
 });
+const projectAccessModeSchema = z.enum(["installation", "restricted"]);
+const projectGrantRoleSchema = z.enum(["viewer", "editor", "manager"]);
+const projectGroupGrantRowSchema = z.object({
+  grantedAt: z.string(),
+  grantedByPrincipalId: z.string(),
+  groupId: z.string(),
+  projectId: z.string(),
+  role: projectGrantRoleSchema,
+});
+const accessMemberRowSchema = z.object({
+  email: z.string(),
+  role: z.enum(["administrator", "member"]),
+  status: z.enum(["active", "inactive"]),
+});
 const storedDirectoryGroupRowSchema = z.object({
   id: z.string(),
   memberCount: z.coerce.number().int().nonnegative(),
@@ -193,9 +212,10 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
             WHERE installation_id = ${installationId} AND group_id = ${group.id}`;
           for (const member of group.members) {
             yield* sql`INSERT INTO directory_group_members (
-              installation_id, group_id, subject, email
+              installation_id, group_id, subject, email, provider
             ) VALUES (
-              ${installationId}, ${group.id}, ${member.subject}, ${member.email}
+              ${installationId}, ${group.id}, ${member.subject}, ${member.email},
+              ${snapshot.provider}
             ) ON CONFLICT DO NOTHING`;
           }
         }
@@ -223,6 +243,151 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
       );
       return z.array(storedDirectoryGroupRowSchema).parse(rows);
     }));
+  }
+
+  async findProjectAccess(
+    installationId: string,
+    projectId: string,
+    memberId: string,
+  ): Promise<ProjectAccessRecord | null> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const projects = yield* sql.unsafe<object>(
+        "SELECT access_mode FROM projects WHERE installation_id = $1 AND id = $2",
+        [installationId, projectId],
+      );
+      if (projects.length === 0) return null;
+      const accessMode = z.object({access_mode: projectAccessModeSchema})
+        .parse(projects[0]).access_mode;
+      const members = yield* sql.unsafe<object>(
+        `SELECT email, role, status FROM installation_members
+         WHERE installation_id = $1 AND id = $2`,
+        [installationId, memberId],
+      );
+      const member = members.length === 0
+        ? null
+        : accessMemberRowSchema.parse(members[0]);
+      if (accessMode === "installation" || member === null) {
+        return {
+          accessMode,
+          grantRoles: [],
+          member: member === null ? null : {role: member.role, status: member.status},
+        };
+      }
+      // A group member is this member through its external identity for the
+      // row's provider, or by verified email only when the member has none.
+      // A row written before providers were recorded matches nobody until
+      // the next sync rewrites it.
+      const grants = yield* sql.unsafe<object>(
+        `SELECT DISTINCT g.role FROM project_group_grants g
+         JOIN directory_group_members d
+           ON d.installation_id = g.installation_id AND d.group_id = g.group_id
+         WHERE g.installation_id = $1 AND g.project_id = $2
+           AND d.provider IS NOT NULL AND (
+           EXISTS (
+             SELECT 1 FROM external_identities e
+             WHERE e.installation_id = d.installation_id AND e.member_id = $3
+               AND e.provider = d.provider AND e.subject = d.subject
+           ) OR (
+             d.email = $4 AND NOT EXISTS (
+               SELECT 1 FROM external_identities e
+               WHERE e.installation_id = d.installation_id AND e.member_id = $3
+                 AND e.provider = d.provider
+             )
+           )
+         )`,
+        [installationId, projectId, memberId, member.email],
+      );
+      return {
+        accessMode,
+        grantRoles: z.array(z.object({role: projectGrantRoleSchema})).parse(grants)
+          .map((row) => row.role),
+        member: {role: member.role, status: member.status},
+      };
+    }));
+  }
+
+  async listProjectGroupGrants(
+    installationId: string,
+    projectId: string,
+  ): Promise<readonly ProjectGroupGrant[]> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(
+        `SELECT project_id AS "projectId", group_id AS "groupId", role,
+          granted_at AS "grantedAt", granted_by_principal_id AS "grantedByPrincipalId"
+         FROM project_group_grants
+         WHERE installation_id = $1 AND project_id = $2
+         ORDER BY group_id ASC`,
+        [installationId, projectId],
+      );
+      return z.array(projectGroupGrantRowSchema).parse(rows);
+    }));
+  }
+
+  async putProjectGroupGrant(
+    installationId: string,
+    grant: ProjectGroupGrant,
+  ): Promise<void> {
+    this.#assertInstallationScope(installationId);
+    try {
+      await this.#database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        yield* sql`INSERT INTO project_group_grants (
+          installation_id, project_id, group_id, role, granted_at,
+          granted_by_principal_id
+        ) VALUES (
+          ${installationId}, ${grant.projectId}, ${grant.groupId}, ${grant.role},
+          ${grant.grantedAt}, ${grant.grantedByPrincipalId}
+        ) ON CONFLICT (installation_id, project_id, group_id) DO UPDATE SET
+          role = EXCLUDED.role, granted_at = EXCLUDED.granted_at,
+          granted_by_principal_id = EXCLUDED.granted_by_principal_id`;
+      }));
+    } catch (cause) {
+      if (isConstraintFailure(cause)) {
+        throw new IdentityNotFound({message: "The project or group does not exist."});
+      }
+      throw cause;
+    }
+  }
+
+  async removeProjectGroupGrant(
+    installationId: string,
+    projectId: string,
+    groupId: string,
+  ): Promise<boolean> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(
+        `DELETE FROM project_group_grants
+         WHERE installation_id = $1 AND project_id = $2 AND group_id = $3
+         RETURNING group_id`,
+        [installationId, projectId, groupId],
+      );
+      return rows.length > 0;
+    }));
+  }
+
+  async setProjectAccessMode(
+    installationId: string,
+    projectId: string,
+    accessMode: ProjectAccessMode,
+  ): Promise<void> {
+    this.#assertInstallationScope(installationId);
+    const updated = await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.unsafe<object>(
+        `UPDATE projects SET access_mode = $3
+         WHERE installation_id = $1 AND id = $2 RETURNING id`,
+        [installationId, projectId, accessMode],
+      );
+    }));
+    if (updated.length === 0) {
+      throw new IdentityNotFound({message: "The project does not exist."});
+    }
   }
 
   async admitMember(command: AdmitMemberRecord): Promise<InstallationMember> {

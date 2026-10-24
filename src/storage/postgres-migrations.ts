@@ -723,6 +723,30 @@ const addDirectoryGroups = Effect.gen(function*() {
     ON directory_group_members (installation_id, subject)`);
 });
 
+const addProjectAccess = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE projects ADD COLUMN access_mode TEXT NOT NULL
+    DEFAULT 'installation' CHECK (access_mode IN ('installation', 'restricted'))`);
+  // The identity provider whose user ids the subjects are, so a subject
+  // matches a member only through that provider's external identity.
+  yield* sql.unsafe("ALTER TABLE directory_group_members ADD COLUMN provider TEXT");
+  yield* sql.unsafe(`CREATE TABLE project_group_grants (
+    installation_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('viewer', 'editor', 'manager')),
+    granted_at TEXT NOT NULL,
+    granted_by_principal_id TEXT NOT NULL,
+    PRIMARY KEY (installation_id, project_id, group_id),
+    FOREIGN KEY (installation_id, project_id)
+      REFERENCES projects(installation_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (installation_id, group_id)
+      REFERENCES directory_groups(installation_id, id) ON DELETE CASCADE
+  )`);
+  yield* sql.unsafe(`CREATE INDEX project_group_grants_by_group
+    ON project_group_grants (installation_id, group_id)`);
+});
+
 const postgresMigrations = {
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -739,6 +763,7 @@ const postgresMigrations = {
   "0013_project_archive_audit": addProjectArchiveAudit,
   "0014_artifact_state_entries": addArtifactStateEntries,
   "0015_directory_groups": addDirectoryGroups,
+  "0016_project_access": addProjectAccess,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);
