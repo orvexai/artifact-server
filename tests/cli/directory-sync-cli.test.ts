@@ -92,6 +92,15 @@ describe("artifactserver maintenance sync-directory", () => {
       deactivated: 0,
       unchanged: 0,
       skipped: 1,
+    }), JSON.stringify({
+      groupSync: {
+        groups: 2,
+        created: 2,
+        renamed: 0,
+        deleted: 0,
+        membershipsReplaced: 2,
+        groupsFailed: 0,
+      },
     })]);
     expect(members()).toEqual([
       {email: "ada@example.test", role: "administrator", status: "active"},

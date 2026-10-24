@@ -235,6 +235,15 @@ These settings require the group lists above, and the issuer must have the form
 The sync obtains a token with the client-credentials grant at the issuer's
 discovered token endpoint.
 
+After the members are reconciled, the same pass copies every Keycloak group,
+subgroups included, with its direct members, keyed by the Keycloak group id.
+Groups are shown by their full path, such as `/Engineering/Platform`. A rename
+keeps the group; a group deleted in Keycloak is deleted here. If the group
+listing fails, nothing changes; if one group's members cannot be read, that
+group keeps its previous members and the pass continues. Copying a group grants
+no access by itself. The client needs no permission beyond `view-users` and
+`query-groups`. The sync prints a second JSON line, `{"groupSync": {...}}`.
+
 In Keycloak, create a separate client for the sync:
 
 1. Create an OpenID Connect client such as `artifact-server-directory` with
