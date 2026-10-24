@@ -59,7 +59,7 @@ describe("Keycloak directory group sync", () => {
   test("copies every group, nested ones by full path, with direct members only", async () => {
     keycloak.groups.set("Engineering", [keycloakUser("eve")]);
     keycloak.groups.set("Platform Team", [
-      // Never admitted, unverified, and disabled people are still members.
+      // Never-admitted and unverified people are members; a disabled one is not.
       keycloakUser("pat"),
       keycloakUser("uma", {emailVerified: false}),
       keycloakUser("dan", {enabled: false}),
@@ -80,7 +80,6 @@ describe("Keycloak directory group sync", () => {
     expect(groupMembers().filter((row) => row.path.startsWith("/Engineering")))
       .toEqual([
         {email: "eve@example.test", path: "/Engineering", subject: "user-eve"},
-        {email: null, path: "/Engineering/Platform Team", subject: "user-dan"},
         {email: "pat@example.test", path: "/Engineering/Platform Team", subject: "user-pat"},
         {email: null, path: "/Engineering/Platform Team", subject: "user-uma"},
       ]);
@@ -133,7 +132,7 @@ describe("Keycloak directory group sync", () => {
     keycloak.groups.set("Platform Team", [keycloakUser("pat"), keycloakUser("quinn")]);
     keycloak.groups.set("Engineering", [keycloakUser("eve"), keycloakUser("ezra")]);
     keycloak.failGroupMembers("Platform Team");
-    await expect(syncGroups()).resolves.toEqual(report({
+    await expect(syncGroups("2026-10-24T01:00:00.000Z")).resolves.toEqual(report({
       groups: 4,
       membershipsReplaced: 3,
       groupsFailed: 1,
@@ -143,6 +142,23 @@ describe("Keycloak directory group sync", () => {
       .map((row) => row.subject);
     expect(subjects("/Platform Team")).toEqual(["user-pat"]);
     expect(subjects("/Engineering")).toEqual(["user-eve", "user-ezra"]);
+    // The kept group still says when its members were last actually read.
+    const syncedAt = new Map(rowsOf("SELECT path, synced_at FROM directory_groups")
+      .map((row) => [String(row["path"]), String(row["synced_at"])]));
+    expect(syncedAt.get("/Platform Team")).toBe("2026-10-24T00:00:00.000Z");
+    expect(syncedAt.get("/Engineering")).toBe("2026-10-24T01:00:00.000Z");
+  });
+
+  test("more than one page of groups and members is read completely", async () => {
+    for (let index = 0; index < 130; index += 1) {
+      keycloak.groups.set(`team-${String(index).padStart(3, "0")}`, [keycloakUser(`u${index}`)]);
+    }
+    keycloak.groups.set("crowd", Array.from({length: 150}, (_, index) => keycloakUser(`c${index}`)));
+    await expect(syncGroups()).resolves.toMatchObject({groups: 133, created: 133});
+    expect(groups()).toHaveLength(133);
+    expect(groupMembers().filter((row) => row.path === "/crowd")).toHaveLength(150);
+    // One admin token serves the whole pass, not one per group.
+    expect(keycloak.tokenRequests()).toBe(1);
   });
 
   test("a failed group listing changes and deletes nothing", async () => {
@@ -156,7 +172,9 @@ describe("Keycloak directory group sync", () => {
     expect({groups: groups(), members: groupMembers()}).toEqual(before);
   });
 
-  async function syncGroups(): Promise<DirectoryGroupSyncReport> {
+  async function syncGroups(
+    syncedAt = "2026-10-24T00:00:00.000Z",
+  ): Promise<DirectoryGroupSyncReport> {
     const runtime = await createLocalRuntime({
       apiToken: installation.apiToken,
       browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
@@ -173,7 +191,7 @@ describe("Keycloak directory group sync", () => {
         clientSecret: Redacted.make(keycloak.clientSecret),
         issuer: keycloak.issuer,
         retryBaseDelayMilliseconds: 0,
-      }), "2026-10-24T00:00:00.000Z");
+      }), syncedAt);
     } finally {
       await runtime.close();
     }

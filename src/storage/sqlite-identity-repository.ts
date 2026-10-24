@@ -181,11 +181,15 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       for (const id of plan.movedIds) {
         park.run(parkedDirectoryGroupPath(id), installationId, id);
       }
+      // synced_at records when the members were last read, so a group whose
+      // members could not be read keeps its old time.
       const upsertGroup = this.#database.prepare(`
         INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT (installation_id, id) DO UPDATE SET
-          name = excluded.name, path = excluded.path, synced_at = excluded.synced_at
+          name = excluded.name, path = excluded.path,
+          synced_at = CASE WHEN ? THEN directory_groups.synced_at
+            ELSE excluded.synced_at END
       `);
       const insertMember = this.#database.prepare(`
         INSERT INTO directory_group_members (installation_id, group_id, subject, email)
@@ -199,6 +203,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           group.name,
           group.path,
           snapshot.syncedAt,
+          group.members === null ? 1 : 0,
         );
         if (group.members === null) continue;
         deleteMembers.run(installationId, group.id);

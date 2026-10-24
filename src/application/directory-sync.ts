@@ -194,8 +194,9 @@ export const syncDirectoryGroups = Effect.fn("syncDirectoryGroups")(function*(
     if (users === null) groupsFailed += 1;
     groups.push({
       ...group,
-      members: users === null ? null : users.map((user) => ({
-        email: user.enabled && user.emailVerified && user.email !== null
+      // A disabled directory user belongs to no group here.
+      members: users === null ? null : users.filter((user) => user.enabled).map((user) => ({
+        email: user.emailVerified && user.email !== null
           ? normalizeMemberEmail(user.email)
           : null,
         subject: user.id,

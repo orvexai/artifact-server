@@ -6,7 +6,7 @@ export interface DirectoryGroupRecord {
   readonly path: string;
 }
 
-/** One person in a directory group, whether or not they are admitted. */
+/** One enabled person in a directory group, whether or not they are admitted. */
 export interface DirectoryGroupMember {
   /** Normalized address, present only for an enabled user with a verified email. */
   readonly email: string | null;

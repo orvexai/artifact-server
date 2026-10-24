@@ -177,13 +177,17 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
             WHERE installation_id = ${installationId} AND id = ${id}`;
         }
         for (const group of snapshot.groups) {
+          // synced_at records when the members were last read, so a group
+          // whose members could not be read keeps its old time.
           yield* sql`INSERT INTO directory_groups (
             installation_id, id, name, path, synced_at
           ) VALUES (
             ${installationId}, ${group.id}, ${group.name}, ${group.path},
             ${snapshot.syncedAt}
           ) ON CONFLICT (installation_id, id) DO UPDATE SET
-            name = EXCLUDED.name, path = EXCLUDED.path, synced_at = EXCLUDED.synced_at`;
+            name = EXCLUDED.name, path = EXCLUDED.path,
+            synced_at = CASE WHEN ${group.members === null}
+              THEN directory_groups.synced_at ELSE EXCLUDED.synced_at END`;
           if (group.members === null) continue;
           yield* sql`DELETE FROM directory_group_members
             WHERE installation_id = ${installationId} AND group_id = ${group.id}`;

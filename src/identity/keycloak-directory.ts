@@ -18,6 +18,8 @@ const maximumPagesPerGroup = 1_000;
 /** Refuse a directory with more groups than one bounded pass lists. */
 const maximumGroups = 10_000;
 const requestTimeoutMilliseconds = 10_000;
+/** Reuse one admin token this long; Keycloak's default lifetime is 5 minutes. */
+const tokenReuseMilliseconds = 30_000;
 /** Attempts per request; only a timeout, network fault or HTTP 5xx is retried. */
 const requestAttempts = 3;
 const retryBaseDelayMilliseconds = 500;
@@ -145,6 +147,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
   readonly #fetch: typeof globalThis.fetch;
   readonly #issuer: string;
   readonly #retryBaseDelayMilliseconds: number;
+  #cachedToken: {readonly token: Redacted.Redacted; readonly until: number} | null = null;
   readonly #tokenEndpoint: string | undefined;
 
   constructor(config: KeycloakDirectoryConfig) {
@@ -238,6 +241,9 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
 
   readonly #accessToken = Effect.fn("KeycloakDirectory.accessToken")(
     function*(this: KeycloakDirectory) {
+      if (this.#cachedToken !== null && Date.now() < this.#cachedToken.until) {
+        return this.#cachedToken.token;
+      }
       const tokenEndpoint = this.#tokenEndpoint ?? (yield* Effect.tryPromise({
         try: async () => {
           const server = await loadOidcAuthorizationServer(this.#issuer, {
@@ -264,7 +270,9 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
           unavailable("The Keycloak token response carried no access token.")
         ),
       );
-      return Redacted.make(body.access_token, {label: "keycloak-directory-token"});
+      const token = Redacted.make(body.access_token, {label: "keycloak-directory-token"});
+      this.#cachedToken = {token, until: Date.now() + tokenReuseMilliseconds};
+      return token;
     },
   );
 
