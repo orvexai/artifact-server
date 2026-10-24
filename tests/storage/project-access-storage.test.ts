@@ -79,6 +79,25 @@ describe("project access storage (SQLite)", () => {
       .toMatchObject({accessMode: "restricted", member: {role: "member", status: "active"}});
   });
 
+  test("a group row from before providers were recorded matches nobody", async () => {
+    await Promise.all(["ada", "cat"].map(admit));
+    await bind("cat", keycloak, "user-cat");
+    await groups([group("g-old", [["user-ada", "ada"], ["user-imposter", "cat"]])]);
+    await repository.setProjectAccessMode(installationId, defaultProject, "restricted");
+    await grant("g-old", "manager");
+    readWrite((database) => database.exec("UPDATE directory_group_members SET provider = NULL"));
+    for (const name of ["ada", "cat"]) {
+      expect((await repository.findProjectAccess(installationId, defaultProject, `mem_${name}`))
+        ?.grantRoles).toEqual([]);
+    }
+    // The next sync records the provider and the unbound member matches again.
+    await groups([group("g-old", [["user-ada", "ada"], ["user-imposter", "cat"]])]);
+    expect((await repository.findProjectAccess(installationId, defaultProject, "mem_ada"))
+      ?.grantRoles).toEqual(["manager"]);
+    expect((await repository.findProjectAccess(installationId, defaultProject, "mem_cat"))
+      ?.grantRoles).toEqual([]);
+  });
+
   test("grants list, replace and remove; a deleted group takes its grants with it", async () => {
     await admit("ada");
     await groups([group("g-a", [["user-ada", "ada"]]), group("g-b", [])]);

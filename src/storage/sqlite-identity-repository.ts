@@ -285,11 +285,14 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     }
     // A group member is this member through its external identity for the
     // row's provider, or by verified email only when the member has none.
+    // A row written before providers were recorded matches nobody until the
+    // next sync rewrites it.
     const grants = this.#database.prepare(`
       SELECT DISTINCT g.role FROM project_group_grants g
       JOIN directory_group_members d
         ON d.installation_id = g.installation_id AND d.group_id = g.group_id
-      WHERE g.installation_id = ? AND g.project_id = ? AND (
+      WHERE g.installation_id = ? AND g.project_id = ?
+        AND d.provider IS NOT NULL AND (
         EXISTS (
           SELECT 1 FROM external_identities e
           WHERE e.member_id = ? AND e.provider = d.provider AND e.subject = d.subject

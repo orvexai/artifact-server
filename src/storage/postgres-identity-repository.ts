@@ -277,11 +277,14 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
       }
       // A group member is this member through its external identity for the
       // row's provider, or by verified email only when the member has none.
+      // A row written before providers were recorded matches nobody until
+      // the next sync rewrites it.
       const grants = yield* sql.unsafe<object>(
         `SELECT DISTINCT g.role FROM project_group_grants g
          JOIN directory_group_members d
            ON d.installation_id = g.installation_id AND d.group_id = g.group_id
-         WHERE g.installation_id = $1 AND g.project_id = $2 AND (
+         WHERE g.installation_id = $1 AND g.project_id = $2
+           AND d.provider IS NOT NULL AND (
            EXISTS (
              SELECT 1 FROM external_identities e
              WHERE e.installation_id = d.installation_id AND e.member_id = $3
