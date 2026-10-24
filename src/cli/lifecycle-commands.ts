@@ -190,6 +190,20 @@ function configureMaintenance(program: Command): void {
         console.log(JSON.stringify(
           await runtime.syncDirectory(directory, groupRoles),
         ));
+        // Groups follow members, so a refused member pass changes no group.
+        const groupSync = await runtime.syncDirectoryGroups(
+          directory,
+          new Date().toISOString(),
+        );
+        console.log(JSON.stringify({groupSync}));
+        // A kept group may hold someone Keycloak removed: fail the Job so
+        // operators see it and the CronJob retries.
+        if (groupSync.groupsFailed > 0) {
+          console.error(
+            `${groupSync.groupsFailed} directory group(s) kept their previous members because Keycloak could not be read.`,
+          );
+          process.exitCode = 1;
+        }
       } finally {
         await runtime.close();
       }

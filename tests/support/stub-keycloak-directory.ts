@@ -41,6 +41,12 @@ export interface RunningStubKeycloak {
    * for the next `times` requests of that page (every request when omitted).
    */
   failMembersPage(first: number | null, status?: number, times?: number): void;
+  /** Answer every members request of this group with HTTP 500 (null stops). */
+  failGroupMembers(name: string | null): void;
+  /** Make one existing group a subgroup of another. */
+  nestGroup(child: string, parent: string): void;
+  /** Rename one group in place, keeping its Keycloak id. */
+  renameGroup(from: string, to: string): void;
   setTokenStatus(status: number): void;
   stop(): Promise<void>;
   tokenRequests(): number;
@@ -57,6 +63,8 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
   let failingPage: {readonly first: number; remaining: number; readonly status: number} | null =
     null;
   let tokenRequestCount = 0;
+  let failingGroup: string | null = null;
+  const parents = new Map<string, string>();
   let tokenStatus = 200;
   let issuer = "";
   const realmPath = `/realms/${realmName}`;
@@ -69,6 +77,19 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
     groupIds.set(name, created);
     return created;
   };
+
+  const groupPath = (name: string): string => {
+    const parent = parents.get(name);
+    return parent === undefined ? `/${name}` : `${groupPath(parent)}/${name}`;
+  };
+  const childrenOf = (parent: string | undefined): string[] =>
+    [...groups.keys()].filter((name) => parents.get(name) === parent);
+  const treeEntry = (name: string) => ({
+    id: groupId(name),
+    name,
+    path: groupPath(name),
+    subGroupCount: childrenOf(name).length,
+  });
 
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://stub.invalid");
@@ -130,6 +151,25 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
       };
       const path = url.pathname.slice(adminPath.length);
       adminRequests.push({path, query: withoutUndefined(query)});
+      if (path === "/groups" && query.search === undefined) {
+        // Keycloak 26 lists top-level groups with a count of their children.
+        json(200, JSON.stringify(
+          page(childrenOf(undefined), query.first, query.max).map(treeEntry),
+        ));
+        return;
+      }
+      const children = /^\/groups\/([^/]+)\/children$/u.exec(path);
+      if (children !== null) {
+        const parent = [...groupIds.entries()].find(([, id]) => id === children[1])?.[0];
+        if (parent === undefined || !groups.has(parent)) {
+          json(404, JSON.stringify({error: "Could not find group by id"}));
+          return;
+        }
+        json(200, JSON.stringify(
+          page(childrenOf(parent), query.first, query.max).map(treeEntry),
+        ));
+        return;
+      }
       if (path === "/groups") {
         // Keycloak's exact search still returns matching groups with their
         // subgroups; a near-miss name never comes back.
@@ -151,6 +191,10 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
       }
       const first = Number(query.first ?? "0");
       const max = Number(query.max ?? "100");
+      if (name === failingGroup) {
+        json(500, JSON.stringify({error: "server_error"}));
+        return;
+      }
       if (failingPage !== null && failingPage.first === first && failingPage.remaining > 0) {
         failingPage.remaining -= 1;
         json(failingPage.status, JSON.stringify({error: "server_error"}));
@@ -172,6 +216,26 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
     adminRequests: () => adminRequests,
     clientId,
     clientSecret,
+    failGroupMembers: (name) => {
+      failingGroup = name;
+    },
+    nestGroup: (child, parent) => {
+      parents.set(child, parent);
+    },
+    renameGroup: (from, to) => {
+      const users = groups.get(from);
+      if (users === undefined) throw new Error(`No stub group ${from}.`);
+      groups.delete(from);
+      groups.set(to, users);
+      groupIds.set(to, groupId(from));
+      groupIds.delete(from);
+      for (const [child, parent] of parents) {
+        if (parent === from) parents.set(child, to);
+      }
+      const parent = parents.get(from);
+      parents.delete(from);
+      if (parent !== undefined) parents.set(to, parent);
+    },
     failMembersPage: (first, status = 500, times = Number.POSITIVE_INFINITY) => {
       failingPage = first === null ? null : {first, remaining: times, status};
     },
@@ -186,6 +250,14 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
 }
 
 /** A directory user with a verified email that sync admits. */
+function page<T>(
+  items: readonly T[],
+  first: string | undefined,
+  max: string | undefined,
+): readonly T[] {
+  return items.slice(Number(first ?? "0"), Number(first ?? "0") + Number(max ?? "100"));
+}
+
 export function keycloakUser(
   username: string,
   overrides: Partial<StubKeycloakUser> = {},

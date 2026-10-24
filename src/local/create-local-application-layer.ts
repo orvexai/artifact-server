@@ -899,6 +899,14 @@ export function createApplicationLayer(
         "listMembers",
         () => identityRepository.listMembers(installationId),
       ),
+      applyDirectoryGroups: (installationId, snapshot) => identityEffect(
+        "applyDirectoryGroups",
+        () => identityRepository.applyDirectoryGroups(installationId, snapshot),
+      ),
+      listDirectoryGroups: (installationId) => identityEffect(
+        "listDirectoryGroups",
+        () => identityRepository.listDirectoryGroups(installationId),
+      ),
       revokeApiKey: (installationId, keyId, revokedAt) => identityEffectWithNotFound(
         "revokeApiKey",
         () => identityRepository.revokeApiKey(installationId, keyId, revokedAt),

@@ -4,6 +4,13 @@ import {isSqlError} from "effect/unstable/sql/SqlError";
 import {z} from "zod";
 
 import {
+  type DirectoryGroupApplyResult,
+  type DirectoryGroupSnapshot,
+  parkedDirectoryGroupPath,
+  planDirectoryGroupChanges,
+  type StoredDirectoryGroup,
+} from "../core/directory-groups.js";
+import {
   IdentityConflict,
   IdentityNotFound,
   LoginAttemptRejected,
@@ -102,6 +109,18 @@ const loginAttemptRowSchema = z.object({
   stateDigest: z.string(),
 });
 const countRowSchema = z.object({count: z.coerce.number().int().nonnegative()});
+const directoryGroupRowSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  path: z.string(),
+});
+const storedDirectoryGroupRowSchema = z.object({
+  id: z.string(),
+  memberCount: z.coerce.number().int().nonnegative(),
+  name: z.string(),
+  path: z.string(),
+  syncedAt: z.string(),
+});
 
 /** Installation-scoped Postgres persistence for membership and credentials. */
 export class PostgresIdentityRepository implements BootstrapManagedApiKeyRepository {
@@ -124,6 +143,85 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         [installationId],
       );
       return z.object({present: z.boolean()}).parse(rows[0]).present;
+    }));
+  }
+
+  async applyDirectoryGroups(
+    installationId: string,
+    snapshot: DirectoryGroupSnapshot,
+  ): Promise<DirectoryGroupApplyResult> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:directory-groups:${installationId}`}, 0)
+        )`;
+        const rows = yield* sql.unsafe<object>(
+          "SELECT id, name, path FROM directory_groups WHERE installation_id = $1",
+          [installationId],
+        );
+        const stored = new Map(
+          z.array(directoryGroupRowSchema).parse(rows).map((row) => [row.id, row]),
+        );
+        const plan = planDirectoryGroupChanges(stored, snapshot);
+        for (const id of plan.deletedIds) {
+          yield* sql`DELETE FROM directory_group_members
+            WHERE installation_id = ${installationId} AND group_id = ${id}`;
+          yield* sql`DELETE FROM directory_groups
+            WHERE installation_id = ${installationId} AND id = ${id}`;
+        }
+        // Park moved groups first, so two groups swapping paths never collide.
+        for (const id of plan.movedIds) {
+          yield* sql`UPDATE directory_groups SET path = ${parkedDirectoryGroupPath(id)}
+            WHERE installation_id = ${installationId} AND id = ${id}`;
+        }
+        for (const group of snapshot.groups) {
+          // synced_at records when the members were last read, so a group
+          // whose members could not be read keeps its old time.
+          yield* sql`INSERT INTO directory_groups (
+            installation_id, id, name, path, synced_at
+          ) VALUES (
+            ${installationId}, ${group.id}, ${group.name}, ${group.path},
+            ${snapshot.syncedAt}
+          ) ON CONFLICT (installation_id, id) DO UPDATE SET
+            name = EXCLUDED.name, path = EXCLUDED.path,
+            synced_at = CASE WHEN ${group.members === null}
+              THEN directory_groups.synced_at ELSE EXCLUDED.synced_at END`;
+          if (group.members === null) continue;
+          yield* sql`DELETE FROM directory_group_members
+            WHERE installation_id = ${installationId} AND group_id = ${group.id}`;
+          for (const member of group.members) {
+            yield* sql`INSERT INTO directory_group_members (
+              installation_id, group_id, subject, email
+            ) VALUES (
+              ${installationId}, ${group.id}, ${member.subject}, ${member.email}
+            ) ON CONFLICT DO NOTHING`;
+          }
+        }
+        return plan.result;
+      }));
+    }));
+  }
+
+  async listDirectoryGroups(
+    installationId: string,
+  ): Promise<readonly StoredDirectoryGroup[]> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(
+        `SELECT g.id, g.name, g.path, g.synced_at AS "syncedAt",
+          COUNT(m.subject) AS "memberCount"
+         FROM directory_groups g
+         LEFT JOIN directory_group_members m
+           ON m.installation_id = g.installation_id AND m.group_id = g.id
+         WHERE g.installation_id = $1
+         GROUP BY g.installation_id, g.id
+         ORDER BY g.path ASC`,
+        [installationId],
+      );
+      return z.array(storedDirectoryGroupRowSchema).parse(rows);
     }));
   }
 

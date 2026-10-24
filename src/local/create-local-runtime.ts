@@ -12,10 +12,15 @@ import type { Clock } from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
 import type {GroupRolePolicy} from "../core/group-role-policy.js";
 import type {
+  DirectoryGroupSyncReport,
   DirectorySyncReport,
+  GroupDirectory,
   MemberDirectory,
 } from "../application/directory-sync.js";
-import {runDirectorySyncPass} from "../lifecycle/directory-sync.js";
+import {
+  runDirectoryGroupSyncPass,
+  runDirectorySyncPass,
+} from "../lifecycle/directory-sync.js";
 import { SystemClock, SystemIdGenerator } from "../core/system.js";
 import { createHttpApp } from "../http/create-http-app.js";
 import type {
@@ -136,6 +141,11 @@ export interface LocalRuntime {
     directory: MemberDirectory,
     policy: GroupRolePolicy,
   ): Promise<DirectorySyncReport>;
+  /** Copy every directory group and its members. */
+  syncDirectoryGroups(
+    directory: GroupDirectory,
+    syncedAt: string,
+  ): Promise<DirectoryGroupSyncReport>;
 }
 
 export async function createLocalRuntime(
@@ -364,6 +374,8 @@ export async function createLocalRuntime(
       cleanupStaging: (limit) => runStagingCleanupPass(applicationRuntime, limit),
       syncDirectory: (directory, policy) =>
         runDirectorySyncPass(applicationRuntime, directory, policy),
+      syncDirectoryGroups: (directory, syncedAt) =>
+        runDirectoryGroupSyncPass(applicationRuntime, directory, syncedAt),
       close: async () => {
         if (closeCleanupSchedule !== null) await closeCleanupSchedule();
         if (gitHistoryWorker !== null) await gitHistoryWorker.close();

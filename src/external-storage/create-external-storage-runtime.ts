@@ -10,10 +10,15 @@ import type {Clock} from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
 import type {GroupRolePolicy} from "../core/group-role-policy.js";
 import type {
+  DirectoryGroupSyncReport,
   DirectorySyncReport,
+  GroupDirectory,
   MemberDirectory,
 } from "../application/directory-sync.js";
-import {runDirectorySyncPass} from "../lifecycle/directory-sync.js";
+import {
+  runDirectoryGroupSyncPass,
+  runDirectorySyncPass,
+} from "../lifecycle/directory-sync.js";
 import {SystemClock, SystemIdGenerator} from "../core/system.js";
 import {createHttpApp} from "../http/create-http-app.js";
 import type {
@@ -117,6 +122,11 @@ export interface ExternalStorageRuntime {
     directory: MemberDirectory,
     policy: GroupRolePolicy,
   ): Promise<DirectorySyncReport>;
+  /** Copy every directory group and its members. */
+  syncDirectoryGroups(
+    directory: GroupDirectory,
+    syncedAt: string,
+  ): Promise<DirectoryGroupSyncReport>;
 }
 
 /** Connect external providers, validate migrations, verify readiness, and build the app. */
@@ -291,6 +301,8 @@ export async function createExternalStorageRuntime(
       cleanupStaging: (limit) => runStagingCleanupPass(readyRuntime, limit),
       syncDirectory: (directory, policy) =>
         runDirectorySyncPass(readyRuntime, directory, policy),
+      syncDirectoryGroups: (directory, syncedAt) =>
+        runDirectoryGroupSyncPass(readyRuntime, directory, syncedAt),
       close: async () => {
         if (closeCleanupSchedule !== null) await closeCleanupSchedule();
         if (gitHistoryWorker !== null) await gitHistoryWorker.close();

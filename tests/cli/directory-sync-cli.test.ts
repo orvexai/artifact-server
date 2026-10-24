@@ -92,12 +92,32 @@ describe("artifactserver maintenance sync-directory", () => {
       deactivated: 0,
       unchanged: 0,
       skipped: 1,
+    }), JSON.stringify({
+      groupSync: {
+        groups: 2,
+        created: 2,
+        renamed: 0,
+        deleted: 0,
+        membershipsReplaced: 2,
+        groupsFailed: 0,
+      },
     })]);
     expect(members()).toEqual([
       {email: "ada@example.test", role: "administrator", status: "active"},
       {email: "bob@example.test", role: "member", status: "active"},
     ]);
     expect(synced.stdout + synced.stderr).not.toContain(keycloak.clientSecret);
+
+    // A group whose members cannot be read keeps them and fails the run.
+    keycloak.groups.set("Engineering", [keycloakUser("eve")]);
+    keycloak.failGroupMembers("Engineering");
+    const kept = await syncDirectory(directoryEnvironment());
+    expect(kept.exitCode).not.toBe(0);
+    expect(kept.stderr).toContain(
+      "1 directory group(s) kept their previous members because Keycloak could not be read.",
+    );
+    keycloak.failGroupMembers(null);
+    keycloak.groups.delete("Engineering");
 
     keycloak.groups.delete("artifact-users");
     const failed = await syncDirectory(directoryEnvironment());

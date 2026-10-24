@@ -1,4 +1,9 @@
 import type {
+  DirectoryGroupApplyResult,
+  DirectoryGroupSnapshot,
+  StoredDirectoryGroup,
+} from "./directory-groups.js";
+import type {
   ApplicationSession,
   InstallationMember,
   LoginAttempt,
@@ -39,6 +44,15 @@ export interface CreateApplicationSessionRecord {
 /** Persistent identity operations required by the Node application composition. */
 export interface IdentityRepository {
   admitMember(command: AdmitMemberRecord): Promise<InstallationMember>;
+  /**
+   * Make the stored directory groups match one complete listing in a single
+   * transaction: create, rename, or delete groups, and replace the membership
+   * of every group whose members were read.
+   */
+  applyDirectoryGroups(
+    installationId: string,
+    snapshot: DirectoryGroupSnapshot,
+  ): Promise<DirectoryGroupApplyResult>;
   bindExternalIdentity(command: BindExternalIdentityRecord): Promise<void>;
   consumeLoginAttempt(
     stateDigest: string,
@@ -79,6 +93,10 @@ export interface IdentityRepository {
   ): Promise<InstallationMember | null>;
   hasMembers(installationId: string): Promise<boolean>;
   listApiKeys(installationId: string): Promise<readonly ManagedApiKey[]>;
+  /** Every stored directory group, ordered by path. */
+  listDirectoryGroups(
+    installationId: string,
+  ): Promise<readonly StoredDirectoryGroup[]>;
   listMembers(installationId: string): Promise<readonly InstallationMember[]>;
   revokeApiKey(
     installationId: string,

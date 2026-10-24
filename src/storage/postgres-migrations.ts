@@ -699,6 +699,30 @@ const addArtifactStateEntries = Effect.gen(function*() {
   )`);
 });
 
+const addDirectoryGroups = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`CREATE TABLE directory_groups (
+    installation_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    synced_at TEXT NOT NULL,
+    PRIMARY KEY (installation_id, id),
+    UNIQUE (installation_id, path)
+  )`);
+  yield* sql.unsafe(`CREATE TABLE directory_group_members (
+    installation_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    email TEXT,
+    PRIMARY KEY (installation_id, group_id, subject),
+    FOREIGN KEY (installation_id, group_id)
+      REFERENCES directory_groups(installation_id, id) ON DELETE CASCADE
+  )`);
+  yield* sql.unsafe(`CREATE INDEX directory_group_members_by_subject
+    ON directory_group_members (installation_id, subject)`);
+});
+
 const postgresMigrations = {
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -714,6 +738,7 @@ const postgresMigrations = {
   "0012_comment_actor_attribution": addCommentActorAttribution,
   "0013_project_archive_audit": addProjectArchiveAudit,
   "0014_artifact_state_entries": addArtifactStateEntries,
+  "0015_directory_groups": addDirectoryGroups,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);
