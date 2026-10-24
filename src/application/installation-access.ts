@@ -1,5 +1,10 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
+import type {
+  DirectoryGroupApplyResult,
+  DirectoryGroupSnapshot,
+  StoredDirectoryGroup,
+} from "../core/directory-groups.js";
 import { Context, Effect, Layer, Redacted } from "effect";
 
 import type { AuthenticatedApplicationSession } from "./authentication.js";
@@ -49,6 +54,13 @@ const allCapabilities = Object.values(principalCapabilities);
 const localBrowserLoginProvider = "artifact-server-local";
 
 export interface InstallationIdentityRepository {
+  readonly applyDirectoryGroups: (
+    installationId: string,
+    snapshot: DirectoryGroupSnapshot,
+  ) => Effect.Effect<DirectoryGroupApplyResult, IdentityRepositoryFailure>;
+  readonly listDirectoryGroups: (
+    installationId: string,
+  ) => Effect.Effect<readonly StoredDirectoryGroup[], IdentityRepositoryFailure>;
   readonly admitMember: (
     command: {
       readonly createdAt: string;
@@ -332,6 +344,18 @@ export interface InstallationAccessOperations {
     DirectoryReconciliation,
     IdentityConflict | IdentityRepositoryFailure
   >;
+  /**
+   * Make the stored directory groups match one complete listing. A group
+   * whose members could not be read keeps its stored membership.
+   */
+  readonly applyDirectoryGroups: (
+    snapshot: DirectoryGroupSnapshot,
+  ) => Effect.Effect<DirectoryGroupApplyResult, IdentityRepositoryFailure>;
+  /** Every stored directory group, ordered by path. */
+  readonly listDirectoryGroups: () => Effect.Effect<
+    readonly StoredDirectoryGroup[],
+    IdentityRepositoryFailure
+  >;
   readonly revokeApiKey: (
     principal: Principal,
     keyId: string,
@@ -518,6 +542,30 @@ function makeInstallationAccessService(
       dependencies.installationId,
       member.id,
       now,
+    );
+  });
+
+  const applyDirectoryGroups = Effect.fn(
+    "InstallationAccessService.applyDirectoryGroups",
+  )(function*(snapshot: DirectoryGroupSnapshot) {
+    const result = yield* dependencies.repository.applyDirectoryGroups(
+      dependencies.installationId,
+      snapshot,
+    );
+    // Group membership will decide project access; never serve a stale grant.
+    if (
+      result.deleted + result.membershipsReplaced + result.renamed > 0
+    ) {
+      clearAuthenticationCaches();
+    }
+    return result;
+  });
+
+  const listDirectoryGroups = Effect.fn(
+    "InstallationAccessService.listDirectoryGroups",
+  )(function*() {
+    return yield* dependencies.repository.listDirectoryGroups(
+      dependencies.installationId,
     );
   });
 
@@ -1012,6 +1060,8 @@ function makeInstallationAccessService(
     listMembers,
     loginWithLocalBrowserToken,
     reconcileDirectoryMembers,
+    applyDirectoryGroups,
+    listDirectoryGroups,
     revokeApiKey,
     revokeSession,
     rotateApiKey,

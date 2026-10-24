@@ -190,6 +190,13 @@ function configureMaintenance(program: Command): void {
         console.log(JSON.stringify(
           await runtime.syncDirectory(directory, groupRoles),
         ));
+        // Groups follow members, so a refused member pass changes no group.
+        console.log(JSON.stringify({
+          groupSync: await runtime.syncDirectoryGroups(
+            directory,
+            new Date().toISOString(),
+          ),
+        }));
       } finally {
         await runtime.close();
       }

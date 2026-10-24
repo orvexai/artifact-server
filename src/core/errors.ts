@@ -436,6 +436,7 @@ export class IdentityRepositoryFailure extends Schema.TaggedError<IdentityReposi
     cause: Schema.Defect(),
     operation: Schema.Literals([
       "admitMember",
+      "applyDirectoryGroups",
       "bindExternalIdentity",
       "consumeLoginAttempt",
       "createApiKey",
@@ -449,6 +450,7 @@ export class IdentityRepositoryFailure extends Schema.TaggedError<IdentityReposi
       "findApplicationSession",
       "hasMembers",
       "listApiKeys",
+      "listDirectoryGroups",
       "listMembers",
       "revokeApiKey",
       "revokeApplicationSession",

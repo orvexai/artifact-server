@@ -21,6 +21,13 @@ import {
   principalKinds,
 } from "../core/identity.js";
 import {requiredSqliteSchemaVersion} from "./sqlite-schema.js";
+import {
+  type DirectoryGroupApplyResult,
+  type DirectoryGroupSnapshot,
+  parkedDirectoryGroupPath,
+  planDirectoryGroupChanges,
+  type StoredDirectoryGroup,
+} from "../core/directory-groups.js";
 import type {
   AdmitMemberRecord,
   BindExternalIdentityRecord,
@@ -28,6 +35,18 @@ import type {
   CreateApplicationSessionRecord,
 } from "../core/identity-ports.js";
 
+const directoryGroupRowSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  path: z.string(),
+});
+const storedDirectoryGroupRowSchema = z.object({
+  id: z.string(),
+  memberCount: z.number().int().nonnegative(),
+  name: z.string(),
+  path: z.string(),
+  syncedAt: z.string(),
+});
 const membershipRoleSchema = z.enum([
   membershipRoles.administrator,
   membershipRoles.member,
@@ -130,6 +149,85 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       ) AS present
     `).get(installationId);
     return presenceRowSchema.parse(row).present === 1;
+  }
+
+  async applyDirectoryGroups(
+    installationId: string,
+    snapshot: DirectoryGroupSnapshot,
+  ): Promise<DirectoryGroupApplyResult> {
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      const rows = this.#database.prepare(
+        "SELECT id, name, path FROM directory_groups WHERE installation_id = ?",
+      ).all(installationId);
+      const stored = new Map(
+        z.array(directoryGroupRowSchema).parse(rows).map((row) => [row.id, row]),
+      );
+      const plan = planDirectoryGroupChanges(stored, snapshot);
+      const deleteMembers = this.#database.prepare(
+        "DELETE FROM directory_group_members WHERE installation_id = ? AND group_id = ?",
+      );
+      const deleteGroup = this.#database.prepare(
+        "DELETE FROM directory_groups WHERE installation_id = ? AND id = ?",
+      );
+      for (const id of plan.deletedIds) {
+        deleteMembers.run(installationId, id);
+        deleteGroup.run(installationId, id);
+      }
+      // Park moved groups first, so two groups swapping paths never collide.
+      const park = this.#database.prepare(
+        "UPDATE directory_groups SET path = ? WHERE installation_id = ? AND id = ?",
+      );
+      for (const id of plan.movedIds) {
+        park.run(parkedDirectoryGroupPath(id), installationId, id);
+      }
+      const upsertGroup = this.#database.prepare(`
+        INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (installation_id, id) DO UPDATE SET
+          name = excluded.name, path = excluded.path, synced_at = excluded.synced_at
+      `);
+      const insertMember = this.#database.prepare(`
+        INSERT INTO directory_group_members (installation_id, group_id, subject, email)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT DO NOTHING
+      `);
+      for (const group of snapshot.groups) {
+        upsertGroup.run(
+          installationId,
+          group.id,
+          group.name,
+          group.path,
+          snapshot.syncedAt,
+        );
+        if (group.members === null) continue;
+        deleteMembers.run(installationId, group.id);
+        for (const member of group.members) {
+          insertMember.run(installationId, group.id, member.subject, member.email);
+        }
+      }
+      this.#database.exec("COMMIT;");
+      return plan.result;
+    } catch (cause) {
+      this.#database.exec("ROLLBACK;");
+      throw cause;
+    }
+  }
+
+  async listDirectoryGroups(
+    installationId: string,
+  ): Promise<readonly StoredDirectoryGroup[]> {
+    const rows = this.#database.prepare(`
+      SELECT g.id, g.name, g.path, g.synced_at AS syncedAt,
+        COUNT(m.subject) AS memberCount
+      FROM directory_groups g
+      LEFT JOIN directory_group_members m
+        ON m.installation_id = g.installation_id AND m.group_id = g.id
+      WHERE g.installation_id = ?
+      GROUP BY g.installation_id, g.id
+      ORDER BY g.path ASC
+    `).all(installationId);
+    return z.array(storedDirectoryGroupRowSchema).parse(rows);
   }
 
   async admitMember(command: AdmitMemberRecord): Promise<InstallationMember> {
@@ -755,6 +853,29 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         activated_at TEXT NOT NULL,
         UNIQUE (provider, account_id, namespace)
       ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS directory_groups (
+        installation_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        path TEXT NOT NULL,
+        synced_at TEXT NOT NULL,
+        PRIMARY KEY (installation_id, id),
+        UNIQUE (installation_id, path)
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS directory_group_members (
+        installation_id TEXT NOT NULL,
+        group_id TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        email TEXT,
+        PRIMARY KEY (installation_id, group_id, subject),
+        FOREIGN KEY (installation_id, group_id)
+          REFERENCES directory_groups(installation_id, id) ON DELETE CASCADE
+      ) STRICT;
+
+      CREATE INDEX IF NOT EXISTS directory_group_members_by_subject
+        ON directory_group_members (installation_id, subject);
 
       CREATE TABLE IF NOT EXISTS git_history_project_settings (
         project_id TEXT PRIMARY KEY REFERENCES projects(id),

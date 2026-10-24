@@ -4,8 +4,10 @@ import {
   DirectoryUnavailable,
   type DirectoryGroup,
   type DirectoryUser,
+  type GroupDirectory,
   type MemberDirectory,
 } from "../application/directory-sync.js";
+import type {DirectoryGroupRecord} from "../core/directory-groups.js";
 import {loadOidcAuthorizationServer} from "./oidc-oauth-metadata.js";
 import {isLocalOidcIssuer, normalizeOidcEndpoint} from "./oidc-issuer.js";
 
@@ -13,6 +15,8 @@ import {isLocalOidcIssuer, normalizeOidcEndpoint} from "./oidc-issuer.js";
 export const keycloakDirectoryPageSize = 100;
 /** Refuse a group so large that reading it all is no longer a bounded pass. */
 const maximumPagesPerGroup = 1_000;
+/** Refuse a directory with more groups than one bounded pass lists. */
+const maximumGroups = 10_000;
 const requestTimeoutMilliseconds = 10_000;
 /** Attempts per request; only a timeout, network fault or HTTP 5xx is retried. */
 const requestAttempts = 3;
@@ -25,6 +29,12 @@ const groupList = Schema.Array(Schema.Struct({
   id: Schema.NonEmptyString,
   name: Schema.String,
 }));
+const groupTree = Schema.Array(Schema.Struct({
+  id: Schema.NonEmptyString,
+  name: Schema.String,
+  path: Schema.optionalKey(Schema.String),
+  subGroupCount: Schema.optionalKey(Schema.Number),
+}));
 const userList = Schema.Array(Schema.Struct({
   email: Schema.optionalKey(Schema.String),
   emailVerified: Schema.optionalKey(Schema.Boolean),
@@ -36,6 +46,7 @@ const userList = Schema.Array(Schema.Struct({
 }));
 const decodeTokenResponse = Schema.decodeUnknownEffect(tokenResponse);
 const decodeGroupList = Schema.decodeUnknownEffect(groupList);
+const decodeGroupTree = Schema.decodeUnknownEffect(groupTree);
 const decodeUserList = Schema.decodeUnknownEffect(userList);
 
 /**
@@ -127,7 +138,7 @@ export interface KeycloakDirectoryConfig {
  * client-credentials token. The client needs only realm-management
  * view-users and query-groups.
  */
-export class KeycloakDirectory implements MemberDirectory {
+export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
   readonly #adminBaseUrl: string;
   readonly #clientId: string;
   readonly #clientSecret: Redacted.Redacted;
@@ -169,6 +180,59 @@ export class KeycloakDirectory implements MemberDirectory {
         groups.push({name, users: yield* this.#groupMembers(token, name, id)});
       }
       return groups;
+    },
+  );
+
+  /**
+   * List every group in the realm, subgroups included, by walking Keycloak's
+   * paged top-level listing and each group's children.
+   */
+  readonly listAllGroups = Effect.fn("KeycloakDirectory.listAllGroups")(
+    function*(this: KeycloakDirectory) {
+      const token = yield* this.#accessToken();
+      const groups: DirectoryGroupRecord[] = [];
+      const pending = [{parentPath: "", url: `${this.#adminBaseUrl}/groups`}];
+      for (let next = pending.shift(); next !== undefined; next = pending.shift()) {
+        for (let page = 0; ; page += 1) {
+          if (page >= maximumPagesPerGroup) {
+            return yield* unavailable("The Keycloak group listing has too many pages.");
+          }
+          const url = new URL(next.url);
+          url.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+          url.searchParams.set("max", String(keycloakDirectoryPageSize));
+          url.searchParams.set("briefRepresentation", "true");
+          const body = yield* this.#adminGet(token, url, "The Keycloak group listing");
+          const listed = yield* decodeGroupTree(body).pipe(
+            Effect.mapError(() =>
+              unavailable("The Keycloak group listing returned an invalid list.")
+            ),
+          );
+          for (const group of listed) {
+            const path = group.path ?? `${next.parentPath}/${group.name}`;
+            groups.push({id: group.id, name: group.name, path});
+            if (groups.length > maximumGroups) {
+              return yield* unavailable("Keycloak lists more groups than one sync reads.");
+            }
+            // An older Keycloak omits the count; ask for children then.
+            if (group.subGroupCount !== 0) {
+              pending.push({
+                parentPath: path,
+                url: `${this.#adminBaseUrl}/groups/${encodeURIComponent(group.id)}/children`,
+              });
+            }
+          }
+          if (listed.length < keycloakDirectoryPageSize) break;
+        }
+      }
+      return groups;
+    },
+  );
+
+  /** Read one group's complete direct membership. */
+  readonly listGroupMembers = Effect.fn("KeycloakDirectory.listGroupMembers")(
+    function*(this: KeycloakDirectory, group: DirectoryGroupRecord) {
+      const token = yield* this.#accessToken();
+      return yield* this.#groupMembers(token, group.path, group.id);
     },
   );
 
