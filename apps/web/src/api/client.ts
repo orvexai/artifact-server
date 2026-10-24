@@ -725,6 +725,17 @@ const apiKeySchema = z.object({
 });
 
 export type InstallationMember = z.infer<typeof memberSchema>;
+
+const directoryGroupSchema = z.object({
+  id: z.string(),
+  memberCount: z.number().int().nonnegative(),
+  name: z.string(),
+  path: z.string(),
+  syncedAt: z.string(),
+});
+
+/** One Keycloak group copied by directory sync. */
+export type DirectoryGroup = z.infer<typeof directoryGroupSchema>;
 export type ManagedApiKey = z.infer<typeof apiKeySchema>;
 
 const issuedKeySchema = z.object({
@@ -1356,6 +1367,10 @@ export const api = {
     z.object({ members: z.array(memberSchema) }),
     "/api/v1/members",
   ).then(({ members }) => members),
+  groups: () => request(
+    z.object({ groups: z.array(directoryGroupSchema) }),
+    "/api/v1/groups",
+  ).then(({ groups }) => groups),
   admitMember: (
     displayName: string,
     email: string,

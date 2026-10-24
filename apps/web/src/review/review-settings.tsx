@@ -8,6 +8,7 @@ import {ArtifactMark} from "./artifact-mark.tsx";
 import {parseSettingsRoute, type SettingsRoute} from "./review-routes.ts";
 import {ApiKeysScreen} from "./settings-api-keys.tsx";
 import {McpScreen} from "./settings-mcp.tsx";
+import {GroupsScreen} from "./settings-groups.tsx";
 import {MembersScreen} from "./settings-members.tsx";
 import {SettingsProject, SettingsProjects} from "./settings-projects.tsx";
 import {PublicLinksScreen} from "./settings-public-links.tsx";
@@ -90,6 +91,7 @@ export function ReviewSettings({
           {administrator ? (
             <>
               <SettingsLink active={route.kind === "members"} href="/review/settings/members">Members</SettingsLink>
+              <SettingsLink active={route.kind === "groups"} href="/review/settings/groups">Groups</SettingsLink>
               <SettingsLink active={route.kind === "apiKeys"} href="/review/settings/api-keys">API keys</SettingsLink>
               <SettingsLink active={route.kind === "publicLinks"} href="/review/settings/public-links">Public links</SettingsLink>
             </>
@@ -166,6 +168,8 @@ function SettingsContent({
   switch (route.kind) {
     case "members":
       return <MembersScreen />;
+    case "groups":
+      return <GroupsScreen />;
     case "apiKeys":
       return <ApiKeysScreen />;
     case "publicLinks":

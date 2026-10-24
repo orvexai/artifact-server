@@ -18,6 +18,7 @@ import {
 } from "../application/application-runtime.js";
 import { StagedUploadService } from "../application/staged-upload.js";
 import { AuthenticationService } from "../application/authentication.js";
+import {listDirectoryGroups} from "../application/directory-groups.js";
 import {
   digestIdentitySecret,
   identitySecretsEqual,
@@ -1142,6 +1143,15 @@ export function createHttpApp(
     }
     clearApplicationSessionCookies(context, dependencies);
     return context.body(null, 204);
+  });
+
+  app.get("/api/v1/groups", async (context) => {
+    const groups = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      listDirectoryGroups(context.get("principal")),
+    );
+    return context.json({groups});
   });
 
   app.get("/api/v1/members", async (context) => {

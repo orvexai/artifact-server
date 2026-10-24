@@ -161,6 +161,30 @@ describe("Keycloak directory group sync", () => {
     expect(keycloak.tokenRequests()).toBe(1);
   });
 
+  test("the groups API lists copied groups by path with member counts", async () => {
+    keycloak.groups.set("Platform Team", [keycloakUser("pat"), keycloakUser("quinn")]);
+    await syncGroups();
+    const runtime = await openRuntime();
+    try {
+      const response = await runtime.app.request("http://localhost/api/v1/groups", {
+        headers: {Authorization: `Bearer ${installation.apiToken}`},
+      });
+      expect(response.status).toBe(200);
+      const body = z.object({groups: z.array(z.object({
+        memberCount: z.number(),
+        path: z.string(),
+      }).loose())}).parse(await response.json());
+      expect(body.groups.map(({memberCount, path: groupPath}) => [groupPath, memberCount]))
+        .toEqual([
+          ["/Platform Team", 2],
+          ["/artifact-admins", 1],
+          ["/artifact-users", 1],
+        ]);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   test("a failed group listing changes and deletes nothing", async () => {
     keycloak.groups.set("Platform Team", [keycloakUser("pat")]);
     await syncGroups();
@@ -172,16 +196,20 @@ describe("Keycloak directory group sync", () => {
     expect({groups: groups(), members: groupMembers()}).toEqual(before);
   });
 
-  async function syncGroups(
-    syncedAt = "2026-10-24T00:00:00.000Z",
-  ): Promise<DirectoryGroupSyncReport> {
-    const runtime = await createLocalRuntime({
+  function openRuntime() {
+    return createLocalRuntime({
       apiToken: installation.apiToken,
       browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
       contentDomain: "localhost",
       dataDirectory: installation.dataDirectory,
       groupRolePolicy: groupRoles,
     });
+  }
+
+  async function syncGroups(
+    syncedAt = "2026-10-24T00:00:00.000Z",
+  ): Promise<DirectoryGroupSyncReport> {
+    const runtime = await openRuntime();
     try {
       const adminBaseUrl = keycloakAdminBaseUrl(keycloak.issuer);
       if (adminBaseUrl === null) throw new Error("The stub issuer is not a realm.");
