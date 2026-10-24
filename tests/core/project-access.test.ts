@@ -24,8 +24,9 @@ function principal(overrides: Partial<Principal> = {}): Principal {
 function restricted(
   grantRoles: readonly ProjectGrantRole[],
   member: ProjectAccessRecord["member"] = {role: "member", status: "active"},
+  isCreator = false,
 ): ProjectAccessRecord {
-  return {accessMode: "restricted", grantRoles, member};
+  return {accessMode: "restricted", grantRoles, isCreator, member};
 }
 
 describe("project access rules", () => {
@@ -33,6 +34,7 @@ describe("project access rules", () => {
     const record: ProjectAccessRecord = {
       accessMode: "installation",
       grantRoles: [],
+      isCreator: false,
       member: null,
     };
     for (const who of [
@@ -59,6 +61,9 @@ describe("project access rules", () => {
     ["stored administrator role wins over a key's member role", principal({authorizedByPrincipalId: "mem_admin"}), restricted([], {role: "administrator", status: "active"}), "administrator"],
     ["a principal claiming administrator is judged by its stored role", principal({membershipRole: "administrator"}), restricted([]), null],
     ["an MCP client acts as its member", principal({actorClientId: "client-1"}), restricted(["editor"]), "editor"],
+    ["the creator manages its project with no grant", principal(), restricted([], undefined, true), "manager"],
+    ["a creator's weaker grant does not lower it", principal(), restricted(["viewer"], undefined, true), "manager"],
+    ["a deactivated creator sees nothing", principal(), restricted([], {role: "member", status: "inactive"}, true), null],
   ])("%s", (_name, who, record, role) => {
     expect(resolveProjectAccess(who, record)).toEqual({mode: "restricted", role});
   });
