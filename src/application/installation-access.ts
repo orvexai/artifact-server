@@ -374,6 +374,15 @@ export interface InstallationAccessOperations {
     principal: Principal,
     projectId: string,
   ) => Effect.Effect<ProjectAccess | null, IdentityRepositoryFailure>;
+  /**
+   * The access the principal that owns something (an agent) has to one
+   * project, known only by its id: a stored member is judged as that member,
+   * anything else is a service principal. Null when the project is absent.
+   */
+  readonly ownerProjectAccess: (
+    ownerPrincipalId: string,
+    projectId: string,
+  ) => Effect.Effect<ProjectAccess | null, IdentityRepositoryFailure>;
   readonly revokeApiKey: (
     principal: Principal,
     keyId: string,
@@ -597,6 +606,28 @@ function makeInstallationAccessService(
       principal.id,
     );
     return record === null ? null : resolveProjectAccess(principal, record);
+  });
+
+  const ownerProjectAccess = Effect.fn(
+    "InstallationAccessService.ownerProjectAccess",
+  )(function*(ownerPrincipalId: string, projectId: string) {
+    const record = yield* dependencies.repository.findProjectAccess(
+      dependencies.installationId,
+      projectId,
+      ownerPrincipalId,
+    );
+    if (record === null) return null;
+    // Members are deactivated, never deleted, so no member row means a
+    // service principal rather than a former member.
+    return resolveProjectAccess({
+      authorizedByPrincipalId: null,
+      capabilities: [],
+      displayName: ownerPrincipalId,
+      id: ownerPrincipalId,
+      installationId: dependencies.installationId,
+      kind: record.member === null ? principalKinds.service : principalKinds.human,
+      membershipRole: record.member?.role ?? membershipRoles.member,
+    }, record);
   });
 
   const reconcileDirectoryMembers = Effect.fn(
@@ -1093,6 +1124,7 @@ function makeInstallationAccessService(
     applyDirectoryGroups,
     listDirectoryGroups,
     projectAccess,
+    ownerProjectAccess,
     revokeApiKey,
     revokeSession,
     rotateApiKey,

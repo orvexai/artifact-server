@@ -850,9 +850,11 @@ function makeArtifactCommentService(
 
   const clearThreads = Effect.fn("ArtifactCommentService.clearThreads")(
     function*(command: ClearCommentThreadsCommand) {
+      // Clearing removes other people's threads too, so it needs an editor.
       const project = yield* resolveProjectForWrite(
         command.principal,
         command.projectId,
+        "editor",
       );
       // Bulk clear shares the dispatch-send rule: a direct human member, or
       // the artifact-management capability (spec §2).

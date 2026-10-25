@@ -137,6 +137,14 @@ interface ProjectManagementOperations {
   readonly requireManagement: (
     command: ReadProjectCommand,
   ) => Effect.Effect<ProjectRecord, ProjectManagementFailure>;
+  /**
+   * Whether the principal that owns something, known only by its id, may
+   * see one project: used before handing project content to someone's agent.
+   */
+  readonly ownerCanView: (
+    ownerPrincipalId: string,
+    projectId: string,
+  ) => Effect.Effect<boolean, IdentityRepositoryFailure>;
   readonly resolveActiveProject: (
     command: ResolveActiveProjectCommand,
   ) => Effect.Effect<ProjectRecord, ProjectManagementFailure>;
@@ -422,6 +430,13 @@ function makeProjectManagementService(
     renameProject,
     requireManagement: (command: ReadProjectCommand) =>
       requireManagedProject(command.principal, command.projectId),
+    ownerCanView: (ownerPrincipalId: string, projectId: string) =>
+      access.ownerProjectAccess(ownerPrincipalId, projectId).pipe(
+        Effect.map((projectAccess) =>
+          projectAccess !== null &&
+          (projectAccess.mode === "installation" || projectAccess.role !== null)
+        ),
+      ),
     resolveActiveProject,
     unarchiveProject,
   });

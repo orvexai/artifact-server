@@ -6,7 +6,8 @@ import {afterAll, beforeAll, describe, expect, test} from "vitest";
 import {z} from "zod";
 
 import {SqliteIdentityRepository} from "../../src/storage/sqlite-identity-repository.js";
-import {signInAdministrator} from "../support/agent-dispatch.js";
+import {ApiClient, signInAdministrator} from "../support/agent-dispatch.js";
+import {publishNew} from "../support/publishing.js";
 import {
   createTestInstallation,
   removeTestInstallation,
@@ -17,6 +18,8 @@ import {
 
 const provider = "oidc:https://idp.example.test/realms/main";
 const keyCapabilities = [
+  "agent:connect",
+  "artifact:manage:any",
   "artifact:read",
   "artifact:create",
   "artifact:publish:any",
@@ -39,7 +42,9 @@ describe("restricted projects shared with directory groups", () => {
   let installation: TestInstallation;
   let server: RunningTestServer;
   let secretProject: string;
+  let databasePath: string;
   const keys = new Map<Person, string>();
+  const memberIds = new Map<Person, string>();
 
   beforeAll(async () => {
     installation = await createTestInstallation();
@@ -74,7 +79,6 @@ describe("restricted projects shared with directory groups", () => {
     secretProject = z.object({project: z.object({id: z.string()})})
       .parse(await created.json()).project.id;
 
-    const memberIds = new Map<Person, string>();
     for (const person of people) {
       // Sequential: each admission and key issue is its own audited write.
       // oxlint-disable-next-line eslint/no-await-in-loop
@@ -94,7 +98,7 @@ describe("restricted projects shared with directory groups", () => {
     }
 
     // Copy three groups as directory sync would, then restrict and share.
-    const databasePath = path.join(installation.dataDirectory, "artifact-server.db");
+    databasePath = path.join(installation.dataDirectory, "artifact-server.db");
     const installationId = z.object({installation_id: z.string()}).parse(
       new DatabaseSync(databasePath, {readOnly: true})
         .prepare("SELECT installation_id FROM projects WHERE id = ?").get(secretProject),
@@ -164,10 +168,81 @@ describe("restricted projects shared with directory groups", () => {
     expect((await rename(key("manager"), "Managed")).status).toBe(200);
   });
 
+  test("project threads go only to agents whose owner can see the project", async () => {
+    const published = (await publishNew(server, installation, {
+      accessSetting: "account_required",
+      content: "<!doctype html><title>Secret page</title>",
+      idempotencyKey: "publish-secret-page",
+      projectId: secretProject,
+    })).body;
+    const viewer = new ApiClient(server, key("viewer"));
+    const thread = await viewer.openThread(published, "Please look", "group-access-viewer-thread");
+    // Only service keys register agents; a member's agent is its MCP
+    // mailbox. Register with the service key, then hand each one to an owner.
+    const service = new ApiClient(server, installation.apiToken);
+    const register = (connectionKey: string) => service.registerAgent({
+      connectionKey,
+      displayName: connectionKey,
+      workingDirectory: `/tmp/${connectionKey}`,
+    });
+    const [outsiderAgent, viewerAgent, serviceAgent] = await Promise.all(
+      ["outsider-agent", "viewer-agent", "service-agent"].map(register),
+    );
+    if (outsiderAgent === undefined || viewerAgent === undefined || serviceAgent === undefined) {
+      throw new Error("Agent registration returned too few agents.");
+    }
+    const owners = new DatabaseSync(databasePath);
+    try {
+      const own = owners.prepare("UPDATE registered_agents SET principal_id = ? WHERE id = ?");
+      own.run(memberId("outsider"), outsiderAgent.id);
+      own.run(memberId("viewer"), viewerAgent.id);
+    } finally {
+      owners.close();
+    }
+    const toOutsider = await viewer.sendDispatch({
+      agentId: outsiderAgent.id,
+      idempotencyKey: "group-access-dispatch-to-outsider",
+      projectId: secretProject,
+      threadIds: [thread.id],
+    });
+    expect(toOutsider.status).toBe(403);
+    expect(await toOutsider.text()).toContain("cannot see this project");
+    const toOwnAgent = await viewer.sendDispatch({
+      agentId: viewerAgent.id,
+      idempotencyKey: "group-access-dispatch-to-viewer-agent",
+      projectId: secretProject,
+      threadIds: [thread.id],
+    });
+    expect(toOwnAgent.ok, `toOwnAgent: ${toOwnAgent.status} ${await toOwnAgent.clone().text()}`).toBe(true);
+    const secondThread = await viewer.openThread(published, "Also this", "group-access-viewer-thread-2");
+    const toServiceAgent = await viewer.sendDispatch({
+      agentId: serviceAgent.id,
+      idempotencyKey: "group-access-dispatch-to-service-agent",
+      projectId: secretProject,
+      threadIds: [secondThread.id],
+    });
+    expect(toServiceAgent.ok, `toServiceAgent: ${toServiceAgent.status} ${await toServiceAgent.clone().text()}`).toBe(true);
+
+    // Clearing removes other people's threads, so a viewer may not.
+    const clear = (person: Person) => new ApiClient(server, key(person)).fetch(
+      `/api/v1/projects/${secretProject}/artifacts/${published.artifact.id}/comments/clear`,
+      {body: JSON.stringify({state: "resolved"}), method: "POST"},
+    );
+    expect((await clear("viewer")).status).toBe(403);
+    const editorClear = await clear("editor");
+    expect(editorClear.ok, `editor clear: ${editorClear.status} ${await editorClear.clone().text()}`).toBe(true);
+  });
+
   test("an installation project keeps today's rules for everyone", async () => {
     expect((await createUpload(key("outsider"), "prj_default")).ok).toBe(true);
     expect((await get("/api/v1/projects/prj_default", key("outsider"))).status).toBe(200);
   });
+
+  function memberId(person: Person): string {
+    const id = memberIds.get(person);
+    if (id === undefined) throw new Error(`No member for ${person}.`);
+    return id;
+  }
 
   function key(person: Person): string {
     const token = keys.get(person);
