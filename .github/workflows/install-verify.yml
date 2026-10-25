@@ -1,8 +1,6 @@
 name: Verify Published Installation
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -13,9 +11,8 @@ on:
       source_run_id:
         description: Tagged Release dry-run ID; leave empty to verify a published release
         required: false
-        default: ""
+        default: ''
         type: string
-
 permissions:
   contents: read
 
