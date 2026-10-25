@@ -71,6 +71,8 @@ describe("restricted projects shared with directory groups", () => {
   let secretProject: string;
   let databasePath: string;
   const keys = new Map<Person, string>();
+  /** The outsider's key without project:manage, as an ordinary member's key. */
+  let outsiderPlainKey: string;
   const memberIds = new Map<Person, string>();
 
   beforeAll(async () => {
@@ -123,6 +125,14 @@ describe("restricted projects shared with directory groups", () => {
       }));
       keys.set(person, issued.token);
     }
+    const outsiderId = memberIds.get("outsider");
+    if (outsiderId === undefined) throw new Error("The outsider was not admitted.");
+    outsiderPlainKey = z.object({token: z.string()}).parse(await adminPost("/api/v1/api-keys", {
+      capabilities: keyCapabilities.filter((capability) => capability !== "project:manage"),
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      memberId: outsiderId,
+      name: "outsider plain key",
+    })).token;
 
     // Copy three groups as directory sync would, then restrict and share.
     databasePath = path.join(installation.dataDirectory, "artifact-server.db");
@@ -328,6 +338,23 @@ describe("restricted projects shared with directory groups", () => {
     });
     expect(opened.isError).not.toBe(true);
     expect(await visibleTo("outsider")).toMatchObject({accessMode: "installation", yourRole: null});
+
+    // The creator can restrict it again; another member of an open project cannot.
+    const outsiderRestrict = await tool(outsiderPlainKey, "project_set_access", {
+      accessMode: "restricted",
+      projectId,
+    });
+    expect(outsiderRestrict.isError).toBe(true);
+    const restricted = await tool(key("editor"), "project_set_access", {
+      accessMode: "restricted",
+      projectId,
+    });
+    expect(restricted.isError).not.toBe(true);
+    expect(await visibleTo("outsider")).toBeUndefined();
+
+    // Viewers see which groups it is shared with, not who shared it.
+    const sharingAsManager = await tool(key("manager"), "project_sharing", {projectId});
+    expect(JSON.stringify(sharingAsManager.structuredContent)).not.toContain("grantedByPrincipalId");
   });
 
   async function tool(token: string, name: string, args: ToolArguments) {

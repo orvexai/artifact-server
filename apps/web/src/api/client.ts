@@ -203,7 +203,6 @@ const projectSharingSchema = z.object({
   accessMode: z.enum(["installation", "restricted"]),
   groups: z.array(z.object({
     grantedAt: z.string(),
-    grantedByPrincipalId: z.string(),
     groupId: z.string(),
     name: z.string(),
     path: z.string(),

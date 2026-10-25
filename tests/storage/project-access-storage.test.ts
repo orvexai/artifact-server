@@ -149,7 +149,7 @@ describe("project access storage (SQLite)", () => {
     repository = new SqliteIdentityRepository(databasePath);
     expect(readOnly((database) => database.prepare(
       "SELECT access_mode, created_by_member_id FROM projects WHERE id = ?",
-    ).get(projectId))).toEqual({access_mode: "installation", created_by_member_id: null});
+    ).get(projectId))).toEqual({access_mode: "restricted", created_by_member_id: null});
   });
 
   test("an unknown group or project is refused", async () => {

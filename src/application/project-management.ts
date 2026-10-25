@@ -73,7 +73,6 @@ export interface UnshareProjectCommand extends ReadProjectCommand {
 /** One group a project is shared with. */
 export interface ProjectGroupShareView {
   readonly grantedAt: string;
-  readonly grantedByPrincipalId: string;
   readonly groupId: string;
   readonly name: string;
   readonly path: string;
@@ -329,6 +328,14 @@ function makeProjectManagementService(
     );
     if (found.access.mode === "installation" || found.access.role === "administrator") {
       if (installationWide) return found.project;
+      // A creator who opened their project to everyone can still restrict it.
+      if (
+        found.access.mode === "installation" && found.access.isCreator &&
+        (isDirectHumanPrincipal(principal) ||
+          hasCapability(principal, principalCapabilities.manageProjects))
+      ) {
+        return found.project;
+      }
       return yield* denial;
     }
     if (
@@ -450,7 +457,6 @@ function makeProjectManagementService(
           const group = groups.get(grant.groupId);
           return group === undefined ? [] : [{
             grantedAt: grant.grantedAt,
-            grantedByPrincipalId: grant.grantedByPrincipalId,
             groupId: grant.groupId,
             name: group.name,
             path: group.path,
@@ -507,6 +513,9 @@ function makeProjectManagementService(
         installationId: dependencies.installationId,
         name,
       });
+      // The project exists now, so a share that fails (its group was just
+      // removed by directory sync) must not report the whole create as
+      // failed: the caller reads the shares that took effect from sharing.
       for (const grant of grants) {
         yield* access.projectSharing.put({
           grantedAt: createdAt,
@@ -514,7 +523,11 @@ function makeProjectManagementService(
           groupId: grant.groupId,
           projectId: project.id,
           role: grant.role,
-        });
+        }).pipe(Effect.catchTag("IdentityRepositoryFailure", (failure) =>
+          Effect.logWarning(
+            `Project ${project.id} was created but not shared with ${grant.groupId}: ${failure.operation}`,
+          )
+        ));
       }
       yield* Effect.annotateCurrentSpan({"artifact.project.id": project.id});
       return project;
