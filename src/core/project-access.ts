@@ -62,7 +62,11 @@ export interface ProjectAccessRecord {
  * role, and a null role means the project must look absent.
  */
 export type ProjectAccess =
-  | {readonly mode: "installation"}
+  | {
+    readonly mode: "installation";
+    /** An active member who created it may still manage it once opened. */
+    readonly isCreator: boolean;
+  }
   | {readonly mode: "restricted"; readonly role: ProjectRole | null};
 
 /**
@@ -78,7 +82,11 @@ export function resolveProjectAccess(
   record: ProjectAccessRecord,
 ): ProjectAccess {
   if (record.accessMode === projectAccessModes.installation) {
-    return {mode: "installation"};
+    return {
+      isCreator: principal.kind === principalKinds.human && record.isCreator &&
+        record.member?.status === "active",
+      mode: "installation",
+    };
   }
   if (principal.kind === principalKinds.service) {
     return {mode: "restricted", role: "administrator"};

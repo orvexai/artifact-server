@@ -2,7 +2,9 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import {
   type ProjectAccess,
+  type ProjectAccessMode,
   type ProjectAccessRecord,
+  type ProjectGroupGrant,
   resolveProjectAccess,
 } from "../core/project-access.js";
 import type {
@@ -71,6 +73,24 @@ export interface InstallationIdentityRepository {
     projectId: string,
     memberId: string,
   ) => Effect.Effect<ProjectAccessRecord | null, IdentityRepositoryFailure>;
+  readonly listProjectGroupGrants: (
+    installationId: string,
+    projectId: string,
+  ) => Effect.Effect<readonly ProjectGroupGrant[], IdentityRepositoryFailure>;
+  readonly putProjectGroupGrant: (
+    installationId: string,
+    grant: ProjectGroupGrant,
+  ) => Effect.Effect<void, IdentityRepositoryFailure>;
+  readonly removeProjectGroupGrant: (
+    installationId: string,
+    projectId: string,
+    groupId: string,
+  ) => Effect.Effect<boolean, IdentityRepositoryFailure>;
+  readonly setProjectAccessMode: (
+    installationId: string,
+    projectId: string,
+    accessMode: ProjectAccessMode,
+  ) => Effect.Effect<void, IdentityRepositoryFailure>;
   readonly admitMember: (
     command: {
       readonly createdAt: string;
@@ -383,6 +403,26 @@ export interface InstallationAccessOperations {
     ownerPrincipalId: string,
     projectId: string,
   ) => Effect.Effect<ProjectAccess | null, IdentityRepositoryFailure>;
+  /**
+   * Storage for project sharing. These do no authorization of their own:
+   * ProjectManagementService decides who may share before calling them.
+   */
+  readonly projectSharing: {
+    readonly list: (
+      projectId: string,
+    ) => Effect.Effect<readonly ProjectGroupGrant[], IdentityRepositoryFailure>;
+    readonly put: (
+      grant: ProjectGroupGrant,
+    ) => Effect.Effect<void, IdentityRepositoryFailure>;
+    readonly remove: (
+      projectId: string,
+      groupId: string,
+    ) => Effect.Effect<boolean, IdentityRepositoryFailure>;
+    readonly setAccessMode: (
+      projectId: string,
+      accessMode: ProjectAccessMode,
+    ) => Effect.Effect<void, IdentityRepositoryFailure>;
+  };
   readonly revokeApiKey: (
     principal: Principal,
     keyId: string,
@@ -1125,6 +1165,24 @@ function makeInstallationAccessService(
     listDirectoryGroups,
     projectAccess,
     ownerProjectAccess,
+    projectSharing: {
+      list: (projectId: string) =>
+        dependencies.repository.listProjectGroupGrants(dependencies.installationId, projectId),
+      put: (grant: ProjectGroupGrant) =>
+        dependencies.repository.putProjectGroupGrant(dependencies.installationId, grant),
+      remove: (projectId: string, groupId: string) =>
+        dependencies.repository.removeProjectGroupGrant(
+          dependencies.installationId,
+          projectId,
+          groupId,
+        ),
+      setAccessMode: (projectId: string, accessMode: ProjectAccessMode) =>
+        dependencies.repository.setProjectAccessMode(
+          dependencies.installationId,
+          projectId,
+          accessMode,
+        ),
+    },
     revokeApiKey,
     revokeSession,
     rotateApiKey,

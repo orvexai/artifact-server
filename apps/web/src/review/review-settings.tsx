@@ -154,6 +154,7 @@ function SettingsContent({
     }
     return (
       <SettingsProject
+        administrator={administrator}
         canManage={canManageProjects}
         gitHistory={session.capabilities.gitHistory}
         onProjectsChanged={onProjectsChanged}

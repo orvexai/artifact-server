@@ -2,6 +2,11 @@ import {createHash} from "node:crypto";
 import path from "node:path";
 import {DatabaseSync} from "node:sqlite";
 
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
+  PROTOCOL_VERSION_META_KEY,
+} from "@modelcontextprotocol/server";
 import {afterAll, beforeAll, describe, expect, test} from "vitest";
 import {z} from "zod";
 
@@ -30,6 +35,28 @@ const people = ["viewer", "editor", "manager", "outsider"] as const;
 type Person = (typeof people)[number];
 
 const projectListSchema = z.object({projects: z.array(z.object({id: z.string()}))});
+const toolResultSchema = z.object({
+  result: z.object({
+    content: z.array(z.object({text: z.string()})),
+    isError: z.boolean().optional(),
+    structuredContent: z.unknown(),
+  }).loose(),
+});
+const sharingSchema = z.object({
+  accessMode: z.string(),
+  groups: z.array(z.object({path: z.string(), role: z.string()}).loose()),
+  projectId: z.string(),
+  yourRole: z.string().nullable(),
+});
+const listedSchema = z.object({
+  projects: z.array(z.object({accessMode: z.string(), id: z.string(), yourRole: z.string().nullable()}).loose()),
+});
+
+/** The JSON arguments these tests pass to an MCP tool. */
+type ToolArguments = Readonly<Record<
+  string,
+  string | readonly Readonly<Record<string, string>>[]
+>>;
 
 /** The JSON bodies this test posts as the administrator. */
 type AdminRequestBody = Readonly<Record<string, string | readonly string[]>>;
@@ -44,6 +71,8 @@ describe("restricted projects shared with directory groups", () => {
   let secretProject: string;
   let databasePath: string;
   const keys = new Map<Person, string>();
+  /** The outsider's key without project:manage, as an ordinary member's key. */
+  let outsiderPlainKey: string;
   const memberIds = new Map<Person, string>();
 
   beforeAll(async () => {
@@ -96,6 +125,14 @@ describe("restricted projects shared with directory groups", () => {
       }));
       keys.set(person, issued.token);
     }
+    const outsiderId = memberIds.get("outsider");
+    if (outsiderId === undefined) throw new Error("The outsider was not admitted.");
+    outsiderPlainKey = z.object({token: z.string()}).parse(await adminPost("/api/v1/api-keys", {
+      capabilities: keyCapabilities.filter((capability) => capability !== "project:manage"),
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      memberId: outsiderId,
+      name: "outsider plain key",
+    })).token;
 
     // Copy three groups as directory sync would, then restrict and share.
     databasePath = path.join(installation.dataDirectory, "artifact-server.db");
@@ -242,6 +279,112 @@ describe("restricted projects shared with directory groups", () => {
     const id = memberIds.get(person);
     if (id === undefined) throw new Error(`No member for ${person}.`);
     return id;
+  }
+
+  test("an agent creates a restricted project, shares it, and controls who can see it", async () => {
+    const created = await tool(key("editor"), "project_create", {
+      name: "Agent project",
+      shareWith: [{group: "/Viewers", role: "viewer"}],
+    });
+    expect(created.isError).not.toBe(true);
+    const sharing = sharingSchema.parse(
+      z.object({sharing: z.unknown()}).parse(created.structuredContent).sharing,
+    );
+    expect(sharing).toMatchObject({
+      accessMode: "restricted",
+      groups: [{path: "/Viewers", role: "viewer"}],
+      yourRole: "manager",
+    });
+    const projectId = sharing.projectId;
+
+    const visibleTo = async (person: Person) =>
+      listedSchema.parse((await tool(key(person), "project_list", {})).structuredContent)
+        .projects.find((project) => project.id === projectId);
+    expect(await visibleTo("outsider")).toBeUndefined();
+    expect(await visibleTo("viewer")).toMatchObject({accessMode: "restricted", yourRole: "viewer"});
+
+    const viewerShare = await tool(key("viewer"), "project_share", {
+      group: "Managers",
+      projectId,
+      role: "editor",
+    });
+    expect(viewerShare.isError).toBe(true);
+    expect(viewerShare.content[0]?.text).toContain("AUTHORIZATION_DENIED");
+
+    const unknown = await tool(key("editor"), "project_share", {
+      group: "No Such Group",
+      projectId,
+      role: "viewer",
+    });
+    expect(unknown.isError).toBe(true);
+    expect(unknown.content[0]?.text).toContain("GROUP_NOT_FOUND");
+
+    const shared = await tool(key("editor"), "project_share", {
+      group: "Managers",
+      projectId,
+      role: "editor",
+    });
+    expect(sharingSchema.parse(z.object({sharing: z.unknown()}).parse(shared.structuredContent).sharing)
+      .groups.map(({path: groupPath, role}) => `${groupPath}:${role}`).toSorted())
+      .toEqual(["/Managers:editor", "/Viewers:viewer"]);
+    expect(await visibleTo("manager")).toMatchObject({yourRole: "editor"});
+
+    await tool(key("editor"), "project_unshare", {group: "/Viewers", projectId});
+    expect(await visibleTo("viewer")).toBeUndefined();
+
+    const opened = await tool(key("editor"), "project_set_access", {
+      accessMode: "installation",
+      projectId,
+    });
+    expect(opened.isError).not.toBe(true);
+    expect(await visibleTo("outsider")).toMatchObject({accessMode: "installation", yourRole: null});
+
+    // The creator can restrict it again; another member of an open project cannot.
+    const outsiderRestrict = await tool(outsiderPlainKey, "project_set_access", {
+      accessMode: "restricted",
+      projectId,
+    });
+    expect(outsiderRestrict.isError).toBe(true);
+    const restricted = await tool(key("editor"), "project_set_access", {
+      accessMode: "restricted",
+      projectId,
+    });
+    expect(restricted.isError).not.toBe(true);
+    expect(await visibleTo("outsider")).toBeUndefined();
+
+    // Viewers see which groups it is shared with, not who shared it.
+    const sharingAsManager = await tool(key("manager"), "project_sharing", {projectId});
+    expect(JSON.stringify(sharingAsManager.structuredContent)).not.toContain("grantedByPrincipalId");
+  });
+
+  async function tool(token: string, name: string, args: ToolArguments) {
+    const response = await fetch(`${server.baseUrl}/mcp`, {
+      body: JSON.stringify({
+        id: crypto.randomUUID(),
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          _meta: {
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+            [CLIENT_INFO_META_KEY]: {name: "group-access-test", version: "1"},
+            [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+          },
+          arguments: args,
+          name,
+        },
+      }),
+      headers: {
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": name,
+      },
+      method: "POST",
+    });
+    expect(response.status).toBe(200);
+    return toolResultSchema.parse(await response.json()).result;
   }
 
   function key(person: Person): string {

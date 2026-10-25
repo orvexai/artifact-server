@@ -67,6 +67,8 @@ export function artifactServerFailureResponse(failure: ArtifactServerFailure) {
       return {code: errorCodes.projectConflict, message: failure.message, status: 409};
     case "ProjectNotFound":
       return {code: errorCodes.projectNotFound, message: failure.message, status: 404};
+    case "DirectoryGroupNotFound":
+      return {code: errorCodes.groupNotFound, message: failure.message, status: 404};
     case "ProjectSelectionRequired":
       return {
         code: errorCodes.projectSelectionRequired,

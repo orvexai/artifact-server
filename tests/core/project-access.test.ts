@@ -29,6 +29,10 @@ function restricted(
   return {accessMode: "restricted", grantRoles, isCreator, member};
 }
 
+function opened(member: ProjectAccessRecord["member"]): ProjectAccessRecord {
+  return {accessMode: "installation", grantRoles: [], isCreator: true, member};
+}
+
 describe("project access rules", () => {
   test("an installation project keeps today's rules for every principal", () => {
     const record: ProjectAccessRecord = {
@@ -42,7 +46,7 @@ describe("project access rules", () => {
       principal({kind: "service", id: "service:ci"}),
       principal({authorizedByPrincipalId: "mem_admin"}),
     ]) {
-      expect(resolveProjectAccess(who, record)).toEqual({mode: "installation"});
+      expect(resolveProjectAccess(who, record)).toEqual({isCreator: false, mode: "installation"});
     }
   });
 
@@ -66,6 +70,15 @@ describe("project access rules", () => {
     ["a deactivated creator sees nothing", principal(), restricted([], {role: "member", status: "inactive"}, true), null],
   ])("%s", (_name, who, record, role) => {
     expect(resolveProjectAccess(who, record)).toEqual({mode: "restricted", role});
+  });
+
+  test("an open project remembers only an active human creator", () => {
+    expect(resolveProjectAccess(principal(), opened({role: "member", status: "active"})))
+      .toEqual({isCreator: true, mode: "installation"});
+    expect(resolveProjectAccess(principal(), opened({role: "member", status: "inactive"})))
+      .toEqual({isCreator: false, mode: "installation"});
+    expect(resolveProjectAccess(principal({kind: "service", id: "service:ci"}), opened(null)))
+      .toEqual({isCreator: false, mode: "installation"});
   });
 
   test("roles are ordered viewer < editor < manager < administrator", () => {
