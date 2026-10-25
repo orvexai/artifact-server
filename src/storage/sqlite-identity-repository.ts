@@ -270,9 +270,11 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     projectId: string,
     memberId: string,
   ): Promise<ProjectAccessRecord | null> {
+    // One SQLite file is one installation and project ids are its primary
+    // key; the artifact repository owns the row's installation label.
     const project = this.#database.prepare(
-      "SELECT access_mode, created_by_member_id FROM projects WHERE installation_id = ? AND id = ?",
-    ).get(installationId, projectId);
+      "SELECT access_mode, created_by_member_id FROM projects WHERE id = ?",
+    ).get(projectId);
     if (project === undefined) return null;
     const projectRow = projectAccessRowSchema.parse(project);
     const accessMode = projectRow.access_mode;
@@ -380,8 +382,8 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     accessMode: ProjectAccessMode,
   ): Promise<void> {
     const result = this.#database.prepare(
-      "UPDATE projects SET access_mode = ? WHERE installation_id = ? AND id = ?",
-    ).run(accessMode, installationId, projectId);
+      "UPDATE projects SET access_mode = ? WHERE id = ?",
+    ).run(accessMode, projectId);
     if (Number(result.changes) === 0) {
       throw new IdentityNotFound({message: "The project does not exist."});
     }

@@ -5,16 +5,29 @@ import {
   type AuthorizationOperations,
   AuthorizationService,
 } from "./authorization.js";
+import {InstallationAccessService} from "./installation-access.js";
 import {
   type ArtifactRepositoryFailure,
-  type AuthorizationDenied,
+  AuthorizationDenied,
+  type IdentityRepositoryFailure,
   InvalidProjectName,
   ProjectArchived,
   type ProjectConflict,
   ProjectNotFound,
   ProjectSelectionRequired,
 } from "../core/errors.js";
-import {principalKinds, type Principal} from "../core/identity.js";
+import {
+  hasCapability,
+  isDirectHumanPrincipal,
+  principalCapabilities,
+  principalKinds,
+  type Principal,
+} from "../core/identity.js";
+import {
+  type ProjectAccess,
+  type ProjectRole,
+  projectRoleAtLeast,
+} from "../core/project-access.js";
 import type {ProjectAuditEvent, ProjectRecord} from "../core/model.js";
 import type {
   CreateProject,
@@ -34,12 +47,16 @@ export interface CreateProjectCommand {
 
 /** Input for selecting one active project, with omission allowed for zero-setup use. */
 export interface ResolveActiveProjectCommand {
+  /** The weakest role a restricted project must grant; viewer when omitted. */
+  readonly minimumRole?: ProjectRole;
   readonly principal: Principal;
   readonly projectId: string | null;
 }
 
 /** Input for reading one project inside the current installation. */
 export interface ReadProjectCommand {
+  /** The weakest role a restricted project must grant; viewer when omitted. */
+  readonly minimumRole?: ProjectRole;
   readonly principal: Principal;
   readonly projectId: string;
 }
@@ -87,6 +104,7 @@ export interface ProjectManagementDependencies {
 export type ProjectManagementFailure =
   | ArtifactRepositoryFailure
   | AuthorizationDenied
+  | IdentityRepositoryFailure
   | InvalidProjectName
   | ProjectArchived
   | ProjectConflict
@@ -112,6 +130,13 @@ interface ProjectManagementOperations {
   readonly renameProject: (
     command: RenameProjectCommand,
   ) => Effect.Effect<ProjectRecord, ProjectManagementFailure>;
+  /**
+   * Require the right to manage one project's settings: an installation
+   * project manager, or the project's own manager once it is restricted.
+   */
+  readonly requireManagement: (
+    command: ReadProjectCommand,
+  ) => Effect.Effect<ProjectRecord, ProjectManagementFailure>;
   readonly resolveActiveProject: (
     command: ResolveActiveProjectCommand,
   ) => Effect.Effect<ProjectRecord, ProjectManagementFailure>;
@@ -128,12 +153,17 @@ export class ProjectManagementService extends Context.Service<
   /** Construct project operations from deployment-neutral persistence. */
   static readonly layer = (
     dependencies: ProjectManagementDependencies,
-  ): Layer.Layer<ProjectManagementService, never, AuthorizationService> =>
+  ): Layer.Layer<
+    ProjectManagementService,
+    never,
+    AuthorizationService | InstallationAccessService
+  > =>
     Layer.effect(
       ProjectManagementService,
       Effect.gen(function*() {
         const authorization = yield* AuthorizationService;
-        return makeProjectManagementService(dependencies, authorization);
+        const access = yield* InstallationAccessService;
+        return makeProjectManagementService(dependencies, authorization, access);
       }),
     );
 }
@@ -141,34 +171,124 @@ export class ProjectManagementService extends Context.Service<
 function makeProjectManagementService(
   dependencies: ProjectManagementDependencies,
   authorization: AuthorizationOperations,
+  access: InstallationAccessService["Service"],
 ): ProjectManagementOperations {
-  const requireProject = Effect.fn("ProjectManagementService.requireProject")(
-    function*(principal: Principal, projectId: string) {
-      yield* authorization.requireProjectAccess(principal);
-      const project = yield* dependencies.repository.findProject(projectId);
-      if (
-        project !== null &&
+  /**
+   * Find one project the principal may see with at least `minimumRole`. A
+   * restricted project the principal cannot see is reported as absent; one
+   * it can see but not at that role is denied. An installation project keeps
+   * today's rules, which the caller's own capability checks apply.
+   */
+  const requireProjectWithAccess = Effect.fn(
+    "ProjectManagementService.requireProjectWithAccess",
+  )(function*(
+    principal: Principal,
+    projectId: string,
+    minimumRole: ProjectRole,
+  ): Effect.fn.Return<
+    {readonly access: ProjectAccess; readonly project: ProjectRecord},
+    | ArtifactRepositoryFailure
+    | AuthorizationDenied
+    | IdentityRepositoryFailure
+    | ProjectNotFound
+  > {
+    yield* authorization.requireProjectAccess(principal);
+    const project = yield* dependencies.repository.findProject(projectId);
+    const projectAccess = project !== null &&
         project.installationId === dependencies.installationId
-      ) {
-        yield* Effect.annotateCurrentSpan({"artifact.project.id": project.id});
-        return project;
-      }
+      ? yield* access.projectAccess(principal, project.id)
+      : null;
+    if (
+      project === null || projectAccess === null ||
+      (projectAccess.mode === "restricted" && projectAccess.role === null)
+    ) {
       return yield* new ProjectNotFound({message: "The project does not exist."});
+    }
+    if (
+      projectAccess.mode === "restricted" && projectAccess.role !== null &&
+      !projectRoleAtLeast(projectAccess.role, minimumRole)
+    ) {
+      return yield* new AuthorizationDenied({
+        message: `This action needs the ${minimumRole} role on the project.`,
+      });
+    }
+    yield* Effect.annotateCurrentSpan({"artifact.project.id": project.id});
+    return {access: projectAccess, project};
+  });
+
+  const requireProject = Effect.fn("ProjectManagementService.requireProject")(
+    function*(principal: Principal, projectId: string, minimumRole: ProjectRole = "viewer") {
+      return (yield* requireProjectWithAccess(principal, projectId, minimumRole)).project;
+    },
+  );
+
+  /**
+   * Allow rename, archive, settings and audit reads. On an installation
+   * project the installation rule decides, exactly as before: an
+   * administrator, or a key that can manage projects. On a restricted
+   * project a member needs the manager role there, through a session or a
+   * key that can manage projects; an installation-wide key alone is not
+   * enough, since a member's key reaches only what the member can. A
+   * failure keeps today's answer: denied, not "not found".
+   */
+  const requireManagedProject = Effect.fn(
+    "ProjectManagementService.requireManagedProject",
+  )(function*(principal: Principal, projectId: string) {
+    const denial = new AuthorizationDenied({message: "Project management is required."});
+    const installationWide = yield* authorization.requireProjectManagement(principal).pipe(
+      Effect.as(true),
+      Effect.catchTag("AuthorizationDenied", () => Effect.succeed(false)),
+    );
+    const found = yield* requireProjectWithAccess(principal, projectId, "viewer").pipe(
+      Effect.catchTag("ProjectNotFound", (notFound) =>
+        Effect.fail<ProjectNotFound | AuthorizationDenied>(
+          installationWide ? notFound : denial,
+        )
+      ),
+    );
+    if (found.access.mode === "installation" || found.access.role === "administrator") {
+      if (installationWide) return found.project;
+      return yield* denial;
+    }
+    if (
+      found.access.role === "manager" &&
+      (isDirectHumanPrincipal(principal) ||
+        hasCapability(principal, principalCapabilities.manageProjects))
+    ) {
+      return found.project;
+    }
+    return yield* denial;
+  });
+
+  /** Every project the principal may see, with the access that showed it. */
+  const listVisibleProjects = Effect.fn("ProjectManagementService.listVisibleProjects")(
+    function*(principal: Principal) {
+      yield* authorization.requireProjectAccess(principal);
+      const all = yield* dependencies.repository.listProjects();
+      const visible: {readonly access: ProjectAccess; readonly project: ProjectRecord}[] = [];
+      for (const project of all) {
+        const projectAccess = yield* access.projectAccess(principal, project.id);
+        if (
+          projectAccess !== null &&
+          (projectAccess.mode === "installation" || projectAccess.role !== null)
+        ) {
+          visible.push({access: projectAccess, project});
+        }
+      }
+      return visible;
     },
   );
 
   const listProjects = Effect.fn("ProjectManagementService.listProjects")(
     function*(principal: Principal) {
-      yield* authorization.requireProjectAccess(principal);
-      return yield* dependencies.repository.listProjects();
+      return (yield* listVisibleProjects(principal)).map(({project}) => project);
     },
   );
 
   const listAuditEvents = Effect.fn(
     "ProjectManagementService.listAuditEvents",
   )(function*(command: ReadProjectCommand) {
-    yield* authorization.requireProjectManagement(command.principal);
-    const project = yield* requireProject(command.principal, command.projectId);
+    const project = yield* requireManagedProject(command.principal, command.projectId);
     return yield* dependencies.repository.listProjectAuditEvents(project.id);
   });
 
@@ -176,7 +296,11 @@ function makeProjectManagementService(
     "ProjectManagementService.resolveActiveProject",
   )(function*(command: ResolveActiveProjectCommand) {
     if (command.projectId !== null) {
-      const project = yield* requireProject(command.principal, command.projectId);
+      const project = yield* requireProject(
+        command.principal,
+        command.projectId,
+        command.minimumRole,
+      );
       if (project.archivedAt !== null) {
         return yield* new ProjectArchived({
           message: "The project is archived and cannot accept new work.",
@@ -184,13 +308,23 @@ function makeProjectManagementService(
       }
       return project;
     }
-    const projects = (yield* listProjects(command.principal)).filter(
-      (project) => project.archivedAt === null,
+    const visible = (yield* listVisibleProjects(command.principal)).filter(
+      ({project}) => project.archivedAt === null,
     );
-    const onlyProject = projects.length === 1 ? projects[0] : undefined;
-    if (onlyProject !== undefined) {
-      yield* Effect.annotateCurrentSpan({"artifact.project.id": onlyProject.id});
-      return onlyProject;
+    const projects = visible.map(({project}) => project);
+    const only = visible.length === 1 ? visible[0] : undefined;
+    if (only !== undefined) {
+      // The one visible project must still grant the role this action needs.
+      if (
+        only.access.mode === "restricted" && only.access.role !== null &&
+        !projectRoleAtLeast(only.access.role, command.minimumRole ?? "viewer")
+      ) {
+        return yield* new AuthorizationDenied({
+          message: `This action needs the ${command.minimumRole ?? "viewer"} role on the project.`,
+        });
+      }
+      yield* Effect.annotateCurrentSpan({"artifact.project.id": only.project.id});
+      return only.project;
     }
     if (projects.length === 0) {
       return yield* new ProjectNotFound({
@@ -227,14 +361,17 @@ function makeProjectManagementService(
 
   const getProject = Effect.fn("ProjectManagementService.getProject")(
     function*(command: ReadProjectCommand) {
-      return yield* requireProject(command.principal, command.projectId);
+      return yield* requireProject(
+        command.principal,
+        command.projectId,
+        command.minimumRole,
+      );
     },
   );
 
   const renameProject = Effect.fn("ProjectManagementService.renameProject")(
     function*(command: RenameProjectCommand) {
-      yield* authorization.requireProjectManagement(command.principal);
-      yield* requireProject(command.principal, command.projectId);
+      yield* requireManagedProject(command.principal, command.projectId);
       return yield* dependencies.repository.renameProject({
         name: yield* parseProjectName(command.name),
         projectId: command.projectId,
@@ -245,8 +382,7 @@ function makeProjectManagementService(
   const setProjectArchive = Effect.fn(
     "ProjectManagementService.setProjectArchive",
   )(function*(command: ReadProjectCommand, archivedAt: string | null) {
-    yield* authorization.requireProjectManagement(command.principal);
-    const project = yield* requireProject(command.principal, command.projectId);
+    const project = yield* requireManagedProject(command.principal, command.projectId);
     const alreadyInRequestedState = archivedAt === null
       ? project.archivedAt === null
       : project.archivedAt !== null;
@@ -284,6 +420,8 @@ function makeProjectManagementService(
     listAuditEvents,
     listProjects,
     renameProject,
+    requireManagement: (command: ReadProjectCommand) =>
+      requireManagedProject(command.principal, command.projectId),
     resolveActiveProject,
     unarchiveProject,
   });
