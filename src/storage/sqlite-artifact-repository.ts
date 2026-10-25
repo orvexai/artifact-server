@@ -586,8 +586,9 @@ export class SqliteArtifactRepository implements
       try {
         this.#database.prepare(`
           INSERT INTO projects (
-            id, installation_id, name, created_at, archived_at, created_by_member_id
-          ) VALUES (?, ?, ?, ?, ?, ?)
+            id, installation_id, name, created_at, archived_at, created_by_member_id,
+            access_mode
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
         `).run(
           command.id,
           this.#installationId,
@@ -595,6 +596,7 @@ export class SqliteArtifactRepository implements
           command.createdAt,
           command.archivedAt,
           command.createdByMemberId,
+          command.accessMode,
         );
       } catch (cause) {
         if (isSqliteConstraint(cause)) {

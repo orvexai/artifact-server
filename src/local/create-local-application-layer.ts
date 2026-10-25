@@ -911,6 +911,22 @@ export function createApplicationLayer(
         "findProjectAccess",
         () => identityRepository.findProjectAccess(installationId, projectId, memberId),
       ),
+      listProjectGroupGrants: (installationId, projectId) => identityEffect(
+        "listProjectGroupGrants",
+        () => identityRepository.listProjectGroupGrants(installationId, projectId),
+      ),
+      putProjectGroupGrant: (installationId, grant) => identityEffect(
+        "putProjectGroupGrant",
+        () => identityRepository.putProjectGroupGrant(installationId, grant),
+      ),
+      removeProjectGroupGrant: (installationId, projectId, groupId) => identityEffect(
+        "removeProjectGroupGrant",
+        () => identityRepository.removeProjectGroupGrant(installationId, projectId, groupId),
+      ),
+      setProjectAccessMode: (installationId, projectId, accessMode) => identityEffect(
+        "setProjectAccessMode",
+        () => identityRepository.setProjectAccessMode(installationId, projectId, accessMode),
+      ),
       revokeApiKey: (installationId, keyId, revokedAt) => identityEffectWithNotFound(
         "revokeApiKey",
         () => identityRepository.revokeApiKey(installationId, keyId, revokedAt),
