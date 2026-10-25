@@ -150,7 +150,11 @@ import {
 } from "./artifact-http-links.js";
 import {artifactServerFailureResponse} from "./artifact-http-failure.js";
 import {attachmentContentDisposition} from "./content-disposition.js";
-import {observeHttpRequest} from "../observability/application-observability.js";
+import {
+  inFlightReportMilliseconds,
+  observeHttpRequest,
+  observeInFlightRequest,
+} from "../observability/application-observability.js";
 import {
   createVersionArchive,
   versionArchiveFilename,
@@ -724,9 +728,28 @@ export function createHttpApp(
     context.set("requestId", requestId);
     context.set("requestSpan", requestSpan);
     context.header("X-Request-Id", requestId);
+    const contentOrigin = tokenFromContentHost(
+      new URL(context.req.url).hostname,
+      dependencies.contentDomain,
+    ) !== null;
+    // A request that never finishes never reaches the completed log, so
+    // report it while it is still running.
+    const inFlightTimers = inFlightReportMilliseconds.map((elapsed) =>
+      setTimeout(() => {
+        void dependencies.applicationRuntime.runPromise(
+          observeInFlightRequest({
+            contentOrigin,
+            elapsedMilliseconds: elapsed,
+            method,
+            requestId,
+            route: safeMatchedRoute(context),
+          }),
+        ).catch(() => undefined);
+      }, elapsed));
     try {
       await next();
     } finally {
+      for (const timer of inFlightTimers) clearTimeout(timer);
       const status = context.res.status;
       const matchedRoute = safeMatchedRoute(context);
       const protocol = matchedRoute === "/mcp" ? "mcp" : "http";

@@ -87,6 +87,33 @@ function shouldLogCompletedRequest(
   return Number.isFinite(requestSample) && requestSample < sampleRate;
 }
 
+/** Elapsed times at which a request that is still running is logged. */
+export const inFlightReportMilliseconds: readonly number[] = [2_000, 10_000, 30_000];
+
+/** Bounded attributes recorded for one request that is still running. */
+export interface InFlightRequestObservation {
+  readonly contentOrigin: boolean;
+  readonly elapsedMilliseconds: number;
+  readonly method: string;
+  readonly requestId: string;
+  readonly route: string;
+}
+
+/** Log one request that has been running longer than a report threshold. */
+export function observeInFlightRequest(
+  observation: InFlightRequestObservation,
+): Effect.Effect<void> {
+  return Effect.logWarning("http.request.in_flight").pipe(
+    Effect.annotateLogs({
+      content_origin: observation.contentOrigin,
+      elapsed_ms: observation.elapsedMilliseconds,
+      http_method: observation.method,
+      http_route: observation.route,
+      request_id: observation.requestId,
+    }),
+  );
+}
+
 /** Effect layer that writes structured JSON logs to standard output. */
 export const structuredLoggingLayer: Layer.Layer<never> = Logger.layer([
   Logger.consoleJson,
