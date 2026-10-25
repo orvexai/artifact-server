@@ -98,14 +98,15 @@ spec:
       params:
         # Only pushes to the orvex branch of this fork.
         - name: filter
-          value: "body.repository.full_name == 'orvexai/artifact-server' && body.ref == 'refs/heads/orvex'"
+          value: >-
+            body.repository.full_name == 'orvexai/artifact-server' && body.ref.startsWith('refs/tags/') && body.deleted == false
         - name: overlays
           value:
             # Populate extensions.git-branch for the platform binding.
             - key: git-branch
-              expression: "body.ref.replace('refs/heads/', '').replace('/', '-')"
+              expression: "body.ref.replace('refs/tags/', '').replace('/', '-')"
             - key: image-tag
-              expression: "'orvex-' + body.after.truncate(12)"
+              expression: "'orvex-' + body.ref.replace('refs/tags/', '').replace('/', '-')"
   bindings:
     # Platform-wide binding: extracts git-url and git-revision.
     - ref: github-push-defaults
