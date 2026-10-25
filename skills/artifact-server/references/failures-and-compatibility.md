@@ -14,6 +14,9 @@ Stop on uncertainty. Do not turn a failed or partial request into a success repo
 - If an artifact link, named profile, project config, and conversation context disagree, use the explicit current request and confirm before a write.
 - If no exact server is selected, ask local or team and do nothing else.
 - If more than one active project exists and no project is selected, call `project_list` and ask.
+- `PROJECT_NOT_FOUND` for a project the user names may mean it is restricted and not shared with them; say so rather than assuming it was deleted, and suggest asking its manager to share it.
+- `GROUP_NOT_FOUND` from `project_create`, `project_share`, or `project_unshare`: the group reference matched no group, or a bare name matched several. Call `group_list` and use the full path; nothing was created or changed.
+- `AUTHORIZATION_DENIED` on a sharing change means you are not the project's manager; report who can change it rather than retrying.
 - If the user supplies only a project display name but the selected server has no connected MCP, ask for the stable project ID or ask them to connect MCP. The current CLI cannot list projects.
 - If `.artifactserver.json` contains credentials or a server URL with a path, query, fragment, or embedded credentials, reject the file as unsafe project configuration.
 
