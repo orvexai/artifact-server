@@ -1,21 +1,6 @@
 name: Tagged Release
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - .github/workflows/ci.yml
-      - .github/workflows/release.yml
-      - scripts/assemble-release-assets.mjs
-      - scripts/build-oci-image.sh
-      - scripts/check-release-ref.mjs
-      - scripts/check-release-version.mjs
-      - scripts/extract-oci-sboms.mjs
-      - scripts/generate-release-sboms.sh
-      - scripts/install-release-syft.sh
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -28,7 +13,9 @@ on:
         required: true
         default: false
         type: boolean
-
+  push:
+    tags:
+    - v*
 permissions:
   contents: read
 
