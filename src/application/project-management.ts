@@ -80,6 +80,14 @@ export interface ProjectGroupShareView {
   readonly role: ProjectGrantRole;
 }
 
+/** One project the caller can see, with how it can see it. */
+export interface VisibleProject {
+  readonly accessMode: ProjectAccessMode;
+  readonly project: ProjectRecord;
+  /** Null on an installation project, where today's rules apply. */
+  readonly yourRole: ProjectRole | null;
+}
+
 /** Who may see one project, and the caller's own role on it. */
 export interface ProjectSharing {
   readonly accessMode: ProjectAccessMode;
@@ -185,6 +193,10 @@ interface ProjectManagementOperations {
   readonly listProjects: (
     principal: Principal,
   ) => Effect.Effect<readonly ProjectRecord[], ProjectManagementFailure>;
+  /** Every visible project with its access mode and the caller's role. */
+  readonly listProjectsWithAccess: (
+    principal: Principal,
+  ) => Effect.Effect<readonly VisibleProject[], ProjectManagementFailure>;
   readonly listAuditEvents: (
     command: ReadProjectCommand,
   ) => Effect.Effect<readonly ProjectAuditEvent[], ProjectManagementFailure>;
@@ -462,7 +474,7 @@ function makeProjectManagementService(
       ) {
         return;
       }
-      return yield* new AuthorizationDenied({
+      yield* new AuthorizationDenied({
         message: "Creating a project needs a member session or a key that can manage projects.",
       });
     },
@@ -627,6 +639,16 @@ function makeProjectManagementService(
     unshareGroup,
     listAuditEvents,
     listProjects,
+    listProjectsWithAccess: (principal: Principal) =>
+      listVisibleProjects(principal).pipe(
+        Effect.map((visible) =>
+          visible.map(({access: projectAccess, project}): VisibleProject => ({
+            accessMode: projectAccess.mode,
+            project,
+            yourRole: projectAccess.mode === "restricted" ? projectAccess.role : null,
+          }))
+        ),
+      ),
     renameProject,
     requireManagement: (command: ReadProjectCommand) =>
       requireManagedProject(command.principal, command.projectId),

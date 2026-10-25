@@ -156,6 +156,29 @@ const projectProjectionSchema = z.object({
   id: z.string(),
   name: z.string(),
 }).strict();
+const projectAccessModeSchema = z.enum(["installation", "restricted"]);
+const projectGrantRoleSchema = z.enum(["viewer", "editor", "manager"]);
+const projectRoleSchema = z.enum(["viewer", "editor", "manager", "administrator"]);
+const listedProjectSchema = projectProjectionSchema.extend({
+  accessMode: projectAccessModeSchema,
+  yourRole: projectRoleSchema.nullable(),
+}).strict();
+const projectGroupReferenceSchema = z.string().trim().min(1).max(500).describe(
+  "A group's id, full path such as /Engineering/Platform, or a name only one group has. group_list shows them.",
+);
+const projectSharingSchema = z.object({
+  accessMode: projectAccessModeSchema,
+  groups: z.array(z.object({
+    grantedAt: z.string(),
+    grantedByPrincipalId: z.string(),
+    groupId: z.string(),
+    name: z.string(),
+    path: z.string(),
+    role: projectGrantRoleSchema,
+  }).strict()),
+  projectId: z.string(),
+  yourRole: projectRoleSchema.nullable(),
+}).strict();
 const projectGitHistorySettingSchema = z.object({
   enabled: z.boolean(),
   projectId: z.string(),
@@ -680,10 +703,10 @@ export function createArtifactMcpServer(
     {
       title: "List projects",
       description:
-        "List this installation's projects. Use a returned project ID in artifact tools when more than one active project exists.",
+        "List the projects you can see, with each one's access mode (installation: every member sees it; restricted: only administrators and the groups it is shared with) and your role on a restricted one. Use a returned project ID in artifact tools when more than one active project exists.",
       inputSchema: z.object({}).strict(),
       outputSchema: z.object({
-        projects: z.array(projectProjectionSchema),
+        projects: z.array(listedProjectSchema),
       }).strict(),
       annotations: readOnlyAnnotations,
     },
@@ -691,9 +714,16 @@ export function createArtifactMcpServer(
       projects: (await runMcpApplicationEffect(
         dependencies,
         ProjectManagementService.use((projects) =>
-          projects.listProjects(identity.principal)
+          projects.listProjectsWithAccess(identity.principal)
         ),
-      )).map(projectProjection),
+      )).map(({accessMode, project, yourRole}) => ({
+        accessMode,
+        archivedAt: project.archivedAt,
+        createdAt: project.createdAt,
+        id: project.id,
+        name: project.name,
+        yourRole,
+      })),
     })),
   );
 
@@ -728,22 +758,130 @@ export function createArtifactMcpServer(
     {
       title: "Create a project",
       description:
-        "Create a project in this installation. After a second active project exists, artifact tools require projectId.",
+        "Create a project. A new project is restricted: only administrators, you (as its manager), and the groups in shareWith can see it. Pass shareWith to decide who can see it as it is created; change it later with project_share, project_unshare and project_set_access. After a second active project exists, artifact tools require projectId.",
       inputSchema: z.object({
         name: z.string().trim().min(1).max(120),
+        shareWith: z.array(z.object({
+          group: projectGroupReferenceSchema,
+          role: projectGrantRoleSchema.describe(
+            "viewer reads and comments; editor also publishes and manages artifacts; manager also renames, archives and shares the project.",
+          ),
+        }).strict()).max(50).optional(),
       }).strict(),
       outputSchema: z.object({
         project: projectProjectionSchema,
+        sharing: projectSharingSchema,
       }).strict(),
       annotations: additiveWriteAnnotations,
     },
-    ({name}) => toolResult(async () => ({
-      project: projectProjection(await runMcpApplicationEffect(
+    ({name, shareWith}) => toolResult(async () => {
+      const project = await runMcpApplicationEffect(
         dependencies,
         ProjectManagementService.use((projects) =>
-          projects.createProject({name, principal: identity.principal})
+          projects.createProject({
+            name,
+            principal: identity.principal,
+            shareWith: shareWith ?? [],
+          })
         ),
-      )),
+      );
+      const sharing = await runMcpApplicationEffect(
+        dependencies,
+        ProjectManagementService.use((projects) =>
+          projects.getSharing({principal: identity.principal, projectId: project.id})
+        ),
+      );
+      return {project: projectProjection(project), sharing};
+    }),
+  );
+
+  registerNudgedTool(
+    "project_sharing",
+    {
+      title: "Show who can see a project",
+      description:
+        "Show a project's access mode, the groups it is shared with and their roles, and your own role on it.",
+      inputSchema: z.object({projectId: projectIdSchema}).strict(),
+      outputSchema: z.object({sharing: projectSharingSchema}).strict(),
+      annotations: readOnlyAnnotations,
+    },
+    ({projectId}) => toolResult(async () => ({
+      sharing: await runMcpApplicationEffect(
+        dependencies,
+        ProjectManagementService.use((projects) =>
+          projects.getSharing({principal: identity.principal, projectId})
+        ),
+      ),
+    })),
+  );
+
+  registerNudgedTool(
+    "project_share",
+    {
+      title: "Share a project with a group",
+      description:
+        "Share a project with one identity-provider group at a role, or change that group's role. Needs the manager role on the project. Sharing an installation-mode project takes effect once it is restricted.",
+      inputSchema: z.object({
+        group: projectGroupReferenceSchema,
+        projectId: projectIdSchema,
+        role: projectGrantRoleSchema,
+      }).strict(),
+      outputSchema: z.object({sharing: projectSharingSchema}).strict(),
+      annotations: idempotentWriteAnnotations,
+    },
+    ({group, projectId, role}) => toolResult(async () => ({
+      sharing: await runMcpApplicationEffect(
+        dependencies,
+        ProjectManagementService.use((projects) =>
+          projects.shareWithGroup({group, principal: identity.principal, projectId, role})
+        ),
+      ),
+    })),
+  );
+
+  registerNudgedTool(
+    "project_unshare",
+    {
+      title: "Stop sharing a project with a group",
+      description:
+        "Remove one group's access to a project. Needs the manager role on the project. Pages its members already have open stay viewable until their session expires.",
+      inputSchema: z.object({
+        group: projectGroupReferenceSchema,
+        projectId: projectIdSchema,
+      }).strict(),
+      outputSchema: z.object({sharing: projectSharingSchema}).strict(),
+      annotations: destructiveWriteAnnotations,
+    },
+    ({group, projectId}) => toolResult(async () => ({
+      sharing: await runMcpApplicationEffect(
+        dependencies,
+        ProjectManagementService.use((projects) =>
+          projects.unshareGroup({group, principal: identity.principal, projectId})
+        ),
+      ),
+    })),
+  );
+
+  registerNudgedTool(
+    "project_set_access",
+    {
+      title: "Restrict a project or open it to everyone",
+      description:
+        "Set a project's access mode: restricted (only administrators and the groups it is shared with) or installation (every member). Needs the manager role on the project.",
+      inputSchema: z.object({
+        accessMode: projectAccessModeSchema,
+        projectId: projectIdSchema,
+      }).strict(),
+      outputSchema: z.object({sharing: projectSharingSchema}).strict(),
+      annotations: idempotentWriteAnnotations,
+    },
+    ({accessMode, projectId}) => toolResult(async () => ({
+      sharing: await runMcpApplicationEffect(
+        dependencies,
+        ProjectManagementService.use((projects) =>
+          projects.setAccessMode({accessMode, principal: identity.principal, projectId})
+        ),
+      ),
     })),
   );
 
@@ -2569,6 +2707,7 @@ function agentInstructions(mode: "local" | "remote"): string {
     "Artifact Server stores actual files as immutable versions. It does not accept inline HTML, CSS, JavaScript, base64, or invented file contents through MCP.",
     "Start with artifact_capabilities when you do not know this installation's limits.",
     "Artifacts belong to projects. Omit projectId only when the installation has one active project; otherwise call project_list and choose explicitly.",
+    "A new project is restricted: only administrators, its creator (its manager), and the groups it is shared with can see it. When you create a project for someone, pass shareWith with the identity-provider groups that should see it (group_list shows them); change it later with project_share, project_unshare and project_set_access, and read it with project_sharing.",
     "For publishing, inspect the selected file or finished directory on the client, compute each relative path, byte length, media type, and SHA-256 fingerprint, call artifact_create_upload, PUT the exact bytes to every returned uploadUrl without an Authorization header (each URL is a short-lived, single-use capability), then call artifact_commit_upload.",
     "After publishing, always give the user links.review first so they can see the exact version full screen and comment. Mention links.version second when the raw artifact is useful. Do not put content bootstrap URLs or credentials in chat.",
     "When publishing a new version, first call artifact_get and pass its current version ID as expectedCurrentVersionId. On conflict, inspect the new current version before retrying.",

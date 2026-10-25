@@ -197,6 +197,26 @@ export type Principal = z.infer<typeof principalSchema>;
 export type Session = z.infer<typeof sessionSchema>;
 export type AccessContext = z.infer<typeof accessContextSchema>;
 export type Project = z.infer<typeof projectSchema>;
+
+const projectGrantRoleSchema = z.enum(["viewer", "editor", "manager"]);
+const projectSharingSchema = z.object({
+  accessMode: z.enum(["installation", "restricted"]),
+  groups: z.array(z.object({
+    grantedAt: z.string(),
+    grantedByPrincipalId: z.string(),
+    groupId: z.string(),
+    name: z.string(),
+    path: z.string(),
+    role: projectGrantRoleSchema,
+  })),
+  projectId: z.string(),
+  yourRole: z.enum(["viewer", "editor", "manager", "administrator"]).nullable(),
+});
+
+/** Who may see one project and the signed-in person's role on it. */
+export type ProjectSharing = z.infer<typeof projectSharingSchema>;
+/** A role a group can be given on a restricted project. */
+export type ProjectGrantRole = z.infer<typeof projectGrantRoleSchema>;
 export type ProjectGitHistorySetting = z.infer<typeof projectGitHistorySettingSchema>;
 export type ProjectGitHistoryEstimate = z.infer<typeof projectGitHistoryEstimateSchema>;
 export type Artifact = z.infer<typeof artifactSchema>;
@@ -939,6 +959,33 @@ export const api = {
       method: "POST",
     },
   ).then(({ project }) => project),
+  projectSharing: (projectId: string) => request(
+    z.object({ sharing: projectSharingSchema }),
+    `/api/v1/projects/${encodeURIComponent(projectId)}/sharing`,
+  ).then(({ sharing }) => sharing),
+  setProjectAccess: (projectId: string, accessMode: ProjectSharing["accessMode"]) => request(
+    z.object({ sharing: projectSharingSchema }),
+    `/api/v1/projects/${encodeURIComponent(projectId)}/access`,
+    {
+      body: JSON.stringify({ accessMode }),
+      headers: mutationHeaders(),
+      method: "PUT",
+    },
+  ).then(({ sharing }) => sharing),
+  shareProject: (projectId: string, groupId: string, role: ProjectGrantRole) => request(
+    z.object({ sharing: projectSharingSchema }),
+    `/api/v1/projects/${encodeURIComponent(projectId)}/groups/${encodeURIComponent(groupId)}`,
+    {
+      body: JSON.stringify({ role }),
+      headers: mutationHeaders(),
+      method: "PUT",
+    },
+  ).then(({ sharing }) => sharing),
+  unshareProject: (projectId: string, groupId: string) => request(
+    z.object({ sharing: projectSharingSchema }),
+    `/api/v1/projects/${encodeURIComponent(projectId)}/groups/${encodeURIComponent(groupId)}`,
+    { headers: mutationHeaders(), method: "DELETE" },
+  ).then(({ sharing }) => sharing),
   renameProject: (projectId: string, name: string) => request(
     z.object({ project: projectSchema }),
     `/api/v1/projects/${encodeURIComponent(projectId)}`,

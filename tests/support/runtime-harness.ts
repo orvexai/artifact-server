@@ -300,6 +300,28 @@ export function loginHandshakeCookie(loginResponse: Response): string {
   return cookie.split(";")[0] ?? "";
 }
 
+/**
+ * Open one project to every member. New projects start restricted; a test
+ * about something other than project access opens the ones it creates.
+ */
+export async function openProjectToMembers(
+  server: RunningTestServer,
+  installation: TestInstallation,
+  projectId: string,
+): Promise<void> {
+  const response = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}/access`, {
+    body: JSON.stringify({accessMode: "installation"}),
+    headers: {
+      Authorization: `Bearer ${installation.apiToken}`,
+      "Content-Type": "application/json",
+    },
+    method: "PUT",
+  });
+  if (response.status !== 200) {
+    throw new Error(`Opening project ${projectId} answered ${response.status}: ${await response.text()}`);
+  }
+}
+
 export function apiHeaders(
   installation: TestInstallation,
   idempotencyKey: string,

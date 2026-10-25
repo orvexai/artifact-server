@@ -25,7 +25,10 @@ import {
   InstallationAccessService,
 } from "../application/installation-access.js";
 import { InteractiveLoginService } from "../application/interactive-login.js";
-import { ProjectManagementService } from "../application/project-management.js";
+import {
+  type CreateProjectCommand,
+  ProjectManagementService,
+} from "../application/project-management.js";
 import {ProjectGitHistoryService} from
   "../application/project-git-history.js";
 import {
@@ -1538,16 +1541,15 @@ export function createHttpApp(
 
   app.post("/api/v1/projects", boundedJsonBody, async (context) => {
     const body = createProjectSchema.parse(await context.req.json());
+    const command: CreateProjectCommand = {
+      name: body.name,
+      principal: context.get("principal"),
+      shareWith: body.shareWith ?? [],
+    };
     const project = await runHttpApplicationEffect(
       context,
       dependencies,
-      ProjectManagementService.use((management) =>
-        management.createProject({
-          name: body.name,
-          principal: context.get("principal"),
-          ...(body.shareWith === undefined ? {} : {shareWith: body.shareWith}),
-        })
-      ),
+      ProjectManagementService.use((management) => management.createProject(command)),
     );
     return context.json({project}, 201);
   });
