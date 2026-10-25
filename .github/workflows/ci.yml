@@ -1,21 +1,9 @@
 name: CI
 
 on:
-  workflow_call:
-    inputs:
-      tier:
-        description: Gate tier to run from a calling workflow
-        required: false
-        default: release
-        type: string
   pull_request:
-    branches: [main]
-  merge_group:
-    types: [checks_requested]
-  push:
-    branches: [main]
-  schedule:
-    - cron: "17 9 * * *"
+    branches:
+    - main
   workflow_dispatch:
     inputs:
       tier:
@@ -24,9 +12,15 @@ on:
         default: full
         type: choice
         options:
-          - full
-          - pr
-
+        - full
+        - pr
+  workflow_call:
+    inputs:
+      tier:
+        description: Gate tier to run from a calling workflow
+        required: false
+        default: release
+        type: string
 permissions:
   contents: read
 
