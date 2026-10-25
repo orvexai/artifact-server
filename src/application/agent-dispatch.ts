@@ -584,6 +584,12 @@ function makeAgentDispatchService(
       const note = yield* requireNote(command.note);
       const idempotencyKey = yield* parseIdempotencyKey(command.idempotencyKey);
       const agent = yield* requireAgent(command.agentId);
+      // The agent's owner receives these threads, so it must see the project.
+      if (!(yield* projects.ownerCanView(agent.principalId, project.id))) {
+        return yield* new AuthorizationDenied({
+          message: "That agent's owner cannot see this project.",
+        });
+      }
       return yield* dependencies.repository.createDispatch({
         agentDisplayName: agent.displayName,
         agentId: agent.id,

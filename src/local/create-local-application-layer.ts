@@ -1086,7 +1086,7 @@ export function createApplicationLayer(
     installationId: adapters.installationId,
   });
   const projectLayer = ProjectManagementService.layer(projectDependencies).pipe(
-    Layer.provideMerge(authorizationLayer),
+    Layer.provideMerge(Layer.mergeAll(authorizationLayer, identityLayer)),
   );
   const projectGitHistoryLayer = ProjectGitHistoryService.layer(
     projectGitHistoryDependencies,

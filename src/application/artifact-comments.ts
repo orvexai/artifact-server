@@ -1,5 +1,6 @@
 import {Context, DateTime, Effect, Layer, Option, Schema} from "effect";
 
+import type {ProjectRole} from "../core/project-access.js";
 import type {ApplicationClock} from "./application-clock.js";
 import {
   type AuthorizationOperations,
@@ -336,6 +337,11 @@ export class ArtifactCommentService extends Context.Service<
     );
 }
 
+/** Removing someone else's comment manages the artifact, so it needs an editor. */
+function deletionRole(principal: Principal): ProjectRole {
+  return hasCapability(principal, principalCapabilities.manageAnyArtifact) ? "editor" : "viewer";
+}
+
 function makeArtifactCommentService(
   dependencies: ArtifactCommentDependencies,
   authorization: AuthorizationOperations,
@@ -352,8 +358,12 @@ function makeArtifactCommentService(
 
   const resolveProjectForWrite = Effect.fn(
     "ArtifactCommentService.resolveProjectForWrite",
-  )(function*(principal: Principal, projectId: string | null) {
-    return yield* projects.resolveActiveProject({principal, projectId});
+  )(function*(
+    principal: Principal,
+    projectId: string | null,
+    minimumRole: ProjectRole = "viewer",
+  ) {
+    return yield* projects.resolveActiveProject({minimumRole, principal, projectId});
   });
 
   const requireArtifact = Effect.fn("ArtifactCommentService.requireArtifact")(
@@ -816,6 +826,7 @@ function makeArtifactCommentService(
       const project = yield* resolveProjectForWrite(
         command.principal,
         command.projectId,
+        deletionRole(command.principal),
       );
       yield* requireCommentDeletionAuthority(command.principal);
       const artifact = yield* requireArtifact(project.id, command.artifactId);
@@ -839,9 +850,11 @@ function makeArtifactCommentService(
 
   const clearThreads = Effect.fn("ArtifactCommentService.clearThreads")(
     function*(command: ClearCommentThreadsCommand) {
+      // Clearing removes other people's threads too, so it needs an editor.
       const project = yield* resolveProjectForWrite(
         command.principal,
         command.projectId,
+        "editor",
       );
       // Bulk clear shares the dispatch-send rule: a direct human member, or
       // the artifact-management capability (spec §2).
@@ -927,6 +940,7 @@ function makeArtifactCommentService(
       const project = yield* resolveProjectForWrite(
         command.principal,
         command.projectId,
+        deletionRole(command.principal),
       );
       yield* requireCommentDeletionAuthority(command.principal);
       const artifact = yield* requireArtifact(project.id, command.artifactId);

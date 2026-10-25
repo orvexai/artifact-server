@@ -239,8 +239,7 @@ function makeProjectGitHistoryService(
 
   const estimate = Effect.fn("ProjectGitHistoryService.estimate")(
     function*(command: EstimateProjectGitHistoryCommand) {
-      yield* authorization.requireProjectManagement(command.principal);
-      yield* projects.getProject(command);
+      yield* projects.requireManagement(command);
       const capability = yield* requireConfigured();
       const values = yield* dependencies.repository.estimateProjectGitHistory(
         command.projectId,
@@ -257,8 +256,7 @@ function makeProjectGitHistoryService(
 
   const set = Effect.fn("ProjectGitHistoryService.set")(
     function*(command: SetProjectGitHistoryCommand) {
-      yield* authorization.requireProjectManagement(command.principal);
-      yield* projects.getProject(command);
+      yield* projects.requireManagement(command);
       const existing = yield* dependencies.repository
         .readProjectGitHistorySetting(command.projectId);
       if ((existing?.enabled ?? false) === command.enabled) {
