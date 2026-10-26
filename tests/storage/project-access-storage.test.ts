@@ -177,12 +177,103 @@ describe("project access storage (SQLite)", () => {
     repository = new SqliteIdentityRepository(databasePath);
     expect(readOnly((database) =>
       database.prepare("PRAGMA user_version").get()
-    )).toEqual({user_version: 16});
+    )).toEqual({user_version: 17});
     expect(await repository.findProjectAccess(installationId, defaultProject, "nobody"))
       .toMatchObject({accessMode: "installation"});
     await groups([group("g-a", [])]);
     await grant("g-a", "viewer");
     expect(await repository.listProjectGroupGrants(installationId, defaultProject)).toHaveLength(1);
+  });
+
+  test("a schema 16 database widens member roles and keeps every member and its identity", async () => {
+    await admit("ada");
+    await repository.bindExternalIdentity({
+      boundAt: "2026-10-24T00:00:00.000Z",
+      email: "ada@example.test",
+      memberId: "mem_ada",
+      provider: "oidc:test",
+      subject: "subject-ada",
+    });
+    repository.close();
+    // Rebuild the members table as schema 16 had it: two roles only.
+    readWrite((database) => database.exec(`
+      PRAGMA foreign_keys = OFF;
+      CREATE TABLE installation_members_old (
+        id TEXT PRIMARY KEY,
+        installation_id TEXT NOT NULL,
+        email TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('administrator', 'member')),
+        status TEXT NOT NULL CHECK (status IN ('active', 'inactive')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (installation_id, email)
+      );
+      INSERT INTO installation_members_old SELECT * FROM installation_members;
+      DROP TABLE installation_members;
+      ALTER TABLE installation_members_old RENAME TO installation_members;
+      DROP TABLE directory_group_roles;
+      DROP TABLE directory_group_role_seeds;
+      PRAGMA foreign_keys = ON;
+      PRAGMA user_version = 16;
+    `));
+    repository = new SqliteIdentityRepository(databasePath);
+    expect(readOnly((database) =>
+      database.prepare("PRAGMA user_version").get()
+    )).toEqual({user_version: 17});
+    expect(readOnly((database) => database.prepare("PRAGMA foreign_key_check").all()))
+      .toEqual([]);
+    expect(await repository.findActiveMemberByExternalIdentity(
+      installationId,
+      "oidc:test",
+      "subject-ada",
+    )).toMatchObject({id: "mem_ada", role: "member"});
+    await repository.setMemberRole(installationId, "mem_ada", "owner", "2026-10-26T00:00:00.000Z");
+    expect(await repository.findMember(installationId, "mem_ada"))
+      .toMatchObject({role: "owner"});
+    expect(await repository.listGroupRoles(installationId)).toEqual([]);
+  });
+
+  test("starting roles are stored once, and later changes and removals stay", async () => {
+    await groups([group("g-a", []), group("g-b", [])]);
+    expect(await repository.seedGroupRoles(
+      installationId,
+      [{groupId: "g-a", role: "owner"}, {groupId: "g-b", role: "member"}],
+      "2026-10-26T00:00:00.000Z",
+    )).toBe(true);
+    await repository.setGroupRole(installationId, "g-a", "viewer", "2026-10-26T01:00:00.000Z", "mem_ada");
+    await repository.setGroupRole(installationId, "g-b", null, "2026-10-26T01:00:00.000Z", "mem_ada");
+    expect(await repository.seedGroupRoles(
+      installationId,
+      [{groupId: "g-a", role: "owner"}, {groupId: "g-b", role: "member"}],
+      "2026-10-26T02:00:00.000Z",
+    )).toBe(false);
+    expect((await repository.listGroupRoles(installationId))
+      .map(({groupId, role}) => ({groupId, role}))).toEqual([{groupId: "g-a", role: "viewer"}]);
+    await expect(repository.setGroupRole(installationId, "missing", "member", "2026-10-26T03:00:00.000Z", "mem_ada"))
+      .rejects.toMatchObject({_tag: "IdentityNotFound"});
+    // A group the directory deletes takes its role with it.
+    await groups([group("g-b", [])]);
+    expect(await repository.listGroupRoles(installationId)).toEqual([]);
+  });
+
+  test("a stored role reports whether its group's name is shared by another group", async () => {
+    await repository.applyDirectoryGroups(installationId, {
+      groups: [
+        {id: "g-temporal", members: [], name: "default:admin", path: "/temporal/default:admin"},
+        {id: "g-other", members: [], name: "default:admin", path: "/other/default:admin"},
+        {id: "g-dev", members: [], name: "Developers", path: "/Developers"},
+      ],
+      provider: keycloak,
+      syncedAt: "2026-10-26T00:00:00.000Z",
+    });
+    await repository.setGroupRole(installationId, "g-temporal", "owner", "2026-10-26T00:00:00.000Z", "mem_ada");
+    await repository.setGroupRole(installationId, "g-dev", "member", "2026-10-26T00:00:00.000Z", "mem_ada");
+    expect((await repository.listGroupRoles(installationId))
+      .map(({groupId, nameUnique}) => ({groupId, nameUnique}))).toEqual([
+      {groupId: "g-dev", nameUnique: true},
+      {groupId: "g-temporal", nameUnique: false},
+    ]);
   });
 
   function openRuntime() {
@@ -191,7 +282,12 @@ describe("project access storage (SQLite)", () => {
       browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
       contentDomain: "localhost",
       dataDirectory: installation.dataDirectory,
-      groupRolePolicy: {administratorGroups: ["admins"], memberGroups: ["users"]},
+      groupRolePolicy: {
+        seed: [
+          {role: "administrator", selector: "admins"},
+          {role: "member", selector: "users"},
+        ],
+      },
     });
   }
 

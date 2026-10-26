@@ -44,10 +44,13 @@ import {
   type StoredManagedApiKey,
 } from "../core/installation-identity.js";
 import {
+  type GroupRoleAssignment,
   type GroupRolePolicy,
+  type GroupRoleSeedEntry,
   groupMembershipRole,
 } from "../core/group-role-policy.js";
 import {
+  isAdministratorRole,
   isHumanAdministrator,
   membershipRoles,
   principalCapabilities,
@@ -68,6 +71,21 @@ export interface InstallationIdentityRepository {
   readonly listDirectoryGroups: (
     installationId: string,
   ) => Effect.Effect<readonly StoredDirectoryGroup[], IdentityRepositoryFailure>;
+  readonly listGroupRoles: (
+    installationId: string,
+  ) => Effect.Effect<readonly GroupRoleAssignment[], IdentityRepositoryFailure>;
+  readonly setGroupRole: (
+    installationId: string,
+    groupId: string,
+    role: MembershipRole | null,
+    assignedAt: string,
+    assignedByPrincipalId: string,
+  ) => Effect.Effect<void, IdentityNotFound | IdentityRepositoryFailure>;
+  readonly seedGroupRoles: (
+    installationId: string,
+    roles: readonly {readonly groupId: string; readonly role: MembershipRole}[],
+    seededAt: string,
+  ) => Effect.Effect<boolean, IdentityRepositoryFailure>;
   readonly findProjectAccess: (
     installationId: string,
     projectId: string,
@@ -252,6 +270,14 @@ export interface AdmitMemberCommand {
 }
 
 /** One person a member directory says should be an active member. */
+/** The outcome of applying the configured starting group roles. */
+export interface GroupRoleSeedResult {
+  /** True only on the run that stored the roles. */
+  readonly seeded: boolean;
+  /** Seed entries that named no group, or more than one. */
+  readonly unresolved: readonly string[];
+}
+
 export interface DirectoryMemberEntry {
   readonly displayName: string;
   /** Already normalized with {@link normalizeMemberEmail}. */
@@ -386,6 +412,19 @@ export interface InstallationAccessOperations {
     readonly StoredDirectoryGroup[],
     IdentityRepositoryFailure
   >;
+  /** Every directory group's installation role, ordered by path. */
+  readonly listGroupRoles: () => Effect.Effect<
+    readonly GroupRoleAssignment[],
+    IdentityRepositoryFailure
+  >;
+  /**
+   * Store the configured starting roles once. Every seed entry must name
+   * exactly one stored directory group; otherwise nothing is stored and the
+   * entries that matched no single group are reported.
+   */
+  readonly seedGroupRoles: (
+    seed: readonly GroupRoleSeedEntry[],
+  ) => Effect.Effect<GroupRoleSeedResult, IdentityRepositoryFailure>;
   /**
    * The access one principal has to one project, read fresh on every call,
    * or null when the project does not exist in this installation.
@@ -563,7 +602,7 @@ function makeInstallationAccessService(
         role: membershipRoles.administrator,
       });
     }
-    if (member.role !== membershipRoles.administrator) {
+    if (!isAdministratorRole(member.role)) {
       return yield* Effect.fail(new IdentityConflict({
         message: "The configured local administrator is not an administrator.",
       }));
@@ -634,6 +673,50 @@ function makeInstallationAccessService(
     return yield* dependencies.repository.listDirectoryGroups(
       dependencies.installationId,
     );
+  });
+
+  const listGroupRoles = Effect.fn(
+    "InstallationAccessService.listGroupRoles",
+  )(function*() {
+    return yield* dependencies.repository.listGroupRoles(
+      dependencies.installationId,
+    );
+  });
+
+  const seedGroupRoles = Effect.fn(
+    "InstallationAccessService.seedGroupRoles",
+  )(function*(seed: readonly GroupRoleSeedEntry[]) {
+    const groups = yield* dependencies.repository.listDirectoryGroups(
+      dependencies.installationId,
+    );
+    const roles: {groupId: string; role: MembershipRole}[] = [];
+    const unresolved: string[] = [];
+    for (const entry of seed) {
+      const matches = groups.filter((group) =>
+        entry.selector.startsWith("/")
+          ? group.path === entry.selector
+          : group.name === entry.selector
+      );
+      const match = matches.length === 1 ? matches[0] : undefined;
+      if (match === undefined) {
+        unresolved.push(entry.selector);
+      } else {
+        roles.push({groupId: match.id, role: entry.role});
+      }
+    }
+    // A partial seed would be stored for good, so store all of it or none.
+    if (unresolved.length > 0) {
+      const result: GroupRoleSeedResult = {seeded: false, unresolved};
+      return result;
+    }
+    const seeded = yield* dependencies.repository.seedGroupRoles(
+      dependencies.installationId,
+      roles,
+      dependencies.clock.now().toISOString(),
+    );
+    if (seeded) clearAuthenticationCaches();
+    const result: GroupRoleSeedResult = {seeded, unresolved: []};
+    return result;
   });
 
   const projectAccess = Effect.fn(
@@ -765,12 +848,21 @@ function makeInstallationAccessService(
   const applyGroupRole = Effect.fn(
     "InstallationAccessService.applyGroupRole",
   )(function*(
-    policy: GroupRolePolicy,
     identity: ExternalIdentity,
     email: string,
     member: InstallationMember | null,
   ) {
-    const role = groupMembershipRole(policy, identity.groups);
+    const assignments = yield* dependencies.repository.listGroupRoles(
+      dependencies.installationId,
+    );
+    // Before any group holds a role nobody is turned away for good: the
+    // roles are simply not set up yet.
+    if (assignments.length === 0) {
+      return yield* Effect.fail(new IdentityAdmissionDenied({
+        message: "No group has been given a role in the Artifact Server yet.",
+      }));
+    }
+    const role = groupMembershipRole(assignments, identity.groups);
     const now = dependencies.clock.now().toISOString();
     if (role === null) {
       if (member !== null) {
@@ -841,7 +933,6 @@ function makeInstallationAccessService(
     }
     if (groupRolePolicy !== null) {
       member = yield* applyGroupRole(
-        groupRolePolicy,
         identity,
         email,
         member,
@@ -1163,6 +1254,8 @@ function makeInstallationAccessService(
     reconcileDirectoryMembers,
     applyDirectoryGroups,
     listDirectoryGroups,
+    listGroupRoles,
+    seedGroupRoles,
     projectAccess,
     ownerProjectAccess,
     projectSharing: {

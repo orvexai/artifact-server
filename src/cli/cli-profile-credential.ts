@@ -65,10 +65,7 @@ const principalSchema = Schema.Struct({
   id: Schema.String,
   installationId: Schema.String,
   kind: Schema.Literals([principalKinds.human, principalKinds.service]),
-  membershipRole: Schema.Literals([
-    membershipRoles.administrator,
-    membershipRoles.member,
-  ]),
+  membershipRole: Schema.Literals(Object.values(membershipRoles)),
 });
 const sessionResponseSchema = Schema.Struct({
   authenticationMethod: Schema.Literals(["bearer", "session"]),

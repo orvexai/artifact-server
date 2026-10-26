@@ -1,6 +1,6 @@
 import type {MemberStatus} from "./installation-identity.js";
 import {
-  membershipRoles,
+  isAdministratorRole,
   principalKinds,
   type MembershipRole,
   type Principal,
@@ -95,7 +95,7 @@ export function resolveProjectAccess(
   if (member === null || member.status !== "active") {
     return {mode: "restricted", role: null};
   }
-  if (member.role === membershipRoles.administrator) {
+  if (isAdministratorRole(member.role)) {
     return {mode: "restricted", role: "administrator"};
   }
   let best: ProjectRole | null = record.isCreator ? "manager" : null;

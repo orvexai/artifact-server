@@ -1162,12 +1162,13 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         {email: "bob@example.test", role: "administrator", status: "active"},
       ]);
 
+      // A group deleted in Keycloak takes its role with it.
       keycloak.groups.delete("artifact-users");
-      const refused = await sync();
-      expect(refused).toEqual({failure: expect.stringContaining(
-        "The Keycloak group artifact-users does not exist.",
-      )});
-      expect(await members()).toHaveLength(2);
+      expect(await sync()).toMatchObject({report: {deactivated: 1, groups: 1}});
+      expect(await members()).toEqual([
+        {email: "ada@example.test", role: "member", status: "inactive"},
+        {email: "bob@example.test", role: "administrator", status: "active"},
+      ]);
     } finally {
       await keycloak.stop();
       await database.close();

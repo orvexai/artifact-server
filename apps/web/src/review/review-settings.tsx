@@ -1,7 +1,7 @@
 import {ArrowLeft01Icon, Moon02Icon, Sun03Icon} from "@hugeicons/core-free-icons";
 import {HugeiconsIcon} from "@hugeicons/react";
 
-import {api, type Project, type Session} from "@/api/client";
+import {api, isAdministratorRole, type Project, type Session} from "@/api/client";
 import {StatePanel} from "@/components/product";
 import {Button, ButtonLink} from "@/components/ui/button";
 import {ArtifactMark} from "./artifact-mark.tsx";
@@ -37,7 +37,7 @@ export function ReviewSettings({
   const canManageProjects = directHuman
     || principal.capabilities.includes("project:manage");
   const administrator = directHuman
-    && principal.membershipRole === "administrator";
+    && isAdministratorRole(principal.membershipRole);
   const reviewHref = readReturnToReview();
 
   return (

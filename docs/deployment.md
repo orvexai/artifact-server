@@ -142,8 +142,9 @@ so access is managed where people already are:
 
 | Setting | Helm value | Meaning |
 | --- | --- | --- |
-| `ARTIFACT_SERVER_OIDC_MEMBER_GROUPS` | `identity.oidcMemberGroups` | Groups whose people are admitted as members. |
-| `ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS` | `identity.oidcAdministratorGroups` | Groups whose people are admitted as administrators. |
+| `ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED` | `identity.oidcGroupRoleSeed` | Starting roles, as `Group=role` (role `viewer`, `operator`, `admin` or `owner`; a group by exact name, or full path starting with `/`). |
+| `ARTIFACT_SERVER_OIDC_MEMBER_GROUPS` | `identity.oidcMemberGroups` | Older form: groups seeded as operators. |
+| `ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS` | `identity.oidcAdministratorGroups` | Older form: groups seeded as admins. |
 | `ARTIFACT_SERVER_OIDC_GROUPS_CLAIM` | `identity.oidcGroupsClaim` | The claim that lists a person's groups. Defaults to `groups`. |
 
 The environment variables take comma-separated lists; the Helm values take YAML
@@ -187,9 +188,18 @@ In Keycloak:
 3. Configure the server:
 
    ```sh
-   ARTIFACT_SERVER_OIDC_MEMBER_GROUPS=artifact-users
-   ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS=artifact-admins
+   ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED=artifact-admins=owner,artifact-users=operator
    ```
+
+Installation roles belong to directory groups, never to one person, and a
+group has no role until it is given one. The seed gives the named groups their
+starting roles the first time the directory sync runs; from then on the roles
+stored per group decide, so changes made in the application are never undone
+by the seed. A person gets the strongest role among their groups: Viewer
+(sign in and read), Operator (work in projects), Admin (manage the
+installation) or Owner (also manage which group holds which role). A group
+deleted in the issuer takes its role with it. Until some group holds a role,
+sign-in is refused without changing anyone.
 
 `artifactserver config check` reports the active policy under
 `configuration.oidcGroupRoles`.

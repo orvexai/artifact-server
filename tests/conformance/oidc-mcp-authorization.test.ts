@@ -33,6 +33,7 @@ import {
   removeTestInstallation,
   type RunningTestServer,
   startTestServer,
+  storeTestGroupRoles,
   type TestInstallation,
 } from "../support/runtime-harness.js";
 
@@ -523,14 +524,20 @@ describe("generic OIDC MCP authorization", () => {
           userInfoEndpoint: authorizationServer.userInfoEndpoint,
         }),
         groupRolePolicy: {
-          administratorGroups: [administratorGroup],
-          memberGroups: [memberGroup],
+          seed: [
+            {role: "administrator", selector: administratorGroup},
+            {role: "member", selector: memberGroup},
+          ],
         },
         mcpOAuthResource: {
           authorizationServerMetadata: authorizationServer.metadata,
           resource,
         },
       });
+      await storeTestGroupRoles(server, installation, [
+        {name: administratorGroup, role: "administrator"},
+        {name: memberGroup, role: "member"},
+      ]);
     });
 
     test("groups admit a member or an administrator and every later token re-applies them", async () => {

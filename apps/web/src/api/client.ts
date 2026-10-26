@@ -1,7 +1,23 @@
 import { z } from "zod";
 
 const accessSettingSchema = z.enum(["account_required", "public_link"]);
-const membershipRoleSchema = z.enum(["administrator", "member"]);
+const membershipRoleSchema = z.enum(["viewer", "member", "administrator", "owner"]);
+
+/** One installation role; the application shows them as Viewer, Operator, Admin and Owner. */
+export type MembershipRole = z.infer<typeof membershipRoleSchema>;
+
+/** How each installation role is named in the application. */
+export const membershipRoleLabels = {
+  viewer: "Viewer",
+  member: "Operator",
+  administrator: "Admin",
+  owner: "Owner",
+} as const satisfies Readonly<Record<MembershipRole, string>>;
+
+/** True for the roles that administer the installation: Admin and Owner. */
+export function isAdministratorRole(role: MembershipRole): boolean {
+  return role === "administrator" || role === "owner";
+}
 const principalKindSchema = z.enum(["human", "service"]);
 const capabilitySchema = z.enum([
   "agent:connect",

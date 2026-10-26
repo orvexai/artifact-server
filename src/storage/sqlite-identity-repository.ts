@@ -16,11 +16,17 @@ import {
   type StoredManagedApiKey,
 } from "../core/installation-identity.js";
 import {
+  isAdministratorRole,
+  type MembershipRole,
   membershipRoles,
   principalCapabilities,
   principalKinds,
 } from "../core/identity.js";
 import {requiredSqliteSchemaVersion} from "./sqlite-schema.js";
+import {
+  type GroupRoleAssignment,
+  groupRoleSeedPrincipalId,
+} from "../core/group-role-policy.js";
 import {
   type DirectoryGroupApplyResult,
   type DirectoryGroupSnapshot,
@@ -60,7 +66,7 @@ const projectGroupGrantRowSchema = z.object({
 });
 const accessMemberRowSchema = z.object({
   email: z.string(),
-  role: z.enum(["administrator", "member"]),
+  role: z.enum(Object.values(membershipRoles)),
   status: z.enum(["active", "inactive"]),
 });
 const storedDirectoryGroupRowSchema = z.object({
@@ -70,10 +76,15 @@ const storedDirectoryGroupRowSchema = z.object({
   path: z.string(),
   syncedAt: z.string(),
 });
-const membershipRoleSchema = z.enum([
-  membershipRoles.administrator,
-  membershipRoles.member,
-]);
+const membershipRoleSchema = z.enum(Object.values(membershipRoles));
+const groupRoleRowSchema = z.object({
+  assignedAt: z.string(),
+  groupId: z.string(),
+  name: z.string(),
+  nameUnique: z.coerce.boolean(),
+  path: z.string(),
+  role: membershipRoleSchema,
+});
 const memberStatusSchema = z.enum([
   memberStatuses.active,
   memberStatuses.inactive,
@@ -243,6 +254,87 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       }
       this.#database.exec("COMMIT;");
       return plan.result;
+    } catch (cause) {
+      this.#database.exec("ROLLBACK;");
+      throw cause;
+    }
+  }
+
+  async listGroupRoles(
+    installationId: string,
+  ): Promise<readonly GroupRoleAssignment[]> {
+    const rows = this.#database.prepare(`
+      SELECT r.group_id AS groupId, g.name, g.path, r.role,
+        r.assigned_at AS assignedAt,
+        (SELECT COUNT(*) FROM directory_groups same
+          WHERE same.installation_id = g.installation_id AND same.name = g.name
+        ) = 1 AS nameUnique
+      FROM directory_group_roles r
+      JOIN directory_groups g
+        ON g.installation_id = r.installation_id AND g.id = r.group_id
+      WHERE r.installation_id = ?
+      ORDER BY g.path ASC
+    `).all(installationId);
+    return z.array(groupRoleRowSchema).parse(rows);
+  }
+
+  async setGroupRole(
+    installationId: string,
+    groupId: string,
+    role: MembershipRole | null,
+    assignedAt: string,
+    assignedByPrincipalId: string,
+  ): Promise<void> {
+    const exists = this.#database.prepare(`
+      SELECT EXISTS(
+        SELECT 1 FROM directory_groups WHERE installation_id = ? AND id = ?
+      ) AS present
+    `).get(installationId, groupId);
+    if (presenceRowSchema.parse(exists).present !== 1) {
+      throw new IdentityNotFound({message: "The group does not exist."});
+    }
+    if (role === null) {
+      this.#database.prepare(
+        "DELETE FROM directory_group_roles WHERE installation_id = ? AND group_id = ?",
+      ).run(installationId, groupId);
+      return;
+    }
+    this.#database.prepare(`
+      INSERT INTO directory_group_roles (
+        installation_id, group_id, role, assigned_at, assigned_by_principal_id
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (installation_id, group_id) DO UPDATE SET
+        role = excluded.role, assigned_at = excluded.assigned_at,
+        assigned_by_principal_id = excluded.assigned_by_principal_id
+    `).run(installationId, groupId, role, assignedAt, assignedByPrincipalId);
+  }
+
+  async seedGroupRoles(
+    installationId: string,
+    roles: readonly {readonly groupId: string; readonly role: MembershipRole}[],
+    seededAt: string,
+  ): Promise<boolean> {
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      const seeded = this.#database.prepare(`
+        INSERT INTO directory_group_role_seeds (installation_id, seeded_at)
+        VALUES (?, ?) ON CONFLICT (installation_id) DO NOTHING
+      `).run(installationId, seededAt);
+      if (seeded.changes === 0) {
+        this.#database.exec("COMMIT;");
+        return false;
+      }
+      const insert = this.#database.prepare(`
+        INSERT INTO directory_group_roles (
+          installation_id, group_id, role, assigned_at, assigned_by_principal_id
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (installation_id, group_id) DO NOTHING
+      `);
+      for (const {groupId, role} of roles) {
+        insert.run(installationId, groupId, role, seededAt, groupRoleSeedPrincipalId);
+      }
+      this.#database.exec("COMMIT;");
+      return true;
     } catch (cause) {
       this.#database.exec("ROLLBACK;");
       throw cause;
@@ -553,16 +645,17 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       }
       if (
         existing.status === memberStatuses.active &&
-        existing.role === membershipRoles.administrator
+        isAdministratorRole(existing.role)
       ) {
         const activeAdministratorCount = countRowSchema.parse(
           this.#database.prepare(`
           SELECT COUNT(*) AS count
           FROM installation_members
-          WHERE installation_id = ? AND role = ? AND status = ?
+          WHERE installation_id = ? AND role IN (?, ?) AND status = ?
           `).get(
             installationId,
             membershipRoles.administrator,
+            membershipRoles.owner,
             memberStatuses.active,
           ),
         );
@@ -946,7 +1039,8 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         installation_id TEXT NOT NULL,
         email TEXT NOT NULL,
         display_name TEXT NOT NULL,
-        role TEXT NOT NULL CHECK (role IN ('administrator', 'member')),
+        role TEXT NOT NULL
+          CHECK (role IN ('viewer', 'member', 'administrator', 'owner')),
         status TEXT NOT NULL CHECK (status IN ('active', 'inactive')),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -1049,6 +1143,23 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           REFERENCES directory_groups(installation_id, id) ON DELETE CASCADE
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS directory_group_roles (
+        installation_id TEXT NOT NULL,
+        group_id TEXT NOT NULL,
+        role TEXT NOT NULL
+          CHECK (role IN ('viewer', 'member', 'administrator', 'owner')),
+        assigned_at TEXT NOT NULL,
+        assigned_by_principal_id TEXT NOT NULL,
+        PRIMARY KEY (installation_id, group_id),
+        FOREIGN KEY (installation_id, group_id)
+          REFERENCES directory_groups(installation_id, id) ON DELETE CASCADE
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS directory_group_role_seeds (
+        installation_id TEXT PRIMARY KEY,
+        seeded_at TEXT NOT NULL
+      ) STRICT;
+
       CREATE INDEX IF NOT EXISTS project_group_grants_by_group
         ON project_group_grants (installation_id, group_id);
 
@@ -1062,6 +1173,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     `);
     this.#addLoginAttemptNonceIfMissing();
     this.#addDirectoryGroupMemberProviderIfMissing();
+    this.#widenMemberRolesIfNeeded();
     this.#database.exec(`PRAGMA user_version = ${requiredSqliteSchemaVersion};`);
   }
 
@@ -1073,6 +1185,57 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
   #addDirectoryGroupMemberProviderIfMissing(): void {
     if (this.#tableColumns("directory_group_members").includes("provider")) return;
     this.#database.exec("ALTER TABLE directory_group_members ADD COLUMN provider TEXT");
+  }
+
+  /**
+   * Older files allow only the Admin and Operator roles. SQLite cannot change
+   * a CHECK constraint, so copy the members into a table that allows all four,
+   * with foreign keys paused so the sessions and identities that point at
+   * members keep pointing at the same rows.
+   */
+  #widenMemberRolesIfNeeded(): void {
+    const row = z.object({sql: z.string()}).parse(this.#database.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'installation_members'",
+    ).get());
+    if (row.sql.includes("'owner'")) return;
+    this.#database.exec("PRAGMA foreign_keys = OFF;");
+    try {
+      this.#database.exec("BEGIN IMMEDIATE;");
+      try {
+        this.#database.exec(`
+          CREATE TABLE installation_members_widened (
+            id TEXT PRIMARY KEY,
+            installation_id TEXT NOT NULL,
+            email TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            role TEXT NOT NULL
+              CHECK (role IN ('viewer', 'member', 'administrator', 'owner')),
+            status TEXT NOT NULL CHECK (status IN ('active', 'inactive')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (installation_id, email)
+          );
+          INSERT INTO installation_members_widened (
+            id, installation_id, email, display_name, role, status,
+            created_at, updated_at
+          )
+          SELECT id, installation_id, email, display_name, role, status,
+            created_at, updated_at
+          FROM installation_members;
+          DROP TABLE installation_members;
+          ALTER TABLE installation_members_widened RENAME TO installation_members;
+        `);
+        if (this.#database.prepare("PRAGMA foreign_key_check").all().length > 0) {
+          throw new Error("Widening member roles broke a member reference.");
+        }
+        this.#database.exec("COMMIT;");
+      } catch (cause) {
+        this.#database.exec("ROLLBACK;");
+        throw cause;
+      }
+    } finally {
+      this.#database.exec("PRAGMA foreign_keys = ON;");
+    }
   }
 
   #tableColumns(table: "directory_group_members" | "login_attempts"): readonly string[] {

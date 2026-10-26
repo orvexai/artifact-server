@@ -16,6 +16,7 @@ import {
   removeTestInstallation,
   reserveLoopbackPort,
   startTestServer,
+  storeTestGroupRoles,
   type RunningTestServer,
   type TestInstallation,
 } from "../support/runtime-harness.js";
@@ -27,14 +28,16 @@ import {
 
 const bootstrapEmail = "administrator@example.test";
 const groupRoles: OidcGroupRoles = {
-  administratorGroups: ["artifact-admins"],
   claim: "roles",
-  memberGroups: ["artifact-users"],
+  seed: [
+    {role: "administrator", selector: "artifact-admins"},
+    {role: "member", selector: "artifact-users"},
+  ],
 };
 const sessionResponseSchema = z.object({
   principal: z.object({
     id: z.string(),
-    membershipRole: z.enum(["administrator", "member"]),
+    membershipRole: z.enum(["viewer", "member", "administrator", "owner"]),
   }),
 });
 const failureSchema = z.object({
@@ -82,7 +85,41 @@ describe("generic OIDC browser login with issuer group roles", () => {
     await removeTestInstallation(installation);
   });
 
+  test("before any group holds a role, sign-in is refused and nobody is deactivated", async () => {
+    provider.claims.email = "ada@example.test";
+    provider.claims.subject = "subject-ada";
+    provider.claims.groups = ["artifact-admins"];
+    const refused = await completeLogin();
+    expect(refused.status).toBe(403);
+    expect(failureSchema.parse(await refused.json()).error).toEqual({
+      code: "IDENTITY_ADMISSION_DENIED",
+      message: "No group has been given a role in the Artifact Server yet.",
+    });
+    expect(members(installation)).toEqual([]);
+  });
+
+  test("the strongest stored group role wins, including Owner and Viewer, matched by name or full path", async () => {
+    await storeTestGroupRoles(server, installation, [
+      {name: "artifact-owners", role: "owner"},
+      {name: "artifact-users", role: "member"},
+      {name: "artifact-readers", role: "viewer"},
+    ]);
+    provider.claims.email = "ada@example.test";
+    provider.claims.subject = "subject-ada";
+    provider.claims.groups = ["artifact-readers", "artifact-owners", "artifact-users"];
+    expect(await sessionRole(await signIn())).toBe("owner");
+
+    provider.claims.email = "grace@example.test";
+    provider.claims.subject = "subject-grace";
+    provider.claims.groups = ["/artifact-readers"];
+    expect(await sessionRole(await signIn())).toBe("viewer");
+  });
+
   test("the configured claim admits people by group and every login re-applies their role", async () => {
+    await storeTestGroupRoles(server, installation, [
+      {name: "artifact-admins", role: "administrator"},
+      {name: "artifact-users", role: "member"},
+    ]);
     provider.claims.email = "ada@example.test";
     provider.claims.subject = "subject-ada";
     provider.claims.groups = ["artifact-admins", "artifact-users"];
@@ -109,6 +146,9 @@ describe("generic OIDC browser login with issuer group roles", () => {
   });
 
   test("a person outside the groups is refused, deactivated, and signed out", async () => {
+    await storeTestGroupRoles(server, installation, [
+      {name: "artifact-users", role: "member"},
+    ]);
     provider.claims.email = bootstrapEmail;
     provider.claims.groups = ["artifact-users"];
     const session = await signIn();

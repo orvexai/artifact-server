@@ -35,16 +35,27 @@ import {
   type StoredManagedApiKey,
 } from "../core/installation-identity.js";
 import {
+  isAdministratorRole,
+  type MembershipRole,
   membershipRoles,
   principalCapabilities,
   principalKinds,
 } from "../core/identity.js";
+import {
+  type GroupRoleAssignment,
+  groupRoleSeedPrincipalId,
+} from "../core/group-role-policy.js";
 import type {PostgresDatabase} from "./postgres-database.js";
 
-const membershipRoleSchema = z.enum([
-  membershipRoles.administrator,
-  membershipRoles.member,
-]);
+const membershipRoleSchema = z.enum(Object.values(membershipRoles));
+const groupRoleRowSchema = z.object({
+  assignedAt: z.string(),
+  groupId: z.string(),
+  name: z.string(),
+  nameUnique: z.coerce.boolean(),
+  path: z.string(),
+  role: membershipRoleSchema,
+});
 const memberStatusSchema = z.enum([
   memberStatuses.active,
   memberStatuses.inactive,
@@ -134,7 +145,7 @@ const projectGroupGrantRowSchema = z.object({
 });
 const accessMemberRowSchema = z.object({
   email: z.string(),
-  role: z.enum(["administrator", "member"]),
+  role: membershipRoleSchema,
   status: z.enum(["active", "inactive"]),
 });
 const storedDirectoryGroupRowSchema = z.object({
@@ -378,6 +389,99 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     }));
   }
 
+  async listGroupRoles(
+    installationId: string,
+  ): Promise<readonly GroupRoleAssignment[]> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(
+        `SELECT r.group_id AS "groupId", g.name, g.path, r.role,
+          r.assigned_at AS "assignedAt",
+          (SELECT COUNT(*) FROM directory_groups same
+            WHERE same.installation_id = g.installation_id AND same.name = g.name
+          ) = 1 AS "nameUnique"
+         FROM directory_group_roles r
+         JOIN directory_groups g
+           ON g.installation_id = r.installation_id AND g.id = r.group_id
+         WHERE r.installation_id = $1
+         ORDER BY g.path ASC`,
+        [installationId],
+      );
+      return z.array(groupRoleRowSchema).parse(rows);
+    }));
+  }
+
+  async setGroupRole(
+    installationId: string,
+    groupId: string,
+    role: MembershipRole | null,
+    assignedAt: string,
+    assignedByPrincipalId: string,
+  ): Promise<void> {
+    this.#assertInstallationScope(installationId);
+    const found = await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        const groups = yield* sql.unsafe<object>(
+          `SELECT id FROM directory_groups
+           WHERE installation_id = $1 AND id = $2 FOR SHARE`,
+          [installationId, groupId],
+        );
+        if (groups.length === 0) return false;
+        if (role === null) {
+          yield* sql.unsafe(
+            `DELETE FROM directory_group_roles
+             WHERE installation_id = $1 AND group_id = $2`,
+            [installationId, groupId],
+          );
+          return true;
+        }
+        yield* sql.unsafe(
+          `INSERT INTO directory_group_roles (
+             installation_id, group_id, role, assigned_at, assigned_by_principal_id
+           ) VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (installation_id, group_id) DO UPDATE SET
+             role = EXCLUDED.role, assigned_at = EXCLUDED.assigned_at,
+             assigned_by_principal_id = EXCLUDED.assigned_by_principal_id`,
+          [installationId, groupId, role, assignedAt, assignedByPrincipalId],
+        );
+        return true;
+      }));
+    }));
+    if (!found) throw new IdentityNotFound({message: "The group does not exist."});
+  }
+
+  async seedGroupRoles(
+    installationId: string,
+    roles: readonly {readonly groupId: string; readonly role: MembershipRole}[],
+    seededAt: string,
+  ): Promise<boolean> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        const seeded = yield* sql.unsafe<object>(
+          `INSERT INTO directory_group_role_seeds (installation_id, seeded_at)
+           VALUES ($1, $2) ON CONFLICT (installation_id) DO NOTHING
+           RETURNING installation_id`,
+          [installationId, seededAt],
+        );
+        if (seeded.length === 0) return false;
+        for (const {groupId, role} of roles) {
+          yield* sql.unsafe(
+            `INSERT INTO directory_group_roles (
+               installation_id, group_id, role, assigned_at, assigned_by_principal_id
+             ) VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (installation_id, group_id) DO NOTHING`,
+            [installationId, groupId, role, seededAt, groupRoleSeedPrincipalId],
+          );
+        }
+        return true;
+      }));
+    }));
+  }
+
   async setProjectAccessMode(
     installationId: string,
     projectId: string,
@@ -532,14 +636,15 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         }
         if (
           existing.status === memberStatuses.active &&
-          existing.role === membershipRoles.administrator
+          isAdministratorRole(existing.role)
         ) {
           const rows = yield* sql.unsafe<object>(
             `SELECT COUNT(*) AS count FROM installation_members
-             WHERE installation_id = $1 AND role = $2 AND status = $3`,
+             WHERE installation_id = $1 AND role IN ($2, $3) AND status = $4`,
             [
               installationId,
               membershipRoles.administrator,
+              membershipRoles.owner,
               memberStatuses.active,
             ],
           );
