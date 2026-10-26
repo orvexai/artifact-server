@@ -3,6 +3,8 @@ import type {
   DirectoryGroupSnapshot,
   StoredDirectoryGroup,
 } from "./directory-groups.js";
+import type {GroupRoleAssignment} from "./group-role-policy.js";
+import type {MembershipRole} from "./identity.js";
 import type {
   ProjectAccessMode,
   ProjectAccessRecord,
@@ -114,6 +116,31 @@ export interface IdentityRepository {
     projectId: string,
     memberId: string,
   ): Promise<ProjectAccessRecord | null>;
+  /** Every directory group's stored installation role, ordered by path. */
+  listGroupRoles(
+    installationId: string,
+  ): Promise<readonly GroupRoleAssignment[]>;
+  /**
+   * Give one directory group an installation role, or take its role away with
+   * null. IdentityNotFound when the group does not exist.
+   */
+  setGroupRole(
+    installationId: string,
+    groupId: string,
+    role: MembershipRole | null,
+    assignedAt: string,
+    assignedByPrincipalId: string,
+  ): Promise<void>;
+  /**
+   * Store the configured starting roles, only the first time this is called
+   * for an installation, in one transaction. True when it stored them; false
+   * when roles were seeded before, in which case nothing changes.
+   */
+  seedGroupRoles(
+    installationId: string,
+    roles: readonly {readonly groupId: string; readonly role: MembershipRole}[],
+    seededAt: string,
+  ): Promise<boolean>;
   /** Every group grant on one project, ordered by group id. */
   listProjectGroupGrants(
     installationId: string,

@@ -1,6 +1,6 @@
 import {useEffect, useState} from "react";
 
-import { api, type InstallationMember } from "@/api/client";
+import { api, type InstallationMember, membershipRoleLabels } from "@/api/client";
 import { ErrorPanel, PageHeader, StatePanel, StatusBadge } from "@/components/product";
 import { Button } from "@/components/ui/button";
 import {
@@ -118,9 +118,11 @@ export function MembersScreen() {
                     }}
                     value={role}
                   >
-                    <NativeSelectOption value="member">Member</NativeSelectOption>
+                    <NativeSelectOption value="member">
+                      {membershipRoleLabels.member}
+                    </NativeSelectOption>
                     <NativeSelectOption value="administrator">
-                      Administrator
+                      {membershipRoleLabels.administrator}
                     </NativeSelectOption>
                   </NativeSelect>
                 </div>
@@ -169,7 +171,7 @@ export function MembersScreen() {
                       <p className="font-heading font-semibold">{member.displayName}</p>
                       <p className="mt-1 text-xs text-muted-foreground">{member.email}</p>
                     </td>
-                    <td className="px-4 py-4 capitalize">{member.role}</td>
+                    <td className="px-4 py-4">{membershipRoleLabels[member.role]}</td>
                     <td className="px-4 py-4">
                       <StatusBadge tone={member.status === "active" ? "primary" : "neutral"}>
                         {member.status}

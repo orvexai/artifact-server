@@ -164,7 +164,7 @@ function configureMaintenance(program: Command): void {
       const directorySettings = oidc?.directory ?? null;
       if (oidc === null || groupRoles === null || directorySettings === null) {
         throw new Error(
-          "maintenance sync-directory requires OIDC group roles (ARTIFACT_SERVER_OIDC_MEMBER_GROUPS or ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS) and the ARTIFACT_SERVER_OIDC_DIRECTORY_* settings.",
+          "maintenance sync-directory requires OIDC group roles (ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED) and the ARTIFACT_SERVER_OIDC_DIRECTORY_* settings.",
         );
       }
       const directoryConfig: KeycloakDirectoryConfig = {
@@ -188,10 +188,8 @@ function configureMaintenance(program: Command): void {
           groupRolePolicy: groupRoles,
         });
       try {
-        console.log(JSON.stringify(
-          await runtime.syncDirectory(directory, groupRoles),
-        ));
-        // Groups follow members, so a refused member pass changes no group.
+        // Roles belong to stored groups, so copy the groups first, then give
+        // them their starting roles, then make the members match those roles.
         const groupSync = await runtime.syncDirectoryGroups(
           directory,
           new Date().toISOString(),
@@ -206,6 +204,14 @@ function configureMaintenance(program: Command): void {
           );
           process.exitCode = 1;
         }
+        const groupRoleSeed = await runtime.seedGroupRoles(groupRoles.seed);
+        console.log(JSON.stringify({groupRoleSeed}));
+        if (groupRoleSeed.unresolved.length > 0) {
+          console.error(
+            `ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED names groups that match no single directory group: ${groupRoleSeed.unresolved.join(", ")}. No starting role was stored.`,
+          );
+        }
+        console.log(JSON.stringify(await runtime.syncDirectory(directory)));
       } finally {
         await runtime.close();
       }

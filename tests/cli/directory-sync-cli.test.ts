@@ -75,7 +75,7 @@ describe("artifactserver maintenance sync-directory", () => {
     expect(members()).toEqual([]);
   });
 
-  test("prints one summary line, and fails without writes on a missing group", async () => {
+  test("copies groups, seeds their roles once, then reconciles members", async () => {
     keycloak.groups.set("artifact-admins", [keycloakUser("ada")]);
     keycloak.groups.set("artifact-users", [
       keycloakUser("bob"),
@@ -84,15 +84,6 @@ describe("artifactserver maintenance sync-directory", () => {
     const synced = await syncDirectory(directoryEnvironment());
     expect(synced.exitCode).toBe(0);
     expect(synced.stdout.split("\n")).toEqual([JSON.stringify({
-      groups: 2,
-      directoryUsers: 3,
-      admitted: 2,
-      reactivated: 0,
-      roleChanged: 0,
-      deactivated: 0,
-      unchanged: 0,
-      skipped: 1,
-    }), JSON.stringify({
       groupSync: {
         groups: 2,
         created: 2,
@@ -101,6 +92,17 @@ describe("artifactserver maintenance sync-directory", () => {
         membershipsReplaced: 2,
         groupsFailed: 0,
       },
+    }), JSON.stringify({
+      groupRoleSeed: {seeded: true, unresolved: []},
+    }), JSON.stringify({
+      groups: 2,
+      directoryUsers: 3,
+      admitted: 2,
+      reactivated: 0,
+      roleChanged: 0,
+      deactivated: 0,
+      unchanged: 0,
+      skipped: 1,
     })]);
     expect(members()).toEqual([
       {email: "ada@example.test", role: "administrator", status: "active"},
@@ -119,25 +121,31 @@ describe("artifactserver maintenance sync-directory", () => {
     keycloak.failGroupMembers(null);
     keycloak.groups.delete("Engineering");
 
+    // The seed ran once: a later run reports it stored nothing new.
+    const again = await syncDirectory(directoryEnvironment());
+    expect(again.exitCode).toBe(0);
+    expect(again.stdout.split("\n")[1]).toBe(JSON.stringify({
+      groupRoleSeed: {seeded: false, unresolved: []},
+    }));
+
+    // A group deleted in Keycloak takes its role, and its members' access, with it.
     keycloak.groups.delete("artifact-users");
-    const failed = await syncDirectory(directoryEnvironment());
-    expect(failed.exitCode).not.toBe(0);
-    expect(failed.stderr).toContain(
-      "The Keycloak group artifact-users does not exist.",
-    );
-    expect(failed.stdout).toBe("");
-    expect(members()).toHaveLength(2);
-  });
+    const shrunk = await syncDirectory(directoryEnvironment());
+    expect(shrunk.exitCode).toBe(0);
+    expect(members()).toEqual([
+      {email: "ada@example.test", role: "administrator", status: "active"},
+      {email: "bob@example.test", role: "member", status: "inactive"},
+    ]);
+  }, 60_000);
 
   function directoryEnvironment(): NodeJS.ProcessEnv {
     return {
-      ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS: "artifact-admins",
       ARTIFACT_SERVER_OIDC_CLIENT_ID: "artifact-server",
       ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID: keycloak.clientId,
       ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET: keycloak.clientSecret,
       ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: "keycloak",
+      ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: "artifact-admins=admin,artifact-users=operator",
       ARTIFACT_SERVER_OIDC_ISSUER: keycloak.issuer,
-      ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: "artifact-users",
     };
   }
 

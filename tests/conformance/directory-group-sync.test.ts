@@ -30,9 +30,11 @@ import {
 } from "../support/stub-keycloak-directory.js";
 
 const groupRoles: OidcGroupRoles = {
-  administratorGroups: ["artifact-admins"],
   claim: "groups",
-  memberGroups: ["artifact-users"],
+  seed: [
+    {role: "administrator", selector: "artifact-admins"},
+    {role: "member", selector: "artifact-users"},
+  ],
 };
 const groupRowSchema = z.object({id: z.string(), name: z.string(), path: z.string()});
 const memberRowSchema = z.object({

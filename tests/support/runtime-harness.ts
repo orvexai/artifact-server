@@ -3,6 +3,7 @@ import { request } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {DatabaseSync} from "node:sqlite";
 
 import {z} from "zod";
 
@@ -27,7 +28,11 @@ import type {
   McpOAuthResourceConfiguration,
 } from "../../src/http/create-http-app.js";
 import type {Clock} from "../../src/core/ports.js";
-import type {GroupRolePolicy} from "../../src/core/group-role-policy.js";
+import {
+  type GroupRolePolicy,
+  groupRoleSeedPrincipalId,
+} from "../../src/core/group-role-policy.js";
+import type {MembershipRole} from "../../src/core/identity.js";
 import {localOwnerBrowserAccess} from "../../src/core/browser-access.js";
 import type {BrowserAccess} from "../../src/core/browser-access.js";
 import {defaultCompletedRequestLogSampleRate} from
@@ -331,4 +336,84 @@ export function apiHeaders(
     "Content-Type": "application/json",
     "Idempotency-Key": idempotencyKey,
   });
+}
+
+/**
+ * Give directory groups installation roles in a running test installation, as
+ * a completed directory sync and starting-role seed would. Each group is
+ * stored at the path "/" + its name.
+ */
+export async function storeTestGroupRoles(
+  server: RunningTestServer,
+  installation: TestInstallation,
+  roles: readonly {readonly name: string; readonly role: MembershipRole}[],
+): Promise<void> {
+  const installationId = await testInstallationId(server, installation);
+  const database = new DatabaseSync(
+    path.join(installation.dataDirectory, "artifact-server.db"),
+  );
+  const now = new Date().toISOString();
+  try {
+    for (const {name, role} of roles) {
+      database.prepare(`
+        INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (installation_id, id) DO NOTHING
+      `).run(installationId, `group-${name}`, name, `/${name}`, now);
+      database.prepare(`
+        INSERT INTO directory_group_roles (
+          installation_id, group_id, role, assigned_at, assigned_by_principal_id
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (installation_id, group_id) DO UPDATE SET role = excluded.role
+      `).run(
+        installationId,
+        `group-${name}`,
+        role,
+        now,
+        groupRoleSeedPrincipalId,
+      );
+    }
+  } finally {
+    database.close();
+  }
+}
+
+/** The email of the standing administrator {@link storeTestKeeper} adds. */
+export const testKeeperEmail = "keeper@example.test";
+
+/**
+ * Add one more active Admin who is in no directory group. The last Admin or
+ * Owner always keeps their role, so a test that demotes or removes someone
+ * who was an administrator adds this keeper first.
+ */
+export async function storeTestKeeper(
+  server: RunningTestServer,
+  installation: TestInstallation,
+): Promise<void> {
+  const installationId = await testInstallationId(server, installation);
+  const database = new DatabaseSync(
+    path.join(installation.dataDirectory, "artifact-server.db"),
+  );
+  const now = new Date().toISOString();
+  try {
+    database.prepare(`
+      INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'administrator', 'active', ?, ?)
+    `).run("member_keeper", installationId, testKeeperEmail, "Keeper", now, now);
+  } finally {
+    database.close();
+  }
+}
+
+async function testInstallationId(
+  server: RunningTestServer,
+  installation: TestInstallation,
+): Promise<string> {
+  const session = await fetch(`${server.baseUrl}/api/v1/session`, {
+    headers: {Authorization: `Bearer ${installation.apiToken}`},
+  });
+  return z.object({
+    principal: z.object({installationId: z.string()}),
+  }).parse(await session.json()).principal.installationId;
 }

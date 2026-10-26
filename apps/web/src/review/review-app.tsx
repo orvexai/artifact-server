@@ -42,6 +42,7 @@ import {motion} from "motion/react";
 import {setDraftPrincipal, writeDraft} from "@/components/comments/comment-drafts";
 import {useCommentPoll} from "@/components/comments/comment-poll";
 import {
+  isAdministratorRole,
   api,
   ApiError,
   type AccessContext,
@@ -966,7 +967,7 @@ function ArtifactReview({
   const canDeleteAnyComment = (
     session.principal.kind === "human"
     && session.principal.authorizedByPrincipalId === null
-    && session.principal.membershipRole === "administrator"
+    && isAdministratorRole(session.principal.membershipRole)
   ) || session.principal.capabilities.includes("artifact:manage:any");
   const previewKind = reviewPreviewKind(selectedVersion, selectedPath);
   const annotatablePreview = previewKind === "html" || previewKind === "markdown";

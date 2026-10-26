@@ -8,16 +8,20 @@ import type {
 import type {InteractiveIdentityProvider} from "../application/interactive-login.js";
 import type {Clock} from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
-import type {GroupRolePolicy} from "../core/group-role-policy.js";
+import type {
+  GroupRolePolicy,
+  GroupRoleSeedEntry,
+} from "../core/group-role-policy.js";
+import type {GroupRoleSeedResult} from "../application/installation-access.js";
 import type {
   DirectoryGroupSyncReport,
   DirectorySyncReport,
   GroupDirectory,
-  MemberDirectory,
 } from "../application/directory-sync.js";
 import {
   runDirectoryGroupSyncPass,
   runDirectorySyncPass,
+  runGroupRoleSeed,
 } from "../lifecycle/directory-sync.js";
 import {SystemClock, SystemIdGenerator} from "../core/system.js";
 import {createHttpApp} from "../http/create-http-app.js";
@@ -117,11 +121,10 @@ export interface ExternalStorageRuntime {
   readonly app: ReturnType<typeof createHttpApp>;
   cleanupStaging(limit: number): Promise<ExpiredStagingCleanupReport>;
   close(): Promise<void>;
-  /** Make the members match one directory under the given group roles. */
-  syncDirectory(
-    directory: MemberDirectory,
-    policy: GroupRolePolicy,
-  ): Promise<DirectorySyncReport>;
+  /** Make the members match the directory under the stored group roles. */
+  syncDirectory(directory: GroupDirectory): Promise<DirectorySyncReport>;
+  /** Store the configured starting group roles, the first time only. */
+  seedGroupRoles(seed: readonly GroupRoleSeedEntry[]): Promise<GroupRoleSeedResult>;
   /** Copy every directory group and its members. */
   syncDirectoryGroups(
     directory: GroupDirectory,
@@ -300,8 +303,8 @@ export async function createExternalStorageRuntime(
         ? appDependencies
         : {...appDependencies, runtimeLifecycle: config.runtimeLifecycle}),
       cleanupStaging: (limit) => runStagingCleanupPass(readyRuntime, limit),
-      syncDirectory: (directory, policy) =>
-        runDirectorySyncPass(readyRuntime, directory, policy),
+      seedGroupRoles: (seed) => runGroupRoleSeed(readyRuntime, seed),
+      syncDirectory: (directory) => runDirectorySyncPass(readyRuntime, directory),
       syncDirectoryGroups: (directory, syncedAt, provider) =>
         runDirectoryGroupSyncPass(readyRuntime, directory, syncedAt, provider),
       close: async () => {

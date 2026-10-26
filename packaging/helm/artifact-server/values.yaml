@@ -46,11 +46,13 @@ identity:
   oidcIssuer: ""
   oidcScopes: ""
   # Opt-in issuer group roles, unset by default so admission stays manual.
-  # Either list admits people from the issuer's groups claim and sets their
-  # role on every sign-in. Group names match exactly.
+  # Installation roles (viewer, operator, admin, owner) belong to directory
+  # groups and are changed in the application. The seed gives groups their
+  # starting roles once, by exact name or full path; later changes stay.
+  # The older oidcMemberGroups and oidcAdministratorGroups lists still work
+  # as a seed of operators and admins.
   # oidcGroupsClaim: groups
-  # oidcMemberGroups: [artifact-users]
-  # oidcAdministratorGroups: [artifact-admins]
+  # oidcGroupRoleSeed: ["Administrators=owner", "Developers=operator"]
   # Opt-in Keycloak directory sync, which admits group members before they
   # first sign in and needs the group roles above. Setting the client ID
   # enables the directorySync CronJob; secret.keys.oidcDirectoryClientSecret

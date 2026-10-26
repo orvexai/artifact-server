@@ -907,6 +907,25 @@ export function createApplicationLayer(
         "listDirectoryGroups",
         () => identityRepository.listDirectoryGroups(installationId),
       ),
+      listGroupRoles: (installationId) => identityEffect(
+        "listGroupRoles",
+        () => identityRepository.listGroupRoles(installationId),
+      ),
+      setGroupRole: (installationId, groupId, role, assignedAt, assignedBy) =>
+        identityEffectWithNotFound(
+          "setGroupRole",
+          () => identityRepository.setGroupRole(
+            installationId,
+            groupId,
+            role,
+            assignedAt,
+            assignedBy,
+          ),
+        ),
+      seedGroupRoles: (installationId, roles, seededAt) => identityEffect(
+        "seedGroupRoles",
+        () => identityRepository.seedGroupRoles(installationId, roles, seededAt),
+      ),
       findProjectAccess: (installationId, projectId, memberId) => identityEffect(
         "findProjectAccess",
         () => identityRepository.findProjectAccess(installationId, projectId, memberId),

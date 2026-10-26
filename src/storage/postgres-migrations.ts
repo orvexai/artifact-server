@@ -753,6 +753,33 @@ const addProjectCreator = Effect.gen(function*() {
   yield* sql.unsafe("ALTER TABLE projects ADD COLUMN created_by_member_id TEXT");
 });
 
+const addGroupRoles = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  // Viewer and Owner join Operator ("member") and Admin ("administrator").
+  yield* sql.unsafe(`ALTER TABLE installation_members
+    DROP CONSTRAINT installation_members_role_check`);
+  yield* sql.unsafe(`ALTER TABLE installation_members
+    ADD CONSTRAINT installation_members_role_check
+    CHECK (role IN ('viewer', 'member', 'administrator', 'owner'))`);
+  // Installation roles are given to directory groups, never to one person.
+  yield* sql.unsafe(`CREATE TABLE directory_group_roles (
+    installation_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    role TEXT NOT NULL
+      CHECK (role IN ('viewer', 'member', 'administrator', 'owner')),
+    assigned_at TEXT NOT NULL,
+    assigned_by_principal_id TEXT NOT NULL,
+    PRIMARY KEY (installation_id, group_id),
+    FOREIGN KEY (installation_id, group_id)
+      REFERENCES directory_groups(installation_id, id) ON DELETE CASCADE
+  )`);
+  // The configured starting roles apply once; afterwards the stored roles rule.
+  yield* sql.unsafe(`CREATE TABLE directory_group_role_seeds (
+    installation_id TEXT PRIMARY KEY,
+    seeded_at TEXT NOT NULL
+  )`);
+});
+
 const postgresMigrations = {
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -771,6 +798,7 @@ const postgresMigrations = {
   "0015_directory_groups": addDirectoryGroups,
   "0016_project_access": addProjectAccess,
   "0017_project_creator": addProjectCreator,
+  "0018_group_roles": addGroupRoles,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);
