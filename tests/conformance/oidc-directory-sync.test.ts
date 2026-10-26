@@ -149,16 +149,19 @@ describe("Keycloak directory sync", () => {
       status: "active",
     });
 
-    // The issuer decides who administers: the last administrator leaves too.
+    // The last administrator is never removed: with the administrators group
+    // emptied, Bob keeps his role while everyone else follows the directory.
     keycloak.groups.set(administrators, []);
     keycloak.groups.set(users, [keycloakUser("ada")]);
     expect(await sync()).toEqual(report({
-      deactivated: 2,
+      deactivated: 1,
       directoryUsers: 1,
       unchanged: 1,
     }));
     expect(byEmail(members(installation), "bob@example.test"))
-      .toMatchObject({role: "member", status: "inactive"});
+      .toMatchObject({role: "administrator", status: "active"});
+    expect(byEmail(members(installation), "carol@example.test"))
+      .toMatchObject({status: "inactive"});
   });
 
   test("disabled, unverified, and email-less users are skipped and lose membership", async () => {
@@ -242,25 +245,45 @@ describe("Keycloak directory sync", () => {
     keycloak.groups.set(users, [keycloakUser("bob")]);
     await sync();
 
-    keycloak.groups.delete(administrators);
+    keycloak.groups.delete(users);
     expect(await sync()).toEqual(report({
       deactivated: 1,
       directoryUsers: 1,
       groups: 1,
       unchanged: 1,
     }));
-    expect(byEmail(members(installation), "ada@example.test"))
+    expect(byEmail(members(installation), "bob@example.test"))
       .toMatchObject({status: "inactive"});
 
     // Recreated, the group comes back without a role: the seed ran once.
-    keycloak.groups.set(administrators, [keycloakUser("ada")]);
+    keycloak.groups.set(users, [keycloakUser("bob")]);
     expect(await sync()).toEqual(report({
       directoryUsers: 1,
       groups: 1,
       unchanged: 1,
     }));
-    expect(byEmail(members(installation), "ada@example.test"))
+    expect(byEmail(members(installation), "bob@example.test"))
       .toMatchObject({status: "inactive"});
+  });
+
+  test("losing the only group that administers keeps the administrators it had", async () => {
+    keycloak.groups.set(administrators, [keycloakUser("ada")]);
+    keycloak.groups.set(users, [keycloakUser("bob")]);
+    await sync();
+
+    // Deleting the administrators group takes its role, but Ada stays an
+    // active administrator so the roles can be given out again.
+    keycloak.groups.delete(administrators);
+    expect(await sync()).toEqual(report({
+      directoryUsers: 1,
+      groups: 1,
+      unchanged: 1,
+    }));
+    expect(members(installation).map(({email, role, status}) => ({email, role, status})))
+      .toEqual([
+        {email: "ada@example.test", role: "administrator", status: "active"},
+        {email: "bob@example.test", role: "member", status: "active"},
+      ]);
   });
 
   test("an internal Keycloak URL replaces the public admin base and token endpoint", () => {

@@ -631,12 +631,13 @@ function makeInstallationAccessService(
   /**
    * Deactivate one member the issuer no longer admits. Deactivation keeps a
    * last administrator in place; the issuer has already taken that role away,
-   * so demote before deactivating.
+   * so demote an Admin or Owner before deactivating. Callers keep the last
+   * Admin or Owner out of here themselves.
    */
   const deactivateRemovedMember = Effect.fn(
     "InstallationAccessService.deactivateRemovedMember",
   )(function*(member: InstallationMember, now: string) {
-    if (member.role !== membershipRoles.member) {
+    if (isAdministratorRole(member.role)) {
       yield* dependencies.repository.setMemberRole(
         dependencies.installationId,
         member.id,
@@ -780,6 +781,18 @@ function makeInstallationAccessService(
       dependencies.installationId,
     );
     const byEmail = new Map(members.map((member) => [member.email, member]));
+    // A deleted or emptied group can take every Admin and Owner role with it,
+    // and then nobody could give a role again. When the directory leaves no
+    // one able to administer, the current Admins and Owners keep their role.
+    const keptAdministrators = new Set(
+      [...desired.values()].some((entry) => isAdministratorRole(entry.role))
+        ? []
+        : members
+          .filter((member) =>
+            member.status === memberStatuses.active && isAdministratorRole(member.role)
+          )
+          .map((member) => member.email),
+    );
     let admitted = 0;
     let reactivated = 0;
     let roleChanged = 0;
@@ -807,7 +820,7 @@ function makeInstallationAccessService(
           now,
         );
         reactivated += 1;
-      } else if (member.role !== entry.role) {
+      } else if (member.role !== entry.role && !keptAdministrators.has(member.email)) {
         yield* dependencies.repository.setMemberRole(
           dependencies.installationId,
           member.id,
@@ -821,7 +834,10 @@ function makeInstallationAccessService(
     }
     let deactivated = 0;
     for (const member of members) {
-      if (member.status !== memberStatuses.active || desired.has(member.email)) {
+      if (
+        member.status !== memberStatuses.active || desired.has(member.email) ||
+        keptAdministrators.has(member.email)
+      ) {
         continue;
       }
       yield* deactivateRemovedMember(member, now);
@@ -864,6 +880,22 @@ function makeInstallationAccessService(
     }
     const role = groupMembershipRole(assignments, identity.groups);
     const now = dependencies.clock.now().toISOString();
+    // The last active Admin or Owner keeps their role, so someone can always
+    // give the roles out again after a group that held them is lost.
+    if (
+      member !== null && isAdministratorRole(member.role) &&
+      (role === null || !isAdministratorRole(role))
+    ) {
+      const members = yield* dependencies.repository.listMembers(
+        dependencies.installationId,
+      );
+      const otherAdministrators = members.filter((candidate) =>
+        candidate.id !== member.id &&
+        candidate.status === memberStatuses.active &&
+        isAdministratorRole(candidate.role)
+      );
+      if (otherAdministrators.length === 0) return member;
+    }
     if (role === null) {
       if (member !== null) {
         yield* deactivateRemovedMember(member, now);

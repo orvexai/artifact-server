@@ -34,6 +34,8 @@ import {
   type RunningTestServer,
   startTestServer,
   storeTestGroupRoles,
+  storeTestKeeper,
+  testKeeperEmail,
   type TestInstallation,
 } from "../support/runtime-harness.js";
 
@@ -538,6 +540,8 @@ describe("generic OIDC MCP authorization", () => {
         {name: administratorGroup, role: "administrator"},
         {name: memberGroup, role: "member"},
       ]);
+      // The last administrator keeps their role; these tests demote one.
+      await storeTestKeeper(server, installation);
     });
 
     test("groups admit a member or an administrator and every later token re-applies them", async () => {
@@ -775,7 +779,8 @@ function members(
     return database
       .prepare("SELECT id, email, role, status FROM installation_members ORDER BY created_at")
       .all()
-      .map((row) => memberRowSchema.parse(row));
+      .map((row) => memberRowSchema.parse(row))
+      .filter((row) => row.email !== testKeeperEmail);
   } finally {
     database.close();
   }

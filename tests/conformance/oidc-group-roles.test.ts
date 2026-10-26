@@ -17,6 +17,8 @@ import {
   reserveLoopbackPort,
   startTestServer,
   storeTestGroupRoles,
+  storeTestKeeper,
+  testKeeperEmail,
   type RunningTestServer,
   type TestInstallation,
 } from "../support/runtime-harness.js";
@@ -115,11 +117,38 @@ describe("generic OIDC browser login with issuer group roles", () => {
     expect(await sessionRole(await signIn())).toBe("viewer");
   });
 
+  test("the last Admin or Owner keeps their role when their group loses it", async () => {
+    await storeTestGroupRoles(server, installation, [
+      {name: "artifact-owners", role: "owner"},
+      {name: "artifact-users", role: "member"},
+    ]);
+    provider.claims.email = "ada@example.test";
+    provider.claims.subject = "subject-ada";
+    provider.claims.groups = ["artifact-owners"];
+    expect(await sessionRole(await signIn())).toBe("owner");
+
+    // Ada is the only Owner. Leaving the group, or every group, keeps her
+    // role and access, so someone can still give the roles out again.
+    provider.claims.groups = ["artifact-users"];
+    expect(await sessionRole(await signIn())).toBe("owner");
+    provider.claims.groups = ["sales"];
+    expect(await sessionRole(await signIn())).toBe("owner");
+    expect(members(installation)).toEqual([
+      {email: "ada@example.test", role: "owner", status: "active"},
+    ]);
+
+    // With another administrator in place, the same change applies.
+    await storeTestKeeper(server, installation);
+    provider.claims.groups = ["artifact-users"];
+    expect(await sessionRole(await signIn())).toBe("member");
+  });
+
   test("the configured claim admits people by group and every login re-applies their role", async () => {
     await storeTestGroupRoles(server, installation, [
       {name: "artifact-admins", role: "administrator"},
       {name: "artifact-users", role: "member"},
     ]);
+    await storeTestKeeper(server, installation);
     provider.claims.email = "ada@example.test";
     provider.claims.subject = "subject-ada";
     provider.claims.groups = ["artifact-admins", "artifact-users"];
@@ -228,7 +257,8 @@ function members(
     return database
       .prepare("SELECT email, role, status FROM installation_members ORDER BY email")
       .all()
-      .map((row) => memberRowSchema.parse(row));
+      .map((row) => memberRowSchema.parse(row))
+      .filter((row) => row.email !== testKeeperEmail);
   } finally {
     database.close();
   }

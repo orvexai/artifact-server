@@ -348,12 +348,7 @@ export async function storeTestGroupRoles(
   installation: TestInstallation,
   roles: readonly {readonly name: string; readonly role: MembershipRole}[],
 ): Promise<void> {
-  const session = await fetch(`${server.baseUrl}/api/v1/session`, {
-    headers: {Authorization: `Bearer ${installation.apiToken}`},
-  });
-  const {installationId} = z.object({
-    principal: z.object({installationId: z.string()}),
-  }).parse(await session.json()).principal;
+  const installationId = await testInstallationId(server, installation);
   const database = new DatabaseSync(
     path.join(installation.dataDirectory, "artifact-server.db"),
   );
@@ -381,4 +376,44 @@ export async function storeTestGroupRoles(
   } finally {
     database.close();
   }
+}
+
+/** The email of the standing administrator {@link storeTestKeeper} adds. */
+export const testKeeperEmail = "keeper@example.test";
+
+/**
+ * Add one more active Admin who is in no directory group. The last Admin or
+ * Owner always keeps their role, so a test that demotes or removes someone
+ * who was an administrator adds this keeper first.
+ */
+export async function storeTestKeeper(
+  server: RunningTestServer,
+  installation: TestInstallation,
+): Promise<void> {
+  const installationId = await testInstallationId(server, installation);
+  const database = new DatabaseSync(
+    path.join(installation.dataDirectory, "artifact-server.db"),
+  );
+  const now = new Date().toISOString();
+  try {
+    database.prepare(`
+      INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'administrator', 'active', ?, ?)
+    `).run("member_keeper", installationId, testKeeperEmail, "Keeper", now, now);
+  } finally {
+    database.close();
+  }
+}
+
+async function testInstallationId(
+  server: RunningTestServer,
+  installation: TestInstallation,
+): Promise<string> {
+  const session = await fetch(`${server.baseUrl}/api/v1/session`, {
+    headers: {Authorization: `Bearer ${installation.apiToken}`},
+  });
+  return z.object({
+    principal: z.object({installationId: z.string()}),
+  }).parse(await session.json()).principal.installationId;
 }
