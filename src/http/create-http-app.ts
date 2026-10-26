@@ -18,13 +18,17 @@ import {
 } from "../application/application-runtime.js";
 import { StagedUploadService } from "../application/staged-upload.js";
 import { AuthenticationService } from "../application/authentication.js";
+import {listDirectoryGroups} from "../application/directory-groups.js";
 import {
   digestIdentitySecret,
   identitySecretsEqual,
   InstallationAccessService,
 } from "../application/installation-access.js";
 import { InteractiveLoginService } from "../application/interactive-login.js";
-import { ProjectManagementService } from "../application/project-management.js";
+import {
+  type CreateProjectCommand,
+  ProjectManagementService,
+} from "../application/project-management.js";
 import {ProjectGitHistoryService} from
   "../application/project-git-history.js";
 import {
@@ -146,7 +150,11 @@ import {
 } from "./artifact-http-links.js";
 import {artifactServerFailureResponse} from "./artifact-http-failure.js";
 import {attachmentContentDisposition} from "./content-disposition.js";
-import {observeHttpRequest} from "../observability/application-observability.js";
+import {
+  inFlightReportMilliseconds,
+  observeHttpRequest,
+  observeInFlightRequest,
+} from "../observability/application-observability.js";
 import {
   createVersionArchive,
   versionArchiveFilename,
@@ -163,10 +171,22 @@ const accessSettingSchema = z.enum([
 ]);
 const artifactTagsSchema = z.array(z.string()).default([]);
 const projectIdSchema = z.string().trim().min(1).max(200);
-const createProjectSchema = z.object({
+const projectNameBodySchema = z.object({
   name: z.string().trim().min(1).max(120),
 }).strict();
-const renameProjectSchema = createProjectSchema;
+const projectGrantRoleBodySchema = z.enum(["viewer", "editor", "manager"]);
+const projectGroupReferenceSchema = z.string().trim().min(1).max(500);
+const createProjectSchema = projectNameBodySchema.extend({
+  shareWith: z.array(z.object({
+    group: projectGroupReferenceSchema,
+    role: projectGrantRoleBodySchema,
+  }).strict()).max(50).optional(),
+}).strict();
+const renameProjectSchema = projectNameBodySchema;
+const setProjectAccessSchema = z.object({
+  accessMode: z.enum(["installation", "restricted"]),
+}).strict();
+const shareProjectSchema = z.object({role: projectGrantRoleBodySchema}).strict();
 const setProjectGitHistorySchema = z.discriminatedUnion("enabled", [
   z.object({enabled: z.literal(false)}).strict(),
   z.object({
@@ -708,9 +728,28 @@ export function createHttpApp(
     context.set("requestId", requestId);
     context.set("requestSpan", requestSpan);
     context.header("X-Request-Id", requestId);
+    const contentOrigin = tokenFromContentHost(
+      new URL(context.req.url).hostname,
+      dependencies.contentDomain,
+    ) !== null;
+    // A request that never finishes never reaches the completed log, so
+    // report it while it is still running.
+    const inFlightTimers = inFlightReportMilliseconds.map((elapsed) =>
+      setTimeout(() => {
+        void dependencies.applicationRuntime.runPromise(
+          observeInFlightRequest({
+            contentOrigin,
+            elapsedMilliseconds: elapsed,
+            method,
+            requestId,
+            route: safeMatchedRoute(context),
+          }),
+        ).catch(() => undefined);
+      }, elapsed));
     try {
       await next();
     } finally {
+      for (const timer of inFlightTimers) clearTimeout(timer);
       const status = context.res.status;
       const matchedRoute = safeMatchedRoute(context);
       const protocol = matchedRoute === "/mcp" ? "mcp" : "http";
@@ -1144,6 +1183,15 @@ export function createHttpApp(
     return context.body(null, 204);
   });
 
+  app.get("/api/v1/groups", async (context) => {
+    const groups = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      listDirectoryGroups(context.get("principal")),
+    );
+    return context.json({groups});
+  });
+
   app.get("/api/v1/members", async (context) => {
     const members = await runHttpApplicationEffect(
       context,
@@ -1516,15 +1564,15 @@ export function createHttpApp(
 
   app.post("/api/v1/projects", boundedJsonBody, async (context) => {
     const body = createProjectSchema.parse(await context.req.json());
+    const command: CreateProjectCommand = {
+      name: body.name,
+      principal: context.get("principal"),
+      shareWith: body.shareWith ?? [],
+    };
     const project = await runHttpApplicationEffect(
       context,
       dependencies,
-      ProjectManagementService.use((management) =>
-        management.createProject({
-          name: body.name,
-          principal: context.get("principal"),
-        })
-      ),
+      ProjectManagementService.use((management) => management.createProject(command)),
     );
     return context.json({project}, 201);
   });
@@ -1541,6 +1589,68 @@ export function createHttpApp(
       ),
     );
     return context.json({project});
+  });
+
+  app.get("/api/v1/projects/:projectId/sharing", async (context) => {
+    const sharing = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      ProjectManagementService.use((management) =>
+        management.getSharing({
+          principal: context.get("principal"),
+          projectId: projectIdSchema.parse(context.req.param("projectId")),
+        })
+      ),
+    );
+    return context.json({sharing});
+  });
+
+  app.put("/api/v1/projects/:projectId/access", boundedJsonBody, async (context) => {
+    const body = setProjectAccessSchema.parse(await context.req.json());
+    const sharing = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      ProjectManagementService.use((management) =>
+        management.setAccessMode({
+          accessMode: body.accessMode,
+          principal: context.get("principal"),
+          projectId: projectIdSchema.parse(context.req.param("projectId")),
+        })
+      ),
+    );
+    return context.json({sharing});
+  });
+
+  app.put("/api/v1/projects/:projectId/groups/:group", boundedJsonBody, async (context) => {
+    const body = shareProjectSchema.parse(await context.req.json());
+    const sharing = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      ProjectManagementService.use((management) =>
+        management.shareWithGroup({
+          group: projectGroupReferenceSchema.parse(context.req.param("group")),
+          principal: context.get("principal"),
+          projectId: projectIdSchema.parse(context.req.param("projectId")),
+          role: body.role,
+        })
+      ),
+    );
+    return context.json({sharing});
+  });
+
+  app.delete("/api/v1/projects/:projectId/groups/:group", async (context) => {
+    const sharing = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      ProjectManagementService.use((management) =>
+        management.unshareGroup({
+          group: projectGroupReferenceSchema.parse(context.req.param("group")),
+          principal: context.get("principal"),
+          projectId: projectIdSchema.parse(context.req.param("projectId")),
+        })
+      ),
+    );
+    return context.json({sharing});
   });
 
   app.get("/api/v1/projects/:projectId/audit", async (context) => {

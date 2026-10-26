@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import type {ProjectRole} from "../core/project-access.js";
 import { Context, DateTime, Effect, Layer } from "effect";
 
 import type { ApplicationClock } from "./application-clock.js";
@@ -272,12 +273,16 @@ function makeArtifactManagementService(
   authorization: AuthorizationOperations,
   projects: ProjectManagementService["Service"],
 ): ArtifactManagementOperations {
-  const resolveProjectForRead = Effect.fn(
-    "ArtifactManagementService.resolveProjectForRead",
-  )(function*(principal: Principal, projectId: string | null) {
+  const resolveProject = Effect.fn(
+    "ArtifactManagementService.resolveProject",
+  )(function*(
+    principal: Principal,
+    projectId: string | null,
+    minimumRole: ProjectRole = "viewer",
+  ) {
     return projectId === null
-      ? yield* projects.resolveActiveProject({principal, projectId})
-      : yield* projects.getProject({principal, projectId});
+      ? yield* projects.resolveActiveProject({minimumRole, principal, projectId})
+      : yield* projects.getProject({minimumRole, principal, projectId});
   });
 
   const requireArtifact = Effect.fn("ArtifactManagementService.requireArtifact")(
@@ -337,7 +342,7 @@ function makeArtifactManagementService(
 
   const getArtifact = Effect.fn("ArtifactManagementService.getArtifact")(
     function*(command: ReadArtifactCommand) {
-      const project = yield* resolveProjectForRead(
+      const project = yield* resolveProject(
         command.principal,
         command.projectId,
       );
@@ -354,7 +359,7 @@ function makeArtifactManagementService(
 
   const getVersionDetails = Effect.fn("ArtifactManagementService.getVersionDetails")(
     function*(command: ReadArtifactVersionCommand) {
-      const project = yield* resolveProjectForRead(
+      const project = yield* resolveProject(
         command.principal,
         command.projectId,
       );
@@ -391,7 +396,7 @@ function makeArtifactManagementService(
 
   const listVersions = Effect.fn("ArtifactManagementService.listVersions")(
     function*(command: ReadArtifactCommand) {
-      const project = yield* resolveProjectForRead(
+      const project = yield* resolveProject(
         command.principal,
         command.projectId,
       );
@@ -426,7 +431,7 @@ function makeArtifactManagementService(
       yield* authorization.requireArtifactListing(command.principal);
       const tags = yield* parseArtifactTags(command.tags);
       const search = normalizeArtifactSearch(command.search);
-      const project = yield* resolveProjectForRead(
+      const project = yield* resolveProject(
         command.principal,
         command.projectId,
       );
@@ -446,9 +451,10 @@ function makeArtifactManagementService(
     "ArtifactManagementService.listArtifactActions",
   )(function*(command: ListArtifactActionsCommand) {
     const limit = yield* requirePageSize(command.limit);
-    const project = yield* resolveProjectForRead(
+    const project = yield* resolveProject(
       command.principal,
       command.projectId,
+      "editor",
     );
     const artifact = yield* requireArtifactForAdministration(
       project.id,
@@ -465,9 +471,10 @@ function makeArtifactManagementService(
 
   const restoreVersion = Effect.fn("ArtifactManagementService.restoreVersion")(
     function*(command: RestoreArtifactVersionCommand) {
-      const project = yield* resolveProjectForRead(
+      const project = yield* resolveProject(
         command.principal,
         command.projectId,
+      "editor",
       );
       const artifact = yield* requireArtifact(project.id, command.artifactId);
       yield* authorization.requireArtifactManagement(command.principal);
@@ -497,9 +504,10 @@ function makeArtifactManagementService(
 
   const changeAccess = Effect.fn("ArtifactManagementService.changeAccess")(
     function*(command: ChangeArtifactAccessCommand) {
-      const project = yield* resolveProjectForRead(
+      const project = yield* resolveProject(
         command.principal,
         command.projectId,
+      "editor",
       );
       const artifact = yield* requireArtifact(project.id, command.artifactId);
       yield* authorization.requireArtifactManagement(command.principal);
@@ -528,9 +536,10 @@ function makeArtifactManagementService(
 
   const changeTags = Effect.fn("ArtifactManagementService.changeTags")(
     function*(command: ChangeArtifactTagsCommand) {
-      const project = yield* resolveProjectForRead(
+      const project = yield* resolveProject(
         command.principal,
         command.projectId,
+      "editor",
       );
       const artifact = yield* requireArtifact(project.id, command.artifactId);
       yield* authorization.requireArtifactManagement(command.principal);
@@ -560,9 +569,10 @@ function makeArtifactManagementService(
 
   const deleteArtifact = Effect.fn("ArtifactManagementService.deleteArtifact")(
     function*(command: DeleteArtifactCommand) {
-      const project = yield* resolveProjectForRead(
+      const project = yield* resolveProject(
         command.principal,
         command.projectId,
+      "editor",
       );
       const artifact = yield* requireArtifactForAdministration(
         project.id,

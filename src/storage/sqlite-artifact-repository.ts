@@ -119,6 +119,7 @@ import type {
   WriteArtifactStateEntry,
   PublicationSource,
   ProjectRepository,
+  CreateProject,
   RenameProject,
   RestoreArtifactVersion,
   SetProjectArchive,
@@ -580,18 +581,22 @@ export class SqliteArtifactRepository implements
     this.#migrate(installationId);
   }
 
-  createProject(command: ProjectRecord): Promise<ProjectRecord> {
+  createProject(command: CreateProject): Promise<ProjectRecord> {
     return Promise.resolve().then(() => {
       try {
         this.#database.prepare(`
-          INSERT INTO projects (id, installation_id, name, created_at, archived_at)
-          VALUES (?, ?, ?, ?, ?)
+          INSERT INTO projects (
+            id, installation_id, name, created_at, archived_at, created_by_member_id,
+            access_mode
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
         `).run(
           command.id,
           this.#installationId,
           command.name,
           command.createdAt,
           command.archivedAt,
+          command.createdByMemberId,
+          command.accessMode,
         );
       } catch (cause) {
         if (isSqliteConstraint(cause)) {
@@ -5099,11 +5104,23 @@ export class SqliteArtifactRepository implements
     this.#widenRegisteredAgentsIfNeeded();
     this.#addSourceBindingColumnsIfMissing();
     this.#addGitHistoryMirrorTablesIfMissing();
+    this.#addProjectAccessModeIfMissing();
     this.#database.exec(`
       CREATE INDEX IF NOT EXISTS projects_active_created
         ON projects (archived_at, created_at, id);
     `);
     this.#database.exec(`PRAGMA user_version = ${requiredSqliteSchemaVersion};`);
+  }
+
+  #addProjectAccessModeIfMissing(): void {
+    const columns = this.#tableColumns("projects");
+    if (!columns.includes("access_mode")) {
+      this.#database.exec(`ALTER TABLE projects ADD COLUMN access_mode TEXT NOT NULL
+        DEFAULT 'installation' CHECK (access_mode IN ('installation', 'restricted'))`);
+    }
+    if (!columns.includes("created_by_member_id")) {
+      this.#database.exec("ALTER TABLE projects ADD COLUMN created_by_member_id TEXT");
+    }
   }
 
   #addArtifactSearchNameIfMissing(): void {
@@ -5662,6 +5679,7 @@ export class SqliteArtifactRepository implements
       | "content_sessions"
       | "git_history_project_settings"
       | "idempotency_records"
+      | "projects"
       | "staged_uploads"
       | "versions",
   ): readonly string[] {

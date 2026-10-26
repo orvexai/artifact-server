@@ -505,9 +505,9 @@ const parseS3ObjectStorage = Effect.fn("parseS3ObjectStorage")(
 
 /** Generic OIDC group roles as the configuration summary reports them. */
 export interface OidcGroupRolesSummary {
-  readonly administratorGroups: readonly string[];
   readonly claim: string;
-  readonly memberGroups: readonly string[];
+  /** The starting roles only; the roles in force are stored per group. */
+  readonly seed: readonly {readonly role: string; readonly selector: string}[];
 }
 
 /** The credential-free part of one OIDC directory sync configuration. */
@@ -532,9 +532,8 @@ export function summarizeRuntimeConfiguration(
     summary = {
       ...summary,
       oidcGroupRoles: {
-        administratorGroups: oidcGroupRoles.administratorGroups,
         claim: oidcGroupRoles.claim,
-        memberGroups: oidcGroupRoles.memberGroups,
+        seed: oidcGroupRoles.seed.map(({role, selector}) => ({role, selector})),
       },
     };
   }

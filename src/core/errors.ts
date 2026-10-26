@@ -38,6 +38,7 @@ export const errorCodes = {
   projectArchived: "PROJECT_ARCHIVED",
   projectConflict: "PROJECT_CONFLICT",
   projectNotFound: "PROJECT_NOT_FOUND",
+  groupNotFound: "GROUP_NOT_FOUND",
   projectSelectionRequired: "PROJECT_SELECTION_REQUIRED",
   uploadClosed: "UPLOAD_CLOSED",
   uploadExpired: "UPLOAD_EXPIRED",
@@ -181,6 +182,12 @@ export class InvalidArtifactName extends Schema.TaggedError<InvalidArtifactName>
 /** A project name cannot be parsed into the supported domain value. */
 export class InvalidProjectName extends Schema.TaggedError<InvalidProjectName>()(
   "InvalidProjectName",
+  messageField,
+) {}
+
+/** No copied directory group matches the requested id, path, or name. */
+export class DirectoryGroupNotFound extends Schema.TaggedError<DirectoryGroupNotFound>()(
+  "DirectoryGroupNotFound",
   messageField,
 ) {}
 
@@ -436,6 +443,7 @@ export class IdentityRepositoryFailure extends Schema.TaggedError<IdentityReposi
     cause: Schema.Defect(),
     operation: Schema.Literals([
       "admitMember",
+      "applyDirectoryGroups",
       "bindExternalIdentity",
       "consumeLoginAttempt",
       "createApiKey",
@@ -447,13 +455,22 @@ export class IdentityRepositoryFailure extends Schema.TaggedError<IdentityReposi
       "findMember",
       "findApiKey",
       "findApplicationSession",
+      "findProjectAccess",
       "hasMembers",
       "listApiKeys",
+      "listDirectoryGroups",
+      "listGroupRoles",
       "listMembers",
+      "listProjectGroupGrants",
+      "putProjectGroupGrant",
+      "removeProjectGroupGrant",
       "revokeApiKey",
       "revokeApplicationSession",
       "rotateApiKey",
+      "seedGroupRoles",
+      "setGroupRole",
       "setMemberRole",
+      "setProjectAccessMode",
     ]),
   },
 ) {}
@@ -478,6 +495,7 @@ export class StagingStorageFailure extends Schema.TaggedError<StagingStorageFail
 
 const artifactServerFailureSchema = Schema.Union([
   AgentDispatchNotFound,
+  DirectoryGroupNotFound,
   AgentNotFound,
   ArtifactNotFound,
   ArtifactMutationConflict,

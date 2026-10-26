@@ -575,10 +575,12 @@ export class PostgresArtifactRepository implements
     const rows = await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`INSERT INTO projects (
-          installation_id, id, name, created_at, archived_at
+          installation_id, id, name, created_at, archived_at, created_by_member_id,
+          access_mode
         ) VALUES (
           ${installationId}, ${command.id}, ${command.name},
-          ${command.createdAt}, ${command.archivedAt}
+          ${command.createdAt}, ${command.archivedAt}, ${command.createdByMemberId},
+          ${command.accessMode}
         ) ON CONFLICT (installation_id, id) DO NOTHING
         RETURNING installation_id AS "installationId", id, name,
           created_at AS "createdAt", archived_at AS "archivedAt"`;

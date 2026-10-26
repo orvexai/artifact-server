@@ -46,6 +46,15 @@ if [[ "$artifactserver_group_roles" != *'value: "artifact-users,engineering"'* |
   exit 1
 fi
 
+artifactserver_group_role_seed=$(helm template artifact-server "$artifactserver_chart" \
+  --kube-version 1.36.0 \
+  "${artifactserver_values[@]}" \
+  --set 'identity.oidcGroupRoleSeed={Administrators=owner,Developers=operator}')
+if [[ "$artifactserver_group_role_seed" != *'value: "Administrators=owner,Developers=operator"'* ]]; then
+  echo "Helm did not render the OIDC group-role seed." >&2
+  exit 1
+fi
+
 artifactserver_directory_sync=$(helm template artifact-server "$artifactserver_chart" \
   --kube-version 1.36.0 \
   "${artifactserver_values[@]}" \
@@ -58,6 +67,22 @@ if [[ "$artifactserver_directory_sync" != *"name: artifact-server-sync-directory
   "$artifactserver_directory_sync" != *"- sync-directory"* ||
   "$artifactserver_directory_sync" != *"path: oidc-directory-client-secret"* ]]; then
   echo "Helm did not render the directory sync CronJob." >&2
+  exit 1
+fi
+if [[ "$artifactserver_directory_sync" == *"ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL"* ]]; then
+  echo "Helm rendered an internal Keycloak URL nobody configured." >&2
+  exit 1
+fi
+if [[ "$(helm template artifact-server "$artifactserver_chart" --kube-version 1.36.0 \
+  "${artifactserver_values[@]}" \
+  --set identity.oidcIssuer=https://idp.example.test/realms/main \
+  --set 'identity.oidcMemberGroups={artifact-users}' \
+  --set identity.oidcDirectoryClientId=artifact-server-directory \
+  --set identity.oidcDirectoryKeycloakUrl=http://keycloak-service.keycloak.svc:8080 \
+  --set secret.keys.oidcDirectoryClientSecret=oidc-directory-client-secret \
+  --set configuration.postgresConnectionBudget=23)" \
+  != *'value: "http://keycloak-service.keycloak.svc:8080"'* ]]; then
+  echo "Helm did not pass the internal Keycloak URL to the directory sync." >&2
   exit 1
 fi
 if [[ "$(helm template artifact-server "$artifactserver_chart" --kube-version 1.36.0 \
@@ -112,7 +137,7 @@ expect_render_failure "identity.oidcAdministratorGroups require identity.oidcCli
   --set identity.oidcIssuer= \
   --set 'identity.oidcAdministratorGroups={artifact-admins}'
 
-expect_render_failure "identity.oidcGroupsClaim requires identity.oidcMemberGroups or identity.oidcAdministratorGroups" \
+expect_render_failure "identity.oidcGroupsClaim requires identity.oidcGroupRoleSeed" \
   "${artifactserver_values[@]}" \
   --set identity.oidcGroupsClaim=groups
 
@@ -120,7 +145,16 @@ expect_render_failure "does not match pattern" \
   "${artifactserver_values[@]}" \
   --set 'identity.oidcMemberGroups={artifact-users\,engineering}'
 
-expect_render_failure "secret.keys.oidcDirectoryClientSecret require identity.oidcClientId, identity.oidcIssuer, and identity.oidcMemberGroups" \
+expect_render_failure "does not match pattern" \
+  "${artifactserver_values[@]}" \
+  --set 'identity.oidcGroupRoleSeed={Developers=superuser}'
+
+expect_render_failure "not both" \
+  "${artifactserver_values[@]}" \
+  --set 'identity.oidcGroupRoleSeed={Developers=operator}' \
+  --set 'identity.oidcMemberGroups={artifact-users}'
+
+expect_render_failure "secret.keys.oidcDirectoryClientSecret require identity.oidcClientId, identity.oidcIssuer, and identity.oidcGroupRoleSeed" \
   "${artifactserver_values[@]}" \
   --set identity.oidcDirectoryClientId=artifact-server-directory \
   --set secret.keys.oidcDirectoryClientSecret=oidc-directory-client-secret

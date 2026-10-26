@@ -1,5 +1,17 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
+import {
+  type ProjectAccess,
+  type ProjectAccessMode,
+  type ProjectAccessRecord,
+  type ProjectGroupGrant,
+  resolveProjectAccess,
+} from "../core/project-access.js";
+import type {
+  DirectoryGroupApplyResult,
+  DirectoryGroupSnapshot,
+  StoredDirectoryGroup,
+} from "../core/directory-groups.js";
 import { Context, Effect, Layer, Redacted } from "effect";
 
 import type { AuthenticatedApplicationSession } from "./authentication.js";
@@ -32,10 +44,13 @@ import {
   type StoredManagedApiKey,
 } from "../core/installation-identity.js";
 import {
+  type GroupRoleAssignment,
   type GroupRolePolicy,
+  type GroupRoleSeedEntry,
   groupMembershipRole,
 } from "../core/group-role-policy.js";
 import {
+  isAdministratorRole,
   isHumanAdministrator,
   membershipRoles,
   principalCapabilities,
@@ -49,6 +64,51 @@ const allCapabilities = Object.values(principalCapabilities);
 const localBrowserLoginProvider = "artifact-server-local";
 
 export interface InstallationIdentityRepository {
+  readonly applyDirectoryGroups: (
+    installationId: string,
+    snapshot: DirectoryGroupSnapshot,
+  ) => Effect.Effect<DirectoryGroupApplyResult, IdentityRepositoryFailure>;
+  readonly listDirectoryGroups: (
+    installationId: string,
+  ) => Effect.Effect<readonly StoredDirectoryGroup[], IdentityRepositoryFailure>;
+  readonly listGroupRoles: (
+    installationId: string,
+  ) => Effect.Effect<readonly GroupRoleAssignment[], IdentityRepositoryFailure>;
+  readonly setGroupRole: (
+    installationId: string,
+    groupId: string,
+    role: MembershipRole | null,
+    assignedAt: string,
+    assignedByPrincipalId: string,
+  ) => Effect.Effect<void, IdentityNotFound | IdentityRepositoryFailure>;
+  readonly seedGroupRoles: (
+    installationId: string,
+    roles: readonly {readonly groupId: string; readonly role: MembershipRole}[],
+    seededAt: string,
+  ) => Effect.Effect<boolean, IdentityRepositoryFailure>;
+  readonly findProjectAccess: (
+    installationId: string,
+    projectId: string,
+    memberId: string,
+  ) => Effect.Effect<ProjectAccessRecord | null, IdentityRepositoryFailure>;
+  readonly listProjectGroupGrants: (
+    installationId: string,
+    projectId: string,
+  ) => Effect.Effect<readonly ProjectGroupGrant[], IdentityRepositoryFailure>;
+  readonly putProjectGroupGrant: (
+    installationId: string,
+    grant: ProjectGroupGrant,
+  ) => Effect.Effect<void, IdentityRepositoryFailure>;
+  readonly removeProjectGroupGrant: (
+    installationId: string,
+    projectId: string,
+    groupId: string,
+  ) => Effect.Effect<boolean, IdentityRepositoryFailure>;
+  readonly setProjectAccessMode: (
+    installationId: string,
+    projectId: string,
+    accessMode: ProjectAccessMode,
+  ) => Effect.Effect<void, IdentityRepositoryFailure>;
   readonly admitMember: (
     command: {
       readonly createdAt: string;
@@ -210,6 +270,14 @@ export interface AdmitMemberCommand {
 }
 
 /** One person a member directory says should be an active member. */
+/** The outcome of applying the configured starting group roles. */
+export interface GroupRoleSeedResult {
+  /** True only on the run that stored the roles. */
+  readonly seeded: boolean;
+  /** Seed entries that named no group, or more than one. */
+  readonly unresolved: readonly string[];
+}
+
 export interface DirectoryMemberEntry {
   readonly displayName: string;
   /** Already normalized with {@link normalizeMemberEmail}. */
@@ -332,6 +400,68 @@ export interface InstallationAccessOperations {
     DirectoryReconciliation,
     IdentityConflict | IdentityRepositoryFailure
   >;
+  /**
+   * Make the stored directory groups match one complete listing. A group
+   * whose members could not be read keeps its stored membership.
+   */
+  readonly applyDirectoryGroups: (
+    snapshot: DirectoryGroupSnapshot,
+  ) => Effect.Effect<DirectoryGroupApplyResult, IdentityRepositoryFailure>;
+  /** Every stored directory group, ordered by path. */
+  readonly listDirectoryGroups: () => Effect.Effect<
+    readonly StoredDirectoryGroup[],
+    IdentityRepositoryFailure
+  >;
+  /** Every directory group's installation role, ordered by path. */
+  readonly listGroupRoles: () => Effect.Effect<
+    readonly GroupRoleAssignment[],
+    IdentityRepositoryFailure
+  >;
+  /**
+   * Store the configured starting roles once. Every seed entry must name
+   * exactly one stored directory group; otherwise nothing is stored and the
+   * entries that matched no single group are reported.
+   */
+  readonly seedGroupRoles: (
+    seed: readonly GroupRoleSeedEntry[],
+  ) => Effect.Effect<GroupRoleSeedResult, IdentityRepositoryFailure>;
+  /**
+   * The access one principal has to one project, read fresh on every call,
+   * or null when the project does not exist in this installation.
+   */
+  readonly projectAccess: (
+    principal: Principal,
+    projectId: string,
+  ) => Effect.Effect<ProjectAccess | null, IdentityRepositoryFailure>;
+  /**
+   * The access the principal that owns something (an agent) has to one
+   * project, known only by its id: a stored member is judged as that member,
+   * anything else is a service principal. Null when the project is absent.
+   */
+  readonly ownerProjectAccess: (
+    ownerPrincipalId: string,
+    projectId: string,
+  ) => Effect.Effect<ProjectAccess | null, IdentityRepositoryFailure>;
+  /**
+   * Storage for project sharing. These do no authorization of their own:
+   * ProjectManagementService decides who may share before calling them.
+   */
+  readonly projectSharing: {
+    readonly list: (
+      projectId: string,
+    ) => Effect.Effect<readonly ProjectGroupGrant[], IdentityRepositoryFailure>;
+    readonly put: (
+      grant: ProjectGroupGrant,
+    ) => Effect.Effect<void, IdentityRepositoryFailure>;
+    readonly remove: (
+      projectId: string,
+      groupId: string,
+    ) => Effect.Effect<boolean, IdentityRepositoryFailure>;
+    readonly setAccessMode: (
+      projectId: string,
+      accessMode: ProjectAccessMode,
+    ) => Effect.Effect<void, IdentityRepositoryFailure>;
+  };
   readonly revokeApiKey: (
     principal: Principal,
     keyId: string,
@@ -472,7 +602,7 @@ function makeInstallationAccessService(
         role: membershipRoles.administrator,
       });
     }
-    if (member.role !== membershipRoles.administrator) {
+    if (!isAdministratorRole(member.role)) {
       return yield* Effect.fail(new IdentityConflict({
         message: "The configured local administrator is not an administrator.",
       }));
@@ -501,12 +631,13 @@ function makeInstallationAccessService(
   /**
    * Deactivate one member the issuer no longer admits. Deactivation keeps a
    * last administrator in place; the issuer has already taken that role away,
-   * so demote before deactivating.
+   * so demote an Admin or Owner before deactivating. Callers keep the last
+   * Admin or Owner out of here themselves.
    */
   const deactivateRemovedMember = Effect.fn(
     "InstallationAccessService.deactivateRemovedMember",
   )(function*(member: InstallationMember, now: string) {
-    if (member.role !== membershipRoles.member) {
+    if (isAdministratorRole(member.role)) {
       yield* dependencies.repository.setMemberRole(
         dependencies.installationId,
         member.id,
@@ -519,6 +650,108 @@ function makeInstallationAccessService(
       member.id,
       now,
     );
+  });
+
+  const applyDirectoryGroups = Effect.fn(
+    "InstallationAccessService.applyDirectoryGroups",
+  )(function*(snapshot: DirectoryGroupSnapshot) {
+    const result = yield* dependencies.repository.applyDirectoryGroups(
+      dependencies.installationId,
+      snapshot,
+    );
+    // Group membership will decide project access; never serve a stale grant.
+    if (
+      result.deleted + result.membershipsReplaced + result.renamed > 0
+    ) {
+      clearAuthenticationCaches();
+    }
+    return result;
+  });
+
+  const listDirectoryGroups = Effect.fn(
+    "InstallationAccessService.listDirectoryGroups",
+  )(function*() {
+    return yield* dependencies.repository.listDirectoryGroups(
+      dependencies.installationId,
+    );
+  });
+
+  const listGroupRoles = Effect.fn(
+    "InstallationAccessService.listGroupRoles",
+  )(function*() {
+    return yield* dependencies.repository.listGroupRoles(
+      dependencies.installationId,
+    );
+  });
+
+  const seedGroupRoles = Effect.fn(
+    "InstallationAccessService.seedGroupRoles",
+  )(function*(seed: readonly GroupRoleSeedEntry[]) {
+    const groups = yield* dependencies.repository.listDirectoryGroups(
+      dependencies.installationId,
+    );
+    const roles: {groupId: string; role: MembershipRole}[] = [];
+    const unresolved: string[] = [];
+    for (const entry of seed) {
+      const matches = groups.filter((group) =>
+        entry.selector.startsWith("/")
+          ? group.path === entry.selector
+          : group.name === entry.selector
+      );
+      const match = matches.length === 1 ? matches[0] : undefined;
+      if (match === undefined) {
+        unresolved.push(entry.selector);
+      } else {
+        roles.push({groupId: match.id, role: entry.role});
+      }
+    }
+    // A partial seed would be stored for good, so store all of it or none.
+    if (unresolved.length > 0) {
+      const result: GroupRoleSeedResult = {seeded: false, unresolved};
+      return result;
+    }
+    const seeded = yield* dependencies.repository.seedGroupRoles(
+      dependencies.installationId,
+      roles,
+      dependencies.clock.now().toISOString(),
+    );
+    if (seeded) clearAuthenticationCaches();
+    const result: GroupRoleSeedResult = {seeded, unresolved: []};
+    return result;
+  });
+
+  const projectAccess = Effect.fn(
+    "InstallationAccessService.projectAccess",
+  )(function*(principal: Principal, projectId: string) {
+    if (principal.installationId !== dependencies.installationId) return null;
+    const record = yield* dependencies.repository.findProjectAccess(
+      dependencies.installationId,
+      projectId,
+      principal.id,
+    );
+    return record === null ? null : resolveProjectAccess(principal, record);
+  });
+
+  const ownerProjectAccess = Effect.fn(
+    "InstallationAccessService.ownerProjectAccess",
+  )(function*(ownerPrincipalId: string, projectId: string) {
+    const record = yield* dependencies.repository.findProjectAccess(
+      dependencies.installationId,
+      projectId,
+      ownerPrincipalId,
+    );
+    if (record === null) return null;
+    // Members are deactivated, never deleted, so no member row means a
+    // service principal rather than a former member.
+    return resolveProjectAccess({
+      authorizedByPrincipalId: null,
+      capabilities: [],
+      displayName: ownerPrincipalId,
+      id: ownerPrincipalId,
+      installationId: dependencies.installationId,
+      kind: record.member === null ? principalKinds.service : principalKinds.human,
+      membershipRole: record.member?.role ?? membershipRoles.member,
+    }, record);
   });
 
   const reconcileDirectoryMembers = Effect.fn(
@@ -548,6 +781,18 @@ function makeInstallationAccessService(
       dependencies.installationId,
     );
     const byEmail = new Map(members.map((member) => [member.email, member]));
+    // A deleted or emptied group can take every Admin and Owner role with it,
+    // and then nobody could give a role again. When the directory leaves no
+    // one able to administer, the current Admins and Owners keep their role.
+    const keptAdministrators = new Set(
+      [...desired.values()].some((entry) => isAdministratorRole(entry.role))
+        ? []
+        : members
+          .filter((member) =>
+            member.status === memberStatuses.active && isAdministratorRole(member.role)
+          )
+          .map((member) => member.email),
+    );
     let admitted = 0;
     let reactivated = 0;
     let roleChanged = 0;
@@ -575,7 +820,7 @@ function makeInstallationAccessService(
           now,
         );
         reactivated += 1;
-      } else if (member.role !== entry.role) {
+      } else if (member.role !== entry.role && !keptAdministrators.has(member.email)) {
         yield* dependencies.repository.setMemberRole(
           dependencies.installationId,
           member.id,
@@ -589,7 +834,10 @@ function makeInstallationAccessService(
     }
     let deactivated = 0;
     for (const member of members) {
-      if (member.status !== memberStatuses.active || desired.has(member.email)) {
+      if (
+        member.status !== memberStatuses.active || desired.has(member.email) ||
+        keptAdministrators.has(member.email)
+      ) {
         continue;
       }
       yield* deactivateRemovedMember(member, now);
@@ -616,13 +864,38 @@ function makeInstallationAccessService(
   const applyGroupRole = Effect.fn(
     "InstallationAccessService.applyGroupRole",
   )(function*(
-    policy: GroupRolePolicy,
     identity: ExternalIdentity,
     email: string,
     member: InstallationMember | null,
   ) {
-    const role = groupMembershipRole(policy, identity.groups);
+    const assignments = yield* dependencies.repository.listGroupRoles(
+      dependencies.installationId,
+    );
+    // Before any group holds a role nobody is turned away for good: the
+    // roles are simply not set up yet.
+    if (assignments.length === 0) {
+      return yield* Effect.fail(new IdentityAdmissionDenied({
+        message: "No group has been given a role in the Artifact Server yet.",
+      }));
+    }
+    const role = groupMembershipRole(assignments, identity.groups);
     const now = dependencies.clock.now().toISOString();
+    // The last active Admin or Owner keeps their role, so someone can always
+    // give the roles out again after a group that held them is lost.
+    if (
+      member !== null && isAdministratorRole(member.role) &&
+      (role === null || !isAdministratorRole(role))
+    ) {
+      const members = yield* dependencies.repository.listMembers(
+        dependencies.installationId,
+      );
+      const otherAdministrators = members.filter((candidate) =>
+        candidate.id !== member.id &&
+        candidate.status === memberStatuses.active &&
+        isAdministratorRole(candidate.role)
+      );
+      if (otherAdministrators.length === 0) return member;
+    }
     if (role === null) {
       if (member !== null) {
         yield* deactivateRemovedMember(member, now);
@@ -692,7 +965,6 @@ function makeInstallationAccessService(
     }
     if (groupRolePolicy !== null) {
       member = yield* applyGroupRole(
-        groupRolePolicy,
         identity,
         email,
         member,
@@ -1012,6 +1284,30 @@ function makeInstallationAccessService(
     listMembers,
     loginWithLocalBrowserToken,
     reconcileDirectoryMembers,
+    applyDirectoryGroups,
+    listDirectoryGroups,
+    listGroupRoles,
+    seedGroupRoles,
+    projectAccess,
+    ownerProjectAccess,
+    projectSharing: {
+      list: (projectId: string) =>
+        dependencies.repository.listProjectGroupGrants(dependencies.installationId, projectId),
+      put: (grant: ProjectGroupGrant) =>
+        dependencies.repository.putProjectGroupGrant(dependencies.installationId, grant),
+      remove: (projectId: string, groupId: string) =>
+        dependencies.repository.removeProjectGroupGrant(
+          dependencies.installationId,
+          projectId,
+          groupId,
+        ),
+      setAccessMode: (projectId: string, accessMode: ProjectAccessMode) =>
+        dependencies.repository.setProjectAccessMode(
+          dependencies.installationId,
+          projectId,
+          accessMode,
+        ),
+    },
     revokeApiKey,
     revokeSession,
     rotateApiKey,

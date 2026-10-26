@@ -1,4 +1,16 @@
 import type {
+  DirectoryGroupApplyResult,
+  DirectoryGroupSnapshot,
+  StoredDirectoryGroup,
+} from "./directory-groups.js";
+import type {GroupRoleAssignment} from "./group-role-policy.js";
+import type {MembershipRole} from "./identity.js";
+import type {
+  ProjectAccessMode,
+  ProjectAccessRecord,
+  ProjectGroupGrant,
+} from "./project-access.js";
+import type {
   ApplicationSession,
   InstallationMember,
   LoginAttempt,
@@ -39,6 +51,15 @@ export interface CreateApplicationSessionRecord {
 /** Persistent identity operations required by the Node application composition. */
 export interface IdentityRepository {
   admitMember(command: AdmitMemberRecord): Promise<InstallationMember>;
+  /**
+   * Make the stored directory groups match one complete listing in a single
+   * transaction: create, rename, or delete groups, and replace the membership
+   * of every group whose members were read.
+   */
+  applyDirectoryGroups(
+    installationId: string,
+    snapshot: DirectoryGroupSnapshot,
+  ): Promise<DirectoryGroupApplyResult>;
   bindExternalIdentity(command: BindExternalIdentityRecord): Promise<void>;
   consumeLoginAttempt(
     stateDigest: string,
@@ -79,6 +100,69 @@ export interface IdentityRepository {
   ): Promise<InstallationMember | null>;
   hasMembers(installationId: string): Promise<boolean>;
   listApiKeys(installationId: string): Promise<readonly ManagedApiKey[]>;
+  /** Every stored directory group, ordered by path. */
+  listDirectoryGroups(
+    installationId: string,
+  ): Promise<readonly StoredDirectoryGroup[]>;
+  /**
+   * Read one project's access mode and the grant roles that reach one member
+   * through directory groups, or null when the project does not exist. A
+   * group member matches through the member's external identity for the
+   * member row's provider, or by verified email only when the member has no
+   * identity for that provider.
+   */
+  findProjectAccess(
+    installationId: string,
+    projectId: string,
+    memberId: string,
+  ): Promise<ProjectAccessRecord | null>;
+  /** Every directory group's stored installation role, ordered by path. */
+  listGroupRoles(
+    installationId: string,
+  ): Promise<readonly GroupRoleAssignment[]>;
+  /**
+   * Give one directory group an installation role, or take its role away with
+   * null. IdentityNotFound when the group does not exist.
+   */
+  setGroupRole(
+    installationId: string,
+    groupId: string,
+    role: MembershipRole | null,
+    assignedAt: string,
+    assignedByPrincipalId: string,
+  ): Promise<void>;
+  /**
+   * Store the configured starting roles, only the first time this is called
+   * for an installation, in one transaction. True when it stored them; false
+   * when roles were seeded before, in which case nothing changes.
+   */
+  seedGroupRoles(
+    installationId: string,
+    roles: readonly {readonly groupId: string; readonly role: MembershipRole}[],
+    seededAt: string,
+  ): Promise<boolean>;
+  /** Every group grant on one project, ordered by group id. */
+  listProjectGroupGrants(
+    installationId: string,
+    projectId: string,
+  ): Promise<readonly ProjectGroupGrant[]>;
+  /** Create or replace one group's grant on one project. */
+  putProjectGroupGrant(
+    installationId: string,
+    grant: ProjectGroupGrant,
+  ): Promise<void>;
+  /** Remove one group's grant on one project; false when there was none. */
+  removeProjectGroupGrant(
+    installationId: string,
+    projectId: string,
+    groupId: string,
+  ): Promise<boolean>;
+  /** Set one project's access mode; IdentityNotFound when it does not exist. */
+  setProjectAccessMode(
+    installationId: string,
+    projectId: string,
+    accessMode: ProjectAccessMode,
+  ): Promise<void>;
   listMembers(installationId: string): Promise<readonly InstallationMember[]>;
   revokeApiKey(
     installationId: string,

@@ -135,6 +135,14 @@
         "oidcIssuer": {"type": "string"},
         "oidcScopes": {"type": "string"},
         "oidcGroupsClaim": {"type": "string"},
+        "oidcGroupRoleSeed": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[^,=]*[^,=\\s][^,=]*=(viewer|operator|admin|owner)$"
+          }
+        },
         "oidcMemberGroups": {
           "type": "array",
           "uniqueItems": true,
@@ -146,7 +154,8 @@
           "items": {"type": "string", "pattern": "^[^,]*[^,\\s][^,]*$"}
         },
         "oidcDirectoryProvider": {"enum": ["keycloak"]},
-        "oidcDirectoryClientId": {"type": "string"}
+        "oidcDirectoryClientId": {"type": "string"},
+        "oidcDirectoryKeycloakUrl": {"type": "string"}
       }
     },
     "serviceAccount": {

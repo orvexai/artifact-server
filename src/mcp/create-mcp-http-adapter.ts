@@ -48,10 +48,7 @@ const principalSchema = z.object({
   id: z.string().min(1),
   installationId: z.string().min(1),
   kind: z.enum([principalKinds.human, principalKinds.service]),
-  membershipRole: z.enum([
-    membershipRoles.administrator,
-    membershipRoles.member,
-  ]),
+  membershipRole: z.enum(Object.values(membershipRoles)),
 }).strict();
 
 /** Configuration for the stateless modern MCP boundary and its 2025-era bridge. */

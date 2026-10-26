@@ -1,48 +1,67 @@
 import {describe, expect, test} from "vitest";
 
 import {
-  type GroupRolePolicy,
+  type GroupRoleAssignment,
   groupMembershipRole,
 } from "../../src/core/group-role-policy.js";
+import type {MembershipRole} from "../../src/core/identity.js";
 
-const policy: GroupRolePolicy = {
-  administratorGroups: ["artifact-admins"],
-  memberGroups: ["artifact-users", "engineering"],
-};
+function assignment(
+  path: string,
+  role: MembershipRole,
+  nameUnique = true,
+): GroupRoleAssignment {
+  return {
+    assignedAt: "2026-10-26T00:00:00.000Z",
+    groupId: `id-${path}`,
+    name: path.slice(path.lastIndexOf("/") + 1),
+    nameUnique,
+    path,
+    role,
+  };
+}
 
-describe("issuer group roles", () => {
-  test("an administrator group outranks a member group", () => {
-    expect(groupMembershipRole(policy, ["artifact-admins"]))
+const assignments = [
+  assignment("/Administrators", "owner"),
+  assignment("/Platform Team", "administrator"),
+  assignment("/Developers", "member"),
+  assignment("/temporal/default:read", "viewer"),
+];
+
+describe("stored group roles", () => {
+  test("the strongest role among a person's groups wins", () => {
+    expect(groupMembershipRole(assignments, ["Developers", "Administrators"]))
+      .toBe("owner");
+    expect(groupMembershipRole(assignments, ["Developers", "Platform Team"]))
       .toBe("administrator");
-    expect(groupMembershipRole(policy, ["engineering", "artifact-admins"]))
-      .toBe("administrator");
+    expect(groupMembershipRole(assignments, ["default:read", "Developers"]))
+      .toBe("member");
+    expect(groupMembershipRole(assignments, ["default:read"])).toBe("viewer");
   });
 
-  test("any member group admits a member", () => {
-    expect(groupMembershipRole(policy, ["artifact-users"])).toBe("member");
-    expect(groupMembershipRole(policy, ["sales", "engineering"])).toBe("member");
+  test("a reported group matches by its name or its full path", () => {
+    expect(groupMembershipRole(assignments, ["/temporal/default:read"]))
+      .toBe("viewer");
+    expect(groupMembershipRole(assignments, ["/Administrators"])).toBe("owner");
   });
 
-  test("no admitted group, no reported groups, or a near miss admits no one", () => {
-    expect(groupMembershipRole(policy, [])).toBeNull();
-    expect(groupMembershipRole(policy, null)).toBeNull();
-    expect(groupMembershipRole(policy, ["sales"])).toBeNull();
-    // Names compare exactly: case, paths, and padding are different groups.
-    expect(groupMembershipRole(policy, [
-      "Artifact-Admins",
-      "/artifact-admins",
-      " artifact-users",
+  test("a name another group shares never stands for the group that has the role", () => {
+    // /temporal/default:admin is Owner; /other/default:admin has no role.
+    const shared = [assignment("/temporal/default:admin", "owner", false)];
+    expect(groupMembershipRole(shared, ["default:admin"])).toBeNull();
+    expect(groupMembershipRole(shared, ["/temporal/default:admin"])).toBe("owner");
+  });
+
+  test("no group with a role, no reported groups, or a near miss admits no one", () => {
+    expect(groupMembershipRole(assignments, [])).toBeNull();
+    expect(groupMembershipRole(assignments, null)).toBeNull();
+    expect(groupMembershipRole(assignments, ["sales"])).toBeNull();
+    expect(groupMembershipRole([], ["Administrators"])).toBeNull();
+    // Names compare exactly: case, a wrong path and padding are other groups.
+    expect(groupMembershipRole(assignments, [
+      "administrators",
+      "/Developers/extra",
+      " Developers",
     ])).toBeNull();
-  });
-
-  test("a policy with one empty list grants only the other role", () => {
-    expect(groupMembershipRole(
-      {administratorGroups: [], memberGroups: ["artifact-users"]},
-      ["artifact-users"],
-    )).toBe("member");
-    expect(groupMembershipRole(
-      {administratorGroups: ["artifact-admins"], memberGroups: []},
-      ["artifact-users"],
-    )).toBeNull();
   });
 });

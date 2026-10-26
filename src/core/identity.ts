@@ -8,15 +8,41 @@ export const principalKinds = {
 export type PrincipalKind =
   (typeof principalKinds)[keyof typeof principalKinds];
 
-/** Standalone installation membership roles. */
+/**
+ * Standalone installation membership roles, weakest first. The application
+ * labels them Viewer, Operator, Admin and Owner; the stored values keep the
+ * original names so existing members, sessions and clients are unchanged.
+ */
 export const membershipRoles = {
-  administrator: "administrator",
+  viewer: "viewer",
   member: "member",
+  administrator: "administrator",
+  owner: "owner",
 } as const;
 
 /** One standalone installation membership role. */
 export type MembershipRole =
   (typeof membershipRoles)[keyof typeof membershipRoles];
+
+const membershipRoleRank = {
+  viewer: 1,
+  member: 2,
+  administrator: 3,
+  owner: 4,
+} as const satisfies Readonly<Record<MembershipRole, number>>;
+
+/** True when `role` is at least `minimum`. */
+export function membershipRoleAtLeast(
+  role: MembershipRole,
+  minimum: MembershipRole,
+): boolean {
+  return membershipRoleRank[role] >= membershipRoleRank[minimum];
+}
+
+/** True for the roles that administer the installation: Admin and Owner. */
+export function isAdministratorRole(role: MembershipRole): boolean {
+  return membershipRoleAtLeast(role, membershipRoles.administrator);
+}
 
 /** Explicit capabilities assignable to API keys and service principals. */
 export const principalCapabilities = {
@@ -59,7 +85,7 @@ export function hasCapability(
 /** Determine whether a human principal administers the standalone installation. */
 export function isHumanAdministrator(principal: Principal): boolean {
   return isDirectHumanPrincipal(principal) &&
-    principal.membershipRole === membershipRoles.administrator;
+    isAdministratorRole(principal.membershipRole);
 }
 
 /** Determine whether a principal came from a person's interactive session. */

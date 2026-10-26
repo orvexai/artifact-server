@@ -7,6 +7,7 @@ import {
   type ProjectGitHistoryEstimate,
   type ProjectGitHistorySetting,
 } from "@/api/client";
+import {ProjectSharingSection} from "./settings-project-sharing.tsx";
 import {ErrorPanel, PageHeader, StatePanel, StatusBadge} from "@/components/product";
 import {Button, ButtonLink} from "@/components/ui/button";
 import {
@@ -196,12 +197,17 @@ export function SettingsProjects({
 
 /** Manage one project's identity, lifecycle, and optional Git history. */
 export function SettingsProject({
+  administrator,
   canManage,
   gitHistory,
   onProjectsChanged,
   projectId,
   projects,
-}: ProjectSettingsSharedProps & {readonly projectId: string}) {
+}: ProjectSettingsSharedProps & {
+  /** Installation administrators may change who sees any project. */
+  readonly administrator: boolean;
+  readonly projectId: string;
+}) {
   const project = projects.find((candidate) => candidate.id === projectId) ?? null;
   const [name, setName] = useState(project?.name ?? "");
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -354,6 +360,8 @@ export function SettingsProject({
           <dd>{formatTimestamp(project.createdAt)}</dd>
         </dl>
       </section>
+
+      <ProjectSharingSection administrator={administrator} projectId={project.id} />
 
       {gitHistory.provider === null ? null : (
         <section className="grid gap-5 border p-5 sm:p-6" aria-labelledby="project-git-heading">

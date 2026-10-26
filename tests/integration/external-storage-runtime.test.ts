@@ -1152,22 +1152,22 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         {email: "bob@example.test", role: "administrator", status: "active"},
       ]);
 
-      // The last administrator leaves with the group, then returns restored.
+      // The last administrator is kept when the group empties.
       keycloak.groups.set("artifact-admins", []);
-      expect(await sync()).toMatchObject({report: {deactivated: 1}});
-      keycloak.groups.set("artifact-admins", [keycloakUser("bob")]);
-      expect(await sync()).toMatchObject({report: {reactivated: 1}});
+      expect(await sync()).toMatchObject({report: {deactivated: 0}});
       expect(await members()).toEqual([
         {email: "ada@example.test", role: "member", status: "active"},
         {email: "bob@example.test", role: "administrator", status: "active"},
       ]);
+      keycloak.groups.set("artifact-admins", [keycloakUser("bob")]);
 
+      // A group deleted in Keycloak takes its role with it.
       keycloak.groups.delete("artifact-users");
-      const refused = await sync();
-      expect(refused).toEqual({failure: expect.stringContaining(
-        "The Keycloak group artifact-users does not exist.",
-      )});
-      expect(await members()).toHaveLength(2);
+      expect(await sync()).toMatchObject({report: {deactivated: 1, groups: 1}});
+      expect(await members()).toEqual([
+        {email: "ada@example.test", role: "member", status: "inactive"},
+        {email: "bob@example.test", role: "administrator", status: "active"},
+      ]);
     } finally {
       await keycloak.stop();
       await database.close();

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import type {ProjectRole} from "../core/project-access.js";
 import { Context, DateTime, Effect, Layer, type Redacted } from "effect";
 
 import {
@@ -417,10 +418,14 @@ function makeLinkedArtifactService(
     });
 
   const resolveProject = Effect.fn("LinkedArtifactService.resolveProject")(
-    function*(principal: Principal, projectId: string | null) {
+    function*(
+      principal: Principal,
+      projectId: string | null,
+      minimumRole: ProjectRole = "viewer",
+    ) {
       return projectId === null
-        ? yield* projects.resolveActiveProject({principal, projectId})
-        : yield* projects.getProject({principal, projectId});
+        ? yield* projects.resolveActiveProject({minimumRole, principal, projectId})
+        : yield* projects.getProject({minimumRole, principal, projectId});
     },
   );
 
@@ -515,6 +520,7 @@ function makeLinkedArtifactService(
       const project = yield* resolveProject(
         command.principal,
         command.projectId,
+        "editor",
       );
       const idempotencyKey = yield* parseIdempotencyKey(command.idempotencyKey);
       const canonical = yield* runLadder(command.path);
@@ -704,6 +710,7 @@ function makeLinkedArtifactService(
       const project = yield* resolveProject(
         command.principal,
         command.projectId,
+        "editor",
       );
       const binding = yield* requireBinding(project.id, command.artifactId);
       const observation = yield* runEngine(() =>
@@ -776,6 +783,7 @@ function makeLinkedArtifactService(
       const project = yield* resolveProject(
         command.principal,
         command.projectId,
+        "editor",
       );
       yield* requireBinding(project.id, command.artifactId);
       const idempotencyKey = yield* parseIdempotencyKey(command.idempotencyKey);
