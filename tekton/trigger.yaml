@@ -103,7 +103,7 @@ spec:
           value:
             # Populate extensions.git-branch for the platform binding.
             - key: git-branch
-              expression: "body.ref.replace('refs/tags/', '').replace('/', '-')"
+              expression: "body.ref.matches('^refs/tags/v[0-9]') ? 'main' : 'dev'"
             - key: image-tag
               expression: "'orvex-' + body.ref.replace('refs/tags/', '').replace('/', '-')"
   bindings:
