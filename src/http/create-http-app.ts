@@ -846,8 +846,11 @@ export function createHttpApp(
   app.on(
     ["GET", "HEAD"],
     ["/review", "/review/*"],
-    (context) =>
-      serveWebAsset(context, dependencies, "/review.html", "application-shell"),
+    async (context) => {
+      const publicUrl = await publicReviewRedirect(context, dependencies);
+      if (publicUrl !== null) return context.redirect(publicUrl, 302);
+      return serveWebAsset(context, dependencies, "/review.html", "application-shell");
+    },
   );
 
   app.on(["GET", "HEAD"], "/workbench", (context) => {
@@ -4494,6 +4497,38 @@ function applicationContentSecurityPolicy(contentDomain: string): string {
 }
 
 type WebAssetKind = "application-shell" | "review-frame" | "static-asset";
+
+/**
+ * A Review link opened without a session goes straight to a public-link
+ * artifact's content when it names that artifact's current version (or no
+ * version), the same content /artifacts/:id already serves anonymously.
+ * Anything else, and anyone with a session cookie, gets the Review shell.
+ */
+async function publicReviewRedirect(
+  context: Context<HttpEnvironment>,
+  dependencies: HttpAppDependencies,
+): Promise<string | null> {
+  if (getCookie(context, applicationCookieNames(dependencies).session) !== undefined) {
+    return null;
+  }
+  const artifactId = context.req.query("artifact");
+  if (artifactId === undefined || artifactId.length === 0) return null;
+  const current = await runHttpApplicationEffect(
+    context,
+    dependencies,
+    ContentAccessService.use((contentAccess) =>
+      contentAccess.resolvePublicArtifact(artifactId)
+    ).pipe(Effect.catch(() => Effect.succeed(null))),
+  );
+  if (current === null) return null;
+  const versionId = context.req.query("version");
+  if (versionId !== undefined && versionId !== current.version.id) return null;
+  return versionBrowserUrl(
+    responseApplicationUrl(context, dependencies),
+    dependencies.contentDomain,
+    current.version.contentToken,
+  );
+}
 
 async function serveWebAsset(
   context: Context<HttpEnvironment>,
