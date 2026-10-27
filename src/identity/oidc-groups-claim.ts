@@ -15,18 +15,22 @@ export interface OidcGroupRoles extends GroupRolePolicy {
 const decodeGroupNames = Schema.decodeUnknownEffect(Schema.Array(Schema.String));
 
 /**
- * Read one configured groups claim from claims the issuer vouched for. No
- * configured claim, or a claim the issuer left out, reads as null; a claim in
+ * Read the first configured groups claim present in claims the issuer
+ * vouched for. No configured claim, or every listed claim left out, reads as null; a claim in
  * any shape other than a list of strings is a provider failure.
  */
 export const readOidcGroupsClaim = Effect.fnUntraced(function*(
   claims: JWTPayload,
   claim: string | null,
 ): Effect.fn.Return<readonly string[] | null, IdentityProviderFailure> {
-  if (claim === null || !Object.hasOwn(claims, claim)) return null;
-  return yield* decodeGroupNames(claims[claim]).pipe(
+  if (claim === null) return null;
+  // A comma-separated list names fallbacks: the first claim present is read.
+  const present = claim.split(",").map((name) => name.trim())
+    .find((name) => name.length > 0 && Object.hasOwn(claims, name));
+  if (present === undefined) return null;
+  return yield* decodeGroupNames(claims[present]).pipe(
     Effect.mapError(() => new IdentityProviderFailure({
-      message: `The OIDC ${claim} claim is not a list of group names.`,
+      message: `The OIDC ${present} claim is not a list of group names.`,
     })),
   );
 });
