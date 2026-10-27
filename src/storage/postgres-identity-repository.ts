@@ -452,6 +452,19 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     if (!found) throw new IdentityNotFound({message: "The group does not exist."});
   }
 
+  async isGroupRoleSeedApplied(installationId: string): Promise<boolean> {
+    this.#assertInstallationScope(installationId);
+    const rows = await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.unsafe<object>(
+        `SELECT installation_id FROM directory_group_role_seeds
+         WHERE installation_id = $1`,
+        [installationId],
+      );
+    }));
+    return rows.length > 0;
+  }
+
   async seedGroupRoles(
     installationId: string,
     roles: readonly {readonly groupId: string; readonly role: MembershipRole}[],

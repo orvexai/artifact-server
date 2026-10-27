@@ -44,6 +44,7 @@ import {
   type StoredManagedApiKey,
 } from "../core/installation-identity.js";
 import {
+  configuredGroupRoleAssignments,
   type GroupRoleAssignment,
   type GroupRolePolicy,
   type GroupRoleSeedEntry,
@@ -81,6 +82,9 @@ export interface InstallationIdentityRepository {
     assignedAt: string,
     assignedByPrincipalId: string,
   ) => Effect.Effect<void, IdentityNotFound | IdentityRepositoryFailure>;
+  readonly isGroupRoleSeedApplied: (
+    installationId: string,
+  ) => Effect.Effect<boolean, IdentityRepositoryFailure>;
   readonly seedGroupRoles: (
     installationId: string,
     roles: readonly {readonly groupId: string; readonly role: MembershipRole}[],
@@ -864,15 +868,20 @@ function makeInstallationAccessService(
   const applyGroupRole = Effect.fn(
     "InstallationAccessService.applyGroupRole",
   )(function*(
+    policy: GroupRolePolicy,
     identity: ExternalIdentity,
     email: string,
     member: InstallationMember | null,
   ) {
-    const assignments = yield* dependencies.repository.listGroupRoles(
-      dependencies.installationId,
-    );
-    // Before any group holds a role nobody is turned away for good: the
-    // roles are simply not set up yet.
+    // The configured roles decide until the directory sync has stored them,
+    // and always without a directory sync; after that the stored roles do.
+    const assignments = (yield* dependencies.repository.isGroupRoleSeedApplied(
+        dependencies.installationId,
+      ))
+      ? yield* dependencies.repository.listGroupRoles(dependencies.installationId)
+      : configuredGroupRoleAssignments(policy.seed);
+    // With every stored role removed nobody is turned away for good: the
+    // roles are simply not set up.
     if (assignments.length === 0) {
       return yield* Effect.fail(new IdentityAdmissionDenied({
         message: "No group has been given a role in the Artifact Server yet.",
@@ -965,6 +974,7 @@ function makeInstallationAccessService(
     }
     if (groupRolePolicy !== null) {
       member = yield* applyGroupRole(
+        groupRolePolicy,
         identity,
         email,
         member,

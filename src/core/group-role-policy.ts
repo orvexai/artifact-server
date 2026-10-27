@@ -35,6 +35,25 @@ export interface GroupRoleAssignment {
 }
 
 /**
+ * The configured starting roles as assignments matched exactly against the
+ * group names or paths a sign-in reports. They decide access until the
+ * directory sync has stored them, and always on an installation that runs no
+ * directory sync, so group roles work with the claim alone.
+ */
+export function configuredGroupRoleAssignments(
+  seed: readonly GroupRoleSeedEntry[],
+): readonly GroupRoleAssignment[] {
+  return seed.map(({role, selector}) => ({
+    assignedAt: "",
+    groupId: selector,
+    name: selector,
+    nameUnique: true,
+    path: selector,
+    role,
+  }));
+}
+
+/**
  * Return the strongest role a person's issuer groups grant, or null when no
  * group with a role admits them. A reported group matches a stored group by
  * its full path, or by its name only when no other directory group shares
