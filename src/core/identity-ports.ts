@@ -131,6 +131,8 @@ export interface IdentityRepository {
     assignedAt: string,
     assignedByPrincipalId: string,
   ): Promise<void>;
+  /** True once the configured starting roles have been stored for good. */
+  isGroupRoleSeedApplied(installationId: string): Promise<boolean>;
   /**
    * Store the configured starting roles, only the first time this is called
    * for an installation, in one transaction. True when it stored them; false

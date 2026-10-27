@@ -922,6 +922,10 @@ export function createApplicationLayer(
             assignedBy,
           ),
         ),
+      isGroupRoleSeedApplied: (installationId) => identityEffect(
+        "isGroupRoleSeedApplied",
+        () => identityRepository.isGroupRoleSeedApplied(installationId),
+      ),
       seedGroupRoles: (installationId, roles, seededAt) => identityEffect(
         "seedGroupRoles",
         () => identityRepository.seedGroupRoles(installationId, roles, seededAt),

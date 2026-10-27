@@ -340,8 +340,8 @@ export function apiHeaders(
 
 /**
  * Give directory groups installation roles in a running test installation, as
- * a completed directory sync and starting-role seed would. Each group is
- * stored at the path "/" + its name.
+ * a completed directory sync and starting-role seed would, so the stored roles
+ * decide from then on. Each group is stored at the path "/" + its name.
  */
 export async function storeTestGroupRoles(
   server: RunningTestServer,
@@ -354,6 +354,10 @@ export async function storeTestGroupRoles(
   );
   const now = new Date().toISOString();
   try {
+    database.prepare(`
+      INSERT INTO directory_group_role_seeds (installation_id, seeded_at)
+      VALUES (?, ?) ON CONFLICT (installation_id) DO NOTHING
+    `).run(installationId, now);
     for (const {name, role} of roles) {
       database.prepare(`
         INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
