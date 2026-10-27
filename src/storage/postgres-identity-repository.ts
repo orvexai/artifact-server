@@ -4,10 +4,22 @@ import {isSqlError} from "effect/unstable/sql/SqlError";
 import {z} from "zod";
 
 import {
+  type DirectoryGroupApplyResult,
+  type DirectoryGroupSnapshot,
+  parkedDirectoryGroupPath,
+  planDirectoryGroupChanges,
+  type StoredDirectoryGroup,
+} from "../core/directory-groups.js";
+import {
   IdentityConflict,
   IdentityNotFound,
   LoginAttemptRejected,
 } from "../core/errors.js";
+import {
+  type ProjectAccessMode,
+  type ProjectAccessRecord,
+  type ProjectGroupGrant,
+} from "../core/project-access.js";
 import type {
   AdmitMemberRecord,
   BindExternalIdentityRecord,
@@ -23,16 +35,27 @@ import {
   type StoredManagedApiKey,
 } from "../core/installation-identity.js";
 import {
+  isAdministratorRole,
+  type MembershipRole,
   membershipRoles,
   principalCapabilities,
   principalKinds,
 } from "../core/identity.js";
+import {
+  type GroupRoleAssignment,
+  groupRoleSeedPrincipalId,
+} from "../core/group-role-policy.js";
 import type {PostgresDatabase} from "./postgres-database.js";
 
-const membershipRoleSchema = z.enum([
-  membershipRoles.administrator,
-  membershipRoles.member,
-]);
+const membershipRoleSchema = z.enum(Object.values(membershipRoles));
+const groupRoleRowSchema = z.object({
+  assignedAt: z.string(),
+  groupId: z.string(),
+  name: z.string(),
+  nameUnique: z.coerce.boolean(),
+  path: z.string(),
+  role: membershipRoleSchema,
+});
 const memberStatusSchema = z.enum([
   memberStatuses.active,
   memberStatuses.inactive,
@@ -102,6 +125,36 @@ const loginAttemptRowSchema = z.object({
   stateDigest: z.string(),
 });
 const countRowSchema = z.object({count: z.coerce.number().int().nonnegative()});
+const directoryGroupRowSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  path: z.string(),
+});
+const projectAccessModeSchema = z.enum(["installation", "restricted"]);
+const projectGrantRoleSchema = z.enum(["viewer", "editor", "manager"]);
+const projectAccessRowSchema = z.object({
+  access_mode: projectAccessModeSchema,
+  created_by_member_id: z.string().nullable(),
+});
+const projectGroupGrantRowSchema = z.object({
+  grantedAt: z.string(),
+  grantedByPrincipalId: z.string(),
+  groupId: z.string(),
+  projectId: z.string(),
+  role: projectGrantRoleSchema,
+});
+const accessMemberRowSchema = z.object({
+  email: z.string(),
+  role: membershipRoleSchema,
+  status: z.enum(["active", "inactive"]),
+});
+const storedDirectoryGroupRowSchema = z.object({
+  id: z.string(),
+  memberCount: z.coerce.number().int().nonnegative(),
+  name: z.string(),
+  path: z.string(),
+  syncedAt: z.string(),
+});
 
 /** Installation-scoped Postgres persistence for membership and credentials. */
 export class PostgresIdentityRepository implements BootstrapManagedApiKeyRepository {
@@ -125,6 +178,340 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
       );
       return z.object({present: z.boolean()}).parse(rows[0]).present;
     }));
+  }
+
+  async applyDirectoryGroups(
+    installationId: string,
+    snapshot: DirectoryGroupSnapshot,
+  ): Promise<DirectoryGroupApplyResult> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:directory-groups:${installationId}`}, 0)
+        )`;
+        const rows = yield* sql.unsafe<object>(
+          "SELECT id, name, path FROM directory_groups WHERE installation_id = $1",
+          [installationId],
+        );
+        const stored = new Map(
+          z.array(directoryGroupRowSchema).parse(rows).map((row) => [row.id, row]),
+        );
+        const plan = planDirectoryGroupChanges(stored, snapshot);
+        for (const id of plan.deletedIds) {
+          yield* sql`DELETE FROM directory_group_members
+            WHERE installation_id = ${installationId} AND group_id = ${id}`;
+          yield* sql`DELETE FROM directory_groups
+            WHERE installation_id = ${installationId} AND id = ${id}`;
+        }
+        // Park moved groups first, so two groups swapping paths never collide.
+        for (const id of plan.movedIds) {
+          yield* sql`UPDATE directory_groups SET path = ${parkedDirectoryGroupPath(id)}
+            WHERE installation_id = ${installationId} AND id = ${id}`;
+        }
+        for (const group of snapshot.groups) {
+          // synced_at records when the members were last read, so a group
+          // whose members could not be read keeps its old time.
+          yield* sql`INSERT INTO directory_groups (
+            installation_id, id, name, path, synced_at
+          ) VALUES (
+            ${installationId}, ${group.id}, ${group.name}, ${group.path},
+            ${snapshot.syncedAt}
+          ) ON CONFLICT (installation_id, id) DO UPDATE SET
+            name = EXCLUDED.name, path = EXCLUDED.path,
+            synced_at = CASE WHEN ${group.members === null}
+              THEN directory_groups.synced_at ELSE EXCLUDED.synced_at END`;
+          if (group.members === null) continue;
+          yield* sql`DELETE FROM directory_group_members
+            WHERE installation_id = ${installationId} AND group_id = ${group.id}`;
+          for (const member of group.members) {
+            yield* sql`INSERT INTO directory_group_members (
+              installation_id, group_id, subject, email, provider
+            ) VALUES (
+              ${installationId}, ${group.id}, ${member.subject}, ${member.email},
+              ${snapshot.provider}
+            ) ON CONFLICT DO NOTHING`;
+          }
+        }
+        return plan.result;
+      }));
+    }));
+  }
+
+  async listDirectoryGroups(
+    installationId: string,
+  ): Promise<readonly StoredDirectoryGroup[]> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(
+        `SELECT g.id, g.name, g.path, g.synced_at AS "syncedAt",
+          COUNT(m.subject) AS "memberCount"
+         FROM directory_groups g
+         LEFT JOIN directory_group_members m
+           ON m.installation_id = g.installation_id AND m.group_id = g.id
+         WHERE g.installation_id = $1
+         GROUP BY g.installation_id, g.id
+         ORDER BY g.path ASC`,
+        [installationId],
+      );
+      return z.array(storedDirectoryGroupRowSchema).parse(rows);
+    }));
+  }
+
+  async findProjectAccess(
+    installationId: string,
+    projectId: string,
+    memberId: string,
+  ): Promise<ProjectAccessRecord | null> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const projects = yield* sql.unsafe<object>(
+        "SELECT access_mode, created_by_member_id FROM projects WHERE installation_id = $1 AND id = $2",
+        [installationId, projectId],
+      );
+      if (projects.length === 0) return null;
+      const project = projectAccessRowSchema.parse(projects[0]);
+      const accessMode = project.access_mode;
+      const isCreator = project.created_by_member_id === memberId;
+      const members = yield* sql.unsafe<object>(
+        `SELECT email, role, status FROM installation_members
+         WHERE installation_id = $1 AND id = $2`,
+        [installationId, memberId],
+      );
+      const member = members.length === 0
+        ? null
+        : accessMemberRowSchema.parse(members[0]);
+      if (accessMode === "installation" || member === null) {
+        return {
+          accessMode,
+          grantRoles: [],
+          isCreator,
+          member: member === null ? null : {role: member.role, status: member.status},
+        };
+      }
+      // A group member is this member through its external identity for the
+      // row's provider, or by verified email only when the member has none.
+      // A row written before providers were recorded matches nobody until
+      // the next sync rewrites it.
+      const grants = yield* sql.unsafe<object>(
+        `SELECT DISTINCT g.role FROM project_group_grants g
+         JOIN directory_group_members d
+           ON d.installation_id = g.installation_id AND d.group_id = g.group_id
+         WHERE g.installation_id = $1 AND g.project_id = $2
+           AND d.provider IS NOT NULL AND (
+           EXISTS (
+             SELECT 1 FROM external_identities e
+             WHERE e.installation_id = d.installation_id AND e.member_id = $3
+               AND e.provider = d.provider AND e.subject = d.subject
+           ) OR (
+             d.email = $4 AND NOT EXISTS (
+               SELECT 1 FROM external_identities e
+               WHERE e.installation_id = d.installation_id AND e.member_id = $3
+                 AND e.provider = d.provider
+             )
+           )
+         )`,
+        [installationId, projectId, memberId, member.email],
+      );
+      return {
+        accessMode,
+        grantRoles: z.array(z.object({role: projectGrantRoleSchema})).parse(grants)
+          .map((row) => row.role),
+        isCreator,
+        member: {role: member.role, status: member.status},
+      };
+    }));
+  }
+
+  async listProjectGroupGrants(
+    installationId: string,
+    projectId: string,
+  ): Promise<readonly ProjectGroupGrant[]> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(
+        `SELECT project_id AS "projectId", group_id AS "groupId", role,
+          granted_at AS "grantedAt", granted_by_principal_id AS "grantedByPrincipalId"
+         FROM project_group_grants
+         WHERE installation_id = $1 AND project_id = $2
+         ORDER BY group_id ASC`,
+        [installationId, projectId],
+      );
+      return z.array(projectGroupGrantRowSchema).parse(rows);
+    }));
+  }
+
+  async putProjectGroupGrant(
+    installationId: string,
+    grant: ProjectGroupGrant,
+  ): Promise<void> {
+    this.#assertInstallationScope(installationId);
+    try {
+      await this.#database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        yield* sql`INSERT INTO project_group_grants (
+          installation_id, project_id, group_id, role, granted_at,
+          granted_by_principal_id
+        ) VALUES (
+          ${installationId}, ${grant.projectId}, ${grant.groupId}, ${grant.role},
+          ${grant.grantedAt}, ${grant.grantedByPrincipalId}
+        ) ON CONFLICT (installation_id, project_id, group_id) DO UPDATE SET
+          role = EXCLUDED.role, granted_at = EXCLUDED.granted_at,
+          granted_by_principal_id = EXCLUDED.granted_by_principal_id`;
+      }));
+    } catch (cause) {
+      if (isConstraintFailure(cause)) {
+        throw new IdentityNotFound({message: "The project or group does not exist."});
+      }
+      throw cause;
+    }
+  }
+
+  async removeProjectGroupGrant(
+    installationId: string,
+    projectId: string,
+    groupId: string,
+  ): Promise<boolean> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(
+        `DELETE FROM project_group_grants
+         WHERE installation_id = $1 AND project_id = $2 AND group_id = $3
+         RETURNING group_id`,
+        [installationId, projectId, groupId],
+      );
+      return rows.length > 0;
+    }));
+  }
+
+  async listGroupRoles(
+    installationId: string,
+  ): Promise<readonly GroupRoleAssignment[]> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(
+        `SELECT r.group_id AS "groupId", g.name, g.path, r.role,
+          r.assigned_at AS "assignedAt",
+          (SELECT COUNT(*) FROM directory_groups same
+            WHERE same.installation_id = g.installation_id AND same.name = g.name
+          ) = 1 AS "nameUnique"
+         FROM directory_group_roles r
+         JOIN directory_groups g
+           ON g.installation_id = r.installation_id AND g.id = r.group_id
+         WHERE r.installation_id = $1
+         ORDER BY g.path ASC`,
+        [installationId],
+      );
+      return z.array(groupRoleRowSchema).parse(rows);
+    }));
+  }
+
+  async setGroupRole(
+    installationId: string,
+    groupId: string,
+    role: MembershipRole | null,
+    assignedAt: string,
+    assignedByPrincipalId: string,
+  ): Promise<void> {
+    this.#assertInstallationScope(installationId);
+    const found = await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        const groups = yield* sql.unsafe<object>(
+          `SELECT id FROM directory_groups
+           WHERE installation_id = $1 AND id = $2 FOR SHARE`,
+          [installationId, groupId],
+        );
+        if (groups.length === 0) return false;
+        if (role === null) {
+          yield* sql.unsafe(
+            `DELETE FROM directory_group_roles
+             WHERE installation_id = $1 AND group_id = $2`,
+            [installationId, groupId],
+          );
+          return true;
+        }
+        yield* sql.unsafe(
+          `INSERT INTO directory_group_roles (
+             installation_id, group_id, role, assigned_at, assigned_by_principal_id
+           ) VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (installation_id, group_id) DO UPDATE SET
+             role = EXCLUDED.role, assigned_at = EXCLUDED.assigned_at,
+             assigned_by_principal_id = EXCLUDED.assigned_by_principal_id`,
+          [installationId, groupId, role, assignedAt, assignedByPrincipalId],
+        );
+        return true;
+      }));
+    }));
+    if (!found) throw new IdentityNotFound({message: "The group does not exist."});
+  }
+
+  async isGroupRoleSeedApplied(installationId: string): Promise<boolean> {
+    this.#assertInstallationScope(installationId);
+    const rows = await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.unsafe<object>(
+        `SELECT installation_id FROM directory_group_role_seeds
+         WHERE installation_id = $1`,
+        [installationId],
+      );
+    }));
+    return rows.length > 0;
+  }
+
+  async seedGroupRoles(
+    installationId: string,
+    roles: readonly {readonly groupId: string; readonly role: MembershipRole}[],
+    seededAt: string,
+  ): Promise<boolean> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        const seeded = yield* sql.unsafe<object>(
+          `INSERT INTO directory_group_role_seeds (installation_id, seeded_at)
+           VALUES ($1, $2) ON CONFLICT (installation_id) DO NOTHING
+           RETURNING installation_id`,
+          [installationId, seededAt],
+        );
+        if (seeded.length === 0) return false;
+        for (const {groupId, role} of roles) {
+          yield* sql.unsafe(
+            `INSERT INTO directory_group_roles (
+               installation_id, group_id, role, assigned_at, assigned_by_principal_id
+             ) VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (installation_id, group_id) DO NOTHING`,
+            [installationId, groupId, role, seededAt, groupRoleSeedPrincipalId],
+          );
+        }
+        return true;
+      }));
+    }));
+  }
+
+  async setProjectAccessMode(
+    installationId: string,
+    projectId: string,
+    accessMode: ProjectAccessMode,
+  ): Promise<void> {
+    this.#assertInstallationScope(installationId);
+    const updated = await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.unsafe<object>(
+        `UPDATE projects SET access_mode = $3
+         WHERE installation_id = $1 AND id = $2 RETURNING id`,
+        [installationId, projectId, accessMode],
+      );
+    }));
+    if (updated.length === 0) {
+      throw new IdentityNotFound({message: "The project does not exist."});
+    }
   }
 
   async admitMember(command: AdmitMemberRecord): Promise<InstallationMember> {
@@ -262,14 +649,15 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         }
         if (
           existing.status === memberStatuses.active &&
-          existing.role === membershipRoles.administrator
+          isAdministratorRole(existing.role)
         ) {
           const rows = yield* sql.unsafe<object>(
             `SELECT COUNT(*) AS count FROM installation_members
-             WHERE installation_id = $1 AND role = $2 AND status = $3`,
+             WHERE installation_id = $1 AND role IN ($2, $3) AND status = $4`,
             [
               installationId,
               membershipRoles.administrator,
+              membershipRoles.owner,
               memberStatuses.active,
             ],
           );

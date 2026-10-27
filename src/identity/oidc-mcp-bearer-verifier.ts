@@ -6,6 +6,7 @@ import {
   type JWTHeaderParameters,
   type JWTPayload,
 } from "jose";
+import {oidcIdentityProviderName} from "../core/project-access.js";
 import {Effect, Predicate, Redacted, Schema} from "effect";
 
 import type {
@@ -100,7 +101,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
     this.#issuer = requireOidcIssuer(config.issuer, "The OIDC issuer");
     // Browser login records the same provider name, so one person keeps one
     // membership whether they arrive through the interface or through MCP.
-    this.#provider = `oidc:${this.#issuer}`;
+    this.#provider = oidcIdentityProviderName(this.#issuer);
     this.#userInfoEndpoint = config.userInfoEndpoint ?? null;
     this.#jwks = createRemoteJWKSet(new URL(config.jwksUri), {
       cacheMaxAge: jwksCacheMilliseconds,

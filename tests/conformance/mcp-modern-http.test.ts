@@ -183,7 +183,12 @@ describe("modern MCP HTTP", () => {
     expect(tools.map((tool) => tool.name)).toEqual([
       "artifact_capabilities",
       "project_list",
+      "group_list",
       "project_create",
+      "project_sharing",
+      "project_share",
+      "project_unshare",
+      "project_set_access",
       "project_rename",
       "project_archive",
       "project_unarchive",
@@ -703,6 +708,15 @@ describe("modern MCP HTTP", () => {
     });
     expect(missingArtifact.isError).toBe(true);
     expect(missingArtifact.content[0]?.text).toContain("ARTIFACT_NOT_FOUND");
+  });
+
+  test("MCP lists copied directory groups, none before a directory sync", async () => {
+    const listed = await callTool(server, installation.apiToken, {
+      arguments: {},
+      name: "group_list",
+    });
+    expect(listed.isError).not.toBe(true);
+    expect(listed.structuredContent).toEqual({groups: []});
   });
 
   test("MCP manages projects and refuses ambiguous artifact scope", async () => {

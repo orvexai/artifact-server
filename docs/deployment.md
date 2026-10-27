@@ -142,8 +142,9 @@ so access is managed where people already are:
 
 | Setting | Helm value | Meaning |
 | --- | --- | --- |
-| `ARTIFACT_SERVER_OIDC_MEMBER_GROUPS` | `identity.oidcMemberGroups` | Groups whose people are admitted as members. |
-| `ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS` | `identity.oidcAdministratorGroups` | Groups whose people are admitted as administrators. |
+| `ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED` | `identity.oidcGroupRoleSeed` | Starting roles, as `Group=role` (role `viewer`, `operator`, `admin` or `owner`; a group by exact name, or full path starting with `/`). |
+| `ARTIFACT_SERVER_OIDC_MEMBER_GROUPS` | `identity.oidcMemberGroups` | Older form: groups seeded as operators. |
+| `ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS` | `identity.oidcAdministratorGroups` | Older form: groups seeded as admins. |
 | `ARTIFACT_SERVER_OIDC_GROUPS_CLAIM` | `identity.oidcGroupsClaim` | The claim that lists a person's groups. Defaults to `groups`. |
 
 The environment variables take comma-separated lists; the Helm values take YAML
@@ -187,9 +188,23 @@ In Keycloak:
 3. Configure the server:
 
    ```sh
-   ARTIFACT_SERVER_OIDC_MEMBER_GROUPS=artifact-users
-   ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS=artifact-admins
+   ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED=artifact-admins=owner,artifact-users=operator
    ```
+
+Installation roles belong to directory groups, never to one person, and a
+group has no role until it is given one. A person gets the strongest role
+among their groups: Viewer (sign in and read), Operator (work in projects),
+Admin (manage the installation) or Owner (also manage which group holds which
+role).
+
+Without the directory sync, the configured roles decide at every sign-in,
+matched exactly against the names in the groups claim. With the directory
+sync, the first sync stores them as each group's starting role; from then on
+the roles stored per group decide, so changes made in the application are
+never undone by the configuration, and a group deleted in the issuer takes its
+role with it. Until that first sync, the configured roles decide as they would
+without one. The last active Admin or Owner keeps their role when their group
+loses it, so someone can always give the roles out again.
 
 `artifactserver config check` reports the active policy under
 `configuration.oidcGroupRoles`.
@@ -228,11 +243,23 @@ subject at their first sign-in, by verified email, exactly as other members do.
 | `ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER` | `identity.oidcDirectoryProvider` | `keycloak`, the only provider. The chart defaults it. |
 | `ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID` | `identity.oidcDirectoryClientId` | The confidential client the sync authenticates as. |
 | `ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET` or `_FILE` | `secret.keys.oidcDirectoryClientSecret` | Its client secret. |
+| `ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL` | `identity.oidcDirectoryKeycloakUrl` | Optional. The Keycloak base URL the sync calls instead of the issuer host, such as `http://keycloak-service.keycloak.svc:8080`. Plain HTTP is accepted only for a Kubernetes `.svc` host, so the client secret travels unencrypted inside the cluster. Include any Keycloak path prefix such as `/auth`. |
 
 These settings require the group lists above, and the issuer must have the form
 `<base>/realms/<realm>`; the admin API is then `<base>/admin/realms/<realm>`.
 The sync obtains a token with the client-credentials grant at the issuer's
 discovered token endpoint.
+
+After the members are reconciled, the same pass copies every Keycloak group,
+subgroups included, with its direct members, keyed by the Keycloak group id.
+Groups are shown by their full path, such as `/Engineering/Platform`. A rename
+keeps the group; a group deleted in Keycloak is deleted here. If the group
+listing fails, nothing changes; if one group's members cannot be read, that
+group keeps its previous members, the pass continues, and the command exits
+non-zero so the Job shows the failure. Disabled Keycloak users are not group
+members. Copying a group grants
+no access by itself. The client needs no permission beyond `view-users` and
+`query-groups`. The sync prints a second JSON line, `{"groupSync": {...}}`.
 
 In Keycloak, create a separate client for the sync:
 

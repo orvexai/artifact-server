@@ -148,17 +148,18 @@ outage therefore waits on the first new pod while the existing pods keep
 serving, and continues by itself once discovery succeeds; the new pods retry
 discovery in the background and need no restart.
 
-Access can also follow the issuer's groups instead of manual admission. Set
-`identity.oidcMemberGroups`, `identity.oidcAdministratorGroups`, or both to
-lists of exact group names, and `identity.oidcGroupsClaim` when the claim is not
-called `groups`:
+Access can also follow the issuer's groups instead of manual admission.
+Installation roles (viewer, operator, admin, owner) belong to directory groups
+and are changed in the application. Set `identity.oidcGroupRoleSeed` to give
+groups their starting roles once, and `identity.oidcGroupsClaim` when the claim
+is not called `groups`. The older `identity.oidcMemberGroups` and
+`identity.oidcAdministratorGroups` lists still work as a seed:
 
 ```yaml
 identity:
   oidcClientId: artifact-server
   oidcIssuer: https://idp.example.com/realms/main
-  oidcMemberGroups: [artifact-users]
-  oidcAdministratorGroups: [artifact-admins]
+  oidcGroupRoleSeed: ["artifact-admins=owner", "artifact-users=operator"]
 ```
 
 Every sign-in and every MCP token then admits the person with the role their

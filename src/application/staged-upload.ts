@@ -240,6 +240,7 @@ function makeStagedUploadService(
   ): Effect.fn.Return<StagedUpload, StagedUploadFailure> {
       yield* authorization.requirePublicationPreparation(command.principal);
       const project = yield* projects.resolveActiveProject({
+        minimumRole: "editor",
         principal: command.principal,
         projectId: command.projectId ?? null,
       });
@@ -272,6 +273,7 @@ function makeStagedUploadService(
   ): Effect.fn.Return<StagedUpload, StagedUploadFailure> {
       yield* authorization.requirePublicationPreparation(command.principal);
       const project = yield* projects.resolveActiveProject({
+        minimumRole: "editor",
         principal: command.principal,
         projectId: command.projectId ?? null,
       });
@@ -406,10 +408,12 @@ function makeStagedUploadService(
       // genuinely new publication into the archived project.
       const project = command.projectId === undefined || command.projectId === null
         ? yield* projects.resolveActiveProject({
+          minimumRole: "editor",
           principal: command.principal,
           projectId: null,
         })
         : yield* projects.getProject({
+          minimumRole: "editor",
           principal: command.principal,
           projectId: command.projectId,
         });

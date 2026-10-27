@@ -899,6 +899,57 @@ export function createApplicationLayer(
         "listMembers",
         () => identityRepository.listMembers(installationId),
       ),
+      applyDirectoryGroups: (installationId, snapshot) => identityEffect(
+        "applyDirectoryGroups",
+        () => identityRepository.applyDirectoryGroups(installationId, snapshot),
+      ),
+      listDirectoryGroups: (installationId) => identityEffect(
+        "listDirectoryGroups",
+        () => identityRepository.listDirectoryGroups(installationId),
+      ),
+      listGroupRoles: (installationId) => identityEffect(
+        "listGroupRoles",
+        () => identityRepository.listGroupRoles(installationId),
+      ),
+      setGroupRole: (installationId, groupId, role, assignedAt, assignedBy) =>
+        identityEffectWithNotFound(
+          "setGroupRole",
+          () => identityRepository.setGroupRole(
+            installationId,
+            groupId,
+            role,
+            assignedAt,
+            assignedBy,
+          ),
+        ),
+      isGroupRoleSeedApplied: (installationId) => identityEffect(
+        "isGroupRoleSeedApplied",
+        () => identityRepository.isGroupRoleSeedApplied(installationId),
+      ),
+      seedGroupRoles: (installationId, roles, seededAt) => identityEffect(
+        "seedGroupRoles",
+        () => identityRepository.seedGroupRoles(installationId, roles, seededAt),
+      ),
+      findProjectAccess: (installationId, projectId, memberId) => identityEffect(
+        "findProjectAccess",
+        () => identityRepository.findProjectAccess(installationId, projectId, memberId),
+      ),
+      listProjectGroupGrants: (installationId, projectId) => identityEffect(
+        "listProjectGroupGrants",
+        () => identityRepository.listProjectGroupGrants(installationId, projectId),
+      ),
+      putProjectGroupGrant: (installationId, grant) => identityEffect(
+        "putProjectGroupGrant",
+        () => identityRepository.putProjectGroupGrant(installationId, grant),
+      ),
+      removeProjectGroupGrant: (installationId, projectId, groupId) => identityEffect(
+        "removeProjectGroupGrant",
+        () => identityRepository.removeProjectGroupGrant(installationId, projectId, groupId),
+      ),
+      setProjectAccessMode: (installationId, projectId, accessMode) => identityEffect(
+        "setProjectAccessMode",
+        () => identityRepository.setProjectAccessMode(installationId, projectId, accessMode),
+      ),
       revokeApiKey: (installationId, keyId, revokedAt) => identityEffectWithNotFound(
         "revokeApiKey",
         () => identityRepository.revokeApiKey(installationId, keyId, revokedAt),
@@ -1074,7 +1125,7 @@ export function createApplicationLayer(
     installationId: adapters.installationId,
   });
   const projectLayer = ProjectManagementService.layer(projectDependencies).pipe(
-    Layer.provideMerge(authorizationLayer),
+    Layer.provideMerge(Layer.mergeAll(authorizationLayer, identityLayer)),
   );
   const projectGitHistoryLayer = ProjectGitHistoryService.layer(
     projectGitHistoryDependencies,

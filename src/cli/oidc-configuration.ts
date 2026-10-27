@@ -1,12 +1,14 @@
 import {type Redacted, Schema} from "effect";
 import {z} from "zod";
 
+import type {GroupRoleSeedEntry} from "../core/group-role-policy.js";
+import {membershipRoles, type MembershipRole} from "../core/identity.js";
 import {
   defaultOidcGroupsClaim,
   type OidcGroupRoles,
 } from "../identity/oidc-groups-claim.js";
 import {defaultOidcScopes} from "../identity/oidc-identity-provider.js";
-import {keycloakAdminBaseUrl} from "../identity/keycloak-directory.js";
+import {keycloakAdminBaseUrl, keycloakInternalEndpoints} from "../identity/keycloak-directory.js";
 import {
   isLocalOidcIssuer,
   normalizeOidcEndpoint,
@@ -25,7 +27,9 @@ const oidcEnvironmentSchema = z.object({
   ARTIFACT_SERVER_OIDC_API_JWKS_URI: z.url().optional(),
   ARTIFACT_SERVER_OIDC_CLIENT_ID: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID: z.string().min(1).optional(),
+  ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL: z.url().optional(),
   ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: z.string().min(1).optional(),
+  ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_GROUPS_CLAIM: z.string().trim().min(1).optional(),
   ARTIFACT_SERVER_OIDC_ISSUER: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: z.string().min(1).optional(),
@@ -35,11 +39,13 @@ const oidcEnvironmentSchema = z.object({
 
 /** A directory that lists group members before they ever sign in. */
 export interface OidcDirectoryConfiguration {
-  /** Admin REST base derived from the realm issuer. */
+  /** Admin REST base, from the realm issuer or the internal Keycloak URL. */
   readonly adminBaseUrl: string;
   readonly clientId: string;
   readonly clientSecret: Redacted.Redacted;
   readonly provider: "keycloak";
+  /** Set with an internal Keycloak URL; otherwise discovery names it. */
+  readonly tokenEndpoint?: string;
 }
 
 /** Complete optional generic OIDC browser-login configuration. */
@@ -82,6 +88,7 @@ export async function loadOidcConfiguration(
     parsed.ARTIFACT_SERVER_OIDC_ISSUER === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_SCOPES === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_GROUPS_CLAIM === undefined &&
+    parsed.ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_MEMBER_GROUPS === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_API_RESOURCE === undefined &&
@@ -165,30 +172,46 @@ function hasBrowserLoginVariable(
   );
 }
 
-/** Read the opt-in group roles; with no group list set, admission stays manual. */
+/**
+ * Read the opt-in group roles; with no seed set, admission stays manual. The
+ * seed names each group's starting role. It fills only roles that were never
+ * set, so roles changed in the application stay as they were. The older
+ * member and administrator group lists still work as a seed.
+ */
 function oidcGroupRoles(
   parsed: z.infer<typeof oidcEnvironmentSchema>,
 ): OidcGroupRoles | null {
-  const memberGroups = groupNames(
-    "ARTIFACT_SERVER_OIDC_MEMBER_GROUPS",
-    parsed.ARTIFACT_SERVER_OIDC_MEMBER_GROUPS,
-  );
-  const administratorGroups = groupNames(
-    "ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS",
-    parsed.ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS,
-  );
-  if (memberGroups.length === 0 && administratorGroups.length === 0) {
+  const seed = groupRoleSeed(parsed.ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED);
+  const legacy = [
+    ...groupNames(
+      "ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS",
+      parsed.ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS,
+    ).map((selector) => ({role: membershipRoles.administrator, selector})),
+    ...groupNames(
+      "ARTIFACT_SERVER_OIDC_MEMBER_GROUPS",
+      parsed.ARTIFACT_SERVER_OIDC_MEMBER_GROUPS,
+    ).map((selector) => ({role: membershipRoles.member, selector})),
+  ];
+  if (seed.length > 0 && legacy.length > 0) {
+    throw new Error(
+      "Set ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED or the older ARTIFACT_SERVER_OIDC_MEMBER_GROUPS and ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS, not both.",
+    );
+  }
+  if (seed.length === 0 && legacy.length === 0) {
     if (parsed.ARTIFACT_SERVER_OIDC_GROUPS_CLAIM !== undefined) {
       throw new Error(
-        "ARTIFACT_SERVER_OIDC_GROUPS_CLAIM requires ARTIFACT_SERVER_OIDC_MEMBER_GROUPS or ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS.",
+        "ARTIFACT_SERVER_OIDC_GROUPS_CLAIM requires ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED.",
       );
     }
     return null;
   }
+  // A group named in both older lists keeps its stronger role, as before.
+  const entries = seed.length > 0 ? seed : legacy.filter((entry, index) =>
+    legacy.findIndex((other) => other.selector === entry.selector) === index
+  );
   return {
-    administratorGroups,
     claim: parsed.ARTIFACT_SERVER_OIDC_GROUPS_CLAIM ?? defaultOidcGroupsClaim,
-    memberGroups,
+    seed: entries,
   };
 }
 
@@ -206,7 +229,7 @@ function oidcDirectory(
   }
   if (groupRoles === null) {
     throw new Error(
-      "The ARTIFACT_SERVER_OIDC_DIRECTORY_* settings require ARTIFACT_SERVER_OIDC_MEMBER_GROUPS or ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS.",
+      "The ARTIFACT_SERVER_OIDC_DIRECTORY_* settings require ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED.",
     );
   }
   if (provider === undefined || clientId === undefined || clientSecret === null) {
@@ -225,7 +248,57 @@ function oidcDirectory(
       "Keycloak directory sync requires ARTIFACT_SERVER_OIDC_ISSUER in the form <base>/realms/<realm>.",
     );
   }
-  return {adminBaseUrl, clientId, clientSecret, provider};
+  const keycloakUrl = parsed.ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL;
+  if (keycloakUrl === undefined) {
+    return {adminBaseUrl, clientId, clientSecret, provider};
+  }
+  const internal = keycloakInternalEndpoints(issuer, keycloakUrl);
+  if (internal === null) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL must be a Keycloak base URL such as http://keycloak-service.keycloak.svc:8080.",
+    );
+  }
+  return {...internal, clientId, clientSecret, provider};
+}
+
+/** The words a seed entry may use for a role, and the role each stores. */
+const seedRoles = new Map<string, MembershipRole>([
+  ["admin", membershipRoles.administrator],
+  ["administrator", membershipRoles.administrator],
+  ["member", membershipRoles.member],
+  ["operator", membershipRoles.member],
+  ["owner", membershipRoles.owner],
+  ["viewer", membershipRoles.viewer],
+] as const);
+
+/**
+ * Parse `Group=role,/Full/Path=role`. Roles are viewer, operator, admin and
+ * owner; a selector starting with "/" is a full path, otherwise a group name.
+ */
+function groupRoleSeed(value: string | undefined): readonly GroupRoleSeedEntry[] {
+  if (value === undefined) return [];
+  const entries: GroupRoleSeedEntry[] = [];
+  for (const item of value.split(",")) {
+    if (item.trim() === "") continue;
+    const separator = item.lastIndexOf("=");
+    const selector = separator < 0 ? "" : item.slice(0, separator).trim();
+    const role = separator < 0
+      ? undefined
+      : seedRoles.get(item.slice(separator + 1).trim());
+    if (selector === "" || role === undefined) {
+      throw new Error(
+        "ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED entries must look like Group=role, with role viewer, operator, admin or owner.",
+      );
+    }
+    if (entries.some((entry) => entry.selector === selector)) {
+      throw new Error(`ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED names ${selector} twice.`);
+    }
+    entries.push({role, selector});
+  }
+  if (entries.length === 0) {
+    throw new Error("ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED must name at least one group.");
+  }
+  return entries;
 }
 
 /** Split one comma-separated list of exact, case-sensitive group names. */

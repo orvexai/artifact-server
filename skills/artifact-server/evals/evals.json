@@ -135,6 +135,19 @@
         "Does not print credentials",
         "Reports the exact failed health or readiness check"
       ]
+    },
+    {
+      "id": 12,
+      "prompt": "Create a project called Q4 launch for the Platform Team and the Design group. Platform Team should be able to publish; Design only needs to review.",
+      "expected_output": "Resolves both groups with group_list, creates the project with project_create and a shareWith of Platform Team as editor and Design as viewer, checks the returned sharing, and reports who can see the project.",
+      "files": [],
+      "expectations": [
+        "Calls group_list or uses full group paths rather than guessing ambiguous names",
+        "Passes shareWith to project_create in the same call instead of creating first and sharing later",
+        "Gives Platform Team the editor role and Design the viewer role",
+        "Does not open the project to every member with project_set_access",
+        "Reports the project ID and the groups that can see it from the returned sharing"
+      ]
     }
   ]
 }

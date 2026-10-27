@@ -19,6 +19,7 @@ import {
   type RunningTestServer,
   startTestServer,
   type TestInstallation,
+  openProjectToMembers,
 } from "../support/runtime-harness.js";
 import {publishNew, type PublishResponse} from "../support/publishing.js";
 
@@ -509,7 +510,9 @@ describe("agent dispatch authorization", () => {
       method: "POST",
     });
     expect(response.status).toBe(201);
-    return projectSchema.parse(await response.json()).project.id;
+    const projectId = projectSchema.parse(await response.json()).project.id;
+    await openProjectToMembers(server, installation, projectId);
+    return projectId;
   }
 
   async function registerAgent(): Promise<string> {

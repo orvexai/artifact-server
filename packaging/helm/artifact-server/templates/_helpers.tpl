@@ -75,18 +75,23 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- fail "identity.oidcScopes and secret.keys.oidcClientSecret require identity.oidcClientId and identity.oidcIssuer" -}}
 {{- end -}}
 {{- $oidcGroupsClaim := default "" .Values.identity.oidcGroupsClaim -}}
-{{- $hasOidcGroups := or (gt (len (default (list) .Values.identity.oidcMemberGroups)) 0) (gt (len (default (list) .Values.identity.oidcAdministratorGroups)) 0) -}}
+{{- $hasOidcGroupLists := or (gt (len (default (list) .Values.identity.oidcMemberGroups)) 0) (gt (len (default (list) .Values.identity.oidcAdministratorGroups)) 0) -}}
+{{- $hasOidcGroupRoleSeed := gt (len (default (list) .Values.identity.oidcGroupRoleSeed)) 0 -}}
+{{- $hasOidcGroups := or $hasOidcGroupLists $hasOidcGroupRoleSeed -}}
+{{- if and $hasOidcGroupLists $hasOidcGroupRoleSeed -}}
+{{- fail "set identity.oidcGroupRoleSeed or the older identity.oidcMemberGroups and identity.oidcAdministratorGroups, not both" -}}
+{{- end -}}
 {{- if and (not $hasOidcIssuer) (or $hasOidcGroups (ne $oidcGroupsClaim "")) -}}
-{{- fail "identity.oidcGroupsClaim, identity.oidcMemberGroups, and identity.oidcAdministratorGroups require identity.oidcClientId and identity.oidcIssuer" -}}
+{{- fail "identity.oidcGroupsClaim, identity.oidcGroupRoleSeed, identity.oidcMemberGroups, and identity.oidcAdministratorGroups require identity.oidcClientId and identity.oidcIssuer" -}}
 {{- end -}}
 {{- if and (ne $oidcGroupsClaim "") (not $hasOidcGroups) -}}
-{{- fail "identity.oidcGroupsClaim requires identity.oidcMemberGroups or identity.oidcAdministratorGroups" -}}
+{{- fail "identity.oidcGroupsClaim requires identity.oidcGroupRoleSeed" -}}
 {{- end -}}
 {{- $oidcDirectoryClientId := default "" .Values.identity.oidcDirectoryClientId -}}
 {{- $oidcDirectorySecret := default "" .Values.secret.keys.oidcDirectoryClientSecret -}}
 {{- $hasOidcDirectory := or (ne $oidcDirectoryClientId "") (ne $oidcDirectorySecret "") (ne (default "" .Values.identity.oidcDirectoryProvider) "") -}}
 {{- if and $hasOidcDirectory (or (not $hasOidcIssuer) (not $hasOidcGroups)) -}}
-{{- fail "identity.oidcDirectoryProvider, identity.oidcDirectoryClientId, and secret.keys.oidcDirectoryClientSecret require identity.oidcClientId, identity.oidcIssuer, and identity.oidcMemberGroups or identity.oidcAdministratorGroups" -}}
+{{- fail "identity.oidcDirectoryProvider, identity.oidcDirectoryClientId, and secret.keys.oidcDirectoryClientSecret require identity.oidcClientId, identity.oidcIssuer, and identity.oidcGroupRoleSeed" -}}
 {{- end -}}
 {{- if and $hasOidcDirectory (or (eq $oidcDirectoryClientId "") (eq $oidcDirectorySecret "")) -}}
 {{- fail "identity.oidcDirectoryClientId and secret.keys.oidcDirectoryClientSecret must be configured together" -}}
@@ -229,6 +234,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 - name: ARTIFACT_SERVER_OIDC_GROUPS_CLAIM
   value: {{ .Values.identity.oidcGroupsClaim | quote }}
 {{- end }}
+{{- if .Values.identity.oidcGroupRoleSeed }}
+- name: ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED
+  value: {{ join "," .Values.identity.oidcGroupRoleSeed | quote }}
+{{- end }}
 {{- if .Values.identity.oidcMemberGroups }}
 - name: ARTIFACT_SERVER_OIDC_MEMBER_GROUPS
   value: {{ join "," .Values.identity.oidcMemberGroups | quote }}
@@ -244,6 +253,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
   value: {{ .Values.identity.oidcDirectoryClientId | quote }}
 - name: ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET_FILE
   value: /run/secrets/artifact-server/oidc-directory-client-secret
+{{- if .Values.identity.oidcDirectoryKeycloakUrl }}
+- name: ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL
+  value: {{ .Values.identity.oidcDirectoryKeycloakUrl | quote }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- if .Values.identity.workosClientId }}

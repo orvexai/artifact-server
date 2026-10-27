@@ -21,9 +21,8 @@ const configurationCheckSchema = z.object({
   configuration: z.looseObject({
     interactiveIdentityProvider: z.string(),
     oidcGroupRoles: z.object({
-      administratorGroups: z.array(z.string()),
       claim: z.string(),
-      memberGroups: z.array(z.string()),
+      seed: z.array(z.object({role: z.string(), selector: z.string()})),
     }).optional(),
   }),
 });
@@ -92,16 +91,55 @@ describe("generic OIDC group-role configuration", () => {
     })).rejects.toThrow("Generic OIDC authentication requires");
   });
 
-  test("lists are trimmed, deduplicated, case-preserving, and read the groups claim by default", async () => {
+  test("the role seed names groups or full paths with viewer, operator, admin or owner", async () => {
+    const configuration = await loadOidcConfiguration({
+      ...completeOidc,
+      ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED:
+        " Administrators=owner, Developers = operator,/temporal/default:read=viewer,Platform Team=admin,",
+    });
+    expect(configuration?.groupRoles).toEqual({
+      claim: "groups",
+      seed: [
+        {role: "owner", selector: "Administrators"},
+        {role: "member", selector: "Developers"},
+        {role: "viewer", selector: "/temporal/default:read"},
+        {role: "administrator", selector: "Platform Team"},
+      ],
+    });
+    await Promise.all(([
+      ["Administrators", "entries must look like Group=role"],
+      ["Administrators=superuser", "entries must look like Group=role"],
+      ["Administrators=toString", "entries must look like Group=role"],
+      ["=owner", "entries must look like Group=role"],
+      ["Developers=operator,Developers=viewer", "names Developers twice"],
+      [" , ", "must name at least one group"],
+    ] as const).map(([value, message]) =>
+      expect(loadOidcConfiguration({
+        ...completeOidc,
+        ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: value,
+      })).rejects.toThrow(message)
+    ));
+    await expect(loadOidcConfiguration({
+      ...completeOidc,
+      ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: "Administrators=owner",
+      ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: "artifact-users",
+    })).rejects.toThrow("not both");
+  });
+
+  test("the older lists still seed Admin and Operator, trimmed, deduplicated and case-preserving", async () => {
     const configuration = await loadOidcConfiguration({
       ...completeOidc,
       ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS: " artifact-admins ,Platform Admins,",
-      ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: "artifact-users, artifact-users,Engineering",
+      ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: "artifact-users, artifact-users,Engineering,artifact-admins",
     });
     expect(configuration?.groupRoles).toEqual({
-      administratorGroups: ["artifact-admins", "Platform Admins"],
       claim: "groups",
-      memberGroups: ["artifact-users", "Engineering"],
+      seed: [
+        {role: "administrator", selector: "artifact-admins"},
+        {role: "administrator", selector: "Platform Admins"},
+        {role: "member", selector: "artifact-users"},
+        {role: "member", selector: "Engineering"},
+      ],
     });
 
     const memberOnly = await loadOidcConfiguration({
@@ -110,9 +148,8 @@ describe("generic OIDC group-role configuration", () => {
       ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: "artifact-users",
     });
     expect(memberOnly?.groupRoles).toEqual({
-      administratorGroups: [],
       claim: "roles",
-      memberGroups: ["artifact-users"],
+      seed: [{role: "member", selector: "artifact-users"}],
     });
   });
 
@@ -131,7 +168,7 @@ describe("generic OIDC group-role configuration", () => {
       ...completeOidc,
       ARTIFACT_SERVER_OIDC_GROUPS_CLAIM: "groups",
     })).rejects.toThrow(
-      "ARTIFACT_SERVER_OIDC_GROUPS_CLAIM requires ARTIFACT_SERVER_OIDC_MEMBER_GROUPS or ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS.",
+      "ARTIFACT_SERVER_OIDC_GROUPS_CLAIM requires ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED.",
     );
     await expect(loadOidcConfiguration({
       ...completeOidc,
@@ -170,7 +207,7 @@ describe("generic OIDC group-role configuration", () => {
     };
     await expect(loadOidcConfiguration({...completeOidc, ...directory}))
       .rejects.toThrow(
-        "The ARTIFACT_SERVER_OIDC_DIRECTORY_* settings require ARTIFACT_SERVER_OIDC_MEMBER_GROUPS or ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS.",
+        "The ARTIFACT_SERVER_OIDC_DIRECTORY_* settings require ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED.",
       );
     const grouped = {
       ...completeOidc,
@@ -216,15 +253,16 @@ describe("generic OIDC group-role configuration", () => {
       ["config", "check", "--mode", "compact", "--data", dataDirectory],
       {
         ...environment,
-        ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS: "artifact-admins",
-        ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: "artifact-users",
+        ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: "Administrators=owner,Developers=operator",
       },
     );
     expect(configurationCheckSchema.parse(JSON.parse(grouped.output))
       .configuration.oidcGroupRoles).toEqual({
-      administratorGroups: ["artifact-admins"],
       claim: "groups",
-      memberGroups: ["artifact-users"],
+      seed: [
+        {role: "owner", selector: "Administrators"},
+        {role: "member", selector: "Developers"},
+      ],
     });
 
     const orphaned = await runCli(

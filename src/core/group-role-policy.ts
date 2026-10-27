@@ -1,29 +1,78 @@
-import {membershipRoles, type MembershipRole} from "./identity.js";
+import {membershipRoleAtLeast, type MembershipRole} from "./identity.js";
 
-/**
- * Issuer group names that admit people to one installation and set their role.
- * Names compare exactly and case-sensitively.
- */
-export interface GroupRolePolicy {
-  readonly administratorGroups: readonly string[];
-  readonly memberGroups: readonly string[];
+/** One configured starting role: a directory group name or full path, and its role. */
+export interface GroupRoleSeedEntry {
+  readonly role: MembershipRole;
+  /** A group's exact name, or its full path when it starts with "/". */
+  readonly selector: string;
 }
 
 /**
- * Return the role a person's issuer groups grant, or null when no configured
- * group admits them. An administrator group outranks a member group, and a
- * provider that reported no groups admits no one.
+ * Issuer groups decide who may sign in and with which installation role. The
+ * roles themselves are stored per group and edited in the application; the
+ * seed only fills them in the first time, so later edits are never undone.
+ */
+export interface GroupRolePolicy {
+  readonly seed: readonly GroupRoleSeedEntry[];
+}
+
+/** Who stored a role that came from the configured seed rather than a person. */
+export const groupRoleSeedPrincipalId = "configuration:group-role-seed";
+
+/** One directory group's stored installation role. */
+export interface GroupRoleAssignment {
+  readonly assignedAt: string;
+  readonly groupId: string;
+  readonly name: string;
+  /**
+   * True when no other directory group has this name. Group names repeat
+   * under different parents, so a reported name may stand for this group only
+   * when it is unique.
+   */
+  readonly nameUnique: boolean;
+  readonly path: string;
+  readonly role: MembershipRole;
+}
+
+/**
+ * The configured starting roles as assignments matched exactly against the
+ * group names or paths a sign-in reports. They decide access until the
+ * directory sync has stored them, and always on an installation that runs no
+ * directory sync, so group roles work with the claim alone.
+ */
+export function configuredGroupRoleAssignments(
+  seed: readonly GroupRoleSeedEntry[],
+): readonly GroupRoleAssignment[] {
+  return seed.map(({role, selector}) => ({
+    assignedAt: "",
+    groupId: selector,
+    name: selector,
+    nameUnique: true,
+    path: selector,
+    role,
+  }));
+}
+
+/**
+ * Return the strongest role a person's issuer groups grant, or null when no
+ * group with a role admits them. A reported group matches a stored group by
+ * its full path, or by its name only when no other directory group shares
+ * that name; a provider that reported no groups admits no one.
  */
 export function groupMembershipRole(
-  policy: GroupRolePolicy,
+  assignments: readonly GroupRoleAssignment[],
   groups: readonly string[] | null,
 ): MembershipRole | null {
   if (groups === null) return null;
-  if (groups.some((group) => policy.administratorGroups.includes(group))) {
-    return membershipRoles.administrator;
+  const reported = new Set(groups);
+  let best: MembershipRole | null = null;
+  for (const assignment of assignments) {
+    const matches = reported.has(assignment.path) ||
+      (assignment.nameUnique && reported.has(assignment.name));
+    if (!matches) continue;
+    if (best === null || !membershipRoleAtLeast(best, assignment.role)) {
+      best = assignment.role;
+    }
   }
-  if (groups.some((group) => policy.memberGroups.includes(group))) {
-    return membershipRoles.member;
-  }
-  return null;
+  return best;
 }

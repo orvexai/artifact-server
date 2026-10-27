@@ -4,7 +4,7 @@ fullnameOverride: ""
 
 image:
   repository: ghcr.io/plannotator/artifact-server
-  tag: "0.1.8"
+  tag: "0.1.9"
   digest: ""
   allowMutableTag: false
   pullPolicy: IfNotPresent
@@ -46,17 +46,22 @@ identity:
   oidcIssuer: ""
   oidcScopes: ""
   # Opt-in issuer group roles, unset by default so admission stays manual.
-  # Either list admits people from the issuer's groups claim and sets their
-  # role on every sign-in. Group names match exactly.
+  # Installation roles (viewer, operator, admin, owner) belong to directory
+  # groups and are changed in the application. The seed gives groups their
+  # starting roles once, by exact name or full path; later changes stay.
+  # The older oidcMemberGroups and oidcAdministratorGroups lists still work
+  # as a seed of operators and admins.
   # oidcGroupsClaim: groups
-  # oidcMemberGroups: [artifact-users]
-  # oidcAdministratorGroups: [artifact-admins]
+  # oidcGroupRoleSeed: ["Administrators=owner", "Developers=operator"]
   # Opt-in Keycloak directory sync, which admits group members before they
   # first sign in and needs the group roles above. Setting the client ID
   # enables the directorySync CronJob; secret.keys.oidcDirectoryClientSecret
   # must name its client secret.
   # oidcDirectoryProvider: keycloak
   # oidcDirectoryClientId: artifact-server-directory
+  # Reach Keycloak for the sync at its in-cluster service instead of the
+  # public issuer host, as Docmost's SCIM sync does.
+  # oidcDirectoryKeycloakUrl: http://keycloak-service.keycloak.svc:8080
 
 serviceAccount:
   create: true
@@ -143,7 +148,8 @@ cleanup:
 directorySync:
   schedule: "*/10 * * * *"
   activeDeadlineSeconds: 300
-  backoffLimit: 0
+  # Each Keycloak request already retries briefly; this retries a whole run.
+  backoffLimit: 2
 
 ingress:
   enabled: false

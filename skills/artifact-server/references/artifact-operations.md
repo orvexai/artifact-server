@@ -35,7 +35,9 @@ The CLI owns local file inspection, symlink policy, media types, SHA-256 hashing
 ## MCP reads
 
 - `artifact_capabilities`: inspect limits, sharing modes, project rules, and deployment mode.
-- `project_list`: resolve a project when more than one exists.
+- `project_list`: resolve a project when more than one exists. Each project carries `accessMode` (`installation`: every member sees it; `restricted`: only administrators and the groups it is shared with) and `yourRole` on a restricted one.
+- `project_sharing`: read who can see one project: its access mode, shared groups with their roles, and your role.
+- `group_list`: list the identity-provider groups a project can be shared with, by full path.
 - `artifact_list`: list artifacts; use `projectId`, exact `tag`, cursor, and bounded limit when relevant.
 - `artifact_get`: obtain current metadata, manifest, current version ID, tags, access, `current.links.review` for exact full-screen Review, and `links.artifact` for moving latest in one call.
 - `artifact_open`: obtain `reviewUrl` for exact full-screen Review and `browserUrl` for raw immutable content for the current or an exact saved version. Prefer `reviewUrl` for human handoff. Never describe `browserUrl` as Review.
@@ -54,6 +56,10 @@ Call `artifact_get` immediately before a write to obtain the current version ID.
 - `artifact_delete`: use only for an explicit request to delete one artifact. Repeat the artifact name, server, and project before the destructive call. This does not delete the installation.
 
 Project creation, rename, archive, or unarchive are ordinary product actions but must be explicit. Use `project_create`, `project_rename`, `project_archive`, or `project_unarchive`. Archiving a project preserves readable history and stops new publication until it is unarchived.
+
+A new project is restricted: only administrators, its creator (who becomes its manager), and the groups it is shared with can see it. When you create a project for someone, decide who should see it before creating it and pass `shareWith` to `project_create`: a list of `{group, role}`, where `group` is a group's id, full path such as `/Platform Team`, or a name only one group has (`group_list` shows them), and `role` is `viewer` (reads and comments), `editor` (also publishes and manages artifacts), or `manager` (also renames, archives, and shares). If the user did not say who should see it, ask rather than leaving it visible only to you. Check the returned `sharing`: it lists the shares that took effect.
+
+Change sharing only on an explicit request and with the manager role on the project: `project_share` adds a group or changes its role, `project_unshare` removes one, and `project_set_access` switches between `restricted` and `installation` (every member). Opening a project to every member is a deliberate widening; repeat the project name and confirm first. Removing a group stops new access at once, but pages its members already have open stay viewable until their session expires.
 
 ## MCP file upload
 

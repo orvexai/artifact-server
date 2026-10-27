@@ -1,13 +1,14 @@
 import {ArrowLeft01Icon, Moon02Icon, Sun03Icon} from "@hugeicons/core-free-icons";
 import {HugeiconsIcon} from "@hugeicons/react";
 
-import {api, type Project, type Session} from "@/api/client";
+import {api, isAdministratorRole, type Project, type Session} from "@/api/client";
 import {StatePanel} from "@/components/product";
 import {Button, ButtonLink} from "@/components/ui/button";
 import {ArtifactMark} from "./artifact-mark.tsx";
 import {parseSettingsRoute, type SettingsRoute} from "./review-routes.ts";
 import {ApiKeysScreen} from "./settings-api-keys.tsx";
 import {McpScreen} from "./settings-mcp.tsx";
+import {GroupsScreen} from "./settings-groups.tsx";
 import {MembersScreen} from "./settings-members.tsx";
 import {SettingsProject, SettingsProjects} from "./settings-projects.tsx";
 import {PublicLinksScreen} from "./settings-public-links.tsx";
@@ -36,7 +37,7 @@ export function ReviewSettings({
   const canManageProjects = directHuman
     || principal.capabilities.includes("project:manage");
   const administrator = directHuman
-    && principal.membershipRole === "administrator";
+    && isAdministratorRole(principal.membershipRole);
   const reviewHref = readReturnToReview();
 
   return (
@@ -90,6 +91,7 @@ export function ReviewSettings({
           {administrator ? (
             <>
               <SettingsLink active={route.kind === "members"} href="/review/settings/members">Members</SettingsLink>
+              <SettingsLink active={route.kind === "groups"} href="/review/settings/groups">Groups</SettingsLink>
               <SettingsLink active={route.kind === "apiKeys"} href="/review/settings/api-keys">API keys</SettingsLink>
               <SettingsLink active={route.kind === "publicLinks"} href="/review/settings/public-links">Public links</SettingsLink>
             </>
@@ -152,6 +154,7 @@ function SettingsContent({
     }
     return (
       <SettingsProject
+        administrator={administrator}
         canManage={canManageProjects}
         gitHistory={session.capabilities.gitHistory}
         onProjectsChanged={onProjectsChanged}
@@ -166,6 +169,8 @@ function SettingsContent({
   switch (route.kind) {
     case "members":
       return <MembersScreen />;
+    case "groups":
+      return <GroupsScreen />;
     case "apiKeys":
       return <ApiKeysScreen />;
     case "publicLinks":

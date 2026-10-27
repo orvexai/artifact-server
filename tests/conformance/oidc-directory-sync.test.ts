@@ -14,7 +14,9 @@ import {
 import type {OidcGroupRoles} from "../../src/identity/oidc-groups-claim.js";
 import {
   KeycloakDirectory,
+  isClusterServiceUrl,
   keycloakAdminBaseUrl,
+  keycloakInternalEndpoints,
 } from "../../src/identity/keycloak-directory.js";
 import {createOidcIdentityProvider} from
   "../../src/identity/oidc-identity-provider.js";
@@ -39,9 +41,11 @@ import {
 const administrators = "artifact-admins";
 const users = "artifact-users";
 const groupRoles: OidcGroupRoles = {
-  administratorGroups: [administrators],
   claim: "groups",
-  memberGroups: [users],
+  seed: [
+    {role: "administrator", selector: administrators},
+    {role: "member", selector: users},
+  ],
 };
 const memberRowSchema = z.object({
   displayName: z.string(),
@@ -106,13 +110,10 @@ describe("Keycloak directory sync", () => {
       max: "100",
     });
     expect(memberPages.filter((query) => query.first === "300")).toEqual([]);
+    // Groups with a role are read by their stored id, never searched by name.
     expect(keycloak.adminRequests()
-      .filter((request) => request.path === "/groups")
-      .map((request) => request.query))
-      .toEqual([
-        {exact: "true", search: administrators},
-        {exact: "true", search: users},
-      ]);
+      .filter((request) => request.query.search !== undefined))
+      .toEqual([]);
 
     // A second pass with nothing changed writes nothing.
     expect(await sync()).toEqual(report({directoryUsers: 207, unchanged: 207}));
@@ -148,16 +149,19 @@ describe("Keycloak directory sync", () => {
       status: "active",
     });
 
-    // The issuer decides who administers: the last administrator leaves too.
+    // The last administrator is never removed: with the administrators group
+    // emptied, Bob keeps his role while everyone else follows the directory.
     keycloak.groups.set(administrators, []);
     keycloak.groups.set(users, [keycloakUser("ada")]);
     expect(await sync()).toEqual(report({
-      deactivated: 2,
+      deactivated: 1,
       directoryUsers: 1,
       unchanged: 1,
     }));
     expect(byEmail(members(installation), "bob@example.test"))
-      .toMatchObject({role: "member", status: "inactive"});
+      .toMatchObject({role: "administrator", status: "active"});
+    expect(byEmail(members(installation), "carol@example.test"))
+      .toMatchObject({status: "inactive"});
   });
 
   test("disabled, unverified, and email-less users are skipped and lose membership", async () => {
@@ -192,13 +196,6 @@ describe("Keycloak directory sync", () => {
     const baseline = members(installation);
     expect(baseline).toHaveLength(151);
 
-    keycloak.groups.delete(administrators);
-    await expect(sync()).rejects.toThrow(
-      `DirectoryUnavailable: The Keycloak group ${administrators} does not exist.`,
-    );
-    expect(members(installation)).toEqual(baseline);
-    keycloak.groups.set(administrators, [keycloakUser("ada")]);
-
     keycloak.setTokenStatus(503);
     await expect(sync()).rejects.toThrow("The Keycloak token request returned HTTP 503.");
     expect(members(installation)).toEqual(baseline);
@@ -206,7 +203,7 @@ describe("Keycloak directory sync", () => {
 
     // Losing the second page must not read as fifty people leaving.
     keycloak.failMembersPage(100);
-    await expect(sync()).rejects.toThrow(`The Keycloak members of ${users} returned HTTP 500.`);
+    await expect(sync()).rejects.toThrow(`The Keycloak members of /${users} returned HTTP 500.`);
     expect(members(installation)).toEqual(baseline);
     keycloak.failMembersPage(null);
 
@@ -218,8 +215,113 @@ describe("Keycloak directory sync", () => {
     await expect(sync()).rejects.toThrow("nothing was changed");
     expect(members(installation)).toEqual(baseline);
 
-    await expect(sync("wrong-secret")).rejects.toThrow("HTTP 401");
+    await expect(sync({secret: "wrong-secret"})).rejects.toThrow("HTTP 401");
     expect(members(installation)).toEqual(baseline);
+  });
+
+  test("a brief Keycloak fault is retried, but a refused request is not", async () => {
+    keycloak.groups.set(administrators, [keycloakUser("ada")]);
+    keycloak.groups.set(users, [keycloakUser("bob")]);
+    keycloak.failMembersPage(0, 503, 2);
+    await expect(sync()).resolves.toMatchObject({admitted: 2});
+    keycloak.failMembersPage(null);
+
+    const before = keycloak.adminRequests().length;
+    keycloak.failMembersPage(0, 403);
+    await expect(sync({membersOnly: true})).rejects.toThrow("returned HTTP 403.");
+    // One members request for the first group, then the run stops: no retries.
+    expect(keycloak.adminRequests().length - before).toBe(1);
+    keycloak.failMembersPage(null);
+
+    const beforeOutage = keycloak.adminRequests().length;
+    keycloak.failMembersPage(0, 503);
+    await expect(sync({membersOnly: true})).rejects.toThrow("returned HTTP 503.");
+    // Exactly three attempts at the first group's first page.
+    expect(keycloak.adminRequests().length - beforeOutage).toBe(3);
+  });
+
+  test("a group deleted in Keycloak takes its role with it, and the seed never puts it back", async () => {
+    keycloak.groups.set(administrators, [keycloakUser("ada")]);
+    keycloak.groups.set(users, [keycloakUser("bob")]);
+    await sync();
+
+    keycloak.groups.delete(users);
+    expect(await sync()).toEqual(report({
+      deactivated: 1,
+      directoryUsers: 1,
+      groups: 1,
+      unchanged: 1,
+    }));
+    expect(byEmail(members(installation), "bob@example.test"))
+      .toMatchObject({status: "inactive"});
+
+    // Recreated, the group comes back without a role: the seed ran once.
+    keycloak.groups.set(users, [keycloakUser("bob")]);
+    expect(await sync()).toEqual(report({
+      directoryUsers: 1,
+      groups: 1,
+      unchanged: 1,
+    }));
+    expect(byEmail(members(installation), "bob@example.test"))
+      .toMatchObject({status: "inactive"});
+  });
+
+  test("losing the only group that administers keeps the administrators it had", async () => {
+    keycloak.groups.set(administrators, [keycloakUser("ada")]);
+    keycloak.groups.set(users, [keycloakUser("bob")]);
+    await sync();
+
+    // Deleting the administrators group takes its role, but Ada stays an
+    // active administrator so the roles can be given out again.
+    keycloak.groups.delete(administrators);
+    expect(await sync()).toEqual(report({
+      directoryUsers: 1,
+      groups: 1,
+      unchanged: 1,
+    }));
+    expect(members(installation).map(({email, role, status}) => ({email, role, status})))
+      .toEqual([
+        {email: "ada@example.test", role: "administrator", status: "active"},
+        {email: "bob@example.test", role: "member", status: "active"},
+      ]);
+  });
+
+  test("an internal Keycloak URL replaces the public admin base and token endpoint", () => {
+    expect(keycloakInternalEndpoints(
+      "https://idp.example.test/realms/main",
+      "http://keycloak-service.keycloak.svc:8080",
+    )).toEqual({
+      adminBaseUrl: "http://keycloak-service.keycloak.svc:8080/admin/realms/main",
+      tokenEndpoint:
+        "http://keycloak-service.keycloak.svc:8080/realms/main/protocol/openid-connect/token",
+    });
+    expect(keycloakInternalEndpoints("https://idp.example.test", "http://k.svc")).toBeNull();
+    expect(keycloakInternalEndpoints(
+      "https://idp.example.test/realms/main",
+      "http://user:pw@k.svc",
+    )).toBeNull();
+    expect(isClusterServiceUrl("http://keycloak-service.keycloak.svc:8080")).toBe(true);
+    expect(isClusterServiceUrl("http://keycloak.keycloak.svc.cluster.local")).toBe(true);
+    expect(isClusterServiceUrl("http://idp.example.test")).toBe(false);
+    expect(() => new KeycloakDirectory({
+      adminBaseUrl: "http://idp.example.test/admin/realms/main",
+      clientId: "c",
+      clientSecret: Redacted.make("s"),
+      issuer: "https://idp.example.test/realms/main",
+    })).toThrow("must be an HTTPS URL or an in-cluster service URL");
+    for (const unsafe of [
+      "http://user:pw@keycloak.keycloak.svc/admin/realms/main",
+      "http://keycloak.keycloak.svc/admin/realms/main#x",
+      " http://keycloak.keycloak.svc/admin/realms/main",
+    ]) {
+      expect(isClusterServiceUrl(unsafe)).toBe(false);
+      expect(() => new KeycloakDirectory({
+        adminBaseUrl: unsafe,
+        clientId: "c",
+        clientSecret: Redacted.make("s"),
+        issuer: "https://idp.example.test/realms/main",
+      })).toThrow("The Keycloak admin URL must be an HTTPS URL or an in-cluster service URL.");
+    }
   });
 
   test("a member the sync admitted binds to the OIDC subject at first login and keeps the role", async () => {
@@ -291,7 +393,17 @@ describe("Keycloak directory sync", () => {
       .toBeNull();
   });
 
-  async function sync(secret = keycloak.clientSecret): Promise<DirectorySyncReport> {
+  /**
+   * Run one sync as the maintenance command does: copy the groups, apply the
+   * starting roles, then make the members match. `membersOnly` runs the last
+   * step alone, to count the requests it makes.
+   */
+  async function sync(
+    {membersOnly = false, secret = keycloak.clientSecret}: {
+      readonly membersOnly?: boolean;
+      readonly secret?: string;
+    } = {},
+  ): Promise<DirectorySyncReport> {
     const runtime = await createLocalRuntime({
       apiToken: installation.apiToken,
       browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
@@ -302,12 +414,22 @@ describe("Keycloak directory sync", () => {
     try {
       const adminBaseUrl = keycloakAdminBaseUrl(keycloak.issuer);
       if (adminBaseUrl === null) throw new Error("The stub issuer is not a realm.");
-      return await runtime.syncDirectory(new KeycloakDirectory({
+      const directory = new KeycloakDirectory({
         adminBaseUrl,
         clientId: keycloak.clientId,
         clientSecret: Redacted.make(secret),
         issuer: keycloak.issuer,
-      }), groupRoles);
+        retryBaseDelayMilliseconds: 0,
+      });
+      if (!membersOnly) {
+        await runtime.syncDirectoryGroups(
+          directory,
+          new Date().toISOString(),
+          `oidc:${keycloak.issuer}`,
+        );
+        await runtime.seedGroupRoles(groupRoles.seed);
+      }
+      return await runtime.syncDirectory(directory);
     } finally {
       await runtime.close();
     }

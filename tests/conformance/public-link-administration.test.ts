@@ -13,6 +13,7 @@ import {
   type RunningTestServer,
   startTestServer,
   type TestInstallation,
+  openProjectToMembers,
 } from "../support/runtime-harness.js";
 import {
   publishNew,
@@ -300,8 +301,10 @@ describe("public-link administration", () => {
       method: "POST",
     });
     expect(response.status).toBe(201);
-    return z.object({project: z.object({id: z.string()})})
+    const project = z.object({project: z.object({id: z.string()})})
       .parse(await response.json()).project;
+    await openProjectToMembers(server, installation, project.id);
+    return project;
   }
 
   async function listEveryPublicLink(limit: number) {

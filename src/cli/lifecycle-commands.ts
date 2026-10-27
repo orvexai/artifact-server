@@ -1,5 +1,6 @@
 import path from "node:path";
 
+import {oidcIdentityProviderName} from "../core/project-access.js";
 import {type Command, Option} from "commander";
 import {Redacted} from "effect";
 
@@ -18,7 +19,7 @@ import {
 } from "../identity/oidc-hosted-authentication.js";
 import {createWorkOsHostedAuthentication} from
   "../identity/workos-hosted-authentication.js";
-import {KeycloakDirectory} from "../identity/keycloak-directory.js";
+import {KeycloakDirectory, type KeycloakDirectoryConfig} from "../identity/keycloak-directory.js";
 import {
   checkCompactIntegrity,
   checkExternalStorageIntegrity,
@@ -163,15 +164,20 @@ function configureMaintenance(program: Command): void {
       const directorySettings = oidc?.directory ?? null;
       if (oidc === null || groupRoles === null || directorySettings === null) {
         throw new Error(
-          "maintenance sync-directory requires OIDC group roles (ARTIFACT_SERVER_OIDC_MEMBER_GROUPS or ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS) and the ARTIFACT_SERVER_OIDC_DIRECTORY_* settings.",
+          "maintenance sync-directory requires OIDC group roles (ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED) and the ARTIFACT_SERVER_OIDC_DIRECTORY_* settings.",
         );
       }
-      const directory = new KeycloakDirectory({
+      const directoryConfig: KeycloakDirectoryConfig = {
         adminBaseUrl: directorySettings.adminBaseUrl,
         clientId: directorySettings.clientId,
         clientSecret: directorySettings.clientSecret,
         issuer: oidc.issuer,
-      });
+      };
+      const directory = new KeycloakDirectory(
+        directorySettings.tokenEndpoint === undefined
+          ? directoryConfig
+          : {...directoryConfig, tokenEndpoint: directorySettings.tokenEndpoint},
+      );
       const runtime = configuration.deploymentMode === "compact"
         ? await createLocalRuntime({
           ...compactMaintenanceConfig(configuration),
@@ -182,9 +188,30 @@ function configureMaintenance(program: Command): void {
           groupRolePolicy: groupRoles,
         });
       try {
-        console.log(JSON.stringify(
-          await runtime.syncDirectory(directory, groupRoles),
-        ));
+        // Roles belong to stored groups, so copy the groups first, then give
+        // them their starting roles, then make the members match those roles.
+        const groupSync = await runtime.syncDirectoryGroups(
+          directory,
+          new Date().toISOString(),
+          oidcIdentityProviderName(oidc.issuer),
+        );
+        console.log(JSON.stringify({groupSync}));
+        // A kept group may hold someone Keycloak removed: fail the Job so
+        // operators see it and the CronJob retries.
+        if (groupSync.groupsFailed > 0) {
+          console.error(
+            `${groupSync.groupsFailed} directory group(s) kept their previous members because Keycloak could not be read.`,
+          );
+          process.exitCode = 1;
+        }
+        const groupRoleSeed = await runtime.seedGroupRoles(groupRoles.seed);
+        console.log(JSON.stringify({groupRoleSeed}));
+        if (groupRoleSeed.unresolved.length > 0) {
+          console.error(
+            `ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED names groups that match no single directory group: ${groupRoleSeed.unresolved.join(", ")}. No starting role was stored.`,
+          );
+        }
+        console.log(JSON.stringify(await runtime.syncDirectory(directory)));
       } finally {
         await runtime.close();
       }
