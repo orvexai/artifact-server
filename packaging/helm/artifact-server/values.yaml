@@ -4,7 +4,7 @@ fullnameOverride: ""
 
 image:
   repository: ghcr.io/plannotator/artifact-server
-  tag: "0.1.8"
+  tag: "0.1.9"
   digest: ""
   allowMutableTag: false
   pullPolicy: IfNotPresent
