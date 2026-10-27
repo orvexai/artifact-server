@@ -192,14 +192,19 @@ In Keycloak:
    ```
 
 Installation roles belong to directory groups, never to one person, and a
-group has no role until it is given one. The seed gives the named groups their
-starting roles the first time the directory sync runs; from then on the roles
-stored per group decide, so changes made in the application are never undone
-by the seed. A person gets the strongest role among their groups: Viewer
-(sign in and read), Operator (work in projects), Admin (manage the
-installation) or Owner (also manage which group holds which role). A group
-deleted in the issuer takes its role with it. Until some group holds a role,
-sign-in is refused without changing anyone.
+group has no role until it is given one. A person gets the strongest role
+among their groups: Viewer (sign in and read), Operator (work in projects),
+Admin (manage the installation) or Owner (also manage which group holds which
+role).
+
+Without the directory sync, the configured roles decide at every sign-in,
+matched exactly against the names in the groups claim. With the directory
+sync, the first sync stores them as each group's starting role; from then on
+the roles stored per group decide, so changes made in the application are
+never undone by the configuration, and a group deleted in the issuer takes its
+role with it. Until that first sync, the configured roles decide as they would
+without one. The last active Admin or Owner keeps their role when their group
+loses it, so someone can always give the roles out again.
 
 `artifactserver config check` reports the active policy under
 `configuration.oidcGroupRoles`.

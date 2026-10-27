@@ -236,11 +236,13 @@ describe("project access storage (SQLite)", () => {
 
   test("starting roles are stored once, and later changes and removals stay", async () => {
     await groups([group("g-a", []), group("g-b", [])]);
+    expect(await repository.isGroupRoleSeedApplied(installationId)).toBe(false);
     expect(await repository.seedGroupRoles(
       installationId,
       [{groupId: "g-a", role: "owner"}, {groupId: "g-b", role: "member"}],
       "2026-10-26T00:00:00.000Z",
     )).toBe(true);
+    expect(await repository.isGroupRoleSeedApplied(installationId)).toBe(true);
     await repository.setGroupRole(installationId, "g-a", "viewer", "2026-10-26T01:00:00.000Z", "mem_ada");
     await repository.setGroupRole(installationId, "g-b", null, "2026-10-26T01:00:00.000Z", "mem_ada");
     expect(await repository.seedGroupRoles(

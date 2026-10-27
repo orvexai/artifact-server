@@ -309,6 +309,15 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     `).run(installationId, groupId, role, assignedAt, assignedByPrincipalId);
   }
 
+  async isGroupRoleSeedApplied(installationId: string): Promise<boolean> {
+    const row = this.#database.prepare(`
+      SELECT EXISTS(
+        SELECT 1 FROM directory_group_role_seeds WHERE installation_id = ?
+      ) AS present
+    `).get(installationId);
+    return presenceRowSchema.parse(row).present === 1;
+  }
+
   async seedGroupRoles(
     installationId: string,
     roles: readonly {readonly groupId: string; readonly role: MembershipRole}[],

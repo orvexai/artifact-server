@@ -87,7 +87,30 @@ describe("generic OIDC browser login with issuer group roles", () => {
     await removeTestInstallation(installation);
   });
 
-  test("before any group holds a role, sign-in is refused and nobody is deactivated", async () => {
+  test("until the directory sync stores roles, the configured roles apply to the reported groups", async () => {
+    // No directory sync has run: the configured roles decide, exactly by name.
+    provider.claims.email = "ada@example.test";
+    provider.claims.subject = "subject-ada";
+    provider.claims.groups = ["artifact-users", "artifact-admins"];
+    expect(await sessionRole(await signIn())).toBe("administrator");
+
+    provider.claims.email = "grace@example.test";
+    provider.claims.subject = "subject-grace";
+    provider.claims.groups = ["artifact-users", "sales"];
+    expect(await sessionRole(await signIn())).toBe("member");
+
+    provider.claims.email = "eve@example.test";
+    provider.claims.subject = "subject-eve";
+    provider.claims.groups = ["sales", "Artifact-Users"];
+    const refused = await completeLogin();
+    expect(refused.status).toBe(403);
+    expect(failureSchema.parse(await refused.json()).error.message)
+      .toBe("This person is not in a group admitted to the Artifact Server.");
+  });
+
+  test("once roles are stored they decide, and with none left sign-in is refused without changes", async () => {
+    // The sync stored the starting roles, then every role was taken away.
+    await storeTestGroupRoles(server, installation, []);
     provider.claims.email = "ada@example.test";
     provider.claims.subject = "subject-ada";
     provider.claims.groups = ["artifact-admins"];

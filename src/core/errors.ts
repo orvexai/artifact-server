@@ -459,6 +459,7 @@ export class IdentityRepositoryFailure extends Schema.TaggedError<IdentityReposi
       "hasMembers",
       "listApiKeys",
       "listDirectoryGroups",
+      "isGroupRoleSeedApplied",
       "listGroupRoles",
       "listMembers",
       "listProjectGroupGrants",
