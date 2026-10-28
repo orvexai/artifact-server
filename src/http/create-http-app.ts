@@ -846,11 +846,8 @@ export function createHttpApp(
   app.on(
     ["GET", "HEAD"],
     ["/review", "/review/*"],
-    async (context) => {
-      const publicUrl = await publicReviewRedirect(context, dependencies);
-      if (publicUrl !== null) return context.redirect(publicUrl, 302);
-      return serveWebAsset(context, dependencies, "/review.html", "application-shell");
-    },
+    (context) =>
+      serveWebAsset(context, dependencies, "/review.html", "application-shell"),
   );
 
   app.on(["GET", "HEAD"], "/workbench", (context) => {
@@ -891,6 +888,41 @@ export function createHttpApp(
       });
     },
   );
+
+  // The read-only Review page for a public-link artifact: only what
+  // /artifacts/:artifactId already serves anonymously (the current version),
+  // plus its name and number. Anything else is one indistinguishable 404.
+  // Registered before the /api/* authentication middleware so it needs none.
+  app.get("/api/v1/public/artifacts/:artifactId", async (context) => {
+    const current = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      ContentAccessService.use((contentAccess) =>
+        contentAccess.resolvePublicArtifact(context.req.param("artifactId"))
+      ).pipe(Effect.catch(() => Effect.succeed(null))),
+    );
+    if (current === null) {
+      return context.json(
+        {error: {code: "NOT_FOUND", message: "The requested route does not exist."}},
+        404,
+      );
+    }
+    return context.json({
+      artifact: {id: current.artifact.id, name: current.artifact.name},
+      version: {
+        createdAt: current.version.createdAt,
+        id: current.version.id,
+        number: current.version.number,
+      },
+      links: {
+        version: versionBrowserUrl(
+          responseApplicationUrl(context, dependencies),
+          dependencies.contentDomain,
+          current.version.contentToken,
+        ),
+      },
+    });
+  });
 
   app.use("/api/*", async (context, next) => {
     const authorization = context.req.header("authorization");
@@ -4497,38 +4529,6 @@ function applicationContentSecurityPolicy(contentDomain: string): string {
 }
 
 type WebAssetKind = "application-shell" | "review-frame" | "static-asset";
-
-/**
- * A Review link opened without a session goes straight to a public-link
- * artifact's content when it names that artifact's current version (or no
- * version), the same content /artifacts/:id already serves anonymously.
- * Anything else, and anyone with a session cookie, gets the Review shell.
- */
-async function publicReviewRedirect(
-  context: Context<HttpEnvironment>,
-  dependencies: HttpAppDependencies,
-): Promise<string | null> {
-  if (getCookie(context, applicationCookieNames(dependencies).session) !== undefined) {
-    return null;
-  }
-  const artifactId = context.req.query("artifact");
-  if (artifactId === undefined || artifactId.length === 0) return null;
-  const current = await runHttpApplicationEffect(
-    context,
-    dependencies,
-    ContentAccessService.use((contentAccess) =>
-      contentAccess.resolvePublicArtifact(artifactId)
-    ).pipe(Effect.catch(() => Effect.succeed(null))),
-  );
-  if (current === null) return null;
-  const versionId = context.req.query("version");
-  if (versionId !== undefined && versionId !== current.version.id) return null;
-  return versionBrowserUrl(
-    responseApplicationUrl(context, dependencies),
-    dependencies.contentDomain,
-    current.version.contentToken,
-  );
-}
 
 async function serveWebAsset(
   context: Context<HttpEnvironment>,

@@ -928,7 +928,23 @@ function notifySessionExpiry(response: Response): void {
   }
 }
 
+/** What the read-only public Review page may show of a public-link artifact. */
+const publicArtifactSchema = z.object({
+  artifact: z.object({ id: z.string(), name: z.string() }),
+  links: z.object({ version: z.url() }),
+  version: z.object({
+    createdAt: z.string(),
+    id: z.string(),
+    number: z.number().int(),
+  }),
+});
+export type PublicArtifact = z.infer<typeof publicArtifactSchema>;
+
 export const api = {
+  publicArtifact: (artifactId: string) => request(
+    publicArtifactSchema,
+    `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}`,
+  ),
   accessContext: () => request(accessContextSchema, "/auth/context"),
   localOwnerSession: () => requestNoContent("/auth/local-owner", {
     method: "POST",
