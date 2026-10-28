@@ -4137,3 +4137,37 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
   color: var(--as-muted);
   line-height: 1.4;
 }
+
+/* Read-only Review of a public-link artifact for a viewer without a session. */
+.as-public-review {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+
+.as-public-review__bar {
+  align-items: center;
+  border-bottom: 1px solid var(--as-border);
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+}
+
+.as-public-review__bar h1 {
+  font-size: 1rem;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.as-public-review__bar small {
+  flex: 1;
+  opacity: 0.7;
+}
+
+.as-public-review__frame {
+  border: 0;
+  flex: 1;
+  width: 100%;
+}
