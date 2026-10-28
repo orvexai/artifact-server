@@ -53,6 +53,7 @@ import {
   type ArtifactVersion,
   type ComparedFile,
   type Project,
+  type PublicArtifact,
   type Session,
   type Version,
 } from "@/api/client";
@@ -461,6 +462,10 @@ export function ReviewApp() {
   }
   if (sessionState === "unauthenticated") {
     const returnTo = `${window.location.pathname}${window.location.search}`;
+    const publicArtifactId = readReviewLocation().artifactId;
+    if (publicArtifactId !== null && publicArtifactId !== "") {
+      return <PublicArtifactReview artifactId={publicArtifactId} returnTo={returnTo} />;
+    }
     return (
       <ReviewGate
         action={(
@@ -2717,6 +2722,75 @@ function InlineState({
       <strong>{title}</strong>
       <p>{description}</p>
     </div>
+  );
+}
+
+/**
+ * The read-only Review page a viewer without a session gets for a public-link
+ * artifact: its current version full screen, and a sign-in to comment. Any
+ * other artifact shows the same sign-in gate as before.
+ */
+function PublicArtifactReview({
+  artifactId,
+  returnTo,
+}: {
+  readonly artifactId: string;
+  readonly returnTo: string;
+}) {
+  const [state, setState] = useState<
+    {readonly kind: "loading"} | {readonly kind: "missing"} | {
+      readonly kind: "ready";
+      readonly artifact: PublicArtifact;
+    }
+  >({kind: "loading"});
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const artifact = await api.publicArtifact(artifactId);
+        if (!cancelled) setState({artifact, kind: "ready"});
+      } catch {
+        if (!cancelled) setState({kind: "missing"});
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [artifactId]);
+  const signIn = (
+    <a className="as-button as-button--primary" href={`/auth/login?returnTo=${encodeURIComponent(returnTo)}`}>
+      Sign in to comment
+    </a>
+  );
+  if (state.kind === "loading") {
+    return <ReviewGate description="Opening the shared artifact." title="Loading Artifact Server" />;
+  }
+  if (state.kind === "missing") {
+    return (
+      <ReviewGate
+        action={signIn}
+        description="This installation requires an authenticated browser session."
+        title="Sign in required"
+      />
+    );
+  }
+  const {artifact, links, version} = state.artifact;
+  return (
+    <main className="as-public-review">
+      <header className="as-public-review__bar">
+        <span aria-hidden="true" className="as-gate__mark">A</span>
+        <h1>{artifact.name}</h1>
+        <small>Version {version.number} · read only</small>
+        {signIn}
+      </header>
+      <iframe
+        className="as-public-review__frame"
+        referrerPolicy="no-referrer"
+        src={links.version}
+        title={artifact.name}
+      />
+    </main>
   );
 }
 
