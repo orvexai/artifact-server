@@ -10,6 +10,7 @@ import type {Principal} from "../core/identity.js";
 import type {GuestReviewInvitation, GuestReviewSession} from "../core/model.js";
 import type {IdGenerator} from "../core/ports.js";
 
+const guestIdleLifetimeMilliseconds = 24 * 60 * 60 * 1_000;
 const guestSessionLifetimeMilliseconds = 7 * 24 * 60 * 60 * 1_000;
 
 /** Identity carried by requests after the guest cookie has been verified. */
@@ -29,9 +30,10 @@ export interface GuestReviewDependencies {
     readonly findGuestInvitation: (projectId: string, artifactId: string) => Effect.Effect<GuestReviewInvitation | null, ArtifactRepositoryFailure>;
     readonly findGuestInvitationByDigest: (tokenDigest: string) => Effect.Effect<GuestReviewInvitation | null, ArtifactRepositoryFailure>;
     readonly revokeGuestInvitation: (projectId: string, artifactId: string, revokedAt: string) => Effect.Effect<boolean, ArtifactRepositoryFailure>;
-    readonly createGuestSession: (session: GuestReviewSession) => Effect.Effect<boolean, ArtifactRepositoryFailure>;
+    readonly createGuestSession: (session: GuestReviewSession) => Effect.Effect<"created" | "rate_limited" | "invalid", ArtifactRepositoryFailure>;
     readonly findGuestSession: (tokenDigest: string, requestTime: string) => Effect.Effect<GuestReviewSession | null, ArtifactRepositoryFailure>;
     readonly deleteExpiredGuestSessions: (expiredBefore: string, limit: number) => Effect.Effect<number, ArtifactRepositoryFailure>;
+    readonly deleteExpiredGuestContentRows: (expiredBefore: string, limit: number) => Effect.Effect<number, ArtifactRepositoryFailure>;
   };
   readonly findArtifact: (projectId: string, artifactId: string) => Effect.Effect<unknown, ArtifactRepositoryFailure>;
   readonly secrets: ContentSecretProvider;
@@ -96,19 +98,23 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
         if (result.invitation !== null && result.invitation.revokedAt === null) yield* dependencies.repository.revokeGuestInvitation(result.projectId, command.artifactId, DateTime.formatIso(yield* dependencies.clock.now));
       });
       const exchange = Effect.fn("GuestReviewService.exchange")(function*(command: {artifactId: string; displayName: string; secret: string}) {
+        const now = yield* dependencies.clock.now;
+        const nowIso = DateTime.formatIso(now);
+        yield* dependencies.repository.deleteExpiredGuestContentRows(nowIso, 100);
         const displayName = command.displayName.trim();
         if (displayName.length < 1 || displayName.length > 80) return yield* new AuthorizationDenied({message: "The display name must contain 1 to 80 characters."});
         const invitation = yield* dependencies.repository.findGuestInvitationByDigest(dependencies.secrets.digest(Redacted.make(command.secret, {label: "guest-invitation"})));
         if (invitation === null || invitation.artifactId !== command.artifactId || invitation.revokedAt !== null) return yield* new ArtifactNotFound({message: "The requested route does not exist."});
         if (!(yield* creatorMayStillManage(invitation.projectId, invitation.createdByPrincipalId))) return yield* new ArtifactNotFound({message: "The requested route does not exist."});
-        const now = yield* dependencies.clock.now;
         const sessionSecret = dependencies.secrets.issue();
         const csrfSecret = dependencies.secrets.issue();
-        const expiresAt = DateTime.formatIso(DateTime.addDuration(now, guestSessionLifetimeMilliseconds));
+        const absoluteExpiresAt = DateTime.formatIso(DateTime.addDuration(now, guestSessionLifetimeMilliseconds));
+        const idleExpiresAt = DateTime.formatIso(DateTime.addDuration(now, guestIdleLifetimeMilliseconds));
         const guestId = dependencies.ids.guestSessionId();
-        const created = yield* dependencies.repository.createGuestSession({artifactId: invitation.artifactId, createdAt: DateTime.formatIso(now), csrfDigest: csrfSecret.digest, displayName, expiresAt, guestId, invitationCreatorPrincipalId: invitation.createdByPrincipalId, invitationId: invitation.id, projectId: invitation.projectId, tokenDigest: sessionSecret.digest});
-        if (!created) return yield* new GuestRateLimitExceeded({message: "This invitation has reached its active guest-session limit."});
-        return {csrfToken: Redacted.value(csrfSecret.token), expiresAt, reviewer: {artifactId: invitation.artifactId, displayName, guestId, invitationCreatorPrincipalId: invitation.createdByPrincipalId, projectId: invitation.projectId}, sessionToken: sessionSecret.token};
+        const created = yield* dependencies.repository.createGuestSession({absoluteExpiresAt, artifactId: invitation.artifactId, createdAt: nowIso, csrfDigest: csrfSecret.digest, displayName, expiresAt: idleExpiresAt, guestId, invitationCreatorPrincipalId: invitation.createdByPrincipalId, invitationId: invitation.id, lastUsedAt: nowIso, projectId: invitation.projectId, tokenDigest: sessionSecret.digest});
+        if (created === "rate_limited") return yield* new GuestRateLimitExceeded({message: "This invitation has reached its exchange limit. Try again later."});
+        if (created === "invalid") return yield* new ArtifactNotFound({message: "The requested route does not exist."});
+        return {csrfToken: Redacted.value(csrfSecret.token), expiresAt: absoluteExpiresAt, reviewer: {artifactId: invitation.artifactId, displayName, guestId, invitationCreatorPrincipalId: invitation.createdByPrincipalId, projectId: invitation.projectId}, sessionToken: sessionSecret.token};
       });
       const authenticate = (token: Redacted.Redacted, requestTime: string) => Effect.gen(function*() {
         yield* dependencies.repository.deleteExpiredGuestSessions(requestTime, 100);

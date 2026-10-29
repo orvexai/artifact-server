@@ -213,7 +213,8 @@ describe("invited guest review", () => {
     const current = z.object({bootstrapUrl: z.url(), versionId: z.string(), number: z.number()}).parse(await currentResponse.json());
     expect(current.versionId).toBe(currentVersionId);
     expect(new URL(current.bootstrapUrl).searchParams.has("__artifact_bootstrap")).toBe(true);
-    expect((await fetchVersion(server, current.bootstrapUrl)).status).toBe(200);
+    const contentResponse = await fetchVersion(server, current.bootstrapUrl);
+    expect(contentResponse.status).toBe(200);
   });
 
   test("guest listing, detail, replies, paging, and author projections are isolated", async () => {
@@ -282,11 +283,46 @@ describe("invited guest review", () => {
     expect(response.status).toBe(403);
   });
 
-  test("an invitation allows at most 100 active guest sessions", async () => {
+  test("the 101st exchange succeeds and evicts the least recently used guest session", async () => {
     const invitation = await enableInvitation();
-    const exchanges = await Promise.all(Array.from({length: 100}, (_, index) => exchangeResponse(artifactId, invitation.secret, `Guest ${index}`)));
-    expect(exchanges.map((response) => response.status)).toEqual(Array.from({length: 100}, () => 201));
-    expect((await exchangeResponse(artifactId, invitation.secret, "Guest 101")).status).toBe(429);
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    const resetExchangeWindow = () => database.prepare("UPDATE guest_review_invitations SET exchange_window_started_at = NULL, exchange_count = 0 WHERE artifact_id = ?").run(artifactId);
+    const oldest = await exchange(artifactId, invitation.secret, "Oldest guest");
+    await Array.from({length: 99}, (_, offset) => offset + 1).reduce(async (previous, index) => {
+      await previous;
+      resetExchangeWindow();
+      expect((await exchangeResponse(artifactId, invitation.secret, `Guest ${index}`)).status).toBe(201);
+    }, Promise.resolve());
+    resetExchangeWindow();
+    expect((await exchangeResponse(artifactId, invitation.secret, "Guest 101")).status).toBe(201);
+    expect((await guestRequest(oldest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
+    database.close();
+  });
+
+  test("the 31st exchange for one invitation in a minute is rate limited", async () => {
+    const invitation = await enableInvitation();
+    expect((await Promise.all(Array.from({length: 30}, (_, index) => exchangeResponse(artifactId, invitation.secret, `Guest ${index}`)))).map((response) => response.status))
+      .toEqual(Array.from({length: 30}, () => 201));
+    expect((await exchangeResponse(artifactId, invitation.secret, "Guest 31")).status).toBe(429);
+  });
+
+  test("an idle-expired guest session does not count toward the invitation session cap", async () => {
+    const invitation = await enableInvitation();
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    const resetExchangeWindow = () => database.prepare("UPDATE guest_review_invitations SET exchange_window_started_at = NULL, exchange_count = 0 WHERE artifact_id = ?").run(artifactId);
+    const first = await exchange(artifactId, invitation.secret, "Idle expired");
+    await Array.from({length: 99}, (_, offset) => offset + 1).reduce(async (previous, index) => {
+      await previous;
+      resetExchangeWindow();
+      expect((await exchangeResponse(artifactId, invitation.secret, `Guest ${index}`)).status).toBe(201);
+    }, Promise.resolve());
+    database.prepare("UPDATE guest_review_sessions SET expires_at = '2000-01-01T00:00:00.000Z' WHERE artifact_id = ? AND display_name = 'Idle expired'").run(artifactId);
+    resetExchangeWindow();
+    expect((await exchangeResponse(artifactId, invitation.secret, "Replacement")).status).toBe(201);
+    expect((await guestRequest(first, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
+    const activeCount = z.object({count: z.number()}).parse(database.prepare("SELECT COUNT(*) AS count FROM guest_review_sessions WHERE artifact_id = ? AND expires_at > ? AND absolute_expires_at > ?").get(artifactId, new Date().toISOString(), new Date().toISOString()));
+    expect(activeCount.count).toBe(100);
+    database.close();
   });
 
   test("a guest session can create no more than 30 comments per hour", async () => {
@@ -298,13 +334,34 @@ describe("invited guest review", () => {
     expect(limited.status).toBe(429);
   });
 
-  test("repeated current requests reuse the guest bootstrap and revocation invalidates its content URL", async () => {
+  test("guest edits count toward the 30-action hourly budget", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const thread = await createGuestThread(guest, "Patch budget");
+    const path = `/api/v1/public/artifacts/${artifactId}/guest/comments/${thread.id}`;
+    await Array.from({length: 29}, (_, index) => index).reduce(async (previous, index) => {
+      await previous;
+      expect((await guestRequest(guest, "PATCH", path, JSON.stringify({body: `Edit ${index}`}))).status).toBe(200);
+    }, Promise.resolve());
+    expect((await guestRequest(guest, "PATCH", path, JSON.stringify({body: "Over limit"}))).status).toBe(429);
+  });
+
+  test("guest current bootstrap issuance is limited to 60 per hour", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const path = `/api/v1/public/artifacts/${artifactId}/guest/current`;
+    expect((await Promise.all(Array.from({length: 60}, () => guestRequest(guest, "GET", path)))).map((response) => response.status))
+      .toEqual(Array.from({length: 60}, () => 201));
+    expect((await guestRequest(guest, "GET", path)).status).toBe(429);
+  });
+
+  test("repeated current requests issue bounded bootstraps and revocation invalidates its content URL", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
     const currentPath = `/api/v1/public/artifacts/${artifactId}/guest/current`;
     const first = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", currentPath)).json());
     const second = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", currentPath)).json());
-    expect(second.bootstrapUrl).toBe(first.bootstrapUrl);
+    expect(second.bootstrapUrl).not.toBe(first.bootstrapUrl);
     const beforeRevoke = await fetchVersion(server, first.bootstrapUrl);
     expect(beforeRevoke.status).toBe(200);
     const contentCookie = beforeRevoke.headers.getSetCookie().find((cookie) => cookie.startsWith("artifact_content="))?.split(";", 1)[0];
@@ -314,6 +371,20 @@ describe("invited guest review", () => {
     expect((await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`)).status).toBe(204);
     expect((await fetchVersion(server, contentUrl, "GET", {Cookie: contentCookie ?? ""})).status).not.toBe(200);
     expect((await fetchVersion(server, first.bootstrapUrl)).status).not.toBe(200);
+  });
+
+  test("guest content bootstraps and sessions are swept after expiry on the next exchange", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const current = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).json());
+    expect((await fetchVersion(server, current.bootstrapUrl)).status).toBe(200);
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    database.prepare("UPDATE content_bootstraps SET expires_at = '2000-01-01T00:00:00.000Z' WHERE guest_session_id IS NOT NULL").run();
+    database.prepare("UPDATE content_sessions SET expires_at = '2000-01-01T00:00:00.000Z' WHERE guest_session_id IS NOT NULL").run();
+    expect((await exchangeResponse(artifactId, invitation.secret, "Cleanup guest")).status).toBe(201);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM content_bootstraps WHERE guest_session_id IS NOT NULL").get()).toMatchObject({count: 0});
+    expect(database.prepare("SELECT COUNT(*) AS count FROM content_sessions WHERE guest_session_id IS NOT NULL").get()).toMatchObject({count: 0});
+    database.close();
   });
 
   test("guest idempotency replay cannot disclose a member thread", async () => {
@@ -332,6 +403,25 @@ describe("invited guest review", () => {
     expect(await replyReplay.text()).toBe(JSON.stringify({error: {code: "COMMENT_NOT_FOUND", message: "The comment thread does not exist."}}));
   });
 
+  test("guest thread and reply idempotency conflicts return the generic 404", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const threadKey = "guest-thread-conflict-key-001";
+    const threadInput = {body: "First body", versionId: currentVersionId};
+    expect((await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify(threadInput), true, threadKey)).status).toBe(201);
+    const threadConflict = await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({...threadInput, body: "Different body"}), true, threadKey);
+    expect(threadConflict.status).toBe(404);
+    expect(await threadConflict.text()).toBe(JSON.stringify({error: {code: "COMMENT_NOT_FOUND", message: "The comment thread does not exist."}}));
+
+    const thread = await createGuestThread(guest, "Reply conflict root");
+    const replyPath = `/api/v1/public/artifacts/${artifactId}/guest/comments/${thread.id}/replies`;
+    const replyKey = "guest-reply-conflict-key-001";
+    expect((await guestRequest(guest, "POST", replyPath, JSON.stringify({body: "First reply"}), true, replyKey)).status).toBe(201);
+    const replyConflict = await guestRequest(guest, "POST", replyPath, JSON.stringify({body: "Different reply"}), true, replyKey);
+    expect(replyConflict.status).toBe(404);
+    expect(await replyConflict.text()).toBe(JSON.stringify({error: {code: "COMMENT_NOT_FOUND", message: "The comment thread does not exist."}}));
+  });
+
   test("a guest cannot delete a thread containing a team reply", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
@@ -339,6 +429,20 @@ describe("invited guest review", () => {
     const memberReply = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/comments/${thread.id}/replies?projectId=${projectId}`, JSON.stringify({body: "Team reply"}), {"Idempotency-Key": "team-reply-keeps-thread-001"});
     expect(memberReply.status).toBe(201);
     expect((await guestRequest(guest, "DELETE", `/api/v1/public/artifacts/${artifactId}/guest/comments/${thread.id}`)).status).toBe(409);
+  });
+
+  test("a concurrent team reply cannot be removed by guest thread deletion", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const thread = await createGuestThread(guest, "Concurrent team reply");
+    const deletion = guestRequest(guest, "DELETE", `/api/v1/public/artifacts/${artifactId}/guest/comments/${thread.id}`);
+    const reply = ownerRequest("POST", `/api/v1/artifacts/${artifactId}/comments/${thread.id}/replies?projectId=${projectId}`, JSON.stringify({body: "Must not be silently removed"}), {"Idempotency-Key": "guest-delete-reply-race-001"});
+    const [deleted, replied] = await Promise.all([deletion, reply]);
+    const detail = await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/comments/${thread.id}`);
+    const replyWon = replied.status === 201;
+    expect([deleted.status, replied.status]).toEqual(replyWon ? [409, 201] : [204, 404]);
+    expect(detail.status).toBe(replyWon ? 200 : 404);
+    expect((await detail.text()).includes("Must not be silently removed")).toBe(replyWon);
   });
 
   test("guest member-author projections hide emails for replies and resolvedBy", async () => {
@@ -365,9 +469,15 @@ describe("invited guest review", () => {
     expect(details.replies).toContainEqual({author: {displayName: "Team member", isYou: false}, body: "Email author reply"});
   });
 
-  test("creator losing active membership invalidates exchange and existing guest sessions", async () => {
+  test("creator losing active membership invalidates exchange, guest sessions and existing content sessions", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
+    const current = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).json());
+    const fetched = await fetchVersion(server, current.bootstrapUrl);
+    const contentCookie = fetched.headers.getSetCookie().find((cookie) => cookie.startsWith("artifact_content="))?.split(";", 1)[0];
+    expect(fetched.status).toBe(200);
+    expect(contentCookie).toBeDefined();
+    const contentUrl = new URL("/", current.bootstrapUrl).toString();
     const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
     try {
       database.prepare("UPDATE installation_members SET status = 'inactive' WHERE id = (SELECT created_by_principal_id FROM guest_review_invitations WHERE artifact_id = ?)").run(artifactId);
@@ -378,5 +488,7 @@ describe("invited guest review", () => {
     expect(deniedExchange.status).toBe(404);
     expect(await deniedExchange.text()).toBe(JSON.stringify({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}));
     expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
+    expect((await fetchVersion(server, contentUrl, "GET", {Cookie: contentCookie ?? ""})).status).not.toBe(200);
+    expect((await fetchVersion(server, current.bootstrapUrl)).status).not.toBe(200);
   });
 });

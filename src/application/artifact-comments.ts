@@ -1038,7 +1038,7 @@ function makeArtifactCommentService(
         idempotencyKey: yield* parseIdempotencyKey(command.idempotencyKey),
         installationId: dependencies.installationId, path: command.path,
         projectId: command.guest.projectId, versionId: version.version.id,
-      });
+      }).pipe(Effect.catchTag("IdempotencyConflict", () => Effect.fail(new CommentNotFound({message: "The comment thread does not exist."}))));
       if (created.thread.author.principalId !== `guest_${command.guest.guestId}`) {
         return yield* new CommentNotFound({message: "The comment thread does not exist."});
       }
@@ -1059,7 +1059,7 @@ function makeArtifactCommentService(
         id: dependencies.ids.commentReplyId(),
         idempotencyKey,
         projectId: command.guest.projectId, threadId: thread.id,
-      });
+      }).pipe(Effect.catchTag("IdempotencyConflict", () => Effect.fail(new CommentNotFound({message: "The comment thread does not exist."}))));
       if (created.reply.author.principalId !== `guest_${command.guest.guestId}`) {
         return yield* new CommentNotFound({message: "The comment thread does not exist."});
       }
@@ -1072,14 +1072,17 @@ function makeArtifactCommentService(
       if (thread.author.principalId !== makeGuestAuthor(command.guest).principalId) return yield* new AuthorizationDenied({message: "Only the author can change this comment."});
       if (command.anchor === undefined && command.body === undefined) return yield* new InvalidComment({message: "A comment update must change a body or an anchor."});
       if (command.anchor !== undefined) yield* requireAnchor({anchor: command.anchor});
+      const updatedAt = DateTime.formatIso(yield* dependencies.clock.now);
+      const body = command.body === undefined ? null : yield* requireBody(command.body);
+      yield* reserveGuestWrite(command.guest, updatedAt);
       return yield* dependencies.repository.updateThread({
         anchor: command.anchor === undefined ? null : {anchor: command.anchor},
         artifactId: command.guest.artifactId,
         authorizedByPrincipalId: command.guest.invitationCreatorPrincipalId,
-        body: command.body === undefined ? null : yield* requireBody(command.body),
+        body,
         principalId: makeGuestAuthor(command.guest).principalId,
         projectId: command.guest.projectId, state: null, threadId: thread.id,
-        updatedAt: DateTime.formatIso(yield* dependencies.clock.now),
+        updatedAt,
       });
     },
   );
@@ -1087,17 +1090,19 @@ function makeArtifactCommentService(
     function*(command: {readonly guest: GuestReviewer; readonly threadId: string}) {
       const thread = yield* requireGuestThread(command.guest, command.threadId);
       if (thread.author.principalId !== makeGuestAuthor(command.guest).principalId) return yield* new AuthorizationDenied({message: "Only the author can delete this comment."});
-      const replies = yield* dependencies.repository.listReplies(thread.id);
-      if (replies.some((reply) => reply.author.principalId !== `guest_${command.guest.guestId}`)) {
-        return yield* new CommentResolved({message: "A guest thread with team replies cannot be deleted."});
-      }
-      return yield* dependencies.repository.deleteThread({
+      const deletedAt = DateTime.formatIso(yield* dependencies.clock.now);
+      yield* reserveGuestWrite(command.guest, deletedAt);
+      const result = yield* dependencies.repository.deleteThread({
         artifactId: command.guest.artifactId,
         authorizedByPrincipalId: command.guest.invitationCreatorPrincipalId,
-        deletedAt: DateTime.formatIso(yield* dependencies.clock.now),
+        deletedAt,
         principalId: makeGuestAuthor(command.guest).principalId,
-        projectId: command.guest.projectId, threadId: thread.id,
+        projectId: command.guest.projectId,
+        rejectRepliesByOtherAuthorsPrincipalId: `guest_${command.guest.guestId}`,
+        threadId: thread.id,
       });
+      if (result.refusedForeignReplyDeletion === true) return yield* new CommentResolved({message: "A guest thread with team replies cannot be deleted."});
+      return result;
     },
   );
   const guestUpdateReply = Effect.fn("ArtifactCommentService.guestUpdateReply")(
@@ -1105,12 +1110,15 @@ function makeArtifactCommentService(
       const thread = yield* requireGuestThread(command.guest, command.threadId);
       const reply = yield* requireReply(thread.id, command.replyId);
       if (reply.author.principalId !== makeGuestAuthor(command.guest).principalId) return yield* new AuthorizationDenied({message: "Only the author can change this comment."});
+      const body = yield* requireBody(command.body);
+      const updatedAt = DateTime.formatIso(yield* dependencies.clock.now);
+      yield* reserveGuestWrite(command.guest, updatedAt);
       return yield* dependencies.repository.updateReply({
         artifactId: command.guest.artifactId,
         authorizedByPrincipalId: command.guest.invitationCreatorPrincipalId,
-        body: yield* requireBody(command.body), principalId: makeGuestAuthor(command.guest).principalId,
+        body, principalId: makeGuestAuthor(command.guest).principalId,
         projectId: command.guest.projectId, replyId: reply.id, threadId: thread.id,
-        updatedAt: DateTime.formatIso(yield* dependencies.clock.now),
+        updatedAt,
       });
     },
   );
@@ -1119,10 +1127,12 @@ function makeArtifactCommentService(
       const thread = yield* requireGuestThread(command.guest, command.threadId);
       const reply = yield* requireReply(thread.id, command.replyId);
       if (reply.author.principalId !== makeGuestAuthor(command.guest).principalId) return yield* new AuthorizationDenied({message: "Only the author can delete this comment."});
+      const deletedAt = DateTime.formatIso(yield* dependencies.clock.now);
+      yield* reserveGuestWrite(command.guest, deletedAt);
       yield* dependencies.repository.deleteReply({
         artifactId: command.guest.artifactId,
         authorizedByPrincipalId: command.guest.invitationCreatorPrincipalId,
-        deletedAt: DateTime.formatIso(yield* dependencies.clock.now),
+        deletedAt,
         principalId: makeGuestAuthor(command.guest).principalId,
         projectId: command.guest.projectId, replyId: reply.id, threadId: thread.id,
       });

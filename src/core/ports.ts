@@ -299,6 +299,7 @@ export interface DeleteCommentThread {
   readonly deletedAt: string;
   readonly principalId: string;
   readonly projectId: string;
+  readonly rejectRepliesByOtherAuthorsPrincipalId?: string;
   readonly threadId: string;
 }
 
@@ -749,9 +750,11 @@ export interface GuestReviewRepository {
     artifactId: string,
     revokedAt: string,
   ): Promise<boolean>;
-  createGuestSession(session: GuestReviewSession): Promise<boolean>;
+  createGuestSession(session: GuestReviewSession): Promise<"created" | "rate_limited" | "invalid">;
   findGuestSession(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null>;
   reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<boolean>;
+  reserveGuestBootstrap(guestId: string, requestTime: string): Promise<boolean>;
+  deleteExpiredGuestContentRows(expiredBefore: string, limit: number): Promise<number>;
   deleteExpiredGuestSessions(expiredBefore: string, limit: number): Promise<number>;
 }
 

@@ -722,6 +722,7 @@ export function createApplicationLayer(
   const contentDependencies: ContentAccessDependencies = {
     clock,
     repository: {
+      reserveGuestBootstrap: (guestId, at) => Effect.tryPromise({try: () => adapters.repository.reserveGuestBootstrap(guestId, at), catch: (cause) => repositoryFailure("reserveGuestBootstrap", cause)}),
       createContentBootstrap: (command) =>
         Effect.tryPromise({
           try: () => adapters.repository.createContentBootstrap(command),
@@ -1268,6 +1269,7 @@ export function createApplicationLayer(
       revokeGuestInvitation: (projectId, artifactId, at) => Effect.tryPromise({try: () => adapters.repository.revokeGuestInvitation(projectId, artifactId, at), catch: (cause) => repositoryFailure("revokeGuestInvitation", cause)}),
       createGuestSession: (session) => Effect.tryPromise({try: () => adapters.repository.createGuestSession(session), catch: (cause) => repositoryFailure("createGuestSession", cause)}),
       findGuestSession: (digest, at) => Effect.tryPromise({try: () => adapters.repository.findGuestSession(digest, at), catch: (cause) => repositoryFailure("findGuestSession", cause)}),
+      deleteExpiredGuestContentRows: (before, limit) => Effect.tryPromise({try: () => adapters.repository.deleteExpiredGuestContentRows(before, limit), catch: (cause) => repositoryFailure("deleteExpiredGuestContentRows", cause)}),
       deleteExpiredGuestSessions: (before, limit) => Effect.tryPromise({try: () => adapters.repository.deleteExpiredGuestSessions(before, limit), catch: (cause) => repositoryFailure("deleteExpiredGuestSessions", cause)}),
     },
     findArtifact: (projectId, artifactId) => Effect.tryPromise({

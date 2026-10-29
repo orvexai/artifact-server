@@ -12,6 +12,7 @@ import {
   type AuthorizationDenied,
   ContentBootstrapRejected,
   ContentSessionRequired,
+  GuestRateLimitExceeded,
   VersionNotFound,
 } from "../core/errors.js";
 import type { Principal } from "../core/identity.js";
@@ -63,6 +64,7 @@ export interface ContentSecretProvider {
 
 /** Repository capabilities required by content access policy. */
 export interface ContentAccessRepository {
+  readonly reserveGuestBootstrap: (guestId: string, requestTime: string) => Effect.Effect<boolean, ArtifactRepositoryFailure>;
   readonly createContentBootstrap: (
     command: CreateContentBootstrap,
   ) => Effect.Effect<ContentBootstrapRecord, ArtifactRepositoryFailure>;
@@ -176,6 +178,7 @@ export type ContentAccessFailure =
   | AuthorizationDenied
   | ContentBootstrapRejected
   | ContentSessionRequired
+  | GuestRateLimitExceeded
   | VersionNotFound
   | ArtifactRepositoryFailure
   | ProjectManagementFailure;
@@ -230,10 +233,6 @@ function makeContentAccessService(
   authorization: AuthorizationOperations,
   projects: ProjectManagementService["Service"],
 ): ContentAccessOperations {
-  const pendingGuestBootstraps = new Map<
-    string,
-    IssuedContentBootstrap & {readonly guestSessionId: string}
-  >();
   const resolveAuthorizedTarget = Effect.fn(
     "ContentAccessService.resolveAuthorizedTarget",
   )(function*(command: IssueContentBootstrapCommand) {
@@ -310,8 +309,8 @@ function makeContentAccessService(
     if (current === null || current.artifact.deletedAt !== null) return yield* new ArtifactNotFound({message: "The artifact does not exist."});
     const now = yield* dependencies.clock.now;
     const nowIso = DateTime.formatIso(now);
-    const cached = pendingGuestBootstraps.get(guest.guestId);
-    if (cached !== undefined && cached.expiresAt > nowIso && cached.versionId === current.version.id) return cached;
+    const reserved = yield* dependencies.repository.reserveGuestBootstrap(guest.guestId, nowIso);
+    if (!reserved) return yield* new GuestRateLimitExceeded({message: "This guest session has reached its content-bootstrap limit. Try again later."});
     const secret = dependencies.secrets.issue();
     const expiresAt = DateTime.formatIso(DateTime.addDuration(now, bootstrapLifetimeMilliseconds));
     yield* dependencies.repository.createContentBootstrap({
@@ -320,7 +319,7 @@ function makeContentAccessService(
       principalId: `guest_${guest.guestId}`,
       projectId: guest.projectId, tokenDigest: secret.digest, versionId: current.version.id,
     });
-    const issued = {
+    return {
       artifactName: current.artifact.name,
       contentToken: current.version.contentToken,
       createdAt: current.version.createdAt,
@@ -330,8 +329,6 @@ function makeContentAccessService(
       versionId: current.version.id,
       guestSessionId: guest.guestId,
     };
-    pendingGuestBootstraps.set(guest.guestId, issued);
-    return issued;
   });
 
   const issuePreviewLease = Effect.fn(
@@ -391,9 +388,6 @@ function makeContentAccessService(
       return yield* Effect.fail(new ContentBootstrapRejected({
         message: "The private-content bootstrap is invalid or no longer available.",
       }));
-    }
-    if (session.guestSessionId !== null && session.guestSessionId !== undefined) {
-      pendingGuestBootstraps.delete(session.guestSessionId);
     }
     return {expiresAt: session.expiresAt, token: sessionSecret.token};
   });

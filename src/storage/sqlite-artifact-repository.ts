@@ -238,9 +238,9 @@ const guestInvitationRowSchema = z.object({
   tokenDigest: z.string(),
 });
 const guestSessionRowSchema = z.object({
-  artifactId: z.string(), createdAt: z.string(), csrfDigest: z.string(),
+  absoluteExpiresAt: z.string(), artifactId: z.string(), createdAt: z.string(), csrfDigest: z.string(),
   displayName: z.string(), expiresAt: z.string(), guestId: z.string(),
-  invitationCreatorPrincipalId: z.string(), invitationId: z.string(),
+  invitationCreatorPrincipalId: z.string(), invitationId: z.string(), lastUsedAt: z.string(),
   projectId: z.string(), tokenDigest: z.string(),
 });
 const idempotencyRowSchema = z.object({
@@ -2327,27 +2327,47 @@ export class SqliteArtifactRepository implements
     }));
   }
 
-  createGuestSession(session: GuestReviewSession): Promise<boolean> {
+  createGuestSession(session: GuestReviewSession): Promise<"created" | "rate_limited" | "invalid"> {
     return Promise.resolve().then(() => this.#transaction(() => {
-      const invitation = this.#database.prepare(`SELECT i.id FROM guest_review_invitations i
+      const invitation = this.#database.prepare(`SELECT i.id, i.exchange_window_started_at AS exchangeWindowStartedAt,
+        i.exchange_count AS exchangeCount FROM guest_review_invitations i
         JOIN projects p ON p.id = i.project_id
         JOIN artifacts a ON a.id = i.artifact_id AND a.project_id = i.project_id
         WHERE i.id = ? AND i.project_id = ? AND i.artifact_id = ?
           AND i.revoked_at IS NULL AND p.archived_at IS NULL AND a.deleted_at IS NULL`)
         .get(session.invitationId, session.projectId, session.artifactId);
-      if (invitation === undefined) return false;
+      if (invitation === undefined) return "invalid";
+      const parsedInvitation = z.object({id: z.string(), exchangeWindowStartedAt: z.string().nullable(), exchangeCount: z.number()}).parse(invitation);
+      const oldExchangeWindow = parsedInvitation.exchangeWindowStartedAt !== null
+        && Date.parse(parsedInvitation.exchangeWindowStartedAt) > Date.parse(session.createdAt) - 60_000;
+      if (oldExchangeWindow && parsedInvitation.exchangeCount >= 30) return "rate_limited";
+      this.#database.prepare(`UPDATE guest_review_invitations SET
+        exchange_window_started_at = ?, exchange_count = ? WHERE id = ?`)
+        .run(oldExchangeWindow ? parsedInvitation.exchangeWindowStartedAt : session.createdAt, oldExchangeWindow ? parsedInvitation.exchangeCount + 1 : 1, session.invitationId);
       const count = z.object({count: z.number()}).parse(this.#database.prepare(`SELECT COUNT(*) AS count FROM guest_review_sessions
-        WHERE invitation_id = ? AND expires_at > ?`).get(session.invitationId, session.createdAt));
-      if (count.count >= 100) return false;
+        WHERE invitation_id = ? AND expires_at > ? AND absolute_expires_at > ?`).get(session.invitationId, session.createdAt, session.createdAt));
+      if (count.count >= 100) {
+        const oldest = this.#database.prepare(`SELECT id FROM guest_review_sessions
+          WHERE invitation_id = ? AND expires_at > ? AND absolute_expires_at > ?
+        ORDER BY last_used_at ASC, created_at ASC LIMIT 1`).get(session.invitationId, session.createdAt, session.createdAt);
+        const parsedOldest = oldest === undefined ? null : z.object({id: z.string()}).parse(oldest);
+        if (parsedOldest !== null) {
+          this.#database.prepare("DELETE FROM content_bootstraps WHERE guest_session_id = ? OR principal_id = ?").run(parsedOldest.id, `guest_${parsedOldest.id}`);
+          this.#database.prepare("DELETE FROM content_sessions WHERE guest_session_id = ? OR principal_id = ?").run(parsedOldest.id, `guest_${parsedOldest.id}`);
+          this.#database.prepare("DELETE FROM guest_review_sessions WHERE id = ?").run(parsedOldest.id);
+        }
+      }
       this.#database.prepare(`INSERT INTO guest_review_sessions (
         id, token_digest, csrf_digest, invitation_id, project_id, artifact_id,
-        display_name, created_at, expires_at, comment_window_started_at, comment_write_count
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)`).run(
+        display_name, created_at, expires_at, absolute_expires_at, last_used_at,
+        comment_window_started_at, comment_write_count, bootstrap_window_started_at, bootstrap_issue_count
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, 0)`).run(
         session.guestId, session.tokenDigest, session.csrfDigest,
         session.invitationId, session.projectId, session.artifactId,
         session.displayName, session.createdAt, session.expiresAt,
+        session.absoluteExpiresAt, session.lastUsedAt,
       );
-      return true;
+      return "created";
     }));
   }
 
@@ -2370,29 +2390,74 @@ export class SqliteArtifactRepository implements
     });
   }
 
+  reserveGuestBootstrap(guestId: string, requestTime: string): Promise<boolean> {
+    return Promise.resolve().then(() => {
+      const changed = this.#database.prepare(`UPDATE guest_review_sessions SET
+        bootstrap_window_started_at = CASE
+          WHEN bootstrap_window_started_at IS NULL OR julianday(bootstrap_window_started_at) <= julianday(?) - 1.0 / 24
+          THEN ? ELSE bootstrap_window_started_at END,
+        bootstrap_issue_count = CASE
+          WHEN bootstrap_window_started_at IS NULL OR julianday(bootstrap_window_started_at) <= julianday(?) - 1.0 / 24
+          THEN 1 ELSE bootstrap_issue_count + 1 END
+        WHERE id = ? AND expires_at > ? AND absolute_expires_at > ?
+          AND (bootstrap_window_started_at IS NULL
+            OR julianday(bootstrap_window_started_at) <= julianday(?) - 1.0 / 24
+            OR bootstrap_issue_count < 60)`).run(
+        requestTime, requestTime, requestTime, guestId, requestTime, requestTime, requestTime,
+      ).changes;
+      return changed > 0;
+    });
+  }
+
   findGuestSession(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null> {
     return Promise.resolve().then(() => {
+      const idleExpiresAt = new Date(Date.parse(requestTime) + 24 * 60 * 60 * 1_000).toISOString();
+      const updated = this.#database.prepare(`UPDATE guest_review_sessions SET
+        last_used_at = ?, expires_at = MIN(absolute_expires_at, ?)
+        WHERE token_digest = ? AND expires_at > ? AND absolute_expires_at > ?
+          AND EXISTS (SELECT 1 FROM guest_review_invitations i
+            JOIN artifacts a ON a.id = i.artifact_id AND a.project_id = i.project_id
+            JOIN projects p ON p.id = i.project_id
+            WHERE i.id = guest_review_sessions.invitation_id
+              AND i.revoked_at IS NULL AND a.deleted_at IS NULL AND p.archived_at IS NULL)`)
+        .run(requestTime, idleExpiresAt, tokenDigest, requestTime, requestTime).changes;
+      if (updated === 0) return null;
       const row = this.#database.prepare(`SELECT s.id AS guestId,
         s.token_digest AS tokenDigest, s.csrf_digest AS csrfDigest,
         s.invitation_id AS invitationId, s.project_id AS projectId,
         s.artifact_id AS artifactId, s.display_name AS displayName,
         s.created_at AS createdAt, s.expires_at AS expiresAt,
+        s.absolute_expires_at AS absoluteExpiresAt, s.last_used_at AS lastUsedAt,
         i.created_by_principal_id AS invitationCreatorPrincipalId
         FROM guest_review_sessions s
         JOIN guest_review_invitations i ON i.id = s.invitation_id
           AND i.project_id = s.project_id AND i.artifact_id = s.artifact_id
         JOIN artifacts a ON a.id = s.artifact_id AND a.project_id = s.project_id
         JOIN projects p ON p.id = s.project_id
-        WHERE s.token_digest = ? AND s.expires_at > ?
-          AND i.revoked_at IS NULL AND a.deleted_at IS NULL AND p.archived_at IS NULL`).get(tokenDigest, requestTime);
+        WHERE s.token_digest = ? AND s.expires_at > ? AND s.absolute_expires_at > ?
+          AND i.revoked_at IS NULL AND a.deleted_at IS NULL AND p.archived_at IS NULL`).get(tokenDigest, requestTime, requestTime);
       return guestSessionRowSchema.nullable().parse(row ?? null);
     });
   }
 
+  deleteExpiredGuestContentRows(expiredBefore: string, limit: number): Promise<number> {
+    return Promise.resolve().then(() => this.#transaction(() => {
+      const bootstraps = this.#database.prepare(`DELETE FROM content_bootstraps WHERE token_digest IN (
+        SELECT token_digest FROM content_bootstraps WHERE expires_at <= ?
+          AND (guest_session_id IS NOT NULL OR substr(principal_id, 1, 6) = 'guest_') LIMIT ?
+      )`).run(expiredBefore, limit).changes;
+      const sessions = this.#database.prepare(`DELETE FROM content_sessions WHERE token_digest IN (
+        SELECT token_digest FROM content_sessions WHERE expires_at <= ?
+          AND (guest_session_id IS NOT NULL OR substr(principal_id, 1, 6) = 'guest_') LIMIT ?
+      )`).run(expiredBefore, limit).changes;
+      return Number(bootstraps) + Number(sessions);
+    }));
+  }
+
   deleteExpiredGuestSessions(expiredBefore: string, limit: number): Promise<number> {
     return Promise.resolve().then(() => this.#database.prepare(`DELETE FROM guest_review_sessions
-      WHERE id IN (SELECT id FROM guest_review_sessions WHERE expires_at <= ? LIMIT ?)`)
-      .run(expiredBefore, limit).changes).then(Number);
+      WHERE id IN (SELECT id FROM guest_review_sessions WHERE expires_at <= ? OR absolute_expires_at <= ? LIMIT ?)`)
+      .run(expiredBefore, expiredBefore, limit).changes).then(Number);
   }
 
   exchangeContentBootstrap(
@@ -2424,6 +2489,17 @@ export class SqliteArtifactRepository implements
               AND a.deleted_at IS NULL
               AND ((b.guest_session_id IS NULL AND substr(b.principal_id, 1, 6) <> 'guest_') OR (
                 gs.expires_at > ? AND gi.revoked_at IS NULL AND gp.archived_at IS NULL
+                AND EXISTS (SELECT 1 FROM installation_members creator
+                  WHERE creator.id = gi.created_by_principal_id AND creator.status = 'active'
+                    AND (gp.access_mode = 'installation' OR gp.created_by_member_id = creator.id OR creator.role IN ('administrator', 'owner') OR EXISTS (
+                      SELECT 1 FROM project_group_grants pgg
+                      JOIN directory_group_members dgm ON dgm.installation_id = pgg.installation_id AND dgm.group_id = pgg.group_id
+                      WHERE pgg.project_id = gp.id AND pgg.role IN ('editor', 'manager') AND dgm.provider IS NOT NULL
+                        AND (EXISTS (SELECT 1 FROM external_identities ei
+                          WHERE ei.member_id = creator.id AND ei.provider = dgm.provider AND ei.subject = dgm.subject)
+                          OR (dgm.email = creator.email AND NOT EXISTS (SELECT 1 FROM external_identities ei
+                            WHERE ei.member_id = creator.id AND ei.provider = dgm.provider)))
+                    )))
               ))`,
           )
           .get(
@@ -2507,6 +2583,17 @@ export class SqliteArtifactRepository implements
             AND a.deleted_at IS NULL
             AND ((s.guest_session_id IS NULL AND substr(s.principal_id, 1, 6) <> 'guest_') OR (
               gs.expires_at > ? AND gi.revoked_at IS NULL AND gp.archived_at IS NULL
+              AND EXISTS (SELECT 1 FROM installation_members creator
+                WHERE creator.id = gi.created_by_principal_id AND creator.status = 'active'
+                  AND (gp.access_mode = 'installation' OR gp.created_by_member_id = creator.id OR creator.role IN ('administrator', 'owner') OR EXISTS (
+                    SELECT 1 FROM project_group_grants pgg
+                    JOIN directory_group_members dgm ON dgm.installation_id = pgg.installation_id AND dgm.group_id = pgg.group_id
+                    WHERE pgg.project_id = gp.id AND pgg.role IN ('editor', 'manager') AND dgm.provider IS NOT NULL
+                      AND (EXISTS (SELECT 1 FROM external_identities ei
+                        WHERE ei.member_id = creator.id AND ei.provider = dgm.provider AND ei.subject = dgm.subject)
+                        OR (dgm.email = creator.email AND NOT EXISTS (SELECT 1 FROM external_identities ei
+                          WHERE ei.member_id = creator.id AND ei.provider = dgm.provider)))
+                  )))
             ))`,
         )
         .get(tokenDigest, contentToken, requestTime, requestTime);
@@ -3654,6 +3741,15 @@ export class SqliteArtifactRepository implements
         ).state;
         if (dispatchHoldsCommentThread(dispatchState)) {
           throw dispatchedCommentDeletionConflict();
+        }
+        if (command.rejectRepliesByOtherAuthorsPrincipalId !== undefined) {
+          const foreignReply = this.#database.prepare(`SELECT 1 FROM comment_replies
+            WHERE thread_id = ? AND author_principal_id <> ? LIMIT 1`).get(
+            command.threadId, command.rejectRepliesByOtherAuthorsPrincipalId,
+          );
+          if (foreignReply !== undefined) {
+            return {deletedReplyCount: 0, refusedForeignReplyDeletion: true, thread: commentThreadFromRow(row)};
+          }
         }
         const removedReplies = this.#database
           .prepare("DELETE FROM comment_replies WHERE thread_id = ?")
@@ -4960,7 +5056,9 @@ export class SqliteArtifactRepository implements
         token_digest TEXT NOT NULL UNIQUE,
         created_by_principal_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        revoked_at TEXT
+        revoked_at TEXT,
+        exchange_window_started_at TEXT,
+        exchange_count INTEGER NOT NULL DEFAULT 0
       ) STRICT;
       CREATE UNIQUE INDEX IF NOT EXISTS guest_review_active_invitation
         ON guest_review_invitations (project_id, artifact_id)
@@ -4975,8 +5073,12 @@ export class SqliteArtifactRepository implements
         display_name TEXT NOT NULL,
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
+        absolute_expires_at TEXT,
+        last_used_at TEXT,
         comment_window_started_at TEXT,
-        comment_write_count INTEGER NOT NULL DEFAULT 0
+        comment_write_count INTEGER NOT NULL DEFAULT 0,
+        bootstrap_window_started_at TEXT,
+        bootstrap_issue_count INTEGER NOT NULL DEFAULT 0
       ) STRICT;
       CREATE INDEX IF NOT EXISTS guest_review_sessions_expiry
         ON guest_review_sessions (expires_at);
@@ -4987,12 +5089,21 @@ export class SqliteArtifactRepository implements
       }
     }
     const guestColumns = this.#tableColumns("guest_review_sessions");
+    const invitationColumns = this.#tableColumns("guest_review_invitations");
+    if (!invitationColumns.includes("exchange_window_started_at")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN exchange_window_started_at TEXT");
+    if (!invitationColumns.includes("exchange_count")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN exchange_count INTEGER NOT NULL DEFAULT 0");
     if (!guestColumns.includes("comment_window_started_at")) {
       this.#database.exec("ALTER TABLE guest_review_sessions ADD COLUMN comment_window_started_at TEXT");
     }
     if (!guestColumns.includes("comment_write_count")) {
       this.#database.exec("ALTER TABLE guest_review_sessions ADD COLUMN comment_write_count INTEGER NOT NULL DEFAULT 0");
     }
+    if (!guestColumns.includes("absolute_expires_at")) this.#database.exec("ALTER TABLE guest_review_sessions ADD COLUMN absolute_expires_at TEXT");
+    if (!guestColumns.includes("last_used_at")) this.#database.exec("ALTER TABLE guest_review_sessions ADD COLUMN last_used_at TEXT");
+    if (!guestColumns.includes("bootstrap_window_started_at")) this.#database.exec("ALTER TABLE guest_review_sessions ADD COLUMN bootstrap_window_started_at TEXT");
+    if (!guestColumns.includes("bootstrap_issue_count")) this.#database.exec("ALTER TABLE guest_review_sessions ADD COLUMN bootstrap_issue_count INTEGER NOT NULL DEFAULT 0");
+    this.#database.exec(`UPDATE guest_review_sessions SET absolute_expires_at = expires_at WHERE absolute_expires_at IS NULL;
+      UPDATE guest_review_sessions SET last_used_at = created_at WHERE last_used_at IS NULL;`);
     this.#database.exec(`CREATE INDEX IF NOT EXISTS content_bootstraps_guest_session
       ON content_bootstraps (guest_session_id, expires_at);
       CREATE INDEX IF NOT EXISTS content_sessions_guest_session
@@ -5895,6 +6006,7 @@ export class SqliteArtifactRepository implements
       | "content_bootstraps"
       | "content_sessions"
       | "guest_review_sessions"
+      | "guest_review_invitations"
       | "git_history_project_settings"
       | "idempotency_records"
       | "projects"

@@ -277,6 +277,7 @@ export interface GuestReviewInvitation {
 
 /** A guest browser session bound to one invitation and artifact. */
 export interface GuestReviewSession {
+  readonly absoluteExpiresAt: string;
   readonly artifactId: string;
   readonly createdAt: string;
   readonly csrfDigest: string;
@@ -285,6 +286,7 @@ export interface GuestReviewSession {
   readonly guestId: string;
   readonly invitationCreatorPrincipalId: string;
   readonly invitationId: string;
+  readonly lastUsedAt: string;
   readonly projectId: string;
   readonly tokenDigest: string;
 }
@@ -404,6 +406,7 @@ export interface CommentReplyCreation {
 /** The durable outcome of deleting one comment thread and its replies. */
 export interface CommentThreadDeletion {
   readonly deletedReplyCount: number;
+  readonly refusedForeignReplyDeletion?: boolean;
   readonly thread: CommentThreadRecord;
 }
 

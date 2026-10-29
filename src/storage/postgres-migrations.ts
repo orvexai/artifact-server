@@ -720,6 +720,28 @@ const hardenGuestReview = Effect.gen(function*() {
     ON content_sessions (installation_id, guest_session_id, expires_at)`);
 });
 
+const addGuestReviewRateLimits = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE guest_review_sessions
+    ADD COLUMN absolute_expires_at TEXT,
+    ADD COLUMN last_used_at TEXT,
+    ADD COLUMN bootstrap_window_started_at TEXT,
+    ADD COLUMN bootstrap_issue_count INTEGER NOT NULL DEFAULT 0`);
+  yield* sql.unsafe(`UPDATE guest_review_sessions SET
+    absolute_expires_at = expires_at, last_used_at = created_at
+    WHERE absolute_expires_at IS NULL OR last_used_at IS NULL`);
+  yield* sql.unsafe(`ALTER TABLE guest_review_sessions
+    ALTER COLUMN absolute_expires_at SET NOT NULL,
+    ALTER COLUMN last_used_at SET NOT NULL`);
+});
+
+const addGuestInvitationExchangeLimit = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE guest_review_invitations
+    ADD COLUMN exchange_window_started_at TEXT,
+    ADD COLUMN exchange_count INTEGER NOT NULL DEFAULT 0`);
+});
+
 const addProjectArchiveAudit = Effect.gen(function*() {
   const sql = yield* SqlClient;
   yield* sql.unsafe(`CREATE TABLE project_archive_events (
@@ -857,6 +879,8 @@ const postgresMigrations = {
   "0018_group_roles": addGroupRoles,
   "0019_guest_review": addGuestReview,
   "0020_harden_guest_review": hardenGuestReview,
+  "0021_guest_review_rate_limits": addGuestReviewRateLimits,
+  "0022_guest_invitation_exchange_limit": addGuestInvitationExchangeLimit,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);
