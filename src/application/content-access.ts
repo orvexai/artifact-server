@@ -12,6 +12,7 @@ import {
   type AuthorizationDenied,
   ContentBootstrapRejected,
   ContentSessionRequired,
+  GuestRateLimitExceeded,
   VersionNotFound,
 } from "../core/errors.js";
 import type { Principal } from "../core/identity.js";
@@ -33,6 +34,7 @@ import {
   AuthorizationService,
 } from "./authorization.js";
 import type { ApplicationClock } from "./application-clock.js";
+import type {GuestReviewer} from "./guest-review.js";
 import {
   type ProjectManagementFailure,
   ProjectManagementService,
@@ -62,6 +64,7 @@ export interface ContentSecretProvider {
 
 /** Repository capabilities required by content access policy. */
 export interface ContentAccessRepository {
+  readonly reserveGuestBootstrap: (guestId: string, requestTime: string) => Effect.Effect<boolean, ArtifactRepositoryFailure>;
   readonly createContentBootstrap: (
     command: CreateContentBootstrap,
   ) => Effect.Effect<ContentBootstrapRecord, ArtifactRepositoryFailure>;
@@ -108,6 +111,9 @@ export interface ContentAccessDependencies {
 
 /** Successful one-time bootstrap issuance for one current immutable version. */
 export interface IssuedContentBootstrap {
+  readonly artifactName: string;
+  readonly createdAt: string;
+  readonly number: number;
   readonly contentToken: string;
   readonly expiresAt: string;
   readonly token: Redacted.Redacted;
@@ -172,6 +178,7 @@ export type ContentAccessFailure =
   | AuthorizationDenied
   | ContentBootstrapRejected
   | ContentSessionRequired
+  | GuestRateLimitExceeded
   | VersionNotFound
   | ArtifactRepositoryFailure
   | ProjectManagementFailure;
@@ -189,6 +196,7 @@ interface ContentAccessOperations {
   readonly issueContentBootstrap: (
     command: IssueContentBootstrapCommand,
   ) => Effect.Effect<IssuedContentBootstrap, ContentAccessFailure>;
+  readonly issueGuestContentBootstrap: (guest: GuestReviewer) => Effect.Effect<IssuedContentBootstrap, ContentAccessFailure>;
   readonly issuePreviewLease: (
     command: IssuePreviewLeaseCommand,
   ) => Effect.Effect<IssuedPreviewLease, ContentAccessFailure>;
@@ -286,10 +294,40 @@ function makeContentAccessService(
       versionId: target.id,
     });
     return {
+      artifactName: artifact.name,
       contentToken: target.contentToken,
+      createdAt: target.createdAt,
       expiresAt,
+      number: target.number,
       token: secret.token,
       versionId: target.id,
+    };
+  });
+
+  const issueGuestContentBootstrap = Effect.fn("ContentAccessService.issueGuestContentBootstrap")(function*(guest: GuestReviewer) {
+    const current = yield* dependencies.repository.findCurrentVersion(guest.projectId, guest.artifactId);
+    if (current === null || current.artifact.deletedAt !== null) return yield* new ArtifactNotFound({message: "The artifact does not exist."});
+    const now = yield* dependencies.clock.now;
+    const nowIso = DateTime.formatIso(now);
+    const reserved = yield* dependencies.repository.reserveGuestBootstrap(guest.guestId, nowIso);
+    if (!reserved) return yield* new GuestRateLimitExceeded({message: "This guest session has reached its content-bootstrap limit. Try again later."});
+    const secret = dependencies.secrets.issue();
+    const expiresAt = DateTime.formatIso(DateTime.addDuration(now, bootstrapLifetimeMilliseconds));
+    yield* dependencies.repository.createContentBootstrap({
+      artifactId: guest.artifactId, contentToken: current.version.contentToken,
+      createdAt: nowIso, expiresAt, guestSessionId: guest.guestId,
+      principalId: `guest_${guest.guestId}`,
+      projectId: guest.projectId, tokenDigest: secret.digest, versionId: current.version.id,
+    });
+    return {
+      artifactName: current.artifact.name,
+      contentToken: current.version.contentToken,
+      createdAt: current.version.createdAt,
+      expiresAt,
+      number: current.version.number,
+      token: secret.token,
+      versionId: current.version.id,
+      guestSessionId: guest.guestId,
     };
   });
 
@@ -429,6 +467,7 @@ function makeContentAccessService(
     authorizeVersionContent,
     exchangeContentBootstrap,
     issueContentBootstrap,
+    issueGuestContentBootstrap,
     issuePreviewLease,
     resolvePublicArtifact,
   });

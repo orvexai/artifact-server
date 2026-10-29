@@ -57,6 +57,10 @@ import {
   type CommentThreadState,
   type ContentBootstrapRecord,
   type ContentSessionRecord,
+  type GuestReviewInvitation,
+  type GuestReviewInvitationUsage,
+  type GuestReviewSession,
+  type GuestReviewSessionSummary,
   type PageCursor,
   defaultProjectId,
   defaultProjectName,
@@ -81,6 +85,7 @@ import type {
   CommitArtifactVersion,
   CommitNewArtifact,
   ContentSessionRepository,
+  GuestReviewRepository,
   CreateAgentDispatch,
   CreateCommentReply,
   CreateCommentThread,
@@ -319,11 +324,25 @@ const contentRecordRowSchema = z.object({
   contentToken: z.string(),
   createdAt: z.string(),
   expiresAt: z.string(),
+  guestSessionId: z.string().nullable(),
   principalId: z.string(),
   projectId: z.string(),
   tokenDigest: z.string(),
   versionId: z.string(),
 });
+const guestInvitationRecordSchema = z.object({
+  artifactId: z.string(), createdAt: z.string(), createdByPrincipalId: z.string(),
+  id: z.string(), projectId: z.string(), revokedAt: z.string().nullable(),
+  tokenDigest: z.string(),
+});
+const guestSessionRecordSchema = z.object({
+  absoluteExpiresAt: z.string(), artifactId: z.string(), createdAt: z.string(), csrfDigest: z.string(),
+  displayName: z.string(), expiresAt: z.string(), guestId: z.string(),
+  invitationCreatorPrincipalId: z.string(), invitationId: z.string(), lastUsedAt: z.string(),
+  projectId: z.string(), tokenDigest: z.string(),
+});
+const guestSessionSummaryRecordSchema = z.object({createdAt: z.string(), displayName: z.string(), guestId: z.string(), lastUsedAt: z.string()});
+const guestInvitationUsageRecordSchema = z.object({activeSessionCount: z.number(), limitHitRecently: z.boolean()});
 const stagedUploadRowSchema = z.object({
   committedVersionId: z.string().nullable(),
   createdAt: z.string(),
@@ -538,6 +557,7 @@ export class PostgresArtifactRepository implements
   ArtifactRepository,
   CommentRepository,
   ContentSessionRepository,
+  GuestReviewRepository,
   GitHistoryMirrorStore,
   ProjectRepository,
   StagedUploadRepository
@@ -2022,14 +2042,316 @@ export class PostgresArtifactRepository implements
       const sql = yield* SqlClient;
       yield* sql`INSERT INTO content_bootstraps (
         installation_id, project_id, token_digest, principal_id, artifact_id, version_id,
-        content_token, created_at, expires_at, consumed_at
+        content_token, created_at, expires_at, consumed_at, guest_session_id
       ) VALUES (
         ${installationId}, ${command.projectId}, ${command.tokenDigest}, ${command.principalId},
         ${command.artifactId}, ${command.versionId}, ${command.contentToken},
-        ${command.createdAt}, ${command.expiresAt}, NULL
+        ${command.createdAt}, ${command.expiresAt}, NULL, ${command.guestSessionId ?? null}
       )`;
     }));
     return command;
+  }
+
+  async createGuestInvitation(invitation: GuestReviewInvitation): Promise<void> {
+    const installationId = this.#installationId;
+    await this.#database.run(Effect.gen({self: this}, function*() {
+      const sql = yield* SqlClient;
+      yield* sql`INSERT INTO guest_review_invitations (
+        installation_id, id, project_id, artifact_id, token_digest,
+        created_by_principal_id, created_at, revoked_at
+      ) VALUES (${installationId}, ${invitation.id}, ${invitation.projectId},
+        ${invitation.artifactId}, ${invitation.tokenDigest},
+        ${invitation.createdByPrincipalId}, ${invitation.createdAt}, NULL)`;
+    }));
+  }
+
+  async findGuestInvitation(projectId: string, artifactId: string): Promise<GuestReviewInvitation | null> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen({self: this}, function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(`SELECT id, project_id AS "projectId",
+        artifact_id AS "artifactId", token_digest AS "tokenDigest",
+        created_by_principal_id AS "createdByPrincipalId", created_at AS "createdAt",
+        revoked_at AS "revokedAt" FROM guest_review_invitations
+        WHERE installation_id = $1 AND project_id = $2 AND artifact_id = $3
+        ORDER BY created_at DESC, id DESC LIMIT 1`, [installationId, projectId, artifactId]);
+      return guestInvitationRecordSchema.nullable().parse(rows[0] ?? null);
+    }));
+  }
+
+  async findGuestInvitationByDigest(tokenDigest: string): Promise<GuestReviewInvitation | null> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen({self: this}, function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(`SELECT i.id, i.project_id AS "projectId",
+        i.artifact_id AS "artifactId", i.token_digest AS "tokenDigest",
+        i.created_by_principal_id AS "createdByPrincipalId", i.created_at AS "createdAt",
+        i.revoked_at AS "revokedAt" FROM guest_review_invitations i
+        JOIN artifacts a ON a.installation_id = i.installation_id
+          AND a.project_id = i.project_id AND a.id = i.artifact_id
+        JOIN projects p ON p.installation_id = i.installation_id AND p.id = i.project_id
+        WHERE i.installation_id = $1 AND i.token_digest = $2
+          AND i.revoked_at IS NULL AND a.deleted_at IS NULL AND p.archived_at IS NULL`, [installationId, tokenDigest]);
+      return guestInvitationRecordSchema.nullable().parse(rows[0] ?? null);
+    }));
+  }
+
+  async revokeGuestInvitation(projectId: string, artifactId: string, revokedAt: string): Promise<boolean> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen({self: this}, function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+      const rows = yield* sql`UPDATE guest_review_invitations SET revoked_at = ${revokedAt}
+        WHERE installation_id = ${installationId} AND project_id = ${projectId}
+          AND artifact_id = ${artifactId} AND revoked_at IS NULL RETURNING id`;
+      const invitationId = rows[0]?.["id"];
+      if (invitationId === undefined) return false;
+      yield* sql`DELETE FROM content_bootstraps WHERE installation_id = ${installationId}
+        AND (guest_session_id IN (SELECT id FROM guest_review_sessions
+          WHERE installation_id = ${installationId} AND invitation_id = ${invitationId})
+        OR principal_id IN (SELECT 'guest_' || id FROM guest_review_sessions
+          WHERE installation_id = ${installationId} AND invitation_id = ${invitationId}))`;
+      yield* sql`DELETE FROM content_sessions WHERE installation_id = ${installationId}
+        AND (guest_session_id IN (SELECT id FROM guest_review_sessions
+          WHERE installation_id = ${installationId} AND invitation_id = ${invitationId})
+        OR principal_id IN (SELECT 'guest_' || id FROM guest_review_sessions
+          WHERE installation_id = ${installationId} AND invitation_id = ${invitationId}))`;
+      return true;
+      }));
+    }));
+  }
+
+  async createGuestSession(session: GuestReviewSession): Promise<"created" | "rate_limited" | "invalid"> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen({self: this}, function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        yield* sql`SELECT id FROM guest_review_invitations
+          WHERE installation_id = ${installationId} AND id = ${session.invitationId}
+          FOR UPDATE`;
+      const invitation = yield* sql`SELECT i.id, i.exchange_window_started_at AS "exchangeWindowStartedAt",
+        i.exchange_count AS "exchangeCount" FROM guest_review_invitations i
+        JOIN projects p ON p.installation_id = i.installation_id AND p.id = i.project_id
+        JOIN artifacts a ON a.installation_id = i.installation_id AND a.project_id = i.project_id AND a.id = i.artifact_id
+        WHERE i.installation_id = ${installationId} AND i.id = ${session.invitationId}
+          AND i.project_id = ${session.projectId} AND i.artifact_id = ${session.artifactId}
+          AND i.revoked_at IS NULL AND p.archived_at IS NULL AND a.deleted_at IS NULL
+        FOR UPDATE OF i`;
+      if (invitation.length === 0) return "invalid";
+      const invitationWindow = z.object({exchangeWindowStartedAt: z.string().nullable(), exchangeCount: z.number()}).parse(invitation[0]);
+      const exchangeStartedAt = invitationWindow.exchangeWindowStartedAt;
+      const exchangeCount = invitationWindow.exchangeCount;
+      const exchangeWindowActive = exchangeStartedAt !== null
+        && Date.parse(exchangeStartedAt) > Date.parse(session.createdAt) - 60_000;
+      const rows = yield* sql`SELECT COUNT(*)::integer AS count FROM guest_review_sessions
+          WHERE installation_id = ${installationId} AND invitation_id = ${session.invitationId}
+            AND expires_at > ${session.createdAt} AND absolute_expires_at > ${session.createdAt}`;
+      if (Number(rows[0]?.["count"] ?? 0) >= 100 || (exchangeWindowActive && exchangeCount >= 30)) {
+        yield* sql`UPDATE guest_review_invitations SET last_limit_hit_at = ${session.createdAt}
+          WHERE installation_id = ${installationId} AND id = ${session.invitationId}`;
+        return "rate_limited";
+      }
+      yield* sql`UPDATE guest_review_invitations SET
+        exchange_window_started_at = ${exchangeWindowActive ? exchangeStartedAt : session.createdAt},
+        exchange_count = ${exchangeWindowActive ? exchangeCount + 1 : 1}
+        WHERE installation_id = ${installationId} AND id = ${session.invitationId}`;
+        yield* sql`INSERT INTO guest_review_sessions (
+        installation_id, id, token_digest, csrf_digest, invitation_id,
+        project_id, artifact_id, display_name, created_at, expires_at,
+        absolute_expires_at, last_used_at, comment_window_started_at,
+        comment_write_count, bootstrap_window_started_at, bootstrap_issue_count
+      ) VALUES (${installationId}, ${session.guestId}, ${session.tokenDigest},
+        ${session.csrfDigest}, ${session.invitationId}, ${session.projectId},
+        ${session.artifactId}, ${session.displayName}, ${session.createdAt}, ${session.expiresAt},
+        ${session.absoluteExpiresAt}, ${session.lastUsedAt}, NULL, 0, NULL, 0)`;
+        return "created";
+      }));
+    }));
+  }
+
+  async listGuestSessions(projectId: string, artifactId: string, requestTime: string): Promise<readonly GuestReviewSessionSummary[]> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(`SELECT s.id AS "guestId", s.display_name AS "displayName",
+        s.created_at AS "createdAt", s.last_used_at AS "lastUsedAt"
+        FROM guest_review_sessions s
+        JOIN guest_review_invitations i ON i.installation_id = s.installation_id AND i.id = s.invitation_id
+        JOIN projects p ON p.installation_id = s.installation_id AND p.id = s.project_id
+        JOIN artifacts a ON a.installation_id = s.installation_id AND a.id = s.artifact_id
+        WHERE s.installation_id = $1 AND s.project_id = $2 AND s.artifact_id = $3
+          AND s.expires_at > $4 AND s.absolute_expires_at > $4
+          AND i.revoked_at IS NULL AND p.archived_at IS NULL AND a.deleted_at IS NULL
+        ORDER BY s.last_used_at DESC, s.created_at DESC`, [installationId, projectId, artifactId, requestTime]);
+      return z.array(guestSessionSummaryRecordSchema).parse(rows);
+    }));
+  }
+
+  async revokeGuestSession(projectId: string, artifactId: string, guestId: string): Promise<boolean> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        const rows = yield* sql`SELECT id FROM guest_review_sessions WHERE installation_id = ${installationId}
+          AND project_id = ${projectId} AND artifact_id = ${artifactId} AND id = ${guestId} FOR UPDATE`;
+        if (rows.length === 0) return false;
+        yield* sql`DELETE FROM content_bootstraps WHERE installation_id = ${installationId}
+          AND (guest_session_id = ${guestId} OR principal_id = ${`guest_${guestId}`})`;
+        yield* sql`DELETE FROM content_sessions WHERE installation_id = ${installationId}
+          AND (guest_session_id = ${guestId} OR principal_id = ${`guest_${guestId}`})`;
+        yield* sql`DELETE FROM guest_review_sessions WHERE installation_id = ${installationId} AND id = ${guestId}`;
+        return true;
+      }));
+    }));
+  }
+
+  async getGuestInvitationUsage(invitationId: string, requestTime: string): Promise<GuestReviewInvitationUsage> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(`SELECT
+        (SELECT COUNT(*)::integer FROM guest_review_sessions s WHERE s.installation_id = i.installation_id
+          AND s.invitation_id = i.id AND s.expires_at > $3 AND s.absolute_expires_at > $3) AS "activeSessionCount",
+        (i.last_limit_hit_at IS NOT NULL AND i.last_limit_hit_at::timestamptz > $3::timestamptz - INTERVAL '24 hours') AS "limitHitRecently"
+        FROM guest_review_invitations i WHERE i.installation_id = $1 AND i.id = $2`, [installationId, invitationId, requestTime]);
+      return guestInvitationUsageRecordSchema.parse(rows[0] ?? {activeSessionCount: 0, limitHitRecently: false});
+    }));
+  }
+
+  async reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<boolean> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        const session = yield* sql`SELECT invitation_id AS "invitationId", comment_window_started_at AS "windowStartedAt",
+          comment_write_count AS "writeCount" FROM guest_review_sessions WHERE installation_id = ${installationId}
+          AND id = ${guestId} AND expires_at > ${requestTime} AND absolute_expires_at > ${requestTime} FOR UPDATE`;
+        if (session.length === 0) return false;
+        const sessionRow = z.object({invitationId: z.string(), windowStartedAt: z.string().nullable(), writeCount: z.number()}).parse(session[0]);
+        const invitations = yield* sql`SELECT comment_window_started_at AS "windowStartedAt", comment_write_count AS "writeCount"
+          FROM guest_review_invitations WHERE installation_id = ${installationId} AND id = ${sessionRow.invitationId} FOR UPDATE`;
+        if (invitations.length === 0) return false;
+        const invitation = z.object({windowStartedAt: z.string().nullable(), writeCount: z.number()}).parse(invitations[0]);
+        const invitationActive = invitation.windowStartedAt !== null && Date.parse(invitation.windowStartedAt) > Date.parse(requestTime) - 3_600_000;
+        const sessionActive = sessionRow.windowStartedAt !== null && Date.parse(sessionRow.windowStartedAt) > Date.parse(requestTime) - 3_600_000;
+        if (invitationActive && invitation.writeCount >= 3000) {
+          yield* sql`UPDATE guest_review_invitations SET last_limit_hit_at = ${requestTime}
+            WHERE installation_id = ${installationId} AND id = ${sessionRow.invitationId}`;
+          return false;
+        }
+        if (sessionActive && sessionRow.writeCount >= 30) return false;
+        yield* sql`UPDATE guest_review_invitations SET comment_window_started_at = ${invitationActive ? invitation.windowStartedAt : requestTime},
+          comment_write_count = ${invitationActive ? invitation.writeCount + 1 : 1}
+          WHERE installation_id = ${installationId} AND id = ${sessionRow.invitationId}`;
+        yield* sql`UPDATE guest_review_sessions SET comment_window_started_at = ${sessionActive ? sessionRow.windowStartedAt : requestTime},
+          comment_write_count = ${sessionActive ? sessionRow.writeCount + 1 : 1}
+          WHERE installation_id = ${installationId} AND id = ${guestId}`;
+        return true;
+      }));
+    }));
+  }
+
+  async reserveGuestBootstrap(guestId: string, requestTime: string): Promise<boolean> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        const session = yield* sql`SELECT invitation_id AS "invitationId", bootstrap_window_started_at AS "windowStartedAt",
+          bootstrap_issue_count AS "issueCount" FROM guest_review_sessions WHERE installation_id = ${installationId}
+          AND id = ${guestId} AND expires_at > ${requestTime} AND absolute_expires_at > ${requestTime} FOR UPDATE`;
+        if (session.length === 0) return false;
+        const sessionRow = z.object({invitationId: z.string(), windowStartedAt: z.string().nullable(), issueCount: z.number()}).parse(session[0]);
+        const invitations = yield* sql`SELECT bootstrap_window_started_at AS "windowStartedAt", bootstrap_issue_count AS "issueCount"
+          FROM guest_review_invitations WHERE installation_id = ${installationId} AND id = ${sessionRow.invitationId} FOR UPDATE`;
+        if (invitations.length === 0) return false;
+        const invitation = z.object({windowStartedAt: z.string().nullable(), issueCount: z.number()}).parse(invitations[0]);
+        const invitationActive = invitation.windowStartedAt !== null && Date.parse(invitation.windowStartedAt) > Date.parse(requestTime) - 3_600_000;
+        const sessionActive = sessionRow.windowStartedAt !== null && Date.parse(sessionRow.windowStartedAt) > Date.parse(requestTime) - 3_600_000;
+        if (invitationActive && invitation.issueCount >= 6000) {
+          yield* sql`UPDATE guest_review_invitations SET last_limit_hit_at = ${requestTime}
+            WHERE installation_id = ${installationId} AND id = ${sessionRow.invitationId}`;
+          return false;
+        }
+        if (sessionActive && sessionRow.issueCount >= 60) return false;
+        yield* sql`UPDATE guest_review_invitations SET bootstrap_window_started_at = ${invitationActive ? invitation.windowStartedAt : requestTime},
+          bootstrap_issue_count = ${invitationActive ? invitation.issueCount + 1 : 1}
+          WHERE installation_id = ${installationId} AND id = ${sessionRow.invitationId}`;
+        yield* sql`UPDATE guest_review_sessions SET bootstrap_window_started_at = ${sessionActive ? sessionRow.windowStartedAt : requestTime},
+          bootstrap_issue_count = ${sessionActive ? sessionRow.issueCount + 1 : 1}
+          WHERE installation_id = ${installationId} AND id = ${guestId}`;
+        return true;
+      }));
+    }));
+  }
+
+  async findGuestSession(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen({self: this}, function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen({self: this}, function*() {
+      const rows = yield* sql.unsafe<object>(`SELECT s.id AS "guestId",
+        s.token_digest AS "tokenDigest", s.csrf_digest AS "csrfDigest",
+        s.invitation_id AS "invitationId", s.project_id AS "projectId",
+        s.artifact_id AS "artifactId", s.display_name AS "displayName",
+        s.created_at AS "createdAt", s.expires_at AS "expiresAt",
+        s.absolute_expires_at AS "absoluteExpiresAt", s.last_used_at AS "lastUsedAt",
+        i.created_by_principal_id AS "invitationCreatorPrincipalId"
+        FROM guest_review_sessions s
+        JOIN guest_review_invitations i ON i.installation_id = s.installation_id
+          AND i.id = s.invitation_id AND i.project_id = s.project_id
+          AND i.artifact_id = s.artifact_id
+        JOIN artifacts a ON a.installation_id = s.installation_id
+          AND a.project_id = s.project_id AND a.id = s.artifact_id
+        JOIN projects p ON p.installation_id = s.installation_id AND p.id = s.project_id
+        WHERE s.installation_id = $1 AND s.token_digest = $2
+          AND s.expires_at > $3 AND s.absolute_expires_at > $3
+          AND i.revoked_at IS NULL AND a.deleted_at IS NULL AND p.archived_at IS NULL
+        FOR UPDATE OF s`,
+        [installationId, tokenDigest, requestTime]);
+      const session = guestSessionRecordSchema.nullable().parse(rows[0] ?? null);
+      if (session === null) return null;
+      const idleExpiresAt = new Date(Date.parse(requestTime) + 2 * 60 * 60 * 1_000).toISOString();
+      const expiresAt = session.absoluteExpiresAt < idleExpiresAt ? session.absoluteExpiresAt : idleExpiresAt;
+      yield* sql`UPDATE guest_review_sessions SET last_used_at = ${requestTime}, expires_at = ${expiresAt}
+        WHERE installation_id = ${installationId} AND id = ${session.guestId}`;
+      return {...session, expiresAt, lastUsedAt: requestTime};
+      }));
+    }));
+  }
+
+  async deleteExpiredGuestContentRows(expiredBefore: string, limit: number): Promise<number> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen({self: this}, function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        const bootstraps = yield* sql.unsafe<object>(`DELETE FROM content_bootstraps
+          WHERE installation_id = $1 AND token_digest IN (
+            SELECT token_digest FROM content_bootstraps WHERE installation_id = $1
+              AND expires_at <= $2 AND (guest_session_id IS NOT NULL OR substring(principal_id FROM 1 FOR 6) = 'guest_')
+              ORDER BY expires_at LIMIT $3
+          ) RETURNING token_digest`, [installationId, expiredBefore, limit]);
+        const sessions = yield* sql.unsafe<object>(`DELETE FROM content_sessions
+          WHERE installation_id = $1 AND token_digest IN (
+            SELECT token_digest FROM content_sessions WHERE installation_id = $1
+              AND expires_at <= $2 AND (guest_session_id IS NOT NULL OR substring(principal_id FROM 1 FOR 6) = 'guest_')
+              ORDER BY expires_at LIMIT $3
+          ) RETURNING token_digest`, [installationId, expiredBefore, limit]);
+        return bootstraps.length + sessions.length;
+      }));
+    }));
+  }
+
+  async deleteExpiredGuestSessions(expiredBefore: string, limit: number): Promise<number> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen({self: this}, function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(`DELETE FROM guest_review_sessions
+        WHERE installation_id = $1 AND id IN (
+          SELECT id FROM guest_review_sessions WHERE installation_id = $1
+            AND (expires_at <= $2 OR absolute_expires_at <= $2) ORDER BY expires_at LIMIT $3
+        ) RETURNING id`, [installationId, expiredBefore, limit]);
+      return rows.length;
+    }));
   }
 
   async exchangeContentBootstrap(
@@ -2044,13 +2366,34 @@ export class PostgresArtifactRepository implements
             b.principal_id AS "principalId", b.artifact_id AS "artifactId",
             b.project_id AS "projectId",
             b.version_id AS "versionId", b.content_token AS "contentToken",
-            b.created_at AS "createdAt", b.expires_at AS "expiresAt"
+            b.created_at AS "createdAt", b.expires_at AS "expiresAt",
+            b.guest_session_id AS "guestSessionId"
            FROM content_bootstraps b
            JOIN artifacts a
              ON a.installation_id = b.installation_id AND a.id = b.artifact_id
            WHERE b.installation_id = $1 AND b.token_digest = $2
              AND b.content_token = $3 AND b.consumed_at IS NULL
              AND b.expires_at > $4 AND a.deleted_at IS NULL
+             AND ((b.guest_session_id IS NULL AND substring(b.principal_id FROM 1 FOR 6) <> 'guest_') OR EXISTS (
+               SELECT 1 FROM guest_review_sessions gs
+               JOIN guest_review_invitations gi ON gi.installation_id = gs.installation_id AND gi.id = gs.invitation_id
+               JOIN projects gp ON gp.installation_id = gs.installation_id AND gp.id = gs.project_id
+               JOIN installation_members creator ON creator.installation_id = gi.installation_id
+                 AND creator.id = gi.created_by_principal_id AND creator.status = 'active'
+               WHERE gs.installation_id = b.installation_id AND gs.id = COALESCE(b.guest_session_id, CASE WHEN substring(b.principal_id FROM 1 FOR 6) = 'guest_' THEN substring(b.principal_id FROM 7) END)
+                 AND gs.expires_at > $4 AND gi.revoked_at IS NULL AND gp.archived_at IS NULL
+                 AND (gp.access_mode = 'installation' OR gp.created_by_member_id = creator.id OR creator.role IN ('administrator', 'owner') OR EXISTS (
+                   SELECT 1 FROM project_group_grants pgg
+                   JOIN directory_group_members dgm ON dgm.installation_id = pgg.installation_id
+                     AND dgm.group_id = pgg.group_id
+                   WHERE pgg.installation_id = gp.installation_id AND pgg.project_id = gp.id
+                     AND pgg.role IN ('editor', 'manager') AND dgm.provider IS NOT NULL
+                     AND (EXISTS (SELECT 1 FROM external_identities ei WHERE ei.installation_id = dgm.installation_id
+                       AND ei.member_id = creator.id AND ei.provider = dgm.provider AND ei.subject = dgm.subject)
+                       OR (dgm.email = creator.email AND NOT EXISTS (SELECT 1 FROM external_identities ei
+                         WHERE ei.installation_id = dgm.installation_id AND ei.member_id = creator.id AND ei.provider = dgm.provider)))
+                 ))
+             ))
            FOR UPDATE OF b`,
           [
             installationId,
@@ -2073,6 +2416,7 @@ export class PostgresArtifactRepository implements
           contentToken: bootstrap.contentToken,
           createdAt: command.session.createdAt,
           expiresAt: command.session.expiresAt,
+          guestSessionId: bootstrap.guestSessionId,
           principalId: bootstrap.principalId,
           projectId: bootstrap.projectId,
           tokenDigest: command.session.tokenDigest,
@@ -2080,11 +2424,11 @@ export class PostgresArtifactRepository implements
         };
         yield* sql`INSERT INTO content_sessions (
           installation_id, project_id, token_digest, principal_id, artifact_id, version_id,
-          content_token, created_at, expires_at
+          content_token, created_at, expires_at, guest_session_id
         ) VALUES (
           ${installationId}, ${session.projectId}, ${session.tokenDigest}, ${session.principalId},
           ${session.artifactId}, ${session.versionId}, ${session.contentToken},
-          ${session.createdAt}, ${session.expiresAt}
+          ${session.createdAt}, ${session.expiresAt}, ${session.guestSessionId ?? null}
         )`;
         return session;
       }));
@@ -2104,13 +2448,34 @@ export class PostgresArtifactRepository implements
           s.principal_id AS "principalId", s.artifact_id AS "artifactId",
           s.project_id AS "projectId",
           s.version_id AS "versionId", s.content_token AS "contentToken",
-          s.created_at AS "createdAt", s.expires_at AS "expiresAt"
+          s.created_at AS "createdAt", s.expires_at AS "expiresAt",
+          s.guest_session_id AS "guestSessionId"
          FROM content_sessions s
          JOIN artifacts a
            ON a.installation_id = s.installation_id AND a.id = s.artifact_id
          WHERE s.installation_id = $1 AND s.token_digest = $2
            AND s.content_token = $3 AND s.expires_at > $4
-           AND a.deleted_at IS NULL`,
+           AND a.deleted_at IS NULL
+           AND ((s.guest_session_id IS NULL AND substring(s.principal_id FROM 1 FOR 6) <> 'guest_') OR EXISTS (
+             SELECT 1 FROM guest_review_sessions gs
+             JOIN guest_review_invitations gi ON gi.installation_id = gs.installation_id AND gi.id = gs.invitation_id
+             JOIN projects gp ON gp.installation_id = gs.installation_id AND gp.id = gs.project_id
+             JOIN installation_members creator ON creator.installation_id = gi.installation_id
+               AND creator.id = gi.created_by_principal_id AND creator.status = 'active'
+             WHERE gs.installation_id = s.installation_id AND gs.id = COALESCE(s.guest_session_id, CASE WHEN substring(s.principal_id FROM 1 FOR 6) = 'guest_' THEN substring(s.principal_id FROM 7) END)
+               AND gs.expires_at > $4 AND gi.revoked_at IS NULL AND gp.archived_at IS NULL
+               AND (gp.access_mode = 'installation' OR gp.created_by_member_id = creator.id OR creator.role IN ('administrator', 'owner') OR EXISTS (
+                 SELECT 1 FROM project_group_grants pgg
+                 JOIN directory_group_members dgm ON dgm.installation_id = pgg.installation_id
+                   AND dgm.group_id = pgg.group_id
+                 WHERE pgg.installation_id = gp.installation_id AND pgg.project_id = gp.id
+                   AND pgg.role IN ('editor', 'manager') AND dgm.provider IS NOT NULL
+                   AND (EXISTS (SELECT 1 FROM external_identities ei WHERE ei.installation_id = dgm.installation_id
+                     AND ei.member_id = creator.id AND ei.provider = dgm.provider AND ei.subject = dgm.subject)
+                     OR (dgm.email = creator.email AND NOT EXISTS (SELECT 1 FROM external_identities ei
+                       WHERE ei.installation_id = dgm.installation_id AND ei.member_id = creator.id AND ei.provider = dgm.provider)))
+               ))
+           ))`,
         [installationId, tokenDigest, contentToken, requestTime],
       );
       return contentRecordRowSchema.nullable().parse(rows[0] ?? null);
@@ -2123,11 +2488,11 @@ export class PostgresArtifactRepository implements
       const sql = yield* SqlClient;
       yield* sql`INSERT INTO content_sessions (
         installation_id, project_id, token_digest, principal_id, artifact_id, version_id,
-        content_token, created_at, expires_at
+        content_token, created_at, expires_at, guest_session_id
       ) VALUES (
         ${installationId}, ${command.projectId}, ${command.tokenDigest}, ${command.principalId},
         ${command.artifactId}, ${command.versionId}, ${command.contentToken},
-        ${command.createdAt}, ${command.expiresAt}
+        ${command.createdAt}, ${command.expiresAt}, ${command.guestSessionId ?? null}
       )`;
     }));
     return command;
@@ -2145,7 +2510,7 @@ export class PostgresArtifactRepository implements
           s.principal_id AS "principalId", s.artifact_id AS "artifactId",
           s.project_id AS "projectId", s.version_id AS "versionId",
           s.content_token AS "contentToken", s.created_at AS "createdAt",
-          s.expires_at AS "expiresAt"
+          s.expires_at AS "expiresAt", s.guest_session_id AS "guestSessionId"
         FROM content_sessions s
         JOIN artifacts a
           ON a.installation_id = s.installation_id AND a.id = s.artifact_id
@@ -2465,17 +2830,19 @@ export class PostgresArtifactRepository implements
          WHERE thread.installation_id = $1 AND thread.project_id = $2
            AND thread.artifact_id = $3
            AND ${dispatchedPredicate}
-           AND ($4::text IS NULL OR thread.version_id = $4)
-           AND ($5::text IS NULL OR thread.state = $5)
-           AND ($6::text IS NULL OR thread.updated_at >= $6)
-           AND ($7::text IS NULL OR thread.created_at < $7
-             OR (thread.created_at = $7 AND thread.id < $8))
+           AND ($4::text IS NULL OR thread.author_principal_id = $4)
+           AND ($5::text IS NULL OR thread.version_id = $5)
+           AND ($6::text IS NULL OR thread.state = $6)
+           AND ($7::text IS NULL OR thread.updated_at >= $7)
+           AND ($8::text IS NULL OR thread.created_at < $8
+             OR (thread.created_at = $8 AND thread.id < $9))
          ORDER BY thread.created_at DESC, thread.id DESC
-         LIMIT $9`,
+         LIMIT $10`,
         [
           installationId,
           command.projectId,
           command.artifactId,
+          command.authorPrincipalId ?? null,
           command.versionId,
           command.state,
           command.since,
@@ -2589,6 +2956,15 @@ export class PostgresArtifactRepository implements
         }).parse(dispatchRows[0]).state;
         if (dispatchHoldsCommentThread(dispatchState)) {
           return yield* dispatchedCommentDeletionConflict();
+        }
+        if (command.rejectRepliesByOtherAuthorsPrincipalId !== undefined) {
+          const foreignReplies = yield* sql`SELECT 1 FROM comment_replies
+            WHERE installation_id = ${installationId} AND thread_id = ${command.threadId}
+              AND author_principal_id <> ${command.rejectRepliesByOtherAuthorsPrincipalId}
+            LIMIT 1`;
+          if (foreignReplies.length > 0) {
+            return {deletedReplyCount: 0, refusedForeignReplyDeletion: true, thread: commentThreadFromRow(row)};
+          }
         }
         const removedReplies = yield* sql`DELETE FROM comment_replies
           WHERE installation_id = ${installationId}
@@ -2711,6 +3087,17 @@ export class PostgresArtifactRepository implements
           }
           return {replayed: true, reply: commentReplyFromRow(replayed)};
         }
+        // Serialize reply creation with thread deletion. deleteThread locks
+        // this same parent row before checking for foreign replies, so a reply
+        // cannot slip in between that check and the cascading delete.
+        const lockedThread = yield* sql.unsafe<object>(
+          `SELECT id FROM comment_threads
+           WHERE installation_id = $1 AND id = $2
+             AND project_id = $3 AND artifact_id = $4
+           FOR UPDATE`,
+          [installationId, command.threadId, command.projectId, command.artifactId],
+        );
+        if (lockedThread.length === 0) return yield* missingComment();
         const inserted = yield* sql.unsafe<object>(
           `INSERT INTO comment_replies (
             installation_id, project_id, id, thread_id, body,
