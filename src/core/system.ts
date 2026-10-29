@@ -29,6 +29,14 @@ export class SystemIdGenerator implements IdGenerator {
     return `cmt_${randomUUID()}`;
   }
 
+  guestInvitationId(): string {
+    return `gri_${randomUUID()}`;
+  }
+
+  guestSessionId(): string {
+    return `grs_${randomUUID()}`;
+  }
+
   contentToken(): string {
     return randomHex(18);
   }

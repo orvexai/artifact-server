@@ -20,12 +20,13 @@ import {
   type ArtifactRepositoryFailure,
   AuthorizationDenied,
   CommentNotFound,
-  type CommentResolved,
+  CommentResolved,
   type DispatchStateConflict,
   type IdempotencyConflict,
   InvalidComment,
   type InvalidIdempotencyKey,
   InvalidPagination,
+  GuestRateLimitExceeded,
   VersionNotFound,
 } from "../core/errors.js";
 import {
@@ -74,6 +75,7 @@ import {
   maximumCommentBodyCharacters,
   maximumCommentPageSize,
 } from "../core/publishing-limits.js";
+import type {GuestReviewer} from "./guest-review.js";
 
 /** Outbound failures surfaced by comment persistence. */
 export type CommentRepositoryFailure =
@@ -226,6 +228,7 @@ export interface ArtifactCommentRepository {
     projectId: string,
     artifactId: string,
   ) => Effect.Effect<readonly ArtifactStateEntry[], CommentRepositoryFailure>;
+  readonly reserveGuestCommentWrite: (guestId: string, requestTime: string) => Effect.Effect<boolean, ArtifactRepositoryFailure>;
   readonly updateReply: (
     command: UpdateCommentReply,
   ) => Effect.Effect<CommentReplyRecord, CommentRepositoryFailure>;
@@ -262,11 +265,20 @@ export type ArtifactCommentFailure =
   | InvalidComment
   | InvalidIdempotencyKey
   | InvalidPagination
+  | GuestRateLimitExceeded
   | ProjectManagementFailure
   | VersionNotFound
   | LinkedCommentCaptureFailure;
 
 interface ArtifactCommentOperations {
+  readonly guestListThreads: (command: Omit<ListCommentThreadsCommand, "principal" | "projectId" | "artifactId"> & {readonly guest: GuestReviewer}) => Effect.Effect<CommentThreadPage, ArtifactCommentFailure>;
+  readonly guestGetThread: (command: {readonly guest: GuestReviewer; readonly threadId: string}) => Effect.Effect<CommentThreadDetails, ArtifactCommentFailure>;
+  readonly guestCreateThread: (command: {readonly guest: GuestReviewer; readonly anchor: unknown; readonly body: string; readonly idempotencyKey: string; readonly path: string | null; readonly versionId: string}) => Effect.Effect<CommentThreadCreation, ArtifactCommentFailure>;
+  readonly guestCreateReply: (command: {readonly guest: GuestReviewer; readonly threadId: string; readonly body: string; readonly idempotencyKey: string}) => Effect.Effect<CommentReplyCreation, ArtifactCommentFailure>;
+  readonly guestUpdateThread: (command: {readonly guest: GuestReviewer; readonly threadId: string; readonly anchor?: unknown; readonly body?: string}) => Effect.Effect<CommentThreadRecord, ArtifactCommentFailure>;
+  readonly guestDeleteThread: (command: {readonly guest: GuestReviewer; readonly threadId: string}) => Effect.Effect<CommentThreadDeletion, ArtifactCommentFailure>;
+  readonly guestUpdateReply: (command: {readonly guest: GuestReviewer; readonly threadId: string; readonly replyId: string; readonly body: string}) => Effect.Effect<CommentReplyRecord, ArtifactCommentFailure>;
+  readonly guestDeleteReply: (command: {readonly guest: GuestReviewer; readonly threadId: string; readonly replyId: string}) => Effect.Effect<void, ArtifactCommentFailure>;
   readonly clearThreads: (
     command: ClearCommentThreadsCommand,
   ) => Effect.Effect<CommentThreadClearing, ArtifactCommentFailure>;
@@ -342,6 +354,15 @@ function deletionRole(principal: Principal): ProjectRole {
   return hasCapability(principal, principalCapabilities.manageAnyArtifact) ? "editor" : "viewer";
 }
 
+function makeGuestAuthor(guest: GuestReviewer): CommentAuthor {
+  return {
+    authorizedByPrincipalId: guest.invitationCreatorPrincipalId,
+    displayName: `${guest.displayName} (guest)`,
+    principalId: `guest_${guest.guestId}`,
+    principalKind: "human",
+  };
+}
+
 function makeArtifactCommentService(
   dependencies: ArtifactCommentDependencies,
   authorization: AuthorizationOperations,
@@ -364,6 +385,12 @@ function makeArtifactCommentService(
     minimumRole: ProjectRole = "viewer",
   ) {
     return yield* projects.resolveActiveProject({minimumRole, principal, projectId});
+  });
+  const reserveGuestWrite = Effect.fn("ArtifactCommentService.reserveGuestWrite")(function*(guest: GuestReviewer, now: string) {
+    if (!(yield* dependencies.repository.reserveGuestCommentWrite(guest.guestId, now))) {
+      return yield* new GuestRateLimitExceeded({message: "This guest session has reached its comment limit. Try again later."});
+    }
+    return now;
   });
 
   const requireArtifact = Effect.fn("ArtifactCommentService.requireArtifact")(
@@ -530,6 +557,14 @@ function makeArtifactCommentService(
       return yield* new CommentNotFound({
         message: "The comment thread does not exist.",
       });
+    },
+  );
+
+  const requireGuestThread = Effect.fn("ArtifactCommentService.requireGuestThread")(
+    function*(guest: GuestReviewer, threadId: string): Effect.fn.Return<CommentThreadRecord, CommentRepositoryFailure> {
+      const thread = yield* requireThread(guest.projectId, guest.artifactId, threadId);
+      if (thread.author.principalId === `guest_${guest.guestId}`) return thread;
+      return yield* new CommentNotFound({message: "The comment thread does not exist."});
     },
   );
 
@@ -964,7 +999,155 @@ function makeArtifactCommentService(
     },
   );
 
+  const guestListThreads = Effect.fn("ArtifactCommentService.guestListThreads")(
+    function*(command: Omit<ListCommentThreadsCommand, "principal" | "projectId" | "artifactId"> & {readonly guest: GuestReviewer}) {
+      const limit = yield* requirePageSize(command.limit);
+      const since = yield* requireSince(command.since);
+      yield* requireArtifact(command.guest.projectId, command.guest.artifactId);
+      return yield* dependencies.repository.listThreads({
+        authorPrincipalId: `guest_${command.guest.guestId}`,
+        artifactId: command.guest.artifactId, cursor: command.cursor,
+        dispatched: dispatchedThreadFilters.exclude, limit,
+        projectId: command.guest.projectId, since, state: command.state,
+        versionId: command.versionId,
+      });
+    },
+  );
+  const guestGetThread = Effect.fn("ArtifactCommentService.guestGetThread")(
+    function*(command: {readonly guest: GuestReviewer; readonly threadId: string}) {
+      yield* requireArtifact(command.guest.projectId, command.guest.artifactId);
+      const thread = yield* requireGuestThread(command.guest, command.threadId);
+      return {replies: yield* dependencies.repository.listReplies(thread.id), thread};
+    },
+  );
+  const guestCreateThread = Effect.fn("ArtifactCommentService.guestCreateThread")(
+    function*(command: {readonly guest: GuestReviewer; readonly anchor: unknown; readonly body: string; readonly idempotencyKey: string; readonly path: string | null; readonly versionId: string}) {
+      const artifact = yield* requireArtifact(command.guest.projectId, command.guest.artifactId);
+      if (command.versionId !== artifact.currentVersionId) return yield* new VersionNotFound({message: "The saved version does not exist on this artifact."});
+      const version = yield* requireVersion(command.guest.projectId, artifact.id, command.versionId);
+      const body = yield* requireBody(command.body);
+      yield* requireAnchor({anchor: command.anchor});
+      yield* requireVersionPath(command.guest.projectId, version.version.id, command.path);
+      const createdAt = DateTime.formatIso(yield* dependencies.clock.now);
+      yield* reserveGuestWrite(command.guest, createdAt);
+      const created = yield* dependencies.repository.createThread({
+        anchor: command.anchor ?? null, artifactId: artifact.id,
+        author: makeGuestAuthor(command.guest), body,
+        createdAt,
+        id: dependencies.ids.commentThreadId(),
+        idempotencyKey: yield* parseIdempotencyKey(command.idempotencyKey),
+        installationId: dependencies.installationId, path: command.path,
+        projectId: command.guest.projectId, versionId: version.version.id,
+      }).pipe(Effect.catchTag("IdempotencyConflict", () => Effect.fail(new CommentNotFound({message: "The comment thread does not exist."}))));
+      if (created.thread.author.principalId !== `guest_${command.guest.guestId}`) {
+        return yield* new CommentNotFound({message: "The comment thread does not exist."});
+      }
+      return created;
+    },
+  );
+  const guestCreateReply = Effect.fn("ArtifactCommentService.guestCreateReply")(
+    function*(command: {readonly guest: GuestReviewer; readonly threadId: string; readonly body: string; readonly idempotencyKey: string}) {
+      const thread = yield* requireGuestThread(command.guest, command.threadId);
+      const body = yield* requireBody(command.body);
+      const idempotencyKey = yield* parseIdempotencyKey(command.idempotencyKey);
+      const createdAt = DateTime.formatIso(yield* dependencies.clock.now);
+      yield* reserveGuestWrite(command.guest, createdAt);
+      const created = yield* dependencies.repository.createReply({
+        artifactId: command.guest.artifactId, author: makeGuestAuthor(command.guest),
+        body,
+        createdAt,
+        id: dependencies.ids.commentReplyId(),
+        idempotencyKey,
+        projectId: command.guest.projectId, threadId: thread.id,
+      }).pipe(Effect.catchTag("IdempotencyConflict", () => Effect.fail(new CommentNotFound({message: "The comment thread does not exist."}))));
+      if (created.reply.author.principalId !== `guest_${command.guest.guestId}`) {
+        return yield* new CommentNotFound({message: "The comment thread does not exist."});
+      }
+      return created;
+    },
+  );
+  const guestUpdateThread = Effect.fn("ArtifactCommentService.guestUpdateThread")(
+    function*(command: {readonly guest: GuestReviewer; readonly threadId: string; readonly anchor?: unknown; readonly body?: string}) {
+      const thread = yield* requireGuestThread(command.guest, command.threadId);
+      if (thread.author.principalId !== makeGuestAuthor(command.guest).principalId) return yield* new AuthorizationDenied({message: "Only the author can change this comment."});
+      if (command.anchor === undefined && command.body === undefined) return yield* new InvalidComment({message: "A comment update must change a body or an anchor."});
+      if (command.anchor !== undefined) yield* requireAnchor({anchor: command.anchor});
+      const updatedAt = DateTime.formatIso(yield* dependencies.clock.now);
+      const body = command.body === undefined ? null : yield* requireBody(command.body);
+      yield* reserveGuestWrite(command.guest, updatedAt);
+      return yield* dependencies.repository.updateThread({
+        anchor: command.anchor === undefined ? null : {anchor: command.anchor},
+        artifactId: command.guest.artifactId,
+        authorizedByPrincipalId: command.guest.invitationCreatorPrincipalId,
+        body,
+        principalId: makeGuestAuthor(command.guest).principalId,
+        projectId: command.guest.projectId, state: null, threadId: thread.id,
+        updatedAt,
+      });
+    },
+  );
+  const guestDeleteThread = Effect.fn("ArtifactCommentService.guestDeleteThread")(
+    function*(command: {readonly guest: GuestReviewer; readonly threadId: string}) {
+      const thread = yield* requireGuestThread(command.guest, command.threadId);
+      if (thread.author.principalId !== makeGuestAuthor(command.guest).principalId) return yield* new AuthorizationDenied({message: "Only the author can delete this comment."});
+      const deletedAt = DateTime.formatIso(yield* dependencies.clock.now);
+      yield* reserveGuestWrite(command.guest, deletedAt);
+      const result = yield* dependencies.repository.deleteThread({
+        artifactId: command.guest.artifactId,
+        authorizedByPrincipalId: command.guest.invitationCreatorPrincipalId,
+        deletedAt,
+        principalId: makeGuestAuthor(command.guest).principalId,
+        projectId: command.guest.projectId,
+        rejectRepliesByOtherAuthorsPrincipalId: `guest_${command.guest.guestId}`,
+        threadId: thread.id,
+      });
+      if (result.refusedForeignReplyDeletion === true) return yield* new CommentResolved({message: "A guest thread with team replies cannot be deleted."});
+      return result;
+    },
+  );
+  const guestUpdateReply = Effect.fn("ArtifactCommentService.guestUpdateReply")(
+    function*(command: {readonly guest: GuestReviewer; readonly threadId: string; readonly replyId: string; readonly body: string}) {
+      const thread = yield* requireGuestThread(command.guest, command.threadId);
+      const reply = yield* requireReply(thread.id, command.replyId);
+      if (reply.author.principalId !== makeGuestAuthor(command.guest).principalId) return yield* new AuthorizationDenied({message: "Only the author can change this comment."});
+      const body = yield* requireBody(command.body);
+      const updatedAt = DateTime.formatIso(yield* dependencies.clock.now);
+      yield* reserveGuestWrite(command.guest, updatedAt);
+      return yield* dependencies.repository.updateReply({
+        artifactId: command.guest.artifactId,
+        authorizedByPrincipalId: command.guest.invitationCreatorPrincipalId,
+        body, principalId: makeGuestAuthor(command.guest).principalId,
+        projectId: command.guest.projectId, replyId: reply.id, threadId: thread.id,
+        updatedAt,
+      });
+    },
+  );
+  const guestDeleteReply = Effect.fn("ArtifactCommentService.guestDeleteReply")(
+    function*(command: {readonly guest: GuestReviewer; readonly threadId: string; readonly replyId: string}) {
+      const thread = yield* requireGuestThread(command.guest, command.threadId);
+      const reply = yield* requireReply(thread.id, command.replyId);
+      if (reply.author.principalId !== makeGuestAuthor(command.guest).principalId) return yield* new AuthorizationDenied({message: "Only the author can delete this comment."});
+      const deletedAt = DateTime.formatIso(yield* dependencies.clock.now);
+      yield* reserveGuestWrite(command.guest, deletedAt);
+      yield* dependencies.repository.deleteReply({
+        artifactId: command.guest.artifactId,
+        authorizedByPrincipalId: command.guest.invitationCreatorPrincipalId,
+        deletedAt,
+        principalId: makeGuestAuthor(command.guest).principalId,
+        projectId: command.guest.projectId, replyId: reply.id, threadId: thread.id,
+      });
+      return undefined;
+    },
+  );
   return ArtifactCommentService.of({
+    guestCreateReply,
+    guestCreateThread,
+    guestDeleteReply,
+    guestDeleteThread,
+    guestGetThread,
+    guestListThreads,
+    guestUpdateReply,
+    guestUpdateThread,
     clearThreads,
     createReply,
     createThread,

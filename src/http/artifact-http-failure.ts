@@ -38,6 +38,8 @@ export function artifactServerFailureResponse(failure: ArtifactServerFailure) {
       return {code: errorCodes.commentNotFound, message: failure.message, status: 404};
     case "CommentResolved":
       return {code: errorCodes.commentResolved, message: failure.message, status: 409};
+    case "GuestRateLimitExceeded":
+      return {code: errorCodes.rateLimitExceeded, message: failure.message, status: 429};
     case "InvalidComment":
       return {code: errorCodes.invalidComment, message: failure.message, status: 422};
     case "ContentBootstrapRejected":

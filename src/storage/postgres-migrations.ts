@@ -664,6 +664,94 @@ const addCommentActorAttribution = Effect.gen(function*() {
     ADD COLUMN author_actor_client_id TEXT`);
 });
 
+const addGuestReview = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`CREATE TABLE guest_review_invitations (
+    installation_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    token_digest TEXT NOT NULL,
+    created_by_principal_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT,
+    PRIMARY KEY (installation_id, id),
+    UNIQUE (installation_id, token_digest),
+    FOREIGN KEY (installation_id, project_id, artifact_id)
+      REFERENCES artifacts(installation_id, project_id, id)
+  )`);
+  yield* sql.unsafe(`CREATE UNIQUE INDEX guest_review_active_invitation
+    ON guest_review_invitations (installation_id, project_id, artifact_id)
+    WHERE revoked_at IS NULL`);
+  yield* sql.unsafe(`CREATE TABLE guest_review_sessions (
+    installation_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    token_digest TEXT NOT NULL,
+    csrf_digest TEXT NOT NULL,
+    invitation_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    PRIMARY KEY (installation_id, id),
+    UNIQUE (installation_id, token_digest),
+    FOREIGN KEY (installation_id, invitation_id)
+      REFERENCES guest_review_invitations(installation_id, id),
+    FOREIGN KEY (installation_id, project_id, artifact_id)
+      REFERENCES artifacts(installation_id, project_id, id)
+  )`);
+  yield* sql.unsafe(`CREATE INDEX guest_review_sessions_expiry
+    ON guest_review_sessions (installation_id, expires_at)`);
+});
+
+const hardenGuestReview = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE content_bootstraps
+    ADD COLUMN guest_session_id TEXT`);
+  yield* sql.unsafe(`ALTER TABLE content_sessions
+    ADD COLUMN guest_session_id TEXT`);
+  yield* sql.unsafe(`ALTER TABLE guest_review_sessions
+    ADD COLUMN comment_window_started_at TEXT,
+    ADD COLUMN comment_write_count INTEGER NOT NULL DEFAULT 0`);
+  yield* sql.unsafe(`CREATE INDEX content_bootstraps_guest_session
+    ON content_bootstraps (installation_id, guest_session_id, expires_at)`);
+  yield* sql.unsafe(`CREATE INDEX content_sessions_guest_session
+    ON content_sessions (installation_id, guest_session_id, expires_at)`);
+});
+
+const addGuestReviewRateLimits = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE guest_review_sessions
+    ADD COLUMN absolute_expires_at TEXT,
+    ADD COLUMN last_used_at TEXT,
+    ADD COLUMN bootstrap_window_started_at TEXT,
+    ADD COLUMN bootstrap_issue_count INTEGER NOT NULL DEFAULT 0`);
+  yield* sql.unsafe(`UPDATE guest_review_sessions SET
+    absolute_expires_at = expires_at, last_used_at = created_at
+    WHERE absolute_expires_at IS NULL OR last_used_at IS NULL`);
+  yield* sql.unsafe(`ALTER TABLE guest_review_sessions
+    ALTER COLUMN absolute_expires_at SET NOT NULL,
+    ALTER COLUMN last_used_at SET NOT NULL`);
+});
+
+const addGuestInvitationExchangeLimit = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE guest_review_invitations
+    ADD COLUMN exchange_window_started_at TEXT,
+    ADD COLUMN exchange_count INTEGER NOT NULL DEFAULT 0`);
+});
+
+const addGuestInvitationBudgets = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE guest_review_invitations
+    ADD COLUMN last_limit_hit_at TEXT,
+    ADD COLUMN comment_window_started_at TEXT,
+    ADD COLUMN comment_write_count INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN bootstrap_window_started_at TEXT,
+    ADD COLUMN bootstrap_issue_count INTEGER NOT NULL DEFAULT 0`);
+});
+
 const addProjectArchiveAudit = Effect.gen(function*() {
   const sql = yield* SqlClient;
   yield* sql.unsafe(`CREATE TABLE project_archive_events (
@@ -799,6 +887,11 @@ const postgresMigrations = {
   "0016_project_access": addProjectAccess,
   "0017_project_creator": addProjectCreator,
   "0018_group_roles": addGroupRoles,
+  "0019_guest_review": addGuestReview,
+  "0020_harden_guest_review": hardenGuestReview,
+  "0021_guest_review_rate_limits": addGuestReviewRateLimits,
+  "0022_guest_invitation_exchange_limit": addGuestInvitationExchangeLimit,
+  "0023_guest_invitation_budgets": addGuestInvitationBudgets,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);
