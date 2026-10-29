@@ -3454,6 +3454,7 @@ export class SqliteArtifactRepository implements
           `${commentThreadColumns}
            WHERE t.project_id = ? AND t.artifact_id = ?
              AND ${dispatchedPredicate}
+             AND (? IS NULL OR t.author_principal_id = ?)
              AND (? IS NULL OR t.version_id = ?)
              AND (? IS NULL OR t.state = ?)
              AND (? IS NULL OR t.updated_at >= ?)
@@ -3468,6 +3469,8 @@ export class SqliteArtifactRepository implements
         .all(
           command.projectId,
           command.artifactId,
+          command.authorPrincipalId ?? null,
+          command.authorPrincipalId ?? null,
           command.versionId,
           command.versionId,
           command.state,

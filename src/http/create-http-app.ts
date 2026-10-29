@@ -110,6 +110,8 @@ import {
   commentThreadStates,
   type CommentThreadPage,
   type CommentThreadRecord,
+  type CommentReplyRecord,
+  type CommentAuthor,
   type CommentThreadState,
   dispatchedThreadFilters,
   type ManifestEntry,
@@ -984,7 +986,7 @@ export function createHttpApp(
         since: query.since ?? null, state: query.state ?? null,
         versionId: query.versionId ?? null,
       })));
-    return context.json(commentThreadPageResponse(responseApplicationUrl(context, dependencies), page));
+    return context.json(guestThreadPageResponse(responseApplicationUrl(context, dependencies), page, guest));
   });
 
   app.get("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", async (context) => {
@@ -992,7 +994,7 @@ export function createHttpApp(
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const details = await runHttpApplicationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestGetThread({guest, threadId: context.req.param("threadId")})));
-    return context.json(commentThreadDetailsResponse(responseApplicationUrl(context, dependencies), details));
+    return context.json(guestThreadDetailsResponse(responseApplicationUrl(context, dependencies), details, guest));
   });
 
   app.post("/api/v1/public/artifacts/:artifactId/guest/comments", boundedJsonBody, async (context) => {
@@ -1005,7 +1007,7 @@ export function createHttpApp(
         idempotencyKey: requiredIdempotencyKey(context.req.header("idempotency-key")),
         versionId: body.versionId,
       })));
-    return context.json({replayed: created.replayed, thread: commentThreadResponse(responseApplicationUrl(context, dependencies), created.thread)}, 201);
+    return context.json({replayed: created.replayed, thread: guestThreadResponse(responseApplicationUrl(context, dependencies), created.thread, guest)}, 201);
   });
 
   app.post("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies", boundedJsonBody, async (context) => {
@@ -1014,7 +1016,7 @@ export function createHttpApp(
     const body = createCommentReplySchema.parse(await context.req.json());
     const created = await runHttpApplicationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestCreateReply({guest, threadId: context.req.param("threadId"), body: body.body, idempotencyKey: requiredIdempotencyKey(context.req.header("idempotency-key"))})));
-    return context.json({replayed: created.replayed, reply: created.reply}, 201);
+    return context.json({replayed: created.replayed, reply: guestReplyResponse(created.reply, guest)}, 201);
   });
 
   app.patch("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", boundedJsonBody, async (context) => {
@@ -1027,7 +1029,7 @@ export function createHttpApp(
     if (body.body !== undefined) update.body = body.body;
     const thread = await runHttpApplicationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestUpdateThread({guest, threadId: context.req.param("threadId"), ...update})));
-    return context.json({thread: commentThreadResponse(responseApplicationUrl(context, dependencies), thread)});
+    return context.json({thread: guestThreadResponse(responseApplicationUrl(context, dependencies), thread, guest)});
   });
 
   app.delete("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", async (context) => {
@@ -1045,7 +1047,7 @@ export function createHttpApp(
       ArtifactCommentService.use((comments) => comments.guestUpdateReply({
         guest, threadId: context.req.param("threadId"), replyId: context.req.param("replyId"), body: body.body,
       })));
-    return context.json({reply});
+    return context.json({reply: guestReplyResponse(reply, guest)});
   });
 
   app.delete("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId", async (context) => {
@@ -3813,6 +3815,13 @@ function commentThreadPageResponse(requestUrl: URL, page: CommentThreadPage) {
   };
 }
 
+function guestThreadPageResponse(requestUrl: URL, page: CommentThreadPage, guest: GuestReviewer) {
+  return {
+    items: page.items.map((thread) => guestThreadResponse(requestUrl, thread, guest)),
+    nextCursor: encodePageCursor(page.nextCursor),
+  };
+}
+
 function commentThreadDetailsResponse(
   requestUrl: URL,
   details: CommentThreadDetails,
@@ -3850,6 +3859,32 @@ function commentThreadResponse(requestUrl: URL, thread: CommentThreadRecord) {
     updatedAt: thread.updatedAt,
     versionId: thread.versionId,
   };
+}
+
+function guestAuthorResponse(author: CommentAuthor, guest: GuestReviewer) {
+  return {
+    displayName: author.displayName,
+    isYou: author.principalId === `guest_${guest.guestId}`,
+  };
+}
+
+function guestThreadResponse(requestUrl: URL, thread: CommentThreadRecord, guest: GuestReviewer) {
+  return {
+    ...commentThreadResponse(requestUrl, thread),
+    author: guestAuthorResponse(thread.author, guest),
+    resolvedBy: thread.resolvedBy === null ? null : guestAuthorResponse(thread.resolvedBy, guest),
+  };
+}
+
+function guestThreadDetailsResponse(requestUrl: URL, details: CommentThreadDetails, guest: GuestReviewer) {
+  return {
+    replies: details.replies.map((reply) => guestReplyResponse(reply, guest)),
+    thread: guestThreadResponse(requestUrl, details.thread, guest),
+  };
+}
+
+function guestReplyResponse(reply: CommentReplyRecord, guest: GuestReviewer) {
+  return {...reply, author: guestAuthorResponse(reply.author, guest)};
 }
 
 interface CommentThreadUpdate {

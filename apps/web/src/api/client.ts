@@ -957,7 +957,14 @@ export type PublicArtifact = z.infer<typeof publicArtifactSchema>;
 const guestInvitationStatusSchema = z.object({createdAt: z.string().nullable(), enabled: z.boolean()});
 const guestSessionSchema = z.object({displayName: z.string(), expiresAt: z.string()});
 const guestCurrentSchema = z.object({artifactName: z.string(), bootstrapUrl: z.url(), createdAt: z.string(), displayName: z.string(), number: z.number().int(), versionId: z.string()});
-const guestCommentsSchema = commentThreadPageSchema;
+const guestCommentAuthorSchema = z.object({displayName: z.string(), isYou: z.boolean()});
+const guestCommentThreadSchema = commentThreadSchema.extend({author: guestCommentAuthorSchema, resolvedBy: guestCommentAuthorSchema.nullable()});
+const guestCommentReplySchema = commentReplySchema.extend({author: guestCommentAuthorSchema});
+const guestCommentsSchema = z.object({items: z.array(guestCommentThreadSchema), nextCursor: z.string().nullable()});
+const guestCommentDetailsSchema = z.object({replies: z.array(guestCommentReplySchema), thread: guestCommentThreadSchema});
+const guestCreatedCommentSchema = z.object({replayed: z.boolean(), thread: guestCommentThreadSchema});
+const guestCreatedReplySchema = z.object({replayed: z.boolean(), reply: guestCommentReplySchema});
+export type GuestCommentThread = z.infer<typeof guestCommentThreadSchema>;
 
 export const api = {
   guestInvitationStatus: (projectId: string, artifactId: string) => request(
@@ -987,16 +994,16 @@ export const api = {
     `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/comments`,
   ),
   guestComment: (artifactId: string, threadId: string) => request(
-    commentThreadDetailsSchema,
+    guestCommentDetailsSchema,
     `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/comments/${encodeURIComponent(threadId)}`,
   ),
   guestCreateReply: (artifactId: string, threadId: string, body: string, idempotencyKey: string) => request(
-    createdCommentReplySchema,
+    guestCreatedReplySchema,
     `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/comments/${encodeURIComponent(threadId)}/replies`,
     {body: JSON.stringify({body}), headers: guestMutationHeaders(idempotencyKey), method: "POST"},
   ),
   guestCreateComment: (artifactId: string, versionId: string, body: string, idempotencyKey: string) => request(
-    createdCommentThreadSchema,
+    guestCreatedCommentSchema,
     `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/comments`,
     {body: JSON.stringify({body, versionId}), headers: guestMutationHeaders(idempotencyKey), method: "POST"},
   ),

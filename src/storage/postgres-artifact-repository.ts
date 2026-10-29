@@ -2583,17 +2583,19 @@ export class PostgresArtifactRepository implements
          WHERE thread.installation_id = $1 AND thread.project_id = $2
            AND thread.artifact_id = $3
            AND ${dispatchedPredicate}
-           AND ($4::text IS NULL OR thread.version_id = $4)
-           AND ($5::text IS NULL OR thread.state = $5)
-           AND ($6::text IS NULL OR thread.updated_at >= $6)
-           AND ($7::text IS NULL OR thread.created_at < $7
-             OR (thread.created_at = $7 AND thread.id < $8))
+           AND ($4::text IS NULL OR thread.author_principal_id = $4)
+           AND ($5::text IS NULL OR thread.version_id = $5)
+           AND ($6::text IS NULL OR thread.state = $6)
+           AND ($7::text IS NULL OR thread.updated_at >= $7)
+           AND ($8::text IS NULL OR thread.created_at < $8
+             OR (thread.created_at = $8 AND thread.id < $9))
          ORDER BY thread.created_at DESC, thread.id DESC
-         LIMIT $9`,
+         LIMIT $10`,
         [
           installationId,
           command.projectId,
           command.artifactId,
+          command.authorPrincipalId ?? null,
           command.versionId,
           command.state,
           command.since,

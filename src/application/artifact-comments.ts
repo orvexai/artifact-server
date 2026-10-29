@@ -551,6 +551,14 @@ function makeArtifactCommentService(
     },
   );
 
+  const requireGuestThread = Effect.fn("ArtifactCommentService.requireGuestThread")(
+    function*(guest: GuestReviewer, threadId: string): Effect.fn.Return<CommentThreadRecord, CommentRepositoryFailure> {
+      const thread = yield* requireThread(guest.projectId, guest.artifactId, threadId);
+      if (thread.author.principalId === `guest_${guest.guestId}`) return thread;
+      return yield* new CommentNotFound({message: "The comment thread does not exist."});
+    },
+  );
+
   const requireReply = Effect.fn("ArtifactCommentService.requireReply")(
     function*(threadId: string, replyId: string): Effect.fn.Return<
       CommentReplyRecord,
@@ -988,6 +996,7 @@ function makeArtifactCommentService(
       const since = yield* requireSince(command.since);
       yield* requireArtifact(command.guest.projectId, command.guest.artifactId);
       return yield* dependencies.repository.listThreads({
+        authorPrincipalId: `guest_${command.guest.guestId}`,
         artifactId: command.guest.artifactId, cursor: command.cursor,
         dispatched: dispatchedThreadFilters.exclude, limit,
         projectId: command.guest.projectId, since, state: command.state,
@@ -998,7 +1007,7 @@ function makeArtifactCommentService(
   const guestGetThread = Effect.fn("ArtifactCommentService.guestGetThread")(
     function*(command: {readonly guest: GuestReviewer; readonly threadId: string}) {
       yield* requireArtifact(command.guest.projectId, command.guest.artifactId);
-      const thread = yield* requireThread(command.guest.projectId, command.guest.artifactId, command.threadId);
+      const thread = yield* requireGuestThread(command.guest, command.threadId);
       return {replies: yield* dependencies.repository.listReplies(thread.id), thread};
     },
   );
@@ -1023,7 +1032,7 @@ function makeArtifactCommentService(
   );
   const guestCreateReply = Effect.fn("ArtifactCommentService.guestCreateReply")(
     function*(command: {readonly guest: GuestReviewer; readonly threadId: string; readonly body: string; readonly idempotencyKey: string}) {
-      const thread = yield* requireThread(command.guest.projectId, command.guest.artifactId, command.threadId);
+      const thread = yield* requireGuestThread(command.guest, command.threadId);
       return yield* dependencies.repository.createReply({
         artifactId: command.guest.artifactId, author: makeGuestAuthor(command.guest),
         body: yield* requireBody(command.body),
@@ -1036,7 +1045,7 @@ function makeArtifactCommentService(
   );
   const guestUpdateThread = Effect.fn("ArtifactCommentService.guestUpdateThread")(
     function*(command: {readonly guest: GuestReviewer; readonly threadId: string; readonly anchor?: unknown; readonly body?: string}) {
-      const thread = yield* requireThread(command.guest.projectId, command.guest.artifactId, command.threadId);
+      const thread = yield* requireGuestThread(command.guest, command.threadId);
       if (thread.author.principalId !== makeGuestAuthor(command.guest).principalId) return yield* new AuthorizationDenied({message: "Only the author can change this comment."});
       if (command.anchor === undefined && command.body === undefined) return yield* new InvalidComment({message: "A comment update must change a body or an anchor."});
       if (command.anchor !== undefined) yield* requireAnchor({anchor: command.anchor});
@@ -1053,7 +1062,7 @@ function makeArtifactCommentService(
   );
   const guestDeleteThread = Effect.fn("ArtifactCommentService.guestDeleteThread")(
     function*(command: {readonly guest: GuestReviewer; readonly threadId: string}) {
-      const thread = yield* requireThread(command.guest.projectId, command.guest.artifactId, command.threadId);
+      const thread = yield* requireGuestThread(command.guest, command.threadId);
       if (thread.author.principalId !== makeGuestAuthor(command.guest).principalId) return yield* new AuthorizationDenied({message: "Only the author can delete this comment."});
       return yield* dependencies.repository.deleteThread({
         artifactId: command.guest.artifactId,
@@ -1066,7 +1075,7 @@ function makeArtifactCommentService(
   );
   const guestUpdateReply = Effect.fn("ArtifactCommentService.guestUpdateReply")(
     function*(command: {readonly guest: GuestReviewer; readonly threadId: string; readonly replyId: string; readonly body: string}) {
-      const thread = yield* requireThread(command.guest.projectId, command.guest.artifactId, command.threadId);
+      const thread = yield* requireGuestThread(command.guest, command.threadId);
       const reply = yield* requireReply(thread.id, command.replyId);
       if (reply.author.principalId !== makeGuestAuthor(command.guest).principalId) return yield* new AuthorizationDenied({message: "Only the author can change this comment."});
       return yield* dependencies.repository.updateReply({
@@ -1080,7 +1089,7 @@ function makeArtifactCommentService(
   );
   const guestDeleteReply = Effect.fn("ArtifactCommentService.guestDeleteReply")(
     function*(command: {readonly guest: GuestReviewer; readonly threadId: string; readonly replyId: string}) {
-      const thread = yield* requireThread(command.guest.projectId, command.guest.artifactId, command.threadId);
+      const thread = yield* requireGuestThread(command.guest, command.threadId);
       const reply = yield* requireReply(thread.id, command.replyId);
       if (reply.author.principalId !== makeGuestAuthor(command.guest).principalId) return yield* new AuthorizationDenied({message: "Only the author can delete this comment."});
       yield* dependencies.repository.deleteReply({

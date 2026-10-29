@@ -253,6 +253,8 @@ export interface ListCommentThreads {
   readonly cursor: PageCursor | null;
   /** Visibility of threads referenced by an active dispatch. */
   readonly dispatched: DispatchedThreadFilter;
+  /** Optional exact author principal filter, applied before paging. */
+  readonly authorPrincipalId?: string;
   readonly limit: number;
   readonly projectId: string;
   /** Inclusive lower bound on updatedAt, or null for no lower bound. */

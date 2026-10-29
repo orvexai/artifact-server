@@ -51,7 +51,7 @@ import {
   type ArtifactDetails,
   type ArtifactPage,
   type ArtifactVersion,
-  type CommentThread,
+  type GuestCommentThread,
   type ComparedFile,
   type Project,
   type PublicArtifact,
@@ -2754,7 +2754,7 @@ function PublicArtifactReview({
   >({kind: "loading"});
   const [guestName, setGuestName] = useState("");
   const [guestMessage, setGuestMessage] = useState<string | null>(null);
-  const [threads, setThreads] = useState<readonly CommentThread[]>([]);
+  const [threads, setThreads] = useState<readonly GuestCommentThread[]>([]);
   const [newComment, setNewComment] = useState("");
   useEffect(() => {
     let cancelled = false;
