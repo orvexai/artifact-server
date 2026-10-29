@@ -46,6 +46,7 @@ import {
   type ReadCommentThreadCommand,
   type UpdateCommentThreadCommand,
 } from "../application/artifact-comments.js";
+import {GuestReviewService, type GuestReviewer} from "../application/guest-review.js";
 import {
   type ArtifactDetails,
   type ArtifactVersionDetails,
@@ -109,6 +110,8 @@ import {
   commentThreadStates,
   type CommentThreadPage,
   type CommentThreadRecord,
+  type CommentReplyRecord,
+  type CommentAuthor,
   type CommentThreadState,
   dispatchedThreadFilters,
   type ManifestEntry,
@@ -279,6 +282,20 @@ const createCommentThreadSchema = z.object({
   body: commentBodySchema,
   path: manifestEntryPathSchema.optional(),
 }).strict();
+const guestSessionExchangeSchema = z.object({
+  displayName: z.string().trim().min(1).max(80),
+  secret: z.string().min(1).max(200),
+}).strict();
+const guestCreateThreadSchema = z.object({
+  anchor: z.unknown().optional(),
+  body: z.string().min(1),
+  path: z.string().min(1).max(4_096).optional(),
+  versionId: z.string().min(1).max(200),
+}).strict();
+interface GuestThreadUpdate {
+  anchor?: unknown;
+  body?: string;
+}
 const artifactStateWriteSchema = z.object({value: z.unknown()}).strict();
 const artifactStateKeySchema = z.string().min(1).max(200);
 const updateCommentThreadSchema = z.object({
@@ -473,6 +490,10 @@ const loginHandshakeCookie = "artifact_login";
 const secureApplicationSessionCookie = "__Host-artifact_session";
 const secureApplicationCsrfCookie = "__Host-artifact_csrf";
 const secureLoginHandshakeCookie = "__Host-artifact_login";
+const guestSessionCookie = "artifact_guest_session";
+const secureGuestSessionCookie = "__Host-artifact_guest_session";
+const guestCsrfCookie = "artifact_guest_csrf";
+const secureGuestCsrfCookie = "__Host-artifact_guest_csrf";
 const loginHandshakeMaxAgeSeconds = 10 * 60;
 /** Upper bound on one held claim poll, per the dispatch transport contract. */
 const maximumClaimWaitSeconds = 25;
@@ -922,6 +943,136 @@ export function createHttpApp(
         ),
       },
     });
+  });
+
+  // Guest paths deliberately sit before /api/* authentication and accept only
+  // the guest cookie. They never populate the application principal context.
+  app.post("/api/v1/public/artifacts/:artifactId/guest-session", boundedJsonBody, async (context) => {
+    requireGuestSessionExchangeBoundary(context, dependencies);
+    const body = guestSessionExchangeSchema.parse(await context.req.json());
+    const exchangeResult = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.exchange({
+        artifactId: context.req.param("artifactId"),
+        displayName: body.displayName,
+        secret: body.secret,
+      })).pipe(
+        Effect.catchTag("GuestRateLimitExceeded", (failure) => Effect.succeed({rateLimitFailure: failure})),
+        Effect.catch(() => Effect.succeed(null)),
+      ));
+    if (exchangeResult !== null && "rateLimitFailure" in exchangeResult) {
+      const failure = artifactServerFailureResponse(exchangeResult.rateLimitFailure);
+      return context.json({error: {code: failure.code, message: failure.message}}, 429);
+    }
+    const issued = exchangeResult;
+    if (issued === null) return context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404);
+    const secure = usesSecureApplicationCookies(dependencies);
+    const sessionName = secure ? secureGuestSessionCookie : guestSessionCookie;
+    const csrfName = secure ? secureGuestCsrfCookie : guestCsrfCookie;
+    const expires = new Date(issued.expiresAt);
+    setCookie(context, sessionName, Redacted.value(issued.sessionToken), {expires, httpOnly: true, maxAge: 7 * 24 * 60 * 60, path: "/", sameSite: "Strict", secure});
+    setCookie(context, csrfName, issued.csrfToken, {expires, httpOnly: false, maxAge: 7 * 24 * 60 * 60, path: "/", sameSite: "Strict", secure});
+    return context.json({displayName: issued.reviewer.displayName, expiresAt: issued.expiresAt}, 201);
+  });
+
+  app.get("/api/v1/public/artifacts/:artifactId/guest/current", async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, false);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    const issued = await runHttpApplicationEffect(context, dependencies,
+      ContentAccessService.use((contentAccess) => contentAccess.issueGuestContentBootstrap(guest)));
+    return context.json({artifactName: issued.artifactName, createdAt: issued.createdAt, displayName: guest.displayName, number: issued.number, bootstrapUrl: contentBootstrapBrowserUrl(
+      responseApplicationUrl(context, dependencies), dependencies.contentDomain,
+      issued.contentToken, Redacted.value(issued.token), requestedContentPath(context),
+    ), versionId: issued.versionId}, 201);
+  });
+
+  app.post("/api/v1/public/artifacts/:artifactId/guest/heartbeat", async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, true);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    return context.body(null, 204);
+  });
+
+  app.get("/api/v1/public/artifacts/:artifactId/guest/comments", async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, false);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    const query = commentPageQuerySchema.parse(context.req.query());
+    const page = await runHttpApplicationEffect(context, dependencies,
+      ArtifactCommentService.use((comments) => comments.guestListThreads({
+        guest, cursor: decodePageCursor(query.cursor), limit: query.limit,
+        since: query.since ?? null, state: query.state ?? null,
+        versionId: query.versionId ?? null,
+      })));
+    return context.json(guestThreadPageResponse(responseApplicationUrl(context, dependencies), page, guest));
+  });
+
+  app.get("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, false);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    const details = await runHttpApplicationEffect(context, dependencies,
+      ArtifactCommentService.use((comments) => comments.guestGetThread({guest, threadId: context.req.param("threadId")})));
+    return context.json(guestThreadDetailsResponse(responseApplicationUrl(context, dependencies), details, guest));
+  });
+
+  app.post("/api/v1/public/artifacts/:artifactId/guest/comments", boundedJsonBody, async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, true);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    const body = guestCreateThreadSchema.parse(await context.req.json());
+    const created = await runHttpApplicationEffect(context, dependencies,
+      ArtifactCommentService.use((comments) => comments.guestCreateThread({
+        guest, body: body.body, anchor: body.anchor ?? null, path: body.path ?? null,
+        idempotencyKey: requiredIdempotencyKey(context.req.header("idempotency-key")),
+        versionId: body.versionId,
+      })));
+    return context.json({replayed: created.replayed, thread: guestThreadResponse(responseApplicationUrl(context, dependencies), created.thread, guest)}, 201);
+  });
+
+  app.post("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies", boundedJsonBody, async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, true);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    const body = createCommentReplySchema.parse(await context.req.json());
+    const created = await runHttpApplicationEffect(context, dependencies,
+      ArtifactCommentService.use((comments) => comments.guestCreateReply({guest, threadId: context.req.param("threadId"), body: body.body, idempotencyKey: requiredIdempotencyKey(context.req.header("idempotency-key"))})));
+    return context.json({replayed: created.replayed, reply: guestReplyResponse(created.reply, guest)}, 201);
+  });
+
+  app.patch("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", boundedJsonBody, async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, true);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    const body = updateCommentThreadSchema.parse(await context.req.json());
+    if (body.state !== undefined) return context.json({error: {code: "AUTHORIZATION_DENIED", message: "Guests cannot change comment state."}}, 403);
+    const update: GuestThreadUpdate = {};
+    if (body.anchor !== undefined) update.anchor = body.anchor;
+    if (body.body !== undefined) update.body = body.body;
+    const thread = await runHttpApplicationEffect(context, dependencies,
+      ArtifactCommentService.use((comments) => comments.guestUpdateThread({guest, threadId: context.req.param("threadId"), ...update})));
+    return context.json({thread: guestThreadResponse(responseApplicationUrl(context, dependencies), thread, guest)});
+  });
+
+  app.delete("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, true);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((comments) => comments.guestDeleteThread({guest, threadId: context.req.param("threadId")})));
+    return context.body(null, 204);
+  });
+
+  app.patch("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId", boundedJsonBody, async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, true);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    const body = createCommentReplySchema.parse(await context.req.json());
+    const reply = await runHttpApplicationEffect(context, dependencies,
+      ArtifactCommentService.use((comments) => comments.guestUpdateReply({
+        guest, threadId: context.req.param("threadId"), replyId: context.req.param("replyId"), body: body.body,
+      })));
+    return context.json({reply: guestReplyResponse(reply, guest)});
+  });
+
+  app.delete("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId", async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, true);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    await runHttpApplicationEffect(context, dependencies,
+      ArtifactCommentService.use((comments) => comments.guestDeleteReply({
+        guest, threadId: context.req.param("threadId"), replyId: context.req.param("replyId"),
+      })));
+    return context.body(null, 204);
   });
 
   app.use("/api/*", async (context, next) => {
@@ -2412,6 +2563,56 @@ export function createHttpApp(
     },
   );
 
+  app.get("/api/v1/artifacts/:artifactId/guest-invitation", async (context) => {
+    const status = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.status({
+        artifactId: context.req.param("artifactId"),
+        principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    return context.json(status);
+  });
+
+  app.get("/api/v1/artifacts/:artifactId/guest-invitation/sessions", async (context) => {
+    const sessions = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.listSessions({
+        artifactId: context.req.param("artifactId"),
+        principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    return context.json({sessions});
+  });
+
+  app.delete("/api/v1/artifacts/:artifactId/guest-invitation/sessions/:guestId", async (context) => {
+    await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.revokeSession({
+        artifactId: context.req.param("artifactId"), guestId: context.req.param("guestId"),
+        principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    return context.body(null, 204);
+  });
+
+  app.post("/api/v1/artifacts/:artifactId/guest-invitation", async (context) => {
+    const issued = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.enable({
+        artifactId: context.req.param("artifactId"),
+        principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    const url = new URL("/review", responseApplicationUrl(context, dependencies));
+    url.searchParams.set("artifact", context.req.param("artifactId"));
+    const projectId = requestedProjectId(context);
+    if (projectId !== null) url.searchParams.set("project", projectId);
+    url.hash = `invite=${encodeURIComponent(issued.linkSecret)}`;
+    return context.json({createdAt: issued.createdAt, enabled: true, url: url.toString()}, 201);
+  });
+
+  app.delete("/api/v1/artifacts/:artifactId/guest-invitation", async (context) => {
+    await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.revoke({
+        artifactId: context.req.param("artifactId"),
+        principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    return context.body(null, 204);
+  });
+
   app.patch(
     "/api/v1/artifacts/:artifactId/tags",
     boundedJsonBody,
@@ -3143,6 +3344,65 @@ function requireBrowserMutationSecurity(
   }
 }
 
+async function requireGuestReviewer(
+  context: Context<HttpEnvironment>,
+  dependencies: HttpAppDependencies,
+  mutation: boolean,
+): Promise<GuestReviewer | null> {
+  const secure = usesSecureApplicationCookies(dependencies);
+  const sessionName = secure ? secureGuestSessionCookie : guestSessionCookie;
+  const csrfName = secure ? secureGuestCsrfCookie : guestCsrfCookie;
+  const rawSession = sessionTokenSchema.safeParse(getCookie(context, sessionName));
+  if (!rawSession.success) return null;
+  const session = await runHttpApplicationEffect(context, dependencies,
+    GuestReviewService.use((guests) => guests.authenticate(
+      Redacted.make(rawSession.data, {label: "guest-session"}),
+      new Date().toISOString(),
+    ))).catch(() => null);
+  if (session === null || session.artifactId !== context.req.param("artifactId")) return null;
+  if (mutation) {
+    const requestUrl = new URL(context.req.url);
+    const trustedOrigin = dependencies.trustedApplicationOrigin ?? requestUrl.origin;
+    const header = csrfTokenSchema.safeParse(context.req.header("x-csrf-token"));
+    const cookie = csrfTokenSchema.safeParse(getCookie(context, csrfName));
+    if (
+      context.req.header("origin") !== trustedOrigin ||
+      context.req.header("sec-fetch-site") !== "same-origin" ||
+      !header.success || !cookie.success || header.data !== cookie.data ||
+      !identitySecretsEqual(digestIdentitySecret(header.data), session.csrfDigest)
+    ) {
+      throw new AuthorizationDenied({message: "A valid guest browser CSRF token is required."});
+    }
+  }
+  return {
+    artifactId: session.artifactId,
+    displayName: session.displayName,
+    guestId: session.guestId,
+    invitationCreatorPrincipalId: session.invitationCreatorPrincipalId,
+    projectId: session.projectId,
+  };
+}
+
+function requireGuestSessionExchangeBoundary(
+  context: Context<HttpEnvironment>,
+  dependencies: HttpAppDependencies,
+): void {
+  const requestUrl = new URL(context.req.url);
+  const trustedOrigin = dependencies.trustedApplicationOrigin ?? requestUrl.origin;
+  const contentType = context.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (
+    context.req.header("origin") !== trustedOrigin ||
+    context.req.header("sec-fetch-site") !== "same-origin" ||
+    contentType !== "application/json"
+  ) {
+    throw new AuthorizationDenied({message: "Guest sessions must be started by a same-origin JSON request."});
+  }
+}
+
+function guestNotFound(context: Context<HttpEnvironment>): Response {
+  return context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404);
+}
+
 function requireLocalOwnerExchangeBoundary(
   context: Context<HttpEnvironment>,
   dependencies: HttpAppDependencies,
@@ -3604,6 +3864,13 @@ function commentThreadPageResponse(requestUrl: URL, page: CommentThreadPage) {
   };
 }
 
+function guestThreadPageResponse(requestUrl: URL, page: CommentThreadPage, guest: GuestReviewer) {
+  return {
+    items: page.items.map((thread) => guestThreadResponse(requestUrl, thread, guest)),
+    nextCursor: encodePageCursor(page.nextCursor),
+  };
+}
+
 function commentThreadDetailsResponse(
   requestUrl: URL,
   details: CommentThreadDetails,
@@ -3641,6 +3908,36 @@ function commentThreadResponse(requestUrl: URL, thread: CommentThreadRecord) {
     updatedAt: thread.updatedAt,
     versionId: thread.versionId,
   };
+}
+
+function guestAuthorResponse(author: CommentAuthor, guest: GuestReviewer) {
+  const isYou = author.principalId === `guest_${guest.guestId}`;
+  const principalLike = /^(?:service|guest|human|member|principal|user|key)[_:-]/iu.test(author.displayName) ||
+    /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(author.displayName) ||
+    author.displayName === author.principalId;
+  return {
+    displayName: isYou ? author.displayName : principalLike || author.displayName.includes("@") ? "Team member" : author.displayName,
+    isYou,
+  };
+}
+
+function guestThreadResponse(requestUrl: URL, thread: CommentThreadRecord, guest: GuestReviewer) {
+  return {
+    ...commentThreadResponse(requestUrl, thread),
+    author: guestAuthorResponse(thread.author, guest),
+    resolvedBy: thread.resolvedBy === null ? null : guestAuthorResponse(thread.resolvedBy, guest),
+  };
+}
+
+function guestThreadDetailsResponse(requestUrl: URL, details: CommentThreadDetails, guest: GuestReviewer) {
+  return {
+    replies: details.replies.map((reply) => guestReplyResponse(reply, guest)),
+    thread: guestThreadResponse(requestUrl, details.thread, guest),
+  };
+}
+
+function guestReplyResponse(reply: CommentReplyRecord, guest: GuestReviewer) {
+  return {...reply, author: guestAuthorResponse(reply.author, guest)};
 }
 
 interface CommentThreadUpdate {

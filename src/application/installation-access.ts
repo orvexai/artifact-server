@@ -313,6 +313,9 @@ export interface IssuedLocalBrowserLogin {
 }
 
 export interface InstallationAccessOperations {
+  readonly findActiveHumanPrincipal: (
+    memberId: string,
+  ) => Effect.Effect<Principal | null, IdentityRepositoryFailure>;
   readonly admitMember: (
     command: AdmitMemberCommand,
   ) => Effect.Effect<
@@ -1031,6 +1034,16 @@ function makeInstallationAccessService(
     return member === null ? null : humanPrincipal(member);
   });
 
+  const findActiveHumanPrincipal = Effect.fn(
+    "InstallationAccessService.findActiveHumanPrincipal",
+  )(function*(memberId: string) {
+    const member = yield* dependencies.repository.findMember(
+      dependencies.installationId,
+      memberId,
+    );
+    return member?.status === memberStatuses.active ? humanPrincipal(member) : null;
+  });
+
   const authenticateSession = Effect.fn(
     "InstallationAccessService.authenticateSession",
   )(function*(credential: Redacted.Redacted) {
@@ -1287,6 +1300,7 @@ function makeInstallationAccessService(
     authenticateSession,
     completeExternalIdentity,
     deactivateMember,
+    findActiveHumanPrincipal,
     issueApiKey,
     issueLocalBrowserLogin,
     loginAsLocalOwner,

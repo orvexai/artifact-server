@@ -244,6 +244,7 @@ export interface ContentBootstrapRecord {
   readonly contentToken: string;
   readonly createdAt: string;
   readonly expiresAt: string;
+  readonly guestSessionId?: string | null;
   readonly principalId: string;
   readonly projectId: string;
   readonly tokenDigest: string;
@@ -256,10 +257,52 @@ export interface ContentSessionRecord {
   readonly contentToken: string;
   readonly createdAt: string;
   readonly expiresAt: string;
+  readonly guestSessionId?: string | null;
   readonly principalId: string;
   readonly projectId: string;
   readonly tokenDigest: string;
   readonly versionId: string;
+}
+
+/** One invitation that authorizes guest review of a single artifact. */
+export interface GuestReviewInvitation {
+  readonly artifactId: string;
+  readonly createdAt: string;
+  readonly createdByPrincipalId: string;
+  readonly id: string;
+  readonly projectId: string;
+  readonly revokedAt: string | null;
+  readonly tokenDigest: string;
+}
+
+/** A guest browser session bound to one invitation and artifact. */
+export interface GuestReviewSession {
+  readonly absoluteExpiresAt: string;
+  readonly artifactId: string;
+  readonly createdAt: string;
+  readonly csrfDigest: string;
+  readonly displayName: string;
+  readonly expiresAt: string;
+  readonly guestId: string;
+  readonly invitationCreatorPrincipalId: string;
+  readonly invitationId: string;
+  readonly lastUsedAt: string;
+  readonly projectId: string;
+  readonly tokenDigest: string;
+}
+
+/** Non-secret session fields shown to the artifact owner. */
+export interface GuestReviewSessionSummary {
+  readonly createdAt: string;
+  readonly displayName: string;
+  readonly guestId: string;
+  readonly lastUsedAt: string;
+}
+
+/** Counts and recent abuse signal for one invitation. */
+export interface GuestReviewInvitationUsage {
+  readonly activeSessionCount: number;
+  readonly limitHitRecently: boolean;
 }
 
 export interface StagedUploadFile {
@@ -377,6 +420,7 @@ export interface CommentReplyCreation {
 /** The durable outcome of deleting one comment thread and its replies. */
 export interface CommentThreadDeletion {
   readonly deletedReplyCount: number;
+  readonly refusedForeignReplyDeletion?: boolean;
   readonly thread: CommentThreadRecord;
 }
 

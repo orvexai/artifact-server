@@ -23,6 +23,10 @@ import type {
   CommentThreadState,
   ContentBootstrapRecord,
   ContentSessionRecord,
+  GuestReviewInvitation,
+  GuestReviewInvitationUsage,
+  GuestReviewSession,
+  GuestReviewSessionSummary,
   AgentBeaconState,
   AgentCapabilities,
   CommentClearScope,
@@ -251,6 +255,8 @@ export interface ListCommentThreads {
   readonly cursor: PageCursor | null;
   /** Visibility of threads referenced by an active dispatch. */
   readonly dispatched: DispatchedThreadFilter;
+  /** Optional exact author principal filter, applied before paging. */
+  readonly authorPrincipalId?: string;
   readonly limit: number;
   readonly projectId: string;
   /** Inclusive lower bound on updatedAt, or null for no lower bound. */
@@ -295,6 +301,7 @@ export interface DeleteCommentThread {
   readonly deletedAt: string;
   readonly principalId: string;
   readonly projectId: string;
+  readonly rejectRepliesByOtherAuthorsPrincipalId?: string;
   readonly threadId: string;
 }
 
@@ -732,6 +739,30 @@ export interface ContentSessionRepository {
   ): Promise<ContentSessionRecord | null>;
 }
 
+/** Durable invitation and guest-session operations for invited review. */
+export interface GuestReviewRepository {
+  createGuestInvitation(invitation: GuestReviewInvitation): Promise<void>;
+  findGuestInvitation(
+    projectId: string,
+    artifactId: string,
+  ): Promise<GuestReviewInvitation | null>;
+  findGuestInvitationByDigest(tokenDigest: string): Promise<GuestReviewInvitation | null>;
+  revokeGuestInvitation(
+    projectId: string,
+    artifactId: string,
+    revokedAt: string,
+  ): Promise<boolean>;
+  createGuestSession(session: GuestReviewSession): Promise<"created" | "rate_limited" | "invalid">;
+  findGuestSession(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null>;
+  listGuestSessions(projectId: string, artifactId: string, requestTime: string): Promise<readonly GuestReviewSessionSummary[]>;
+  revokeGuestSession(projectId: string, artifactId: string, guestId: string): Promise<boolean>;
+  getGuestInvitationUsage(invitationId: string, requestTime: string): Promise<GuestReviewInvitationUsage>;
+  reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<boolean>;
+  reserveGuestBootstrap(guestId: string, requestTime: string): Promise<boolean>;
+  deleteExpiredGuestContentRows(expiredBefore: string, limit: number): Promise<number>;
+  deleteExpiredGuestSessions(expiredBefore: string, limit: number): Promise<number>;
+}
+
 export interface StagedUploadRepository {
   createStagedUpload(command: CreateStagedUpload): Promise<StagedUpload>;
   findStagedUpload(
@@ -769,6 +800,8 @@ export interface IdGenerator {
   artifactId(): string;
   commentReplyId(): string;
   commentThreadId(): string;
+  guestInvitationId(): string;
+  guestSessionId(): string;
   contentToken(): string;
   projectId(): string;
   registeredAgentId(): string;
