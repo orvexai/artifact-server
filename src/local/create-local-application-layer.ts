@@ -615,6 +615,10 @@ export function createApplicationLayer(
         "listArtifactStateEntries",
         () => adapters.repository.listArtifactStateEntries(projectId, artifactId),
       ),
+      reserveGuestCommentWrite: (guestId, requestTime) => Effect.tryPromise({
+        try: () => adapters.repository.reserveGuestCommentWrite(guestId, requestTime),
+        catch: (cause) => repositoryFailure("reserveGuestCommentWrite", cause),
+      }),
       updateReply: (command) => commentEffect(
         "updateCommentReply",
         () => adapters.repository.updateReply(command),
@@ -1271,7 +1275,7 @@ export function createApplicationLayer(
       catch: (cause) => repositoryFailure("findArtifact", cause),
     }),
     secrets: contentDependencies.secrets,
-  }).pipe(Layer.provideMerge(Layer.mergeAll(authorizationLayer, projectLayer)));
+  }).pipe(Layer.provideMerge(Layer.mergeAll(authorizationLayer, projectLayer, identityLayer)));
   const commentsAndGuestReviewLayer = Layer.mergeAll(commentLayer, guestReviewLayer);
   const comparisonLayer = CompareArtifactService.layer(
     comparisonDependencies,

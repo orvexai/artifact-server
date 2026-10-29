@@ -1617,7 +1617,7 @@ export function createArtifactMcpServer(
       description: "Regenerate the artifact's invited guest review link. The returned URL contains a one-time secret in its fragment; share it only with invited reviewers.",
       inputSchema: z.object({artifactId: artifactIdSchema, projectId: optionalProjectIdSchema}).strict(),
       outputSchema: z.object({createdAt: z.string(), enabled: z.literal(true), url: z.url()}).strict(),
-      annotations: idempotentWriteAnnotations,
+      annotations: additiveWriteAnnotations,
     },
     async ({artifactId, projectId}) => toolResult(async () => {
       const issued = await runMcpApplicationEffect(dependencies,

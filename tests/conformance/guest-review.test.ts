@@ -1,5 +1,7 @@
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
+import {DatabaseSync} from "node:sqlite";
+import nodePath from "node:path";
 
 import {createTestInstallation, fetchVersion, issueLocalBrowserLogin, removeTestInstallation, startTestServer, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
 import {publishNew} from "../support/publishing.js";
@@ -77,9 +79,7 @@ describe("invited guest review", () => {
   }
 
   async function exchange(artifact: string, secret: string, displayName = "Guest Reviewer"): Promise<z.infer<typeof guestSessionCookieSchema>> {
-    const response = await fetch(`${server.baseUrl}/api/v1/public/artifacts/${artifact}/guest-session`, {
-      body: JSON.stringify({displayName, secret}), headers: {"Content-Type": "application/json"}, method: "POST",
-    });
+    const response = await exchangeResponse(artifact, secret, displayName);
     expect(response.status).toBe(201);
     expect(guestSessionResponseSchema.parse(await response.json()).displayName).toBe(displayName.trim());
     const cookies = response.headers.getSetCookie();
@@ -91,6 +91,12 @@ describe("invited guest review", () => {
       cookie: `${session ?? ""}; ${csrfCookie ?? ""}`,
       csrf: csrfCookie?.split("=", 2)[1] ?? "",
     };
+  }
+
+  function exchangeResponse(artifact: string, secret: string, displayName = "Guest Reviewer", headers: HeadersInit = {}): Promise<Response> {
+    return fetch(`${server.baseUrl}/api/v1/public/artifacts/${artifact}/guest-session`, {
+      body: JSON.stringify({displayName, secret}), headers: {Origin: server.baseUrl, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json", ...Object.fromEntries(new Headers(headers))}, method: "POST",
+    });
   }
 
   async function guestRequest(
@@ -118,8 +124,8 @@ describe("invited guest review", () => {
     return z.object({thread: guestThreadSchema}).parse(JSON.parse(responseText)).thread;
   }
 
-  async function createMemberThread(body: string): Promise<{readonly id: string; readonly author: {readonly displayName: string; readonly principalId: string}}> {
-    const response = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/versions/${currentVersionId}/comments?projectId=${projectId}`, JSON.stringify({anchor: {point: {x: 0.5, y: 0.5}}, body}), {"Idempotency-Key": `member-thread-key-${crypto.randomUUID()}`});
+  async function createMemberThread(body: string, key = `member-thread-key-${crypto.randomUUID()}`): Promise<{readonly id: string; readonly author: {readonly displayName: string; readonly principalId: string}}> {
+    const response = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/versions/${currentVersionId}/comments?projectId=${projectId}`, JSON.stringify({anchor: {point: {x: 0.5, y: 0.5}}, body}), {"Idempotency-Key": key});
     expect(response.status).toBe(201);
     return z.object({thread: z.object({id: z.string(), author: z.object({displayName: z.string(), principalId: z.string()})})}).parse(await response.json()).thread;
   }
@@ -134,17 +140,11 @@ describe("invited guest review", () => {
 
   test("wrong, revoked, and other-artifact secrets return the same 404; regeneration revokes the prior secret", async () => {
     const first = await enableInvitation();
-    const wrong = await fetch(`${server.baseUrl}/api/v1/public/artifacts/${artifactId}/guest-session`, {
-      body: JSON.stringify({displayName: "Guest", secret: "x".repeat(40)}), headers: {"Content-Type": "application/json"}, method: "POST",
-    });
+    const wrong = await exchangeResponse(artifactId, "x".repeat(40), "Guest");
     expect(wrong.status).toBe(404);
     const regenerated = await enableInvitation();
-    const revoked = await fetch(`${server.baseUrl}/api/v1/public/artifacts/${artifactId}/guest-session`, {
-      body: JSON.stringify({displayName: "Guest", secret: first.secret}), headers: {"Content-Type": "application/json"}, method: "POST",
-    });
-    const otherArtifact = await fetch(`${server.baseUrl}/api/v1/public/artifacts/${otherArtifactId}/guest-session`, {
-      body: JSON.stringify({displayName: "Guest", secret: regenerated.secret}), headers: {"Content-Type": "application/json"}, method: "POST",
-    });
+    const revoked = await exchangeResponse(artifactId, first.secret, "Guest");
+    const otherArtifact = await exchangeResponse(otherArtifactId, regenerated.secret, "Guest");
     expect(revoked.status).toBe(404);
     expect(otherArtifact.status).toBe(404);
     const genericBody = await wrong.text();
@@ -261,5 +261,122 @@ describe("invited guest review", () => {
     const memberText = await memberList.text();
     expect(memberText).toContain("Guest A (guest)");
     expect(memberText).toContain(ownFirst.id);
+  });
+
+  test("archiving the project invalidates guest current, comment creation, and comment listing", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const archive = await ownerRequest("POST", `/api/v1/projects/${projectId}/archive`, "{}");
+    expect(archive.status).toBe(200);
+    const responses = await Promise.all([
+      guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`),
+      guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Archived", versionId: currentVersionId}), true, "archived-guest-create-0001"),
+      guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/comments`),
+    ]);
+    expect(responses.map((response) => response.status)).toEqual([404, 404, 404]);
+  });
+
+  test("exchange requires a same-origin JSON request", async () => {
+    const invitation = await enableInvitation();
+    const response = await exchangeResponse(artifactId, invitation.secret, "Guest", {Origin: "https://attacker.example", "Sec-Fetch-Site": "cross-site"});
+    expect(response.status).toBe(403);
+  });
+
+  test("an invitation allows at most 100 active guest sessions", async () => {
+    const invitation = await enableInvitation();
+    const exchanges = await Promise.all(Array.from({length: 100}, (_, index) => exchangeResponse(artifactId, invitation.secret, `Guest ${index}`)));
+    expect(exchanges.map((response) => response.status)).toEqual(Array.from({length: 100}, () => 201));
+    expect((await exchangeResponse(artifactId, invitation.secret, "Guest 101")).status).toBe(429);
+  });
+
+  test("a guest session can create no more than 30 comments per hour", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const writes = await Promise.all(Array.from({length: 30}, (_, index) => guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: `Comment ${index}`, versionId: currentVersionId}), true, `guest-hourly-${index.toString().padStart(4, "0")}`)));
+    expect(writes.map((response) => response.status)).toEqual(Array.from({length: 30}, () => 201));
+    const limited = await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Over limit", versionId: currentVersionId}), true, "guest-hourly-over-limit");
+    expect(limited.status).toBe(429);
+  });
+
+  test("repeated current requests reuse the guest bootstrap and revocation invalidates its content URL", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const currentPath = `/api/v1/public/artifacts/${artifactId}/guest/current`;
+    const first = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", currentPath)).json());
+    const second = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", currentPath)).json());
+    expect(second.bootstrapUrl).toBe(first.bootstrapUrl);
+    const beforeRevoke = await fetchVersion(server, first.bootstrapUrl);
+    expect(beforeRevoke.status).toBe(200);
+    const contentCookie = beforeRevoke.headers.getSetCookie().find((cookie) => cookie.startsWith("artifact_content="))?.split(";", 1)[0];
+    expect(contentCookie).toBeDefined();
+    const contentUrl = new URL("/", first.bootstrapUrl).toString();
+    expect((await fetchVersion(server, contentUrl, "GET", {Cookie: contentCookie ?? ""})).status).toBe(200);
+    expect((await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`)).status).toBe(204);
+    expect((await fetchVersion(server, contentUrl, "GET", {Cookie: contentCookie ?? ""})).status).not.toBe(200);
+    expect((await fetchVersion(server, first.bootstrapUrl)).status).not.toBe(200);
+  });
+
+  test("guest idempotency replay cannot disclose a member thread", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const key = "member-thread-known-key-12345";
+    const member = await createMemberThread("Member replay body", key);
+    const replay = await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({anchor: {point: {x: 0.5, y: 0.5}}, body: "Member replay body", versionId: currentVersionId}), true, key);
+    expect(replay.status).toBe(404);
+    expect(await replay.text()).toBe(JSON.stringify({error: {code: "COMMENT_NOT_FOUND", message: "The comment thread does not exist."}}));
+    const replyKey = "member-reply-known-key-12345";
+    const memberReply = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/comments/${member.id}/replies?projectId=${projectId}`, JSON.stringify({body: "Member reply replay"}), {"Idempotency-Key": replyKey});
+    expect(memberReply.status).toBe(201);
+    const replyReplay = await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments/${member.id}/replies`, JSON.stringify({body: "Member reply replay"}), true, replyKey);
+    expect(replyReplay.status).toBe(404);
+    expect(await replyReplay.text()).toBe(JSON.stringify({error: {code: "COMMENT_NOT_FOUND", message: "The comment thread does not exist."}}));
+  });
+
+  test("a guest cannot delete a thread containing a team reply", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const thread = await createGuestThread(guest, "Keep this with team reply");
+    const memberReply = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/comments/${thread.id}/replies?projectId=${projectId}`, JSON.stringify({body: "Team reply"}), {"Idempotency-Key": "team-reply-keeps-thread-001"});
+    expect(memberReply.status).toBe(201);
+    expect((await guestRequest(guest, "DELETE", `/api/v1/public/artifacts/${artifactId}/guest/comments/${thread.id}`)).status).toBe(409);
+  });
+
+  test("guest member-author projections hide emails for replies and resolvedBy", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const thread = await createGuestThread(guest, "Team response will be private");
+    const memberReply = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/comments/${thread.id}/replies?projectId=${projectId}`, JSON.stringify({body: "Email author reply"}), {"Idempotency-Key": "email-author-reply-guest-001"});
+    expect(memberReply.status).toBe(201);
+    const resolve = await ownerRequest("PATCH", `/api/v1/artifacts/${artifactId}/comments/${thread.id}?projectId=${projectId}`, JSON.stringify({state: "resolved"}));
+    expect(resolve.status).toBe(200);
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    try {
+      database.prepare("UPDATE comment_replies SET author_display_name = 'reviewer@example.test' WHERE thread_id = ?").run(thread.id);
+      database.prepare("UPDATE comment_threads SET resolved_by_display_name = 'reviewer@example.test' WHERE id = ?").run(thread.id);
+    } finally {
+      database.close();
+    }
+    const response = await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/comments/${thread.id}`);
+    const text = await response.text();
+    const details = guestThreadDetailsSchema.parse(JSON.parse(text));
+    expect(text).not.toContain("@");
+    expect(text).not.toMatch(/principalId|authorizedByPrincipalId|principalKind/i);
+    expect(details.thread.resolvedBy).toEqual({displayName: "Team member", isYou: false});
+    expect(details.replies).toContainEqual({author: {displayName: "Team member", isYou: false}, body: "Email author reply"});
+  });
+
+  test("creator losing active membership invalidates exchange and existing guest sessions", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    try {
+      database.prepare("UPDATE installation_members SET status = 'inactive' WHERE id = (SELECT created_by_principal_id FROM guest_review_invitations WHERE artifact_id = ?)").run(artifactId);
+    } finally {
+      database.close();
+    }
+    const deniedExchange = await exchangeResponse(artifactId, invitation.secret);
+    expect(deniedExchange.status).toBe(404);
+    expect(await deniedExchange.text()).toBe(JSON.stringify({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}));
+    expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
   });
 });

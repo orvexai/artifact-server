@@ -705,6 +705,21 @@ const addGuestReview = Effect.gen(function*() {
     ON guest_review_sessions (installation_id, expires_at)`);
 });
 
+const hardenGuestReview = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE content_bootstraps
+    ADD COLUMN guest_session_id TEXT`);
+  yield* sql.unsafe(`ALTER TABLE content_sessions
+    ADD COLUMN guest_session_id TEXT`);
+  yield* sql.unsafe(`ALTER TABLE guest_review_sessions
+    ADD COLUMN comment_window_started_at TEXT,
+    ADD COLUMN comment_write_count INTEGER NOT NULL DEFAULT 0`);
+  yield* sql.unsafe(`CREATE INDEX content_bootstraps_guest_session
+    ON content_bootstraps (installation_id, guest_session_id, expires_at)`);
+  yield* sql.unsafe(`CREATE INDEX content_sessions_guest_session
+    ON content_sessions (installation_id, guest_session_id, expires_at)`);
+});
+
 const addProjectArchiveAudit = Effect.gen(function*() {
   const sql = yield* SqlClient;
   yield* sql.unsafe(`CREATE TABLE project_archive_events (
@@ -841,6 +856,7 @@ const postgresMigrations = {
   "0017_project_creator": addProjectCreator,
   "0018_group_roles": addGroupRoles,
   "0019_guest_review": addGuestReview,
+  "0020_harden_guest_review": hardenGuestReview,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

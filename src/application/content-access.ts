@@ -230,6 +230,10 @@ function makeContentAccessService(
   authorization: AuthorizationOperations,
   projects: ProjectManagementService["Service"],
 ): ContentAccessOperations {
+  const pendingGuestBootstraps = new Map<
+    string,
+    IssuedContentBootstrap & {readonly guestSessionId: string}
+  >();
   const resolveAuthorizedTarget = Effect.fn(
     "ContentAccessService.resolveAuthorizedTarget",
   )(function*(command: IssueContentBootstrapCommand) {
@@ -305,14 +309,18 @@ function makeContentAccessService(
     const current = yield* dependencies.repository.findCurrentVersion(guest.projectId, guest.artifactId);
     if (current === null || current.artifact.deletedAt !== null) return yield* new ArtifactNotFound({message: "The artifact does not exist."});
     const now = yield* dependencies.clock.now;
+    const nowIso = DateTime.formatIso(now);
+    const cached = pendingGuestBootstraps.get(guest.guestId);
+    if (cached !== undefined && cached.expiresAt > nowIso && cached.versionId === current.version.id) return cached;
     const secret = dependencies.secrets.issue();
     const expiresAt = DateTime.formatIso(DateTime.addDuration(now, bootstrapLifetimeMilliseconds));
     yield* dependencies.repository.createContentBootstrap({
       artifactId: guest.artifactId, contentToken: current.version.contentToken,
-      createdAt: DateTime.formatIso(now), expiresAt, principalId: `guest_${guest.guestId}`,
+      createdAt: nowIso, expiresAt, guestSessionId: guest.guestId,
+      principalId: `guest_${guest.guestId}`,
       projectId: guest.projectId, tokenDigest: secret.digest, versionId: current.version.id,
     });
-    return {
+    const issued = {
       artifactName: current.artifact.name,
       contentToken: current.version.contentToken,
       createdAt: current.version.createdAt,
@@ -320,7 +328,10 @@ function makeContentAccessService(
       number: current.version.number,
       token: secret.token,
       versionId: current.version.id,
+      guestSessionId: guest.guestId,
     };
+    pendingGuestBootstraps.set(guest.guestId, issued);
+    return issued;
   });
 
   const issuePreviewLease = Effect.fn(
@@ -380,6 +391,9 @@ function makeContentAccessService(
       return yield* Effect.fail(new ContentBootstrapRejected({
         message: "The private-content bootstrap is invalid or no longer available.",
       }));
+    }
+    if (session.guestSessionId !== null && session.guestSessionId !== undefined) {
+      pendingGuestBootstraps.delete(session.guestSessionId);
     }
     return {expiresAt: session.expiresAt, token: sessionSecret.token};
   });

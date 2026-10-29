@@ -40,6 +40,7 @@ export const errorCodes = {
   projectNotFound: "PROJECT_NOT_FOUND",
   groupNotFound: "GROUP_NOT_FOUND",
   projectSelectionRequired: "PROJECT_SELECTION_REQUIRED",
+  rateLimitExceeded: "RATE_LIMIT_EXCEEDED",
   uploadClosed: "UPLOAD_CLOSED",
   uploadExpired: "UPLOAD_EXPIRED",
   uploadFileNotFound: "UPLOAD_FILE_NOT_FOUND",
@@ -116,6 +117,12 @@ export class CommentNotFound extends Schema.TaggedError<CommentNotFound>()(
 /** A reply was attempted on a comment thread that is already resolved. */
 export class CommentResolved extends Schema.TaggedError<CommentResolved>()(
   "CommentResolved",
+  messageField,
+) {}
+
+/** A bounded guest-review operation exceeded its per-invitation/session cap. */
+export class GuestRateLimitExceeded extends Schema.TaggedError<GuestRateLimitExceeded>()(
+  "GuestRateLimitExceeded",
   messageField,
 ) {}
 
@@ -422,6 +429,7 @@ export class ArtifactRepositoryFailure extends Schema.TaggedError<ArtifactReposi
       "recordAgentActivity",
       "registerAgent",
       "removeExpiredStagedUpload",
+      "reserveGuestCommentWrite",
       "restoreVersion",
       "updateCommentReply",
       "updateCommentThread",
@@ -510,6 +518,7 @@ const artifactServerFailureSchema = Schema.Union([
   AuthenticationRequired,
   CommentNotFound,
   CommentResolved,
+  GuestRateLimitExceeded,
   DispatchStateConflict,
   InvalidComment,
   InvalidDispatch,

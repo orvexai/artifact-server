@@ -749,8 +749,9 @@ export interface GuestReviewRepository {
     artifactId: string,
     revokedAt: string,
   ): Promise<boolean>;
-  createGuestSession(session: GuestReviewSession): Promise<void>;
+  createGuestSession(session: GuestReviewSession): Promise<boolean>;
   findGuestSession(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null>;
+  reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<boolean>;
   deleteExpiredGuestSessions(expiredBefore: string, limit: number): Promise<number>;
 }
 

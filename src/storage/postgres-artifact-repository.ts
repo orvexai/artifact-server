@@ -322,6 +322,7 @@ const contentRecordRowSchema = z.object({
   contentToken: z.string(),
   createdAt: z.string(),
   expiresAt: z.string(),
+  guestSessionId: z.string().nullable(),
   principalId: z.string(),
   projectId: z.string(),
   tokenDigest: z.string(),
@@ -2037,11 +2038,11 @@ export class PostgresArtifactRepository implements
       const sql = yield* SqlClient;
       yield* sql`INSERT INTO content_bootstraps (
         installation_id, project_id, token_digest, principal_id, artifact_id, version_id,
-        content_token, created_at, expires_at, consumed_at
+        content_token, created_at, expires_at, consumed_at, guest_session_id
       ) VALUES (
         ${installationId}, ${command.projectId}, ${command.tokenDigest}, ${command.principalId},
         ${command.artifactId}, ${command.versionId}, ${command.contentToken},
-        ${command.createdAt}, ${command.expiresAt}, NULL
+        ${command.createdAt}, ${command.expiresAt}, NULL, ${command.guestSessionId ?? null}
       )`;
     }));
     return command;
@@ -2084,8 +2085,9 @@ export class PostgresArtifactRepository implements
         i.revoked_at AS "revokedAt" FROM guest_review_invitations i
         JOIN artifacts a ON a.installation_id = i.installation_id
           AND a.project_id = i.project_id AND a.id = i.artifact_id
+        JOIN projects p ON p.installation_id = i.installation_id AND p.id = i.project_id
         WHERE i.installation_id = $1 AND i.token_digest = $2
-          AND i.revoked_at IS NULL AND a.deleted_at IS NULL`, [installationId, tokenDigest]);
+          AND i.revoked_at IS NULL AND a.deleted_at IS NULL AND p.archived_at IS NULL`, [installationId, tokenDigest]);
       return guestInvitationRecordSchema.nullable().parse(rows[0] ?? null);
     }));
   }
@@ -2094,23 +2096,78 @@ export class PostgresArtifactRepository implements
     const installationId = this.#installationId;
     return this.#database.run(Effect.gen({self: this}, function*() {
       const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
       const rows = yield* sql`UPDATE guest_review_invitations SET revoked_at = ${revokedAt}
         WHERE installation_id = ${installationId} AND project_id = ${projectId}
           AND artifact_id = ${artifactId} AND revoked_at IS NULL RETURNING id`;
-      return rows.length > 0;
+      const invitationId = rows[0]?.["id"];
+      if (invitationId === undefined) return false;
+      yield* sql`DELETE FROM content_bootstraps WHERE installation_id = ${installationId}
+        AND (guest_session_id IN (SELECT id FROM guest_review_sessions
+          WHERE installation_id = ${installationId} AND invitation_id = ${invitationId})
+        OR principal_id IN (SELECT 'guest_' || id FROM guest_review_sessions
+          WHERE installation_id = ${installationId} AND invitation_id = ${invitationId}))`;
+      yield* sql`DELETE FROM content_sessions WHERE installation_id = ${installationId}
+        AND (guest_session_id IN (SELECT id FROM guest_review_sessions
+          WHERE installation_id = ${installationId} AND invitation_id = ${invitationId})
+        OR principal_id IN (SELECT 'guest_' || id FROM guest_review_sessions
+          WHERE installation_id = ${installationId} AND invitation_id = ${invitationId}))`;
+      return true;
+      }));
     }));
   }
 
-  async createGuestSession(session: GuestReviewSession): Promise<void> {
+  async createGuestSession(session: GuestReviewSession): Promise<boolean> {
     const installationId = this.#installationId;
-    await this.#database.run(Effect.gen({self: this}, function*() {
+    return this.#database.run(Effect.gen({self: this}, function*() {
       const sql = yield* SqlClient;
-      yield* sql`INSERT INTO guest_review_sessions (
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        yield* sql`SELECT id FROM guest_review_invitations
+          WHERE installation_id = ${installationId} AND id = ${session.invitationId}
+          FOR UPDATE`;
+      const invitation = yield* sql`SELECT i.id FROM guest_review_invitations i
+        JOIN projects p ON p.installation_id = i.installation_id AND p.id = i.project_id
+        JOIN artifacts a ON a.installation_id = i.installation_id AND a.project_id = i.project_id AND a.id = i.artifact_id
+        WHERE i.installation_id = ${installationId} AND i.id = ${session.invitationId}
+          AND i.project_id = ${session.projectId} AND i.artifact_id = ${session.artifactId}
+          AND i.revoked_at IS NULL AND p.archived_at IS NULL AND a.deleted_at IS NULL
+        FOR UPDATE OF i`;
+      if (invitation.length === 0) return false;
+      const rows = yield* sql`SELECT COUNT(*)::integer AS count FROM guest_review_sessions
+          WHERE installation_id = ${installationId} AND invitation_id = ${session.invitationId}
+            AND expires_at > ${session.createdAt}`;
+        if (Number(rows[0]?.["count"] ?? 0) >= 100) return false;
+        yield* sql`INSERT INTO guest_review_sessions (
         installation_id, id, token_digest, csrf_digest, invitation_id,
-        project_id, artifact_id, display_name, created_at, expires_at
+        project_id, artifact_id, display_name, created_at, expires_at,
+        comment_window_started_at, comment_write_count
       ) VALUES (${installationId}, ${session.guestId}, ${session.tokenDigest},
         ${session.csrfDigest}, ${session.invitationId}, ${session.projectId},
-        ${session.artifactId}, ${session.displayName}, ${session.createdAt}, ${session.expiresAt})`;
+        ${session.artifactId}, ${session.displayName}, ${session.createdAt}, ${session.expiresAt},
+        NULL, 0)`;
+        return true;
+      }));
+    }));
+  }
+
+  async reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<boolean> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`UPDATE guest_review_sessions SET
+        comment_window_started_at = CASE
+          WHEN comment_window_started_at IS NULL OR comment_window_started_at::timestamptz <= ${requestTime}::timestamptz - INTERVAL '1 hour'
+          THEN ${requestTime} ELSE comment_window_started_at END,
+        comment_write_count = CASE
+          WHEN comment_window_started_at IS NULL OR comment_window_started_at::timestamptz <= ${requestTime}::timestamptz - INTERVAL '1 hour'
+          THEN 1 ELSE comment_write_count + 1 END
+        WHERE installation_id = ${installationId} AND id = ${guestId}
+          AND expires_at > ${requestTime}
+          AND (comment_window_started_at IS NULL
+            OR comment_window_started_at::timestamptz <= ${requestTime}::timestamptz - INTERVAL '1 hour'
+            OR comment_write_count < 30)
+        RETURNING id`;
+      return rows.length > 0;
     }));
   }
 
@@ -2130,8 +2187,9 @@ export class PostgresArtifactRepository implements
           AND i.artifact_id = s.artifact_id
         JOIN artifacts a ON a.installation_id = s.installation_id
           AND a.project_id = s.project_id AND a.id = s.artifact_id
+        JOIN projects p ON p.installation_id = s.installation_id AND p.id = s.project_id
         WHERE s.installation_id = $1 AND s.token_digest = $2
-          AND s.expires_at > $3 AND i.revoked_at IS NULL AND a.deleted_at IS NULL`,
+          AND s.expires_at > $3 AND i.revoked_at IS NULL AND a.deleted_at IS NULL AND p.archived_at IS NULL`,
         [installationId, tokenDigest, requestTime]);
       return guestSessionRecordSchema.nullable().parse(rows[0] ?? null);
     }));
@@ -2162,13 +2220,21 @@ export class PostgresArtifactRepository implements
             b.principal_id AS "principalId", b.artifact_id AS "artifactId",
             b.project_id AS "projectId",
             b.version_id AS "versionId", b.content_token AS "contentToken",
-            b.created_at AS "createdAt", b.expires_at AS "expiresAt"
+            b.created_at AS "createdAt", b.expires_at AS "expiresAt",
+            b.guest_session_id AS "guestSessionId"
            FROM content_bootstraps b
            JOIN artifacts a
              ON a.installation_id = b.installation_id AND a.id = b.artifact_id
            WHERE b.installation_id = $1 AND b.token_digest = $2
              AND b.content_token = $3 AND b.consumed_at IS NULL
              AND b.expires_at > $4 AND a.deleted_at IS NULL
+             AND ((b.guest_session_id IS NULL AND substring(b.principal_id FROM 1 FOR 6) <> 'guest_') OR EXISTS (
+               SELECT 1 FROM guest_review_sessions gs
+               JOIN guest_review_invitations gi ON gi.installation_id = gs.installation_id AND gi.id = gs.invitation_id
+               JOIN projects gp ON gp.installation_id = gs.installation_id AND gp.id = gs.project_id
+               WHERE gs.installation_id = b.installation_id AND gs.id = COALESCE(b.guest_session_id, CASE WHEN substring(b.principal_id FROM 1 FOR 6) = 'guest_' THEN substring(b.principal_id FROM 7) END)
+                 AND gs.expires_at > $4 AND gi.revoked_at IS NULL AND gp.archived_at IS NULL
+             ))
            FOR UPDATE OF b`,
           [
             installationId,
@@ -2191,6 +2257,7 @@ export class PostgresArtifactRepository implements
           contentToken: bootstrap.contentToken,
           createdAt: command.session.createdAt,
           expiresAt: command.session.expiresAt,
+          guestSessionId: bootstrap.guestSessionId,
           principalId: bootstrap.principalId,
           projectId: bootstrap.projectId,
           tokenDigest: command.session.tokenDigest,
@@ -2198,11 +2265,11 @@ export class PostgresArtifactRepository implements
         };
         yield* sql`INSERT INTO content_sessions (
           installation_id, project_id, token_digest, principal_id, artifact_id, version_id,
-          content_token, created_at, expires_at
+          content_token, created_at, expires_at, guest_session_id
         ) VALUES (
           ${installationId}, ${session.projectId}, ${session.tokenDigest}, ${session.principalId},
           ${session.artifactId}, ${session.versionId}, ${session.contentToken},
-          ${session.createdAt}, ${session.expiresAt}
+          ${session.createdAt}, ${session.expiresAt}, ${session.guestSessionId ?? null}
         )`;
         return session;
       }));
@@ -2222,13 +2289,21 @@ export class PostgresArtifactRepository implements
           s.principal_id AS "principalId", s.artifact_id AS "artifactId",
           s.project_id AS "projectId",
           s.version_id AS "versionId", s.content_token AS "contentToken",
-          s.created_at AS "createdAt", s.expires_at AS "expiresAt"
+          s.created_at AS "createdAt", s.expires_at AS "expiresAt",
+          s.guest_session_id AS "guestSessionId"
          FROM content_sessions s
          JOIN artifacts a
            ON a.installation_id = s.installation_id AND a.id = s.artifact_id
          WHERE s.installation_id = $1 AND s.token_digest = $2
            AND s.content_token = $3 AND s.expires_at > $4
-           AND a.deleted_at IS NULL`,
+           AND a.deleted_at IS NULL
+           AND ((s.guest_session_id IS NULL AND substring(s.principal_id FROM 1 FOR 6) <> 'guest_') OR EXISTS (
+             SELECT 1 FROM guest_review_sessions gs
+             JOIN guest_review_invitations gi ON gi.installation_id = gs.installation_id AND gi.id = gs.invitation_id
+             JOIN projects gp ON gp.installation_id = gs.installation_id AND gp.id = gs.project_id
+             WHERE gs.installation_id = s.installation_id AND gs.id = COALESCE(s.guest_session_id, CASE WHEN substring(s.principal_id FROM 1 FOR 6) = 'guest_' THEN substring(s.principal_id FROM 7) END)
+               AND gs.expires_at > $4 AND gi.revoked_at IS NULL AND gp.archived_at IS NULL
+           ))`,
         [installationId, tokenDigest, contentToken, requestTime],
       );
       return contentRecordRowSchema.nullable().parse(rows[0] ?? null);
@@ -2241,11 +2316,11 @@ export class PostgresArtifactRepository implements
       const sql = yield* SqlClient;
       yield* sql`INSERT INTO content_sessions (
         installation_id, project_id, token_digest, principal_id, artifact_id, version_id,
-        content_token, created_at, expires_at
+        content_token, created_at, expires_at, guest_session_id
       ) VALUES (
         ${installationId}, ${command.projectId}, ${command.tokenDigest}, ${command.principalId},
         ${command.artifactId}, ${command.versionId}, ${command.contentToken},
-        ${command.createdAt}, ${command.expiresAt}
+        ${command.createdAt}, ${command.expiresAt}, ${command.guestSessionId ?? null}
       )`;
     }));
     return command;
@@ -2263,7 +2338,7 @@ export class PostgresArtifactRepository implements
           s.principal_id AS "principalId", s.artifact_id AS "artifactId",
           s.project_id AS "projectId", s.version_id AS "versionId",
           s.content_token AS "contentToken", s.created_at AS "createdAt",
-          s.expires_at AS "expiresAt"
+          s.expires_at AS "expiresAt", s.guest_session_id AS "guestSessionId"
         FROM content_sessions s
         JOIN artifacts a
           ON a.installation_id = s.installation_id AND a.id = s.artifact_id

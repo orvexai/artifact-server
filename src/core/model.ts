@@ -244,6 +244,7 @@ export interface ContentBootstrapRecord {
   readonly contentToken: string;
   readonly createdAt: string;
   readonly expiresAt: string;
+  readonly guestSessionId?: string | null;
   readonly principalId: string;
   readonly projectId: string;
   readonly tokenDigest: string;
@@ -256,6 +257,7 @@ export interface ContentSessionRecord {
   readonly contentToken: string;
   readonly createdAt: string;
   readonly expiresAt: string;
+  readonly guestSessionId?: string | null;
   readonly principalId: string;
   readonly projectId: string;
   readonly tokenDigest: string;

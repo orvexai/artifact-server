@@ -948,13 +948,22 @@ export function createHttpApp(
   // Guest paths deliberately sit before /api/* authentication and accept only
   // the guest cookie. They never populate the application principal context.
   app.post("/api/v1/public/artifacts/:artifactId/guest-session", boundedJsonBody, async (context) => {
+    requireGuestSessionExchangeBoundary(context, dependencies);
     const body = guestSessionExchangeSchema.parse(await context.req.json());
-    const issued = await runHttpApplicationEffect(context, dependencies,
+    const exchangeResult = await runHttpApplicationEffect(context, dependencies,
       GuestReviewService.use((guests) => guests.exchange({
         artifactId: context.req.param("artifactId"),
         displayName: body.displayName,
         secret: body.secret,
-      })).pipe(Effect.catch(() => Effect.succeed(null))));
+      })).pipe(
+        Effect.catchTag("GuestRateLimitExceeded", (failure) => Effect.succeed({rateLimitFailure: failure})),
+        Effect.catch(() => Effect.succeed(null)),
+      ));
+    if (exchangeResult !== null && "rateLimitFailure" in exchangeResult) {
+      const failure = artifactServerFailureResponse(exchangeResult.rateLimitFailure);
+      return context.json({error: {code: failure.code, message: failure.message}}, 429);
+    }
+    const issued = exchangeResult;
     if (issued === null) return context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404);
     const secure = usesSecureApplicationCookies(dependencies);
     const sessionName = secure ? secureGuestSessionCookie : guestSessionCookie;
@@ -3350,6 +3359,22 @@ async function requireGuestReviewer(
   };
 }
 
+function requireGuestSessionExchangeBoundary(
+  context: Context<HttpEnvironment>,
+  dependencies: HttpAppDependencies,
+): void {
+  const requestUrl = new URL(context.req.url);
+  const trustedOrigin = dependencies.trustedApplicationOrigin ?? requestUrl.origin;
+  const contentType = context.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (
+    context.req.header("origin") !== trustedOrigin ||
+    context.req.header("sec-fetch-site") !== "same-origin" ||
+    contentType !== "application/json"
+  ) {
+    throw new AuthorizationDenied({message: "Guest sessions must be started by a same-origin JSON request."});
+  }
+}
+
 function guestNotFound(context: Context<HttpEnvironment>): Response {
   return context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404);
 }
@@ -3862,9 +3887,13 @@ function commentThreadResponse(requestUrl: URL, thread: CommentThreadRecord) {
 }
 
 function guestAuthorResponse(author: CommentAuthor, guest: GuestReviewer) {
+  const isYou = author.principalId === `guest_${guest.guestId}`;
+  const principalLike = /^(?:service|guest|human|member|principal|user|key)[_:-]/iu.test(author.displayName) ||
+    /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(author.displayName) ||
+    author.displayName === author.principalId;
   return {
-    displayName: author.displayName,
-    isYou: author.principalId === `guest_${guest.guestId}`,
+    displayName: isYou ? author.displayName : principalLike || author.displayName.includes("@") ? "Team member" : author.displayName,
+    isYou,
   };
 }
 
