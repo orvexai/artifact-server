@@ -2234,7 +2234,12 @@ export class PostgresArtifactRepository implements
         const invitation = z.object({windowStartedAt: z.string().nullable(), writeCount: z.number()}).parse(invitations[0]);
         const invitationActive = invitation.windowStartedAt !== null && Date.parse(invitation.windowStartedAt) > Date.parse(requestTime) - 3_600_000;
         const sessionActive = sessionRow.windowStartedAt !== null && Date.parse(sessionRow.windowStartedAt) > Date.parse(requestTime) - 3_600_000;
-        if ((invitationActive && invitation.writeCount >= 600) || (sessionActive && sessionRow.writeCount >= 30)) return false;
+        if (invitationActive && invitation.writeCount >= 3000) {
+          yield* sql`UPDATE guest_review_invitations SET last_limit_hit_at = ${requestTime}
+            WHERE installation_id = ${installationId} AND id = ${sessionRow.invitationId}`;
+          return false;
+        }
+        if (sessionActive && sessionRow.writeCount >= 30) return false;
         yield* sql`UPDATE guest_review_invitations SET comment_window_started_at = ${invitationActive ? invitation.windowStartedAt : requestTime},
           comment_write_count = ${invitationActive ? invitation.writeCount + 1 : 1}
           WHERE installation_id = ${installationId} AND id = ${sessionRow.invitationId}`;
@@ -2262,7 +2267,12 @@ export class PostgresArtifactRepository implements
         const invitation = z.object({windowStartedAt: z.string().nullable(), issueCount: z.number()}).parse(invitations[0]);
         const invitationActive = invitation.windowStartedAt !== null && Date.parse(invitation.windowStartedAt) > Date.parse(requestTime) - 3_600_000;
         const sessionActive = sessionRow.windowStartedAt !== null && Date.parse(sessionRow.windowStartedAt) > Date.parse(requestTime) - 3_600_000;
-        if ((invitationActive && invitation.issueCount >= 1200) || (sessionActive && sessionRow.issueCount >= 60)) return false;
+        if (invitationActive && invitation.issueCount >= 6000) {
+          yield* sql`UPDATE guest_review_invitations SET last_limit_hit_at = ${requestTime}
+            WHERE installation_id = ${installationId} AND id = ${sessionRow.invitationId}`;
+          return false;
+        }
+        if (sessionActive && sessionRow.issueCount >= 60) return false;
         yield* sql`UPDATE guest_review_invitations SET bootstrap_window_started_at = ${invitationActive ? invitation.windowStartedAt : requestTime},
           bootstrap_issue_count = ${invitationActive ? invitation.issueCount + 1 : 1}
           WHERE installation_id = ${installationId} AND id = ${sessionRow.invitationId}`;

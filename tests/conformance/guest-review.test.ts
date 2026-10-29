@@ -399,12 +399,14 @@ describe("invited guest review", () => {
     const invitation = await enableInvitation();
     const first = await exchange(artifactId, invitation.secret, "First session");
     const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
-    database.prepare("UPDATE guest_review_invitations SET comment_window_started_at = ?, comment_write_count = 599 WHERE artifact_id = ?")
+    database.prepare("UPDATE guest_review_invitations SET comment_window_started_at = ?, comment_write_count = 2999 WHERE artifact_id = ?")
       .run(new Date().toISOString(), artifactId);
     database.close();
-    expect((await guestRequest(first, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Six hundred", versionId: currentVersionId}), true, "guest-invitation-write-600-001")).status).toBe(201);
+    expect((await guestRequest(first, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Three thousand", versionId: currentVersionId}), true, "guest-invitation-write-3000-001")).status).toBe(201);
     const second = await exchange(artifactId, invitation.secret, "Rotated session");
-    expect((await guestRequest(second, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Over invitation budget", versionId: currentVersionId}), true, "guest-invitation-write-601-001")).status).toBe(429);
+    expect((await guestRequest(second, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Over invitation budget", versionId: currentVersionId}), true, "guest-invitation-write-3001-001")).status).toBe(429);
+    const status = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`);
+    expect(await status.json()).toMatchObject({limitHitRecently: true});
   });
 
   test("invitation-wide bootstrap budget is shared across rotated guest sessions", async () => {
@@ -412,11 +414,13 @@ describe("invited guest review", () => {
     const first = await exchange(artifactId, invitation.secret, "First session");
     const second = await exchange(artifactId, invitation.secret, "Rotated session");
     const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
-    database.prepare("UPDATE guest_review_invitations SET bootstrap_window_started_at = ?, bootstrap_issue_count = 1199 WHERE artifact_id = ?")
+    database.prepare("UPDATE guest_review_invitations SET bootstrap_window_started_at = ?, bootstrap_issue_count = 5999 WHERE artifact_id = ?")
       .run(new Date().toISOString(), artifactId);
     database.close();
     expect((await guestRequest(first, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(201);
     expect((await guestRequest(second, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(429);
+    const status = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`);
+    expect(await status.json()).toMatchObject({limitHitRecently: true});
   });
 
   test("repeated current requests issue bounded bootstraps and revocation invalidates its content URL", async () => {

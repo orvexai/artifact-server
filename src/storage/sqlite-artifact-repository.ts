@@ -2420,7 +2420,11 @@ export class SqliteArtifactRepository implements
         comment_window_started_at AS windowStartedAt, comment_write_count AS writeCount FROM guest_review_sessions WHERE id = ?`).get(guestId));
       const sessionWindowActive = perSession.windowStartedAt !== null
         && Date.parse(perSession.windowStartedAt) > Date.parse(requestTime) - 60 * 60_000;
-      if ((invitationWindowActive && invitation.writeCount >= 600) || (sessionWindowActive && perSession.writeCount >= 30)) return false;
+      if (invitationWindowActive && invitation.writeCount >= 3000) {
+        this.#database.prepare("UPDATE guest_review_invitations SET last_limit_hit_at = ? WHERE id = ?").run(requestTime, invitationId);
+        return false;
+      }
+      if (sessionWindowActive && perSession.writeCount >= 30) return false;
       this.#database.prepare(`UPDATE guest_review_invitations SET
         comment_window_started_at = ?, comment_write_count = ? WHERE id = ?`).run(
         invitationWindowActive ? invitation.windowStartedAt : requestTime,
@@ -2450,7 +2454,11 @@ export class SqliteArtifactRepository implements
         bootstrap_window_started_at AS windowStartedAt, bootstrap_issue_count AS issueCount FROM guest_review_sessions WHERE id = ?`).get(guestId));
       const sessionWindowActive = perSession.windowStartedAt !== null
         && Date.parse(perSession.windowStartedAt) > Date.parse(requestTime) - 60 * 60_000;
-      if ((invitationWindowActive && invitation.issueCount >= 1200) || (sessionWindowActive && perSession.issueCount >= 60)) return false;
+      if (invitationWindowActive && invitation.issueCount >= 6000) {
+        this.#database.prepare("UPDATE guest_review_invitations SET last_limit_hit_at = ? WHERE id = ?").run(requestTime, invitationId);
+        return false;
+      }
+      if (sessionWindowActive && perSession.issueCount >= 60) return false;
       this.#database.prepare(`UPDATE guest_review_invitations SET
         bootstrap_window_started_at = ?, bootstrap_issue_count = ? WHERE id = ?`).run(
         invitationWindowActive ? invitation.windowStartedAt : requestTime,
