@@ -954,7 +954,8 @@ const publicArtifactSchema = z.object({
   }),
 });
 export type PublicArtifact = z.infer<typeof publicArtifactSchema>;
-const guestInvitationStatusSchema = z.object({createdAt: z.string().nullable(), enabled: z.boolean()});
+const guestInvitationStatusSchema = z.object({activeSessionCount: z.number().int(), createdAt: z.string().nullable(), enabled: z.boolean(), limitHitRecently: z.boolean()});
+const guestInvitationSessionsSchema = z.object({sessions: z.array(z.object({createdAt: z.string(), displayName: z.string(), guestId: z.string(), lastUsedAt: z.string()}))});
 const guestSessionSchema = z.object({displayName: z.string(), expiresAt: z.string()});
 const guestCurrentSchema = z.object({artifactName: z.string(), bootstrapUrl: z.url(), createdAt: z.string(), displayName: z.string(), number: z.number().int(), versionId: z.string()});
 const guestCommentAuthorSchema = z.object({displayName: z.string(), isYou: z.boolean()});
@@ -980,6 +981,14 @@ export const api = {
     `/api/v1/artifacts/${encodeURIComponent(artifactId)}/guest-invitation?${projectQuery(projectId)}`,
     {headers: mutationHeaders(), method: "DELETE"},
   ),
+  guestInvitationSessions: (projectId: string, artifactId: string) => request(
+    guestInvitationSessionsSchema,
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/guest-invitation/sessions?${projectQuery(projectId)}`,
+  ),
+  revokeGuestSession: (projectId: string, artifactId: string, guestId: string) => requestNoContent(
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/guest-invitation/sessions/${encodeURIComponent(guestId)}?${projectQuery(projectId)}`,
+    {headers: mutationHeaders(), method: "DELETE"},
+  ),
   exchangeGuestSession: (artifactId: string, secret: string, displayName: string) => request(
     guestSessionSchema,
     `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest-session`,
@@ -988,6 +997,10 @@ export const api = {
   guestCurrent: (artifactId: string) => request(
     guestCurrentSchema,
     `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/current`,
+  ),
+  guestHeartbeat: (artifactId: string) => requestNoContent(
+    `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/heartbeat`,
+    {headers: guestMutationHeaders(), method: "POST"},
   ),
   guestComments: (artifactId: string) => request(
     guestCommentsSchema,

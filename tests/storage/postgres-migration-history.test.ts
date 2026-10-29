@@ -9,7 +9,7 @@ describe("postgres migration history", () => {
   test("covers every migration from 1 to the required version without gaps", () => {
     expect(expectedPostgresMigrationHistory.map((entry) => entry.migration_id))
       .toEqual(Array.from(
-        {length: requiredPostgresSchemaVersion},
+      {length: requiredPostgresSchemaVersion},
         (_, index) => index + 1,
       ));
   });
@@ -18,8 +18,8 @@ describe("postgres migration history", () => {
     expect(expectedPostgresMigrationHistory.every((entry) => entry.name.length > 0))
       .toBe(true);
     expect(expectedPostgresMigrationHistory.at(-1)).toEqual({
-      migration_id: 22,
-      name: "guest_invitation_exchange_limit",
+      migration_id: 23,
+      name: "guest_invitation_budgets",
     });
   });
 });

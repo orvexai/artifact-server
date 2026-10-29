@@ -742,6 +742,16 @@ const addGuestInvitationExchangeLimit = Effect.gen(function*() {
     ADD COLUMN exchange_count INTEGER NOT NULL DEFAULT 0`);
 });
 
+const addGuestInvitationBudgets = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE guest_review_invitations
+    ADD COLUMN last_limit_hit_at TEXT,
+    ADD COLUMN comment_window_started_at TEXT,
+    ADD COLUMN comment_write_count INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN bootstrap_window_started_at TEXT,
+    ADD COLUMN bootstrap_issue_count INTEGER NOT NULL DEFAULT 0`);
+});
+
 const addProjectArchiveAudit = Effect.gen(function*() {
   const sql = yield* SqlClient;
   yield* sql.unsafe(`CREATE TABLE project_archive_events (
@@ -881,6 +891,7 @@ const postgresMigrations = {
   "0020_harden_guest_review": hardenGuestReview,
   "0021_guest_review_rate_limits": addGuestReviewRateLimits,
   "0022_guest_invitation_exchange_limit": addGuestInvitationExchangeLimit,
+  "0023_guest_invitation_budgets": addGuestInvitationBudgets,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

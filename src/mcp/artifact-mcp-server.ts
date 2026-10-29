@@ -1601,13 +1601,44 @@ export function createArtifactMcpServer(
       title: "Get guest review invitation status",
       description: "Return whether invited guest review is enabled for one artifact and when its current invitation was created. Never returns the invitation secret.",
       inputSchema: z.object({artifactId: artifactIdSchema, projectId: optionalProjectIdSchema}).strict(),
-      outputSchema: z.object({createdAt: z.string().nullable(), enabled: z.boolean()}).strict(),
+      outputSchema: z.object({activeSessionCount: z.number().int(), createdAt: z.string().nullable(), enabled: z.boolean(), limitHitRecently: z.boolean()}).strict(),
       annotations: readOnlyAnnotations,
     },
     async ({artifactId, projectId}) => toolResult(async () => runMcpApplicationEffect(
       dependencies,
       GuestReviewService.use((guests) => guests.status({artifactId, principal: identity.principal, projectId})),
     )),
+  );
+
+  registerNudgedTool(
+    "artifact_guest_invitation_sessions",
+    {
+      title: "List invited guest sessions",
+      description: "List live sessions created through the artifact's current guest review invitation.",
+      inputSchema: z.object({artifactId: artifactIdSchema, projectId: optionalProjectIdSchema}).strict(),
+      outputSchema: z.object({sessions: z.array(z.object({createdAt: z.string(), displayName: z.string(), guestId: z.string(), lastUsedAt: z.string()}))}).strict(),
+      annotations: readOnlyAnnotations,
+    },
+    async ({artifactId, projectId}) => toolResult(async () => ({sessions: await runMcpApplicationEffect(
+      dependencies,
+      GuestReviewService.use((guests) => guests.listSessions({artifactId, principal: identity.principal, projectId})),
+    )})),
+  );
+
+  registerNudgedTool(
+    "artifact_revoke_guest_session",
+    {
+      title: "Revoke an invited guest session",
+      description: "End one guest browser session and delete its content bootstrap and session rows.",
+      inputSchema: z.object({artifactId: artifactIdSchema, guestId: z.string().min(1), projectId: optionalProjectIdSchema}).strict(),
+      outputSchema: z.object({revoked: z.literal(true)}).strict(),
+      annotations: idempotentWriteAnnotations,
+    },
+    async ({artifactId, guestId, projectId}) => toolResult(async () => {
+      await runMcpApplicationEffect(dependencies,
+        GuestReviewService.use((guests) => guests.revokeSession({artifactId, guestId, principal: identity.principal, projectId})));
+      return {revoked: true as const};
+    }),
   );
 
   registerNudgedTool(

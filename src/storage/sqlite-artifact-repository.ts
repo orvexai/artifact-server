@@ -67,7 +67,9 @@ import {
   type ContentBootstrapRecord,
   type ContentSessionRecord,
   type GuestReviewInvitation,
+  type GuestReviewInvitationUsage,
   type GuestReviewSession,
+  type GuestReviewSessionSummary,
   type ManifestEntry,
   type PageCursor,
   type PublishedVersion,
@@ -242,6 +244,11 @@ const guestSessionRowSchema = z.object({
   displayName: z.string(), expiresAt: z.string(), guestId: z.string(),
   invitationCreatorPrincipalId: z.string(), invitationId: z.string(), lastUsedAt: z.string(),
   projectId: z.string(), tokenDigest: z.string(),
+});
+const guestSessionSummaryRowSchema = z.object({createdAt: z.string(), displayName: z.string(), guestId: z.string(), lastUsedAt: z.string()});
+const guestInvitationUsageRowSchema = z.object({
+  activeSessionCount: z.number(),
+  limitHitRecently: z.union([z.boolean(), z.number()]).transform(Boolean),
 });
 const idempotencyRowSchema = z.object({
   accessSetting: accessSettingSchema.nullable(),
@@ -2340,23 +2347,19 @@ export class SqliteArtifactRepository implements
       const parsedInvitation = z.object({id: z.string(), exchangeWindowStartedAt: z.string().nullable(), exchangeCount: z.number()}).parse(invitation);
       const oldExchangeWindow = parsedInvitation.exchangeWindowStartedAt !== null
         && Date.parse(parsedInvitation.exchangeWindowStartedAt) > Date.parse(session.createdAt) - 60_000;
-      if (oldExchangeWindow && parsedInvitation.exchangeCount >= 30) return "rate_limited";
-      this.#database.prepare(`UPDATE guest_review_invitations SET
-        exchange_window_started_at = ?, exchange_count = ? WHERE id = ?`)
-        .run(oldExchangeWindow ? parsedInvitation.exchangeWindowStartedAt : session.createdAt, oldExchangeWindow ? parsedInvitation.exchangeCount + 1 : 1, session.invitationId);
       const count = z.object({count: z.number()}).parse(this.#database.prepare(`SELECT COUNT(*) AS count FROM guest_review_sessions
         WHERE invitation_id = ? AND expires_at > ? AND absolute_expires_at > ?`).get(session.invitationId, session.createdAt, session.createdAt));
       if (count.count >= 100) {
-        const oldest = this.#database.prepare(`SELECT id FROM guest_review_sessions
-          WHERE invitation_id = ? AND expires_at > ? AND absolute_expires_at > ?
-        ORDER BY last_used_at ASC, created_at ASC LIMIT 1`).get(session.invitationId, session.createdAt, session.createdAt);
-        const parsedOldest = oldest === undefined ? null : z.object({id: z.string()}).parse(oldest);
-        if (parsedOldest !== null) {
-          this.#database.prepare("DELETE FROM content_bootstraps WHERE guest_session_id = ? OR principal_id = ?").run(parsedOldest.id, `guest_${parsedOldest.id}`);
-          this.#database.prepare("DELETE FROM content_sessions WHERE guest_session_id = ? OR principal_id = ?").run(parsedOldest.id, `guest_${parsedOldest.id}`);
-          this.#database.prepare("DELETE FROM guest_review_sessions WHERE id = ?").run(parsedOldest.id);
-        }
+        this.#database.prepare("UPDATE guest_review_invitations SET last_limit_hit_at = ? WHERE id = ?").run(session.createdAt, session.invitationId);
+        return "rate_limited";
       }
+      if (oldExchangeWindow && parsedInvitation.exchangeCount >= 30) {
+        this.#database.prepare("UPDATE guest_review_invitations SET last_limit_hit_at = ? WHERE id = ?").run(session.createdAt, session.invitationId);
+        return "rate_limited";
+      }
+      this.#database.prepare(`UPDATE guest_review_invitations SET
+        exchange_window_started_at = ?, exchange_count = ? WHERE id = ?`)
+        .run(oldExchangeWindow ? parsedInvitation.exchangeWindowStartedAt : session.createdAt, oldExchangeWindow ? parsedInvitation.exchangeCount + 1 : 1, session.invitationId);
       this.#database.prepare(`INSERT INTO guest_review_sessions (
         id, token_digest, csrf_digest, invitation_id, project_id, artifact_id,
         display_name, created_at, expires_at, absolute_expires_at, last_used_at,
@@ -2371,47 +2374,100 @@ export class SqliteArtifactRepository implements
     }));
   }
 
+  listGuestSessions(projectId: string, artifactId: string, requestTime: string): Promise<readonly GuestReviewSessionSummary[]> {
+    return Promise.resolve().then(() => z.array(guestSessionSummaryRowSchema).parse(this.#database.prepare(`SELECT s.id AS guestId,
+      s.display_name AS displayName, s.created_at AS createdAt, s.last_used_at AS lastUsedAt
+      FROM guest_review_sessions s JOIN guest_review_invitations i ON i.id = s.invitation_id
+      JOIN projects p ON p.id = s.project_id JOIN artifacts a ON a.id = s.artifact_id
+      WHERE s.project_id = ? AND s.artifact_id = ? AND s.expires_at > ? AND s.absolute_expires_at > ?
+        AND i.revoked_at IS NULL AND p.archived_at IS NULL AND a.deleted_at IS NULL
+      ORDER BY s.last_used_at DESC, s.created_at DESC`).all(projectId, artifactId, requestTime, requestTime)));
+  }
+
+  revokeGuestSession(projectId: string, artifactId: string, guestId: string): Promise<boolean> {
+    return Promise.resolve().then(() => this.#transaction(() => {
+      const row = this.#database.prepare(`SELECT id FROM guest_review_sessions
+        WHERE id = ? AND project_id = ? AND artifact_id = ?`).get(guestId, projectId, artifactId);
+      if (row === undefined) return false;
+      this.#database.prepare("DELETE FROM content_bootstraps WHERE guest_session_id = ? OR principal_id = ?").run(guestId, `guest_${guestId}`);
+      this.#database.prepare("DELETE FROM content_sessions WHERE guest_session_id = ? OR principal_id = ?").run(guestId, `guest_${guestId}`);
+      this.#database.prepare("DELETE FROM guest_review_sessions WHERE id = ?").run(guestId);
+      return true;
+    }));
+  }
+
+  getGuestInvitationUsage(invitationId: string, requestTime: string): Promise<GuestReviewInvitationUsage> {
+    return Promise.resolve().then(() => guestInvitationUsageRowSchema.parse(this.#database.prepare(`SELECT
+      (SELECT COUNT(*) FROM guest_review_sessions s WHERE s.invitation_id = i.id
+        AND s.expires_at > ? AND s.absolute_expires_at > ?) AS activeSessionCount,
+      CASE WHEN i.last_limit_hit_at IS NOT NULL AND julianday(i.last_limit_hit_at) > julianday(?) - 1.0
+        THEN 1 ELSE 0 END AS limitHitRecently
+      FROM guest_review_invitations i WHERE i.id = ?`).get(requestTime, requestTime, requestTime, invitationId) ?? {activeSessionCount: 0, limitHitRecently: 0}));
+  }
+
   reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<boolean> {
-    return Promise.resolve().then(() => {
-      const changed = this.#database.prepare(`UPDATE guest_review_sessions SET
-        comment_window_started_at = CASE
-          WHEN comment_window_started_at IS NULL OR julianday(comment_window_started_at) <= julianday(?) - 1.0 / 24
-          THEN ? ELSE comment_window_started_at END,
-        comment_write_count = CASE
-          WHEN comment_window_started_at IS NULL OR julianday(comment_window_started_at) <= julianday(?) - 1.0 / 24
-          THEN 1 ELSE comment_write_count + 1 END
-        WHERE id = ? AND expires_at > ?
-          AND (comment_window_started_at IS NULL
-            OR julianday(comment_window_started_at) <= julianday(?) - 1.0 / 24
-            OR comment_write_count < 30)`).run(
-        requestTime, requestTime, requestTime, guestId, requestTime, requestTime,
-      ).changes;
-      return changed > 0;
-    });
+    return Promise.resolve().then(() => this.#transaction(() => {
+      const session = this.#database.prepare(`SELECT invitation_id AS invitationId FROM guest_review_sessions
+        WHERE id = ? AND expires_at > ? AND absolute_expires_at > ?`).get(guestId, requestTime, requestTime);
+      if (session === undefined) return false;
+      const invitationId = z.object({invitationId: z.string()}).parse(session).invitationId;
+      const invitation = z.object({windowStartedAt: z.string().nullable(), writeCount: z.number()}).parse(this.#database.prepare(`SELECT
+        comment_window_started_at AS windowStartedAt, comment_write_count AS writeCount
+        FROM guest_review_invitations WHERE id = ?`).get(invitationId));
+      const invitationWindowActive = invitation.windowStartedAt !== null
+        && Date.parse(invitation.windowStartedAt) > Date.parse(requestTime) - 60 * 60_000;
+      const perSession = z.object({windowStartedAt: z.string().nullable(), writeCount: z.number()}).parse(this.#database.prepare(`SELECT
+        comment_window_started_at AS windowStartedAt, comment_write_count AS writeCount FROM guest_review_sessions WHERE id = ?`).get(guestId));
+      const sessionWindowActive = perSession.windowStartedAt !== null
+        && Date.parse(perSession.windowStartedAt) > Date.parse(requestTime) - 60 * 60_000;
+      if ((invitationWindowActive && invitation.writeCount >= 600) || (sessionWindowActive && perSession.writeCount >= 30)) return false;
+      this.#database.prepare(`UPDATE guest_review_invitations SET
+        comment_window_started_at = ?, comment_write_count = ? WHERE id = ?`).run(
+        invitationWindowActive ? invitation.windowStartedAt : requestTime,
+        invitationWindowActive ? invitation.writeCount + 1 : 1, invitationId,
+      );
+      this.#database.prepare(`UPDATE guest_review_sessions SET comment_window_started_at = ?,
+        comment_write_count = ? WHERE id = ?`).run(
+        sessionWindowActive ? perSession.windowStartedAt : requestTime,
+        sessionWindowActive ? perSession.writeCount + 1 : 1, guestId,
+      );
+      return true;
+    }));
   }
 
   reserveGuestBootstrap(guestId: string, requestTime: string): Promise<boolean> {
-    return Promise.resolve().then(() => {
-      const changed = this.#database.prepare(`UPDATE guest_review_sessions SET
-        bootstrap_window_started_at = CASE
-          WHEN bootstrap_window_started_at IS NULL OR julianday(bootstrap_window_started_at) <= julianday(?) - 1.0 / 24
-          THEN ? ELSE bootstrap_window_started_at END,
-        bootstrap_issue_count = CASE
-          WHEN bootstrap_window_started_at IS NULL OR julianday(bootstrap_window_started_at) <= julianday(?) - 1.0 / 24
-          THEN 1 ELSE bootstrap_issue_count + 1 END
-        WHERE id = ? AND expires_at > ? AND absolute_expires_at > ?
-          AND (bootstrap_window_started_at IS NULL
-            OR julianday(bootstrap_window_started_at) <= julianday(?) - 1.0 / 24
-            OR bootstrap_issue_count < 60)`).run(
-        requestTime, requestTime, requestTime, guestId, requestTime, requestTime, requestTime,
-      ).changes;
-      return changed > 0;
-    });
+    return Promise.resolve().then(() => this.#transaction(() => {
+      const session = this.#database.prepare(`SELECT invitation_id AS invitationId FROM guest_review_sessions
+        WHERE id = ? AND expires_at > ? AND absolute_expires_at > ?`).get(guestId, requestTime, requestTime);
+      if (session === undefined) return false;
+      const invitationId = z.object({invitationId: z.string()}).parse(session).invitationId;
+      const invitation = z.object({windowStartedAt: z.string().nullable(), issueCount: z.number()}).parse(this.#database.prepare(`SELECT
+        bootstrap_window_started_at AS windowStartedAt, bootstrap_issue_count AS issueCount
+        FROM guest_review_invitations WHERE id = ?`).get(invitationId));
+      const invitationWindowActive = invitation.windowStartedAt !== null
+        && Date.parse(invitation.windowStartedAt) > Date.parse(requestTime) - 60 * 60_000;
+      const perSession = z.object({windowStartedAt: z.string().nullable(), issueCount: z.number()}).parse(this.#database.prepare(`SELECT
+        bootstrap_window_started_at AS windowStartedAt, bootstrap_issue_count AS issueCount FROM guest_review_sessions WHERE id = ?`).get(guestId));
+      const sessionWindowActive = perSession.windowStartedAt !== null
+        && Date.parse(perSession.windowStartedAt) > Date.parse(requestTime) - 60 * 60_000;
+      if ((invitationWindowActive && invitation.issueCount >= 1200) || (sessionWindowActive && perSession.issueCount >= 60)) return false;
+      this.#database.prepare(`UPDATE guest_review_invitations SET
+        bootstrap_window_started_at = ?, bootstrap_issue_count = ? WHERE id = ?`).run(
+        invitationWindowActive ? invitation.windowStartedAt : requestTime,
+        invitationWindowActive ? invitation.issueCount + 1 : 1, invitationId,
+      );
+      this.#database.prepare(`UPDATE guest_review_sessions SET bootstrap_window_started_at = ?,
+        bootstrap_issue_count = ? WHERE id = ?`).run(
+        sessionWindowActive ? perSession.windowStartedAt : requestTime,
+        sessionWindowActive ? perSession.issueCount + 1 : 1, guestId,
+      );
+      return true;
+    }));
   }
 
   findGuestSession(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null> {
     return Promise.resolve().then(() => {
-      const idleExpiresAt = new Date(Date.parse(requestTime) + 24 * 60 * 60 * 1_000).toISOString();
+      const idleExpiresAt = new Date(Date.parse(requestTime) + 2 * 60 * 60 * 1_000).toISOString();
       const updated = this.#database.prepare(`UPDATE guest_review_sessions SET
         last_used_at = ?, expires_at = MIN(absolute_expires_at, ?)
         WHERE token_digest = ? AND expires_at > ? AND absolute_expires_at > ?
@@ -5058,7 +5114,12 @@ export class SqliteArtifactRepository implements
         created_at TEXT NOT NULL,
         revoked_at TEXT,
         exchange_window_started_at TEXT,
-        exchange_count INTEGER NOT NULL DEFAULT 0
+        exchange_count INTEGER NOT NULL DEFAULT 0,
+        last_limit_hit_at TEXT,
+        comment_window_started_at TEXT,
+        comment_write_count INTEGER NOT NULL DEFAULT 0,
+        bootstrap_window_started_at TEXT,
+        bootstrap_issue_count INTEGER NOT NULL DEFAULT 0
       ) STRICT;
       CREATE UNIQUE INDEX IF NOT EXISTS guest_review_active_invitation
         ON guest_review_invitations (project_id, artifact_id)
@@ -5092,6 +5153,11 @@ export class SqliteArtifactRepository implements
     const invitationColumns = this.#tableColumns("guest_review_invitations");
     if (!invitationColumns.includes("exchange_window_started_at")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN exchange_window_started_at TEXT");
     if (!invitationColumns.includes("exchange_count")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN exchange_count INTEGER NOT NULL DEFAULT 0");
+    if (!invitationColumns.includes("last_limit_hit_at")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN last_limit_hit_at TEXT");
+    if (!invitationColumns.includes("comment_window_started_at")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN comment_window_started_at TEXT");
+    if (!invitationColumns.includes("comment_write_count")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN comment_write_count INTEGER NOT NULL DEFAULT 0");
+    if (!invitationColumns.includes("bootstrap_window_started_at")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN bootstrap_window_started_at TEXT");
+    if (!invitationColumns.includes("bootstrap_issue_count")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN bootstrap_issue_count INTEGER NOT NULL DEFAULT 0");
     if (!guestColumns.includes("comment_window_started_at")) {
       this.#database.exec("ALTER TABLE guest_review_sessions ADD COLUMN comment_window_started_at TEXT");
     }

@@ -291,6 +291,20 @@ export interface GuestReviewSession {
   readonly tokenDigest: string;
 }
 
+/** Non-secret session fields shown to the artifact owner. */
+export interface GuestReviewSessionSummary {
+  readonly createdAt: string;
+  readonly displayName: string;
+  readonly guestId: string;
+  readonly lastUsedAt: string;
+}
+
+/** Counts and recent abuse signal for one invitation. */
+export interface GuestReviewInvitationUsage {
+  readonly activeSessionCount: number;
+  readonly limitHitRecently: boolean;
+}
+
 export interface StagedUploadFile {
   readonly entry: ManifestEntry;
   readonly storageToken: string;

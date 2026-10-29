@@ -7,10 +7,10 @@ import type {ApplicationClock} from "./application-clock.js";
 import type {ContentSecretProvider} from "./content-access.js";
 import {ArtifactNotFound, AuthorizationDenied, GuestRateLimitExceeded, type ArtifactRepositoryFailure, type IdentityRepositoryFailure, type ProjectArchived, type ProjectNotFound} from "../core/errors.js";
 import type {Principal} from "../core/identity.js";
-import type {GuestReviewInvitation, GuestReviewSession} from "../core/model.js";
+import type {GuestReviewInvitation, GuestReviewInvitationUsage, GuestReviewSession, GuestReviewSessionSummary} from "../core/model.js";
 import type {IdGenerator} from "../core/ports.js";
 
-const guestIdleLifetimeMilliseconds = 24 * 60 * 60 * 1_000;
+const guestIdleLifetimeMilliseconds = 2 * 60 * 60 * 1_000;
 const guestSessionLifetimeMilliseconds = 7 * 24 * 60 * 60 * 1_000;
 
 /** Identity carried by requests after the guest cookie has been verified. */
@@ -32,6 +32,9 @@ export interface GuestReviewDependencies {
     readonly revokeGuestInvitation: (projectId: string, artifactId: string, revokedAt: string) => Effect.Effect<boolean, ArtifactRepositoryFailure>;
     readonly createGuestSession: (session: GuestReviewSession) => Effect.Effect<"created" | "rate_limited" | "invalid", ArtifactRepositoryFailure>;
     readonly findGuestSession: (tokenDigest: string, requestTime: string) => Effect.Effect<GuestReviewSession | null, ArtifactRepositoryFailure>;
+    readonly listGuestSessions: (projectId: string, artifactId: string, requestTime: string) => Effect.Effect<readonly GuestReviewSessionSummary[], ArtifactRepositoryFailure>;
+    readonly revokeGuestSession: (projectId: string, artifactId: string, guestId: string) => Effect.Effect<boolean, ArtifactRepositoryFailure>;
+    readonly getGuestInvitationUsage: (invitationId: string, requestTime: string) => Effect.Effect<GuestReviewInvitationUsage, ArtifactRepositoryFailure>;
     readonly deleteExpiredGuestSessions: (expiredBefore: string, limit: number) => Effect.Effect<number, ArtifactRepositoryFailure>;
     readonly deleteExpiredGuestContentRows: (expiredBefore: string, limit: number) => Effect.Effect<number, ArtifactRepositoryFailure>;
   };
@@ -42,7 +45,9 @@ export interface GuestReviewDependencies {
 interface GuestReviewOperations {
   readonly enable: (command: {artifactId: string; principal: Principal; projectId: string | null}) => Effect.Effect<{createdAt: string; linkSecret: string}, GuestReviewFailure>;
   readonly revoke: (command: {artifactId: string; principal: Principal; projectId: string | null}) => Effect.Effect<void, GuestReviewFailure>;
-  readonly status: (command: {artifactId: string; principal: Principal; projectId: string | null}) => Effect.Effect<{createdAt: string | null; enabled: boolean}, GuestReviewFailure>;
+  readonly status: (command: {artifactId: string; principal: Principal; projectId: string | null}) => Effect.Effect<{activeSessionCount: number; createdAt: string | null; enabled: boolean; limitHitRecently: boolean}, GuestReviewFailure>;
+  readonly listSessions: (command: {artifactId: string; principal: Principal; projectId: string | null}) => Effect.Effect<readonly GuestReviewSessionSummary[], GuestReviewFailure>;
+  readonly revokeSession: (command: {artifactId: string; guestId: string; principal: Principal; projectId: string | null}) => Effect.Effect<void, GuestReviewFailure>;
   readonly exchange: (command: {artifactId: string; displayName: string; secret: string}) => Effect.Effect<{csrfToken: string; expiresAt: string; reviewer: GuestReviewer; sessionToken: Redacted.Redacted}, GuestReviewFailure>;
   readonly authenticate: (token: Redacted.Redacted, requestTime: string) => Effect.Effect<GuestReviewSession | null, GuestReviewFailure>;
 }
@@ -82,7 +87,22 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
       });
       const status = Effect.fn("GuestReviewService.status")(function*(command: {artifactId: string; principal: Principal; projectId: string | null}) {
         const result = yield* resolveManageableArtifact(command);
-        return {createdAt: result.invitation?.createdAt ?? null, enabled: result.invitation !== null && result.invitation.revokedAt === null};
+        const now = DateTime.formatIso(yield* dependencies.clock.now);
+        const invitation = result.invitation;
+        const enabled = invitation !== null && invitation.revokedAt === null;
+        const usage = enabled && invitation !== null ? yield* dependencies.repository.getGuestInvitationUsage(invitation.id, now) : {activeSessionCount: 0, limitHitRecently: false};
+        return {activeSessionCount: usage.activeSessionCount, createdAt: invitation?.createdAt ?? null, enabled, limitHitRecently: usage.limitHitRecently};
+      });
+      const listSessions = Effect.fn("GuestReviewService.listSessions")(function*(command: {artifactId: string; principal: Principal; projectId: string | null}) {
+        const result = yield* resolveManageableArtifact(command);
+        if (result.invitation === null || result.invitation.revokedAt !== null) return [];
+        return yield* dependencies.repository.listGuestSessions(result.projectId, command.artifactId, DateTime.formatIso(yield* dependencies.clock.now));
+      });
+      const revokeSession = Effect.fn("GuestReviewService.revokeSession")(function*(command: {artifactId: string; guestId: string; principal: Principal; projectId: string | null}) {
+        const result = yield* resolveManageableArtifact(command);
+        const revoked = yield* dependencies.repository.revokeGuestSession(result.projectId, command.artifactId, command.guestId);
+        if (!revoked) return yield* new ArtifactNotFound({message: "The guest session does not exist."});
+        return undefined;
       });
       const enable = Effect.fn("GuestReviewService.enable")(function*(command: {artifactId: string; principal: Principal; projectId: string | null}) {
         const result = yield* resolveManageableArtifact(command);
@@ -116,13 +136,19 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
         if (created === "invalid") return yield* new ArtifactNotFound({message: "The requested route does not exist."});
         return {csrfToken: Redacted.value(csrfSecret.token), expiresAt: absoluteExpiresAt, reviewer: {artifactId: invitation.artifactId, displayName, guestId, invitationCreatorPrincipalId: invitation.createdByPrincipalId, projectId: invitation.projectId}, sessionToken: sessionSecret.token};
       });
+      let lastGuestContentSweepAt = 0;
       const authenticate = (token: Redacted.Redacted, requestTime: string) => Effect.gen(function*() {
+        const requestTimestamp = Date.parse(requestTime);
+        if (requestTimestamp - lastGuestContentSweepAt >= 60_000) {
+          yield* dependencies.repository.deleteExpiredGuestContentRows(requestTime, 100);
+          lastGuestContentSweepAt = requestTimestamp;
+        }
         yield* dependencies.repository.deleteExpiredGuestSessions(requestTime, 100);
         const session = yield* dependencies.repository.findGuestSession(dependencies.secrets.digest(token), requestTime);
         if (session === null || !(yield* creatorMayStillManage(session.projectId, session.invitationCreatorPrincipalId))) return null;
         return session;
       });
-      return GuestReviewService.of({authenticate, enable, exchange, revoke, status});
+      return GuestReviewService.of({authenticate, enable, exchange, listSessions, revoke, revokeSession, status});
     }),
   );
 }

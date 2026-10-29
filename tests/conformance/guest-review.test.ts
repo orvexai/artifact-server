@@ -283,19 +283,22 @@ describe("invited guest review", () => {
     expect(response.status).toBe(403);
   });
 
-  test("the 101st exchange succeeds and evicts the least recently used guest session", async () => {
+  test("the 101st exchange is refused without evicting any live guest session", async () => {
     const invitation = await enableInvitation();
     const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
     const resetExchangeWindow = () => database.prepare("UPDATE guest_review_invitations SET exchange_window_started_at = NULL, exchange_count = 0 WHERE artifact_id = ?").run(artifactId);
-    const oldest = await exchange(artifactId, invitation.secret, "Oldest guest");
+    const guests = [await exchange(artifactId, invitation.secret, "Guest 0")];
     await Array.from({length: 99}, (_, offset) => offset + 1).reduce(async (previous, index) => {
       await previous;
       resetExchangeWindow();
-      expect((await exchangeResponse(artifactId, invitation.secret, `Guest ${index}`)).status).toBe(201);
+      guests.push(await exchange(artifactId, invitation.secret, `Guest ${index}`));
     }, Promise.resolve());
     resetExchangeWindow();
-    expect((await exchangeResponse(artifactId, invitation.secret, "Guest 101")).status).toBe(201);
-    expect((await guestRequest(oldest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
+    expect((await exchangeResponse(artifactId, invitation.secret, "Guest 101")).status).toBe(429);
+    expect((await Promise.all(guests.map((guest) => guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)))).map((response) => response.status))
+      .toEqual(Array.from({length: 100}, () => 201));
+    const status = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`);
+    expect(await status.json()).toMatchObject({activeSessionCount: 100, limitHitRecently: true});
     database.close();
   });
 
@@ -304,6 +307,43 @@ describe("invited guest review", () => {
     expect((await Promise.all(Array.from({length: 30}, (_, index) => exchangeResponse(artifactId, invitation.secret, `Guest ${index}`)))).map((response) => response.status))
       .toEqual(Array.from({length: 30}, () => 201));
     expect((await exchangeResponse(artifactId, invitation.secret, "Guest 31")).status).toBe(429);
+    expect(await (await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`)).json())
+      .toMatchObject({activeSessionCount: 30, limitHitRecently: true});
+  });
+
+  test("owners can list guest sessions and revoke one session including its content cookie", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret, "Reviewer to revoke");
+    const current = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).json());
+    const contentResponse = await fetchVersion(server, current.bootstrapUrl);
+    const contentCookie = contentResponse.headers.getSetCookie().find((cookie) => cookie.startsWith("artifact_content="))?.split(";", 1)[0];
+    expect(contentResponse.status).toBe(200);
+    expect(contentCookie).toBeDefined();
+    const listPath = `/api/v1/artifacts/${artifactId}/guest-invitation/sessions?projectId=${projectId}`;
+    const listed = z.object({sessions: z.array(z.object({createdAt: z.string(), displayName: z.string(), guestId: z.string(), lastUsedAt: z.string()}))}).parse(await (await ownerRequest("GET", listPath)).json());
+    expect(listed.sessions).toHaveLength(1);
+    expect(listed.sessions[0]?.displayName).toBe("Reviewer to revoke");
+    expect((await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}/guest-invitation/sessions/${listed.sessions[0]?.guestId}?projectId=${projectId}`)).status).toBe(204);
+    expect((await (await ownerRequest("GET", listPath)).json())).toEqual({sessions: []});
+    expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
+    const contentUrl = new URL("/", current.bootstrapUrl).toString();
+    expect((await fetchVersion(server, contentUrl, "GET", {Cookie: contentCookie ?? ""})).status).not.toBe(200);
+  });
+
+  test("a visible guest heartbeat refreshes the two-hour idle window", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    const soon = new Date(Date.now() + 500).toISOString();
+    database.prepare("UPDATE guest_review_sessions SET expires_at = ? WHERE display_name = ?").run(soon, "Guest Reviewer");
+    database.close();
+    expect((await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/heartbeat`)).status).toBe(204);
+    const afterHeartbeat = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    expect(afterHeartbeat.prepare("SELECT comment_write_count AS comments, bootstrap_issue_count AS bootstraps FROM guest_review_sessions WHERE display_name = ?")
+      .get("Guest Reviewer")).toEqual({comments: 0, bootstraps: 0});
+    afterHeartbeat.close();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(201);
   });
 
   test("an idle-expired guest session does not count toward the invitation session cap", async () => {
@@ -355,6 +395,30 @@ describe("invited guest review", () => {
     expect((await guestRequest(guest, "GET", path)).status).toBe(429);
   });
 
+  test("invitation-wide comment budget is shared across rotated guest sessions", async () => {
+    const invitation = await enableInvitation();
+    const first = await exchange(artifactId, invitation.secret, "First session");
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    database.prepare("UPDATE guest_review_invitations SET comment_window_started_at = ?, comment_write_count = 599 WHERE artifact_id = ?")
+      .run(new Date().toISOString(), artifactId);
+    database.close();
+    expect((await guestRequest(first, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Six hundred", versionId: currentVersionId}), true, "guest-invitation-write-600-001")).status).toBe(201);
+    const second = await exchange(artifactId, invitation.secret, "Rotated session");
+    expect((await guestRequest(second, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Over invitation budget", versionId: currentVersionId}), true, "guest-invitation-write-601-001")).status).toBe(429);
+  });
+
+  test("invitation-wide bootstrap budget is shared across rotated guest sessions", async () => {
+    const invitation = await enableInvitation();
+    const first = await exchange(artifactId, invitation.secret, "First session");
+    const second = await exchange(artifactId, invitation.secret, "Rotated session");
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    database.prepare("UPDATE guest_review_invitations SET bootstrap_window_started_at = ?, bootstrap_issue_count = 1199 WHERE artifact_id = ?")
+      .run(new Date().toISOString(), artifactId);
+    database.close();
+    expect((await guestRequest(first, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(201);
+    expect((await guestRequest(second, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(429);
+  });
+
   test("repeated current requests issue bounded bootstraps and revocation invalidates its content URL", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
@@ -373,7 +437,7 @@ describe("invited guest review", () => {
     expect((await fetchVersion(server, first.bootstrapUrl)).status).not.toBe(200);
   });
 
-  test("guest content bootstraps and sessions are swept after expiry on the next exchange", async () => {
+  test("guest content bootstraps and sessions are swept after expiry on guest authentication", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
     const current = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).json());
@@ -381,9 +445,11 @@ describe("invited guest review", () => {
     const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
     database.prepare("UPDATE content_bootstraps SET expires_at = '2000-01-01T00:00:00.000Z' WHERE guest_session_id IS NOT NULL").run();
     database.prepare("UPDATE content_sessions SET expires_at = '2000-01-01T00:00:00.000Z' WHERE guest_session_id IS NOT NULL").run();
-    expect((await exchangeResponse(artifactId, invitation.secret, "Cleanup guest")).status).toBe(201);
-    expect(database.prepare("SELECT COUNT(*) AS count FROM content_bootstraps WHERE guest_session_id IS NOT NULL").get()).toMatchObject({count: 0});
-    expect(database.prepare("SELECT COUNT(*) AS count FROM content_sessions WHERE guest_session_id IS NOT NULL").get()).toMatchObject({count: 0});
+    await server.stop();
+    server = await startTestServer(installation);
+    expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(201);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM content_bootstraps WHERE guest_session_id IS NOT NULL AND expires_at <= '2000-01-01T00:00:00.000Z'").get()).toMatchObject({count: 0});
+    expect(database.prepare("SELECT COUNT(*) AS count FROM content_sessions WHERE guest_session_id IS NOT NULL AND expires_at <= '2000-01-01T00:00:00.000Z'").get()).toMatchObject({count: 0});
     database.close();
   });
 
@@ -490,5 +556,45 @@ describe("invited guest review", () => {
     expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
     expect((await fetchVersion(server, contentUrl, "GET", {Cookie: contentCookie ?? ""})).status).not.toBe(200);
     expect((await fetchVersion(server, current.bootstrapUrl)).status).not.toBe(200);
+  });
+
+  test("guest content follows project group-grant removal", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const bootstrapOne = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).json());
+    const bootstrapTwo = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).json());
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    const invitationRow = z.object({creatorId: z.string(), installationId: z.string()}).parse(database.prepare(`SELECT i.created_by_principal_id AS creatorId,
+      m.installation_id AS installationId FROM guest_review_invitations i JOIN installation_members m ON m.id = i.created_by_principal_id
+      WHERE i.artifact_id = ?`).get(artifactId));
+    const creator = z.object({email: z.string()}).parse(database.prepare("SELECT email FROM installation_members WHERE id = ?").get(invitationRow.creatorId));
+    const provider = "round4-test-provider";
+    const subject = `round4-${crypto.randomUUID()}`;
+    const groupId = `round4-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    database.prepare("UPDATE installation_members SET role = 'member' WHERE id = ?").run(invitationRow.creatorId);
+    database.prepare("UPDATE projects SET access_mode = 'restricted', created_by_member_id = NULL WHERE id = ?").run(projectId);
+    database.prepare("INSERT INTO external_identities (provider, subject, member_id, email, bound_at) VALUES (?, ?, ?, ?, ?)")
+      .run(provider, subject, invitationRow.creatorId, creator.email, now);
+    database.prepare("INSERT INTO directory_groups (installation_id, id, name, path, synced_at) VALUES (?, ?, ?, ?, ?)")
+      .run(invitationRow.installationId, groupId, "Round 4 project reviewers", `/round4/${groupId}`, now);
+    database.prepare("INSERT INTO directory_group_members (installation_id, group_id, subject, email, provider) VALUES (?, ?, ?, ?, ?)")
+      .run(invitationRow.installationId, groupId, subject, creator.email, provider);
+    database.prepare(`INSERT INTO project_group_grants (installation_id, project_id, group_id, role, granted_at, granted_by_principal_id)
+      VALUES (?, ?, ?, 'manager', ?, ?)`)
+      .run(invitationRow.installationId, projectId, groupId, now, invitationRow.creatorId);
+    database.close();
+
+    const fetched = await fetchVersion(server, bootstrapOne.bootstrapUrl);
+    const contentCookie = fetched.headers.getSetCookie().find((cookie) => cookie.startsWith("artifact_content="))?.split(";", 1)[0];
+    expect(fetched.status).toBe(200);
+    expect(contentCookie).toBeDefined();
+    const contentUrl = new URL("/", bootstrapOne.bootstrapUrl).toString();
+
+    const revokeGrant = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    revokeGrant.prepare("DELETE FROM project_group_grants WHERE project_id = ? AND group_id = ?").run(projectId, groupId);
+    revokeGrant.close();
+    expect((await fetchVersion(server, contentUrl, "GET", {Cookie: contentCookie ?? ""})).status).not.toBe(200);
+    expect((await fetchVersion(server, bootstrapTwo.bootstrapUrl)).status).not.toBe(200);
   });
 });

@@ -24,7 +24,9 @@ import type {
   ContentBootstrapRecord,
   ContentSessionRecord,
   GuestReviewInvitation,
+  GuestReviewInvitationUsage,
   GuestReviewSession,
+  GuestReviewSessionSummary,
   AgentBeaconState,
   AgentCapabilities,
   CommentClearScope,
@@ -752,6 +754,9 @@ export interface GuestReviewRepository {
   ): Promise<boolean>;
   createGuestSession(session: GuestReviewSession): Promise<"created" | "rate_limited" | "invalid">;
   findGuestSession(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null>;
+  listGuestSessions(projectId: string, artifactId: string, requestTime: string): Promise<readonly GuestReviewSessionSummary[]>;
+  revokeGuestSession(projectId: string, artifactId: string, guestId: string): Promise<boolean>;
+  getGuestInvitationUsage(invitationId: string, requestTime: string): Promise<GuestReviewInvitationUsage>;
   reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<boolean>;
   reserveGuestBootstrap(guestId: string, requestTime: string): Promise<boolean>;
   deleteExpiredGuestContentRows(expiredBefore: string, limit: number): Promise<number>;

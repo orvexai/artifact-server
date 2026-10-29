@@ -985,6 +985,12 @@ export function createHttpApp(
     ), versionId: issued.versionId}, 201);
   });
 
+  app.post("/api/v1/public/artifacts/:artifactId/guest/heartbeat", async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, true);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    return context.body(null, 204);
+  });
+
   app.get("/api/v1/public/artifacts/:artifactId/guest/comments", async (context) => {
     const guest = await requireGuestReviewer(context, dependencies, false);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
@@ -2564,6 +2570,24 @@ export function createHttpApp(
         principal: context.get("principal"), projectId: requestedProjectId(context),
       })));
     return context.json(status);
+  });
+
+  app.get("/api/v1/artifacts/:artifactId/guest-invitation/sessions", async (context) => {
+    const sessions = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.listSessions({
+        artifactId: context.req.param("artifactId"),
+        principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    return context.json({sessions});
+  });
+
+  app.delete("/api/v1/artifacts/:artifactId/guest-invitation/sessions/:guestId", async (context) => {
+    await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.revokeSession({
+        artifactId: context.req.param("artifactId"), guestId: context.req.param("guestId"),
+        principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    return context.body(null, 204);
   });
 
   app.post("/api/v1/artifacts/:artifactId/guest-invitation", async (context) => {

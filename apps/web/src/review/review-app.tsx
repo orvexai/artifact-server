@@ -2779,6 +2779,18 @@ function PublicArtifactReview({
       cancelled = true;
     };
   }, [artifactId, inviteSecret]);
+  useEffect(() => {
+    if (state.kind !== "guest") return undefined;
+    const heartbeat = (): void => {
+      if (document.visibilityState === "visible") void api.guestHeartbeat(artifactId).catch(() => undefined);
+    };
+    const interval = window.setInterval(heartbeat, 5 * 60_000);
+    document.addEventListener("visibilitychange", heartbeat);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", heartbeat);
+    };
+  }, [artifactId, state.kind]);
   const joinAsGuest = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (inviteSecret === null) return;
