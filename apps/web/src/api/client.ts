@@ -844,6 +844,21 @@ function mutationHeaders(idempotencyKey?: string): Headers {
   return headers;
 }
 
+function guestMutationHeaders(idempotencyKey?: string): Headers {
+  let csrfToken: string | null = null;
+  for (const candidate of document.cookie.split(";")) {
+    const [rawName, ...rawValue] = candidate.trim().split("=");
+    if (rawName === "artifact_guest_csrf" || rawName === "__Host-artifact_guest_csrf") {
+      csrfToken = decodeURIComponent(rawValue.join("="));
+      break;
+    }
+  }
+  if (csrfToken === null) throw new ApiError("CSRF_TOKEN_MISSING", "The guest browser session cannot authorize changes.", 403);
+  const headers = new Headers({"Content-Type": "application/json", "X-CSRF-Token": csrfToken});
+  if (idempotencyKey !== undefined) headers.set("Idempotency-Key", idempotencyKey);
+  return headers;
+}
+
 async function request<T>(
   schema: z.ZodType<T>,
   path: string,
@@ -939,8 +954,52 @@ const publicArtifactSchema = z.object({
   }),
 });
 export type PublicArtifact = z.infer<typeof publicArtifactSchema>;
+const guestInvitationStatusSchema = z.object({createdAt: z.string().nullable(), enabled: z.boolean()});
+const guestSessionSchema = z.object({displayName: z.string(), expiresAt: z.string()});
+const guestCurrentSchema = z.object({artifactName: z.string(), bootstrapUrl: z.url(), createdAt: z.string(), displayName: z.string(), number: z.number().int(), versionId: z.string()});
+const guestCommentsSchema = commentThreadPageSchema;
 
 export const api = {
+  guestInvitationStatus: (projectId: string, artifactId: string) => request(
+    guestInvitationStatusSchema,
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/guest-invitation?${projectQuery(projectId)}`,
+  ),
+  enableGuestInvitation: (projectId: string, artifactId: string) => request(
+    z.object({createdAt: z.string(), enabled: z.literal(true), url: z.url()}),
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/guest-invitation?${projectQuery(projectId)}`,
+    {body: "{}", headers: mutationHeaders(), method: "POST"},
+  ),
+  revokeGuestInvitation: (projectId: string, artifactId: string) => requestNoContent(
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/guest-invitation?${projectQuery(projectId)}`,
+    {headers: mutationHeaders(), method: "DELETE"},
+  ),
+  exchangeGuestSession: (artifactId: string, secret: string, displayName: string) => request(
+    guestSessionSchema,
+    `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest-session`,
+    {body: JSON.stringify({displayName, secret}), headers: new Headers({"Content-Type": "application/json"}), method: "POST"},
+  ),
+  guestCurrent: (artifactId: string) => request(
+    guestCurrentSchema,
+    `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/current`,
+  ),
+  guestComments: (artifactId: string) => request(
+    guestCommentsSchema,
+    `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/comments`,
+  ),
+  guestComment: (artifactId: string, threadId: string) => request(
+    commentThreadDetailsSchema,
+    `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/comments/${encodeURIComponent(threadId)}`,
+  ),
+  guestCreateReply: (artifactId: string, threadId: string, body: string, idempotencyKey: string) => request(
+    createdCommentReplySchema,
+    `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/comments/${encodeURIComponent(threadId)}/replies`,
+    {body: JSON.stringify({body}), headers: guestMutationHeaders(idempotencyKey), method: "POST"},
+  ),
+  guestCreateComment: (artifactId: string, versionId: string, body: string, idempotencyKey: string) => request(
+    createdCommentThreadSchema,
+    `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/comments`,
+    {body: JSON.stringify({body, versionId}), headers: guestMutationHeaders(idempotencyKey), method: "POST"},
+  ),
   publicArtifact: (artifactId: string) => request(
     publicArtifactSchema,
     `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}`,

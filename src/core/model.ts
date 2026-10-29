@@ -262,6 +262,31 @@ export interface ContentSessionRecord {
   readonly versionId: string;
 }
 
+/** One invitation that authorizes guest review of a single artifact. */
+export interface GuestReviewInvitation {
+  readonly artifactId: string;
+  readonly createdAt: string;
+  readonly createdByPrincipalId: string;
+  readonly id: string;
+  readonly projectId: string;
+  readonly revokedAt: string | null;
+  readonly tokenDigest: string;
+}
+
+/** A guest browser session bound to one invitation and artifact. */
+export interface GuestReviewSession {
+  readonly artifactId: string;
+  readonly createdAt: string;
+  readonly csrfDigest: string;
+  readonly displayName: string;
+  readonly expiresAt: string;
+  readonly guestId: string;
+  readonly invitationCreatorPrincipalId: string;
+  readonly invitationId: string;
+  readonly projectId: string;
+  readonly tokenDigest: string;
+}
+
 export interface StagedUploadFile {
   readonly entry: ManifestEntry;
   readonly storageToken: string;

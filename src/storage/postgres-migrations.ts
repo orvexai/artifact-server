@@ -664,6 +664,47 @@ const addCommentActorAttribution = Effect.gen(function*() {
     ADD COLUMN author_actor_client_id TEXT`);
 });
 
+const addGuestReview = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`CREATE TABLE guest_review_invitations (
+    installation_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    token_digest TEXT NOT NULL,
+    created_by_principal_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT,
+    PRIMARY KEY (installation_id, id),
+    UNIQUE (installation_id, token_digest),
+    FOREIGN KEY (installation_id, project_id, artifact_id)
+      REFERENCES artifacts(installation_id, project_id, id)
+  )`);
+  yield* sql.unsafe(`CREATE UNIQUE INDEX guest_review_active_invitation
+    ON guest_review_invitations (installation_id, project_id, artifact_id)
+    WHERE revoked_at IS NULL`);
+  yield* sql.unsafe(`CREATE TABLE guest_review_sessions (
+    installation_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    token_digest TEXT NOT NULL,
+    csrf_digest TEXT NOT NULL,
+    invitation_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    PRIMARY KEY (installation_id, id),
+    UNIQUE (installation_id, token_digest),
+    FOREIGN KEY (installation_id, invitation_id)
+      REFERENCES guest_review_invitations(installation_id, id),
+    FOREIGN KEY (installation_id, project_id, artifact_id)
+      REFERENCES artifacts(installation_id, project_id, id)
+  )`);
+  yield* sql.unsafe(`CREATE INDEX guest_review_sessions_expiry
+    ON guest_review_sessions (installation_id, expires_at)`);
+});
+
 const addProjectArchiveAudit = Effect.gen(function*() {
   const sql = yield* SqlClient;
   yield* sql.unsafe(`CREATE TABLE project_archive_events (
@@ -799,6 +840,7 @@ const postgresMigrations = {
   "0016_project_access": addProjectAccess,
   "0017_project_creator": addProjectCreator,
   "0018_group_roles": addGroupRoles,
+  "0019_guest_review": addGuestReview,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

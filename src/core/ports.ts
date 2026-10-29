@@ -23,6 +23,8 @@ import type {
   CommentThreadState,
   ContentBootstrapRecord,
   ContentSessionRecord,
+  GuestReviewInvitation,
+  GuestReviewSession,
   AgentBeaconState,
   AgentCapabilities,
   CommentClearScope,
@@ -732,6 +734,24 @@ export interface ContentSessionRepository {
   ): Promise<ContentSessionRecord | null>;
 }
 
+/** Durable invitation and guest-session operations for invited review. */
+export interface GuestReviewRepository {
+  createGuestInvitation(invitation: GuestReviewInvitation): Promise<void>;
+  findGuestInvitation(
+    projectId: string,
+    artifactId: string,
+  ): Promise<GuestReviewInvitation | null>;
+  findGuestInvitationByDigest(tokenDigest: string): Promise<GuestReviewInvitation | null>;
+  revokeGuestInvitation(
+    projectId: string,
+    artifactId: string,
+    revokedAt: string,
+  ): Promise<boolean>;
+  createGuestSession(session: GuestReviewSession): Promise<void>;
+  findGuestSession(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null>;
+  deleteExpiredGuestSessions(expiredBefore: string, limit: number): Promise<number>;
+}
+
 export interface StagedUploadRepository {
   createStagedUpload(command: CreateStagedUpload): Promise<StagedUpload>;
   findStagedUpload(
@@ -769,6 +789,8 @@ export interface IdGenerator {
   artifactId(): string;
   commentReplyId(): string;
   commentThreadId(): string;
+  guestInvitationId(): string;
+  guestSessionId(): string;
   contentToken(): string;
   projectId(): string;
   registeredAgentId(): string;

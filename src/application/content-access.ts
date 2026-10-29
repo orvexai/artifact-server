@@ -33,6 +33,7 @@ import {
   AuthorizationService,
 } from "./authorization.js";
 import type { ApplicationClock } from "./application-clock.js";
+import type {GuestReviewer} from "./guest-review.js";
 import {
   type ProjectManagementFailure,
   ProjectManagementService,
@@ -108,6 +109,9 @@ export interface ContentAccessDependencies {
 
 /** Successful one-time bootstrap issuance for one current immutable version. */
 export interface IssuedContentBootstrap {
+  readonly artifactName: string;
+  readonly createdAt: string;
+  readonly number: number;
   readonly contentToken: string;
   readonly expiresAt: string;
   readonly token: Redacted.Redacted;
@@ -189,6 +193,7 @@ interface ContentAccessOperations {
   readonly issueContentBootstrap: (
     command: IssueContentBootstrapCommand,
   ) => Effect.Effect<IssuedContentBootstrap, ContentAccessFailure>;
+  readonly issueGuestContentBootstrap: (guest: GuestReviewer) => Effect.Effect<IssuedContentBootstrap, ContentAccessFailure>;
   readonly issuePreviewLease: (
     command: IssuePreviewLeaseCommand,
   ) => Effect.Effect<IssuedPreviewLease, ContentAccessFailure>;
@@ -286,10 +291,35 @@ function makeContentAccessService(
       versionId: target.id,
     });
     return {
+      artifactName: artifact.name,
       contentToken: target.contentToken,
+      createdAt: target.createdAt,
       expiresAt,
+      number: target.number,
       token: secret.token,
       versionId: target.id,
+    };
+  });
+
+  const issueGuestContentBootstrap = Effect.fn("ContentAccessService.issueGuestContentBootstrap")(function*(guest: GuestReviewer) {
+    const current = yield* dependencies.repository.findCurrentVersion(guest.projectId, guest.artifactId);
+    if (current === null || current.artifact.deletedAt !== null) return yield* new ArtifactNotFound({message: "The artifact does not exist."});
+    const now = yield* dependencies.clock.now;
+    const secret = dependencies.secrets.issue();
+    const expiresAt = DateTime.formatIso(DateTime.addDuration(now, bootstrapLifetimeMilliseconds));
+    yield* dependencies.repository.createContentBootstrap({
+      artifactId: guest.artifactId, contentToken: current.version.contentToken,
+      createdAt: DateTime.formatIso(now), expiresAt, principalId: `guest_${guest.guestId}`,
+      projectId: guest.projectId, tokenDigest: secret.digest, versionId: current.version.id,
+    });
+    return {
+      artifactName: current.artifact.name,
+      contentToken: current.version.contentToken,
+      createdAt: current.version.createdAt,
+      expiresAt,
+      number: current.version.number,
+      token: secret.token,
+      versionId: current.version.id,
     };
   });
 
@@ -429,6 +459,7 @@ function makeContentAccessService(
     authorizeVersionContent,
     exchangeContentBootstrap,
     issueContentBootstrap,
+    issueGuestContentBootstrap,
     issuePreviewLease,
     resolvePublicArtifact,
   });

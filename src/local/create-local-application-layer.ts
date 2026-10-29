@@ -40,6 +40,7 @@ import {
 } from "../application/content-access.js";
 import {ExpiredStagingCleanupService} from
   "../application/expired-staging-cleanup.js";
+import {GuestReviewService} from "../application/guest-review.js";
 import {
   type GitHistoryAccessDependencies,
   GitHistoryAccessService,
@@ -119,6 +120,7 @@ import type {
   Clock,
   CommentRepository,
   ContentSessionRepository,
+  GuestReviewRepository,
   IdGenerator,
   ProjectRepository,
   SourceBindingRepository,
@@ -180,6 +182,7 @@ export interface ApplicationAdapters {
   readonly repository: ArtifactRepository &
     CommentRepository &
     ContentSessionRepository &
+    GuestReviewRepository &
     ProjectRepository &
     ProjectGitHistoryStore &
     GitHistoryMirrorStore &
@@ -218,6 +221,7 @@ export function createApplicationLayer(
   | ContentAccessService
   | ExpiredStagingCleanupService
   | GitHistoryAccessService
+  | GuestReviewService
   | InstallationAccessService
   | InteractiveLoginService
   | LinkedArtifactService
@@ -1250,12 +1254,31 @@ export function createApplicationLayer(
   ).pipe(
     Layer.provideMerge(Layer.mergeAll(authorizationLayer, managementLayer)),
   );
+  const guestReviewLayer = GuestReviewService.layer({
+    clock,
+    ids: adapters.ids,
+    repository: {
+      createGuestInvitation: (invitation) => Effect.tryPromise({try: () => adapters.repository.createGuestInvitation(invitation), catch: (cause) => repositoryFailure("createGuestInvitation", cause)}),
+      findGuestInvitation: (projectId, artifactId) => Effect.tryPromise({try: () => adapters.repository.findGuestInvitation(projectId, artifactId), catch: (cause) => repositoryFailure("findGuestInvitation", cause)}),
+      findGuestInvitationByDigest: (digest) => Effect.tryPromise({try: () => adapters.repository.findGuestInvitationByDigest(digest), catch: (cause) => repositoryFailure("findGuestInvitationByDigest", cause)}),
+      revokeGuestInvitation: (projectId, artifactId, at) => Effect.tryPromise({try: () => adapters.repository.revokeGuestInvitation(projectId, artifactId, at), catch: (cause) => repositoryFailure("revokeGuestInvitation", cause)}),
+      createGuestSession: (session) => Effect.tryPromise({try: () => adapters.repository.createGuestSession(session), catch: (cause) => repositoryFailure("createGuestSession", cause)}),
+      findGuestSession: (digest, at) => Effect.tryPromise({try: () => adapters.repository.findGuestSession(digest, at), catch: (cause) => repositoryFailure("findGuestSession", cause)}),
+      deleteExpiredGuestSessions: (before, limit) => Effect.tryPromise({try: () => adapters.repository.deleteExpiredGuestSessions(before, limit), catch: (cause) => repositoryFailure("deleteExpiredGuestSessions", cause)}),
+    },
+    findArtifact: (projectId, artifactId) => Effect.tryPromise({
+      try: () => adapters.repository.findArtifact(projectId, artifactId),
+      catch: (cause) => repositoryFailure("findArtifact", cause),
+    }),
+    secrets: contentDependencies.secrets,
+  }).pipe(Layer.provideMerge(Layer.mergeAll(authorizationLayer, projectLayer)));
+  const commentsAndGuestReviewLayer = Layer.mergeAll(commentLayer, guestReviewLayer);
   const comparisonLayer = CompareArtifactService.layer(
     comparisonDependencies,
   ).pipe(Layer.provideMerge(Layer.mergeAll(authorizationLayer, projectLayer)));
   return Layer.mergeAll(
     authenticationLayer,
-    commentLayer,
+    commentsAndGuestReviewLayer,
     dispatchLayer,
     identityLayer,
     interactiveLoginLayer,

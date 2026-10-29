@@ -66,6 +66,8 @@ import {
   type CommentThreadRecord,
   type ContentBootstrapRecord,
   type ContentSessionRecord,
+  type GuestReviewInvitation,
+  type GuestReviewSession,
   type ManifestEntry,
   type PageCursor,
   type PublishedVersion,
@@ -93,6 +95,7 @@ import type {
   CommitLinkedArtifact,
   CommitNewArtifact,
   ContentSessionRepository,
+  GuestReviewRepository,
   CreateCommentReply,
   CreateCommentThread,
   CreateContentBootstrap,
@@ -228,6 +231,17 @@ const contentBootstrapRowSchema = z.object({
   versionId: z.string(),
 });
 const contentSessionRowSchema = contentBootstrapRowSchema;
+const guestInvitationRowSchema = z.object({
+  artifactId: z.string(), createdAt: z.string(), createdByPrincipalId: z.string(),
+  id: z.string(), projectId: z.string(), revokedAt: z.string().nullable(),
+  tokenDigest: z.string(),
+});
+const guestSessionRowSchema = z.object({
+  artifactId: z.string(), createdAt: z.string(), csrfDigest: z.string(),
+  displayName: z.string(), expiresAt: z.string(), guestId: z.string(),
+  invitationCreatorPrincipalId: z.string(), invitationId: z.string(),
+  projectId: z.string(), tokenDigest: z.string(),
+});
 const idempotencyRowSchema = z.object({
   accessSetting: accessSettingSchema.nullable(),
   artifactId: z.string(),
@@ -560,6 +574,7 @@ export class SqliteArtifactRepository implements
   ArtifactRepository,
   CommentRepository,
   ContentSessionRepository,
+  GuestReviewRepository,
   GitHistoryMirrorStore,
   ProjectRepository,
   SourceBindingRepository,
@@ -2247,6 +2262,89 @@ export class SqliteArtifactRepository implements
         );
       return command;
     });
+  }
+
+  createGuestInvitation(invitation: GuestReviewInvitation): Promise<void> {
+    return Promise.resolve().then(() => {
+      this.#database.prepare(`INSERT INTO guest_review_invitations (
+        id, project_id, artifact_id, token_digest, created_by_principal_id,
+        created_at, revoked_at
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL)`).run(
+        invitation.id, invitation.projectId, invitation.artifactId,
+        invitation.tokenDigest, invitation.createdByPrincipalId,
+        invitation.createdAt,
+      );
+      return undefined;
+    });
+  }
+
+  findGuestInvitation(projectId: string, artifactId: string): Promise<GuestReviewInvitation | null> {
+    return Promise.resolve().then(() => {
+      const row = this.#database.prepare(`SELECT id, project_id AS projectId,
+        artifact_id AS artifactId, token_digest AS tokenDigest,
+        created_by_principal_id AS createdByPrincipalId, created_at AS createdAt,
+        revoked_at AS revokedAt FROM guest_review_invitations
+        WHERE project_id = ? AND artifact_id = ?
+        ORDER BY created_at DESC, id DESC LIMIT 1`).get(projectId, artifactId);
+      return guestInvitationRowSchema.nullable().parse(row ?? null);
+    });
+  }
+
+  findGuestInvitationByDigest(tokenDigest: string): Promise<GuestReviewInvitation | null> {
+    return Promise.resolve().then(() => {
+      const row = this.#database.prepare(`SELECT i.id, i.project_id AS projectId,
+        i.artifact_id AS artifactId, i.token_digest AS tokenDigest,
+        i.created_by_principal_id AS createdByPrincipalId, i.created_at AS createdAt,
+        i.revoked_at AS revokedAt FROM guest_review_invitations i
+        JOIN artifacts a ON a.id = i.artifact_id AND a.project_id = i.project_id
+        WHERE i.token_digest = ? AND i.revoked_at IS NULL AND a.deleted_at IS NULL`)
+        .get(tokenDigest);
+      return guestInvitationRowSchema.nullable().parse(row ?? null);
+    });
+  }
+
+  revokeGuestInvitation(projectId: string, artifactId: string, revokedAt: string): Promise<boolean> {
+    return Promise.resolve().then(() => this.#database.prepare(`UPDATE guest_review_invitations
+      SET revoked_at = ? WHERE project_id = ? AND artifact_id = ? AND revoked_at IS NULL`)
+      .run(revokedAt, projectId, artifactId).changes > 0);
+  }
+
+  createGuestSession(session: GuestReviewSession): Promise<void> {
+    return Promise.resolve().then(() => {
+      this.#database.prepare(`INSERT INTO guest_review_sessions (
+        id, token_digest, csrf_digest, invitation_id, project_id, artifact_id,
+        display_name, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        session.guestId, session.tokenDigest, session.csrfDigest,
+        session.invitationId, session.projectId, session.artifactId,
+        session.displayName, session.createdAt, session.expiresAt,
+      );
+      return undefined;
+    });
+  }
+
+  findGuestSession(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null> {
+    return Promise.resolve().then(() => {
+      const row = this.#database.prepare(`SELECT s.id AS guestId,
+        s.token_digest AS tokenDigest, s.csrf_digest AS csrfDigest,
+        s.invitation_id AS invitationId, s.project_id AS projectId,
+        s.artifact_id AS artifactId, s.display_name AS displayName,
+        s.created_at AS createdAt, s.expires_at AS expiresAt,
+        i.created_by_principal_id AS invitationCreatorPrincipalId
+        FROM guest_review_sessions s
+        JOIN guest_review_invitations i ON i.id = s.invitation_id
+          AND i.project_id = s.project_id AND i.artifact_id = s.artifact_id
+        JOIN artifacts a ON a.id = s.artifact_id AND a.project_id = s.project_id
+        WHERE s.token_digest = ? AND s.expires_at > ?
+          AND i.revoked_at IS NULL AND a.deleted_at IS NULL`).get(tokenDigest, requestTime);
+      return guestSessionRowSchema.nullable().parse(row ?? null);
+    });
+  }
+
+  deleteExpiredGuestSessions(expiredBefore: string, limit: number): Promise<number> {
+    return Promise.resolve().then(() => this.#database.prepare(`DELETE FROM guest_review_sessions
+      WHERE id IN (SELECT id FROM guest_review_sessions WHERE expires_at <= ? LIMIT ?)`)
+      .run(expiredBefore, limit).changes).then(Number);
   }
 
   exchangeContentBootstrap(
@@ -4783,6 +4881,36 @@ export class SqliteArtifactRepository implements
     }
   }
 
+  #addGuestReviewTablesIfMissing(): void {
+    this.#database.exec(`
+      CREATE TABLE IF NOT EXISTS guest_review_invitations (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+        token_digest TEXT NOT NULL UNIQUE,
+        created_by_principal_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        revoked_at TEXT
+      ) STRICT;
+      CREATE UNIQUE INDEX IF NOT EXISTS guest_review_active_invitation
+        ON guest_review_invitations (project_id, artifact_id)
+        WHERE revoked_at IS NULL;
+      CREATE TABLE IF NOT EXISTS guest_review_sessions (
+        id TEXT PRIMARY KEY,
+        token_digest TEXT NOT NULL UNIQUE,
+        csrf_digest TEXT NOT NULL,
+        invitation_id TEXT NOT NULL REFERENCES guest_review_invitations(id),
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+        display_name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS guest_review_sessions_expiry
+        ON guest_review_sessions (expires_at);
+    `);
+  }
+
   #addAgentDispatchTablesIfMissing(): void {
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS registered_agents (
@@ -5101,6 +5229,7 @@ export class SqliteArtifactRepository implements
     this.#addSpaRoutingModeIfMissing();
     this.#addCommentTablesIfMissing();
     this.#addAgentDispatchTablesIfMissing();
+    this.#addGuestReviewTablesIfMissing();
     this.#widenRegisteredAgentsIfNeeded();
     this.#addSourceBindingColumnsIfMissing();
     this.#addGitHistoryMirrorTablesIfMissing();

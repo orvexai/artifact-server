@@ -67,6 +67,7 @@ export function ReviewShareControl({
   const [copiedTarget, setCopiedTarget] = useState<CopiedTarget | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [guestInvite, setGuestInvite] = useState<{createdAt: string | null; enabled: boolean; url: string | null}>({createdAt: null, enabled: false, url: null});
   const copiedResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => () => {
@@ -136,6 +137,41 @@ export function ReviewShareControl({
     setFailure(null);
     setNotice(null);
     setScreen("access");
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    if (open && details !== null) {
+      void (async () => {
+        try {
+          const status = await api.guestInvitationStatus(details.artifact.projectId, details.artifact.id);
+          if (!cancelled) setGuestInvite({...status, url: null});
+        } catch { /* Explicit Share actions surface their own errors. */ }
+      })();
+    }
+    return () => { cancelled = true; };
+  }, [details?.artifact.id, details?.artifact.projectId, open]);
+
+  const enableGuestInvite = async (): Promise<void> => {
+    if (details === null) return;
+    setPending(true); setFailure(null);
+    try {
+      const issued = await api.enableGuestInvitation(details.artifact.projectId, details.artifact.id);
+      setGuestInvite({createdAt: issued.createdAt, enabled: true, url: issued.url});
+      setNotice("Guest review link created. Copy it now; it is shown only once.");
+    } catch (caught) { setFailure(caught instanceof Error ? caught.message : "Guest review link could not be created."); }
+    finally { setPending(false); }
+  };
+
+  const revokeGuestInvite = async (): Promise<void> => {
+    if (details === null) return;
+    setPending(true); setFailure(null);
+    try {
+      await api.revokeGuestInvitation(details.artifact.projectId, details.artifact.id);
+      setGuestInvite({...guestInvite, enabled: false, url: null});
+      setNotice("Guest review link revoked.");
+    } catch (caught) { setFailure(caught instanceof Error ? caught.message : "Guest review link could not be revoked."); }
+    finally { setPending(false); }
   };
 
   const saveAccess = async (): Promise<void> => {
@@ -262,6 +298,15 @@ export function ReviewShareControl({
                       {copiedTarget === "review-link" ? "Copied" : "Copy Review link"}
                     </button>
                   </div>
+                </section>
+
+                <section aria-label="Invited guest review" className="as-share-link">
+                  <h3>Invited guest review</h3>
+                  <p>Anyone with this link can view this artifact and comment.</p>
+                  {guestInvite.url === null ? null : <button className="as-button as-button--primary" onClick={() => void copyText(guestInvite.url ?? "", "review-link", "The guest review link could not be copied.")} type="button">{copiedTarget === "review-link" ? "Copied" : "Copy invite link"}</button>}
+                  {guestInvite.enabled && guestInvite.url === null ? <p>Enabled · link secret is not available again. Regenerate to issue a new link.</p> : null}
+                  <button className="as-button" disabled={pending} onClick={() => void enableGuestInvite()} type="button">{guestInvite.enabled ? "Regenerate link" : "Enable guest review"}</button>
+                  {guestInvite.enabled ? <button className="as-button" disabled={pending} onClick={() => void revokeGuestInvite()} type="button">Revoke link</button> : null}
                 </section>
 
                 <div className="as-share-access-summary">

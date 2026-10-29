@@ -26,6 +26,7 @@ import {
   type UpdateCommentThreadCommand,
 } from "../application/artifact-comments.js";
 import {ArtifactManagementService} from "../application/artifact-management.js";
+import {GuestReviewService} from "../application/guest-review.js";
 import {CompareArtifactService} from "../application/compare-artifact.js";
 import {ContentAccessService} from "../application/content-access.js";
 import {
@@ -1591,6 +1592,57 @@ export function createArtifactMcpServer(
           ? "New public requests are blocked. Copies already downloaded or cached outside Artifact Server cannot be recalled."
           : null,
       };
+    }),
+  );
+
+  registerNudgedTool(
+    "artifact_guest_invitation_status",
+    {
+      title: "Get guest review invitation status",
+      description: "Return whether invited guest review is enabled for one artifact and when its current invitation was created. Never returns the invitation secret.",
+      inputSchema: z.object({artifactId: artifactIdSchema, projectId: optionalProjectIdSchema}).strict(),
+      outputSchema: z.object({createdAt: z.string().nullable(), enabled: z.boolean()}).strict(),
+      annotations: readOnlyAnnotations,
+    },
+    async ({artifactId, projectId}) => toolResult(async () => runMcpApplicationEffect(
+      dependencies,
+      GuestReviewService.use((guests) => guests.status({artifactId, principal: identity.principal, projectId})),
+    )),
+  );
+
+  registerNudgedTool(
+    "artifact_enable_guest_invitation",
+    {
+      title: "Enable invited guest review",
+      description: "Regenerate the artifact's invited guest review link. The returned URL contains a one-time secret in its fragment; share it only with invited reviewers.",
+      inputSchema: z.object({artifactId: artifactIdSchema, projectId: optionalProjectIdSchema}).strict(),
+      outputSchema: z.object({createdAt: z.string(), enabled: z.literal(true), url: z.url()}).strict(),
+      annotations: idempotentWriteAnnotations,
+    },
+    async ({artifactId, projectId}) => toolResult(async () => {
+      const issued = await runMcpApplicationEffect(dependencies,
+        GuestReviewService.use((guests) => guests.enable({artifactId, principal: identity.principal, projectId})));
+      const url = new URL("/review", applicationUrl);
+      url.searchParams.set("artifact", artifactId);
+      if (projectId !== null) url.searchParams.set("project", projectId);
+      url.hash = `invite=${encodeURIComponent(issued.linkSecret)}`;
+      return {createdAt: issued.createdAt, enabled: true as const, url: url.toString()};
+    }),
+  );
+
+  registerNudgedTool(
+    "artifact_revoke_guest_invitation",
+    {
+      title: "Revoke invited guest review",
+      description: "Revoke the artifact's invited guest link and end every session created through it.",
+      inputSchema: z.object({artifactId: artifactIdSchema, projectId: optionalProjectIdSchema}).strict(),
+      outputSchema: z.object({revoked: z.literal(true)}).strict(),
+      annotations: idempotentWriteAnnotations,
+    },
+    async ({artifactId, projectId}) => toolResult(async () => {
+      await runMcpApplicationEffect(dependencies,
+        GuestReviewService.use((guests) => guests.revoke({artifactId, principal: identity.principal, projectId})));
+      return {revoked: true as const};
     }),
   );
 

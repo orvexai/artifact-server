@@ -6,7 +6,7 @@ import {z} from "zod";
 const userVersionRowSchema = z.object({user_version: z.number().int().nonnegative()});
 
 /** SQLite schema revision required by this Artifact Server build. */
-export const requiredSqliteSchemaVersion = 17;
+export const requiredSqliteSchemaVersion = 18;
 
 /** Compact database compatibility observed without changing the file. */
 export interface SqliteMigrationStatus {
