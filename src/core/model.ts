@@ -418,7 +418,7 @@ export interface ArtifactResponseRecord {
 /** One bounded immutable response page. */
 export interface ArtifactResponsePage {
   readonly items: readonly ArtifactResponseRecord[];
-  readonly nextCursor: PageCursor | null;
+  readonly nextCursor: string | null;
 }
 
 /** Dispatched-thread visibility filters accepted by comment listings. */

@@ -55,6 +55,7 @@ describe("OIDC service account access to artifact responses", () => {
       externalApiOAuthVerifier: new OidcMcpBearerVerifier({
         audience, groupsClaim: "groups", issuer,
         jwksUri: issuer + "/protocol/openid-connect/certs",
+        serviceClients: ["houston-v2"],
       }),
       groupRolePolicy: {seed: [{role: "viewer", selector: "houston-v2-service"}]},
     });
@@ -136,11 +137,31 @@ describe("OIDC service account access to artifact responses", () => {
     expect(get.status).toBe(200);
     expect(get.headers.get("set-cookie")).toBeNull();
     expect((await get.json()).authorEmail).toBeNull();
+    const forbiddenResponses = await Promise.all(["/api/v1/artifacts?projectId=" + projectId,
+        "/api/v1/artifacts/" + artifactId + "/comments?projectId=" + projectId,
+        "/api/v1/artifacts/" + artifactId + "/content",
+        "/api/v1/artifacts/" + artifactId + "/state?projectId=" + projectId]
+        .map((routePath) => fetch(server.baseUrl + routePath, {headers: auth})));
+    expect(forbiddenResponses.map((response) => response.status)).toEqual([403, 403, 403, 403]);
     const post = await fetch(server.baseUrl + route + "?projectId=" + projectId, {
       body: JSON.stringify({questionId: "second", versionId}),
       headers: {...auth, "Content-Type": "application/json"}, method: "POST",
     });
     expect(post.status).toBe(403);
+
+    const ordinaryUser = new SignJWT({
+      aud: audience, client_id: "houston-v2", groups: ["houston-v2-service"],
+      preferred_username: "jane.doe",
+    }).setProtectedHeader({alg: "RS256", kid: keyId}).setIssuer(issuer)
+      .setSubject("ordinary-user-no-email").setIssuedAt().setExpirationTime("5m").sign(privateKey);
+    expect((await fetch(server.baseUrl + route + "?projectId=" + projectId, {headers: {Authorization: "Bearer " + await ordinaryUser}})).status).toBe(401);
+
+    const unlistedClient = new SignJWT({
+      aud: audience, client_id: "unlisted-client", groups: ["houston-v2-service"],
+      preferred_username: "service-account-unlisted-client",
+    }).setProtectedHeader({alg: "RS256", kid: keyId}).setIssuer(issuer)
+      .setSubject("unlisted-service").setIssuedAt().setExpirationTime("5m").sign(privateKey);
+    expect((await fetch(server.baseUrl + route + "?projectId=" + projectId, {headers: {Authorization: "Bearer " + await unlistedClient}})).status).toBe(401);
 
     const databasePath = path.join(installation.dataDirectory, "artifact-server.db");
     const db = new DatabaseSync(databasePath, {readOnly: true});
@@ -160,5 +181,19 @@ describe("OIDC service account access to artifact responses", () => {
     } finally { identityRepository.close(); }
     expect((await fetch(server.baseUrl + route + "?projectId=" + projectId, {headers: auth})).status).toBe(404);
     expect((await fetch(server.baseUrl + route + "/" + responseId + "?projectId=" + projectId, {headers: auth})).status).toBe(404);
+
+    const suspendedDatabase = new DatabaseSync(databasePath);
+    let suspendedEmail: string;
+    try {
+      const member = z.object({email: z.string(), id: z.string()}).parse(suspendedDatabase.prepare("SELECT email, id FROM installation_members LIMIT 1").get());
+      suspendedEmail = member.email;
+      suspendedDatabase.prepare("UPDATE installation_members SET status = 'inactive' WHERE id = ?").run(member.id);
+    } finally { suspendedDatabase.close(); }
+    const suspendedUser = new SignJWT({
+      aud: audience, client_id: "houston-v2", email: suspendedEmail, email_verified: true,
+      groups: [], preferred_username: "service-account-houston-v2",
+    }).setProtectedHeader({alg: "RS256", kid: keyId}).setIssuer(issuer)
+      .setSubject("suspended-member-subject").setIssuedAt().setExpirationTime("5m").sign(privateKey);
+    expect((await fetch(server.baseUrl + route + "?projectId=" + projectId, {headers: {Authorization: "Bearer " + await suspendedUser}})).status).toBe(403);
   });
 });

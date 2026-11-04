@@ -72,6 +72,11 @@ describe("artifact responses", () => {
     const tooLongChoice = await memberRequest("POST", path, JSON.stringify({choice: "c".repeat(201), questionId: "approval", versionId}));
     expect(tooLongChoice.status).toBe(413);
     expect((await tooLongChoice.json()).error.message).toContain("200 character limit");
+    type NestedData = {readonly child: NestedData} | Record<never, never>;
+    const nestedData = Array.from({length: 33}).reduce<NestedData>((nested) => ({child: nested}), {});
+    expect((await memberRequest("POST", path, JSON.stringify({questionId: "approval", versionId, data: nestedData}))).status).toBe(413);
+    const unsafeData = JSON.parse('{"constructor":{"prototype":{"polluted":true}}}');
+    expect((await memberRequest("POST", path, JSON.stringify({questionId: "approval", versionId, data: unsafeData}))).status).toBe(400);
     expect((await memberRequest("POST", path, JSON.stringify({questionId: "approval", versionId: "ver_not_this_artifact"}))).status).toBe(404);
 
     const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
@@ -87,6 +92,14 @@ describe("artifact responses", () => {
         "external", null, null, "member", "member_external_test", "External test", "member@example.test", null,
         new Date().toISOString(), 1,
       );
+      const cursorInsert = database.prepare(`INSERT INTO artifact_responses (
+        id, installation_id, project_id, artifact_id, version_id, question_id,
+        choice, data_json, author_kind, author_subject, author_display_name,
+        author_email, guest_session_id, created_at, external_question
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'member', 'member_cursor_test', 'Cursor test', NULL, NULL, ?, 0)`);
+      for (const id of ["rsp_cursor_a", "rsp_cursor_b", "rsp_cursor_c"]) {
+        cursorInsert.run(id, identity.installationId, projectId, artifactId, versionId, "cursor", "2025-01-01T00:00:00.000Z");
+      }
       expect(() => database.prepare("UPDATE artifact_responses SET choice = 'changed' WHERE id = ?").run("rsp_external_question_test")).toThrow(/immutable/u);
       expect(() => database.prepare("DELETE FROM artifact_responses WHERE id = ?").run("rsp_external_question_test")).toThrow(/immutable/u);
     } finally {
@@ -94,6 +107,18 @@ describe("artifact responses", () => {
     }
     const external = await memberRequest("GET", `/api/v1/artifacts/${artifactId}/responses/rsp_external_question_test?projectId=${projectId}`);
     expect((await external.json()).externalQuestion).toBe(true);
+    const cursorPath = `/api/v1/artifacts/${artifactId}/responses?projectId=${projectId}&questionId=cursor&limit=1`;
+    const seen: string[] = [];
+    let nextCursor: string | null = null;
+    do {
+      // eslint-disable-next-line no-await-in-loop -- The next request depends on this opaque cursor.
+      const page = await memberRequest("GET", cursorPath + (nextCursor === null ? "" : `&after=${encodeURIComponent(nextCursor)}`));
+      // eslint-disable-next-line no-await-in-loop -- Parsing follows the cursor-dependent response.
+      const parsed = z.object({items: z.array(z.object({id: z.string()})), nextCursor: z.string().nullable()}).parse(await page.json());
+      seen.push(...parsed.items.map((item) => item.id));
+      nextCursor = parsed.nextCursor;
+    } while (nextCursor !== null);
+    expect(seen).toEqual(["rsp_cursor_a", "rsp_cursor_b", "rsp_cursor_c"]);
   });
 
   test("guest response routes expose only that guest's immutable answers", async () => {
@@ -137,5 +162,16 @@ describe("artifact responses", () => {
     expect(hidden.status).toBe(404);
     expect((await hidden.text())).toBe(await (await fetch(`${server.baseUrl}/api/v1/public/artifacts/${artifactId}/guest/responses/missing`, {headers: {Cookie: guestB.cookie}})).text());
     expect((await fetch(`${server.baseUrl}/api/v1/public/artifacts/${artifactId}/responses`)).status).toBe(401);
+    const genericMissing = await fetch(`${server.baseUrl}/api/v1/public/artifacts/${artifactId}/guest/responses/missing`, {headers: {Cookie: guestB.cookie}});
+    const genericBody = await genericMissing.text();
+    const invalidQuery = await fetch(`${server.baseUrl}/api/v1/public/artifacts/${artifactId}/guest/responses?limit=nope`, {headers: {Cookie: guestB.cookie}});
+    expect(invalidQuery.status).toBe(404);
+    expect(await invalidQuery.text()).toBe(genericBody);
+    const badVersion = await guestRequest(guestA, "POST", JSON.stringify({questionId: "missing-version", versionId: "ver_missing"}));
+    expect(badVersion.status).toBe(404);
+    expect(await badVersion.text()).toBe(genericBody);
+    const badBody = await guestRequest(guestA, "POST", JSON.stringify({questionId: "", versionId}));
+    expect(badBody.status).toBe(404);
+    expect(await badBody.text()).toBe(genericBody);
   });
 });

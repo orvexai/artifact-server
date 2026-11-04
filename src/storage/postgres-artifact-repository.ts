@@ -76,6 +76,7 @@ import {
   type VersionContent,
   type VersionRecord,
 } from "../core/model.js";
+import {decodeArtifactResponseCursor, encodeArtifactResponseCursor, normalizeResponseTimestamp} from "../core/artifact-response-cursor.js";
 import type {
   AgentDispatchRepository,
   ArtifactRepository,
@@ -2846,6 +2847,7 @@ export class PostgresArtifactRepository implements
 
   async listResponses(command: ListArtifactResponses): Promise<ArtifactResponsePage> {
     const installationId = this.#installationId;
+    const cursor = decodeArtifactResponseCursor(command.after);
     return this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const rows = yield* sql<z.infer<typeof artifactResponseRowSchema>>`SELECT artifact_id AS "artifactId",
@@ -2859,9 +2861,14 @@ export class PostgresArtifactRepository implements
           AND (${command.authorSubject ?? null}::text IS NULL OR author_subject = ${command.authorSubject ?? null})
           AND (${command.questionId}::text IS NULL OR question_id = ${command.questionId})
           AND (${command.versionId}::text IS NULL OR version_id = ${command.versionId})
-          AND (${command.after}::text IS NULL OR created_at > ${command.after})
-        ORDER BY created_at, id LIMIT ${command.limit}`;
-      return {items: rows.map((row) => artifactResponseFromRow(artifactResponseRowSchema.parse(row))), nextCursor: null};
+          AND (${cursor?.createdAt ?? null}::text IS NULL OR created_at > ${cursor?.createdAt ?? null} OR (created_at = ${cursor?.createdAt ?? null} AND id > ${cursor?.id ?? null}))
+        ORDER BY created_at, id LIMIT ${command.limit + 1}`;
+      const items = rows.slice(0, command.limit).map((row) => {
+        const parsed = artifactResponseFromRow(artifactResponseRowSchema.parse(row));
+        return Object.assign(parsed, {createdAt: normalizeResponseTimestamp(parsed.createdAt)});
+      });
+      const last = items.at(-1);
+      return {items, nextCursor: rows.length > command.limit && last !== undefined ? encodeArtifactResponseCursor(last) : null};
     }));
   }
 

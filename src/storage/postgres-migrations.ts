@@ -762,7 +762,7 @@ const addArtifactResponses = Effect.gen(function*() {
     version_id TEXT NOT NULL,
     question_id TEXT NOT NULL CHECK (char_length(question_id) BETWEEN 1 AND 200),
     choice TEXT CHECK (choice IS NULL OR char_length(choice) <= 200),
-    data JSONB CHECK (data IS NULL OR octet_length(data::text) <= 16384),
+    data JSONB,
     author_kind TEXT NOT NULL CHECK (author_kind IN ('member', 'guest')),
     author_subject TEXT NOT NULL,
     author_display_name TEXT NOT NULL,

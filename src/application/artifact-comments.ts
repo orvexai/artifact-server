@@ -1,6 +1,7 @@
 import {Context, DateTime, Effect, Layer, Option, Schema} from "effect";
 
 import type {ProjectRole} from "../core/project-access.js";
+import {decodeArtifactResponseCursor, normalizeResponseTimestamp} from "../core/artifact-response-cursor.js";
 import type {ApplicationClock} from "./application-clock.js";
 import {
   type AuthorizationOperations,
@@ -1198,7 +1199,7 @@ function makeArtifactCommentService(
         artifactId: artifact.id, authorDisplayName: command.principal.displayName,
         authorEmail: command.principal.email ?? null, authorKind: "member",
         authorSubject: command.principal.id, choice: values.choice,
-        createdAt: DateTime.formatIso(yield* dependencies.clock.now),
+        createdAt: normalizeResponseTimestamp(DateTime.formatIso(yield* dependencies.clock.now)),
         dataJson: values.dataJson, guestSessionId: null,
         id: dependencies.ids.artifactResponseId(), installationId: dependencies.installationId,
         projectId: project.id, questionId: values.questionId, versionId: version.version.id,
@@ -1210,7 +1211,7 @@ function makeArtifactCommentService(
       const artifact = yield* requireArtifact(command.guest.projectId, command.guest.artifactId);
       const version = yield* requireVersion(command.guest.projectId, artifact.id, command.versionId);
       const values = yield* validateResponseValues(command.questionId, command.choice, command.data);
-      const createdAt = DateTime.formatIso(yield* dependencies.clock.now);
+      const createdAt = normalizeResponseTimestamp(DateTime.formatIso(yield* dependencies.clock.now));
       yield* reserveGuestWrite(command.guest, createdAt);
       return yield* dependencies.repository.createResponse({
         artifactId: artifact.id, authorDisplayName: command.guest.displayName,
@@ -1225,8 +1226,11 @@ function makeArtifactCommentService(
   const listResponses = Effect.fn("ArtifactCommentService.listResponses")(
     function*(command: ListArtifactResponsesCommand) {
       const limit = yield* requireResponsePageSize(command.limit);
+      if (command.after !== null && decodeArtifactResponseCursor(command.after) === null) {
+        return yield* new InvalidPagination({message: "The response cursor is invalid or no longer supported."});
+      }
       const project = yield* resolveProjectForRead(command.principal, command.projectId);
-      yield* authorization.requireCommentRead(command.principal);
+      yield* authorization.requireArtifactResponseRead(command.principal);
       yield* requireArtifact(project.id, command.artifactId);
       const page = yield* dependencies.repository.listResponses({
         after: command.after, artifactId: command.artifactId, limit,
@@ -1240,6 +1244,9 @@ function makeArtifactCommentService(
   const guestListResponses = Effect.fn("ArtifactCommentService.guestListResponses")(
     function*(command: Omit<ListArtifactResponsesCommand, "principal" | "projectId" | "artifactId"> & {readonly guest: GuestReviewer}) {
       const limit = yield* requireResponsePageSize(command.limit);
+      if (command.after !== null && decodeArtifactResponseCursor(command.after) === null) {
+        return yield* new InvalidPagination({message: "The response cursor is invalid or no longer supported."});
+      }
       yield* requireArtifact(command.guest.projectId, command.guest.artifactId);
       return yield* dependencies.repository.listResponses({
         after: command.after, artifactId: command.guest.artifactId, authorSubject: `guest_${command.guest.guestId}`,
@@ -1251,7 +1258,7 @@ function makeArtifactCommentService(
   const getResponse = Effect.fn("ArtifactCommentService.getResponse")(
     function*(command: ReadArtifactCommentsCommand & {readonly responseId: string}) {
       const project = yield* resolveProjectForRead(command.principal, command.projectId);
-      yield* authorization.requireCommentRead(command.principal);
+      yield* authorization.requireArtifactResponseRead(command.principal);
       yield* requireArtifact(project.id, command.artifactId);
       const response = yield* dependencies.repository.findResponse(project.id, command.artifactId, command.responseId);
       return response === null || command.principal.kind === "human"
@@ -1302,9 +1309,33 @@ function validateResponseValues(questionId: string, choice: string | null, data:
     if (questionId.length > maximumResponseQuestionIdCharacters) return yield* new ArtifactResponseTooLarge({message: `questionId exceeds the ${maximumResponseQuestionIdCharacters} character limit.`});
     if (choice !== null && choice.length > maximumResponseChoiceCharacters) return yield* new ArtifactResponseTooLarge({message: `choice exceeds the ${maximumResponseChoiceCharacters} character limit.`});
     const dataJson = data === null ? null : JSON.stringify(data);
+    if (dataJson !== null) {
+      const safety = inspectSerializedResponseData(dataJson);
+      if (safety === "key") return yield* new InvalidArtifactResponse({message: "data contains a prohibited object key."});
+      if (safety === "depth") return yield* new ArtifactResponseTooLarge({message: "data exceeds the maximum nesting depth of 32."});
+    }
     if (dataJson !== null && new TextEncoder().encode(dataJson).byteLength > maximumResponseDataBytes) return yield* new ArtifactResponseTooLarge({message: `data exceeds the ${maximumResponseDataBytes / 1024} KB response limit.`});
     return {questionId, choice, dataJson};
   });
+}
+
+function inspectSerializedResponseData(value: string): "key" | "depth" | null {
+  if (/(?:^|[,{])\s*"(?:__proto__|constructor|prototype)"\s*:/u.test(value)) return "key";
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (const character of value) {
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+    } else if (character === '"') quoted = true;
+    else if (character === "{" || character === "[") {
+      depth += 1;
+      if (depth > 32) return "depth";
+    } else if (character === "}" || character === "]") depth -= 1;
+  }
+  return null;
 }
 
 function requireResponsePageSize(limit: number): Effect.Effect<number, InvalidPagination> {

@@ -52,6 +52,7 @@ export const principalCapabilities = {
   manageAnyArtifact: "artifact:manage:any",
   publishAnyArtifact: "artifact:publish:any",
   readArtifacts: "artifact:read",
+  readArtifactResponses: "artifact:responses:read",
   manageProjects: "project:manage",
   writeComments: "comment:write",
 } as const;
@@ -69,13 +70,13 @@ export interface Principal {
   /** Name captured with every write this principal makes; never re-read later. */
   readonly displayName: string;
   /** Verified OIDC email claim, when the identity provider supplied one. */
-  readonly email?: string | null;
+  readonly email?: string | null | undefined;
   readonly id: string;
   readonly installationId: string;
   readonly kind: PrincipalKind;
   readonly membershipRole: MembershipRole;
   /** Directory group IDs carried by a constrained OIDC service identity. */
-  readonly directoryGroupIds?: readonly string[];
+  readonly directoryGroupIds?: readonly string[] | undefined;
 }
 
 /** Determine whether a principal has an explicit capability. */

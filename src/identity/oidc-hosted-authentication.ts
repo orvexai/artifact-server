@@ -46,6 +46,7 @@ export interface OidcHostedAuthenticationConfig {
   readonly groupRoles?: OidcGroupRoles | null;
   readonly issuer: string;
   readonly scopes: string;
+  readonly serviceClients?: readonly string[];
 }
 
 export interface OidcHostedAuthentication {
@@ -79,6 +80,7 @@ export async function createOidcHostedAuthentication(
     groupsClaim: groupRoles?.claim ?? null,
     issuer,
     jwksUri: authorizationServer.jwksUri,
+    serviceClients: config.serviceClients ?? [],
     userInfoEndpoint: authorizationServer.userInfoEndpoint,
   };
   if (config.fetch !== undefined) {

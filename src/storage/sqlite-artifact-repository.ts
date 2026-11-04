@@ -85,6 +85,7 @@ import {
   type VersionContent,
   type VersionRecord,
 } from "../core/model.js";
+import {decodeArtifactResponseCursor, encodeArtifactResponseCursor, normalizeResponseTimestamp} from "../core/artifact-response-cursor.js";
 import type {
   AgentDispatchRepository,
   ArtifactRepository,
@@ -3680,6 +3681,7 @@ export class SqliteArtifactRepository implements
 
   listResponses(command: ListArtifactResponses): Promise<ArtifactResponsePage> {
     return Promise.resolve().then(() => {
+      const cursor = decodeArtifactResponseCursor(command.after);
       const rows = artifactResponseRowSchema.array().parse(this.#database.prepare(`SELECT
         artifact_id AS artifactId, author_display_name AS authorDisplayName,
         author_email AS authorEmail, author_kind AS authorKind,
@@ -3689,13 +3691,18 @@ export class SqliteArtifactRepository implements
         version_id AS versionId FROM artifact_responses
         WHERE project_id = ? AND artifact_id = ?
           AND (? IS NULL OR author_subject = ?) AND (? IS NULL OR question_id = ?)
-          AND (? IS NULL OR version_id = ?) AND (? IS NULL OR created_at > ?)
+          AND (? IS NULL OR version_id = ?)
+          AND (? IS NULL OR created_at > ? OR (created_at = ? AND id > ?))
         ORDER BY created_at, id LIMIT ?`).all(
         command.projectId, command.artifactId, command.authorSubject ?? null,
         command.authorSubject ?? null, command.questionId, command.questionId,
-        command.versionId, command.versionId, command.after, command.after, command.limit,
+        command.versionId, command.versionId, cursor?.createdAt ?? null,
+        cursor?.createdAt ?? null, cursor?.createdAt ?? null, cursor?.id ?? null,
+        command.limit + 1,
       ));
-      return {items: rows.map(artifactResponseFromRow), nextCursor: null};
+      const items = rows.slice(0, command.limit).map((row) => Object.assign(artifactResponseFromRow(row), {createdAt: normalizeResponseTimestamp(row.createdAt)}));
+      const last = items.at(-1);
+      return {items, nextCursor: rows.length > command.limit && last !== undefined ? encodeArtifactResponseCursor(last) : null};
     });
   }
 

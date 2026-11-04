@@ -2010,16 +2010,16 @@ export function createArtifactMcpServer(
     "artifact_response_list",
     {
       title: "List artifact responses",
-      description: "Poll immutable answers recorded for an artifact. Filter by questionId or versionId, and pass the last createdAt value as after to read only newer responses.",
+      description: "Poll immutable answers recorded for an artifact. Filter by questionId or versionId, and pass the returned opaque nextCursor as after to continue without skipping tied timestamps.",
       inputSchema: z.object({
-        after: z.iso.datetime().nullable().default(null),
+        after: z.string().min(1).max(1_024).nullable().default(null),
         artifactId: artifactIdSchema,
         limit: z.number().int().min(1).max(100).default(50),
         projectId: optionalProjectIdSchema,
         questionId: z.string().min(1).max(200).nullable().default(null),
         versionId: versionIdSchema.nullable().default(null),
       }).strict(),
-      outputSchema: z.object({items: z.array(artifactResponseSchema)}).strict(),
+      outputSchema: z.object({items: z.array(artifactResponseSchema), nextCursor: z.string().nullable()}).strict(),
       annotations: readOnlyAnnotations,
     },
     async ({after, artifactId, limit, projectId, questionId, versionId}) =>
@@ -2044,6 +2044,7 @@ export function createArtifactMcpServer(
             questionId: response.questionId,
             versionId: response.versionId,
           })),
+          nextCursor: page.nextCursor,
         };
       }),
   );

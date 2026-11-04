@@ -299,7 +299,7 @@ const artifactResponseWriteSchema = z.object({
   versionId: z.string().min(1).max(200),
 }).strict();
 const artifactResponseQuerySchema = z.object({
-  after: z.iso.datetime().optional(),
+  after: z.string().min(1).max(1_024).regex(/^[A-Za-z0-9_-]+$/u).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   projectId: projectIdSchema.optional(),
   questionId: z.string().min(1).max(200).optional(),
@@ -476,6 +476,7 @@ const principalCapabilitySchema = z.enum([
   principalCapabilities.manageProjects,
   principalCapabilities.publishAnyArtifact,
   principalCapabilities.readArtifacts,
+  principalCapabilities.readArtifactResponses,
   principalCapabilities.writeComments,
 ]);
 const issueApiKeySchema = z.object({
@@ -1009,7 +1010,7 @@ export function createHttpApp(
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const query = artifactResponseQuerySchema.parse(context.req.query());
     const page = await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((service) => service.guestListResponses({
-      after: query.after ?? null, guest, limit: query.limit,
+      after: encodePageCursor(decodePageCursor(query.after)), guest, limit: query.limit,
       questionId: query.questionId ?? null, versionId: query.versionId ?? null,
     })));
     return context.json(page);
@@ -1154,6 +1155,14 @@ export function createHttpApp(
         ),
       );
       context.set("authenticationMethod", "bearer");
+      if (
+        principal.kind === "service" &&
+        principal.capabilities.includes(principalCapabilities.readArtifactResponses) &&
+        !(context.req.method === "GET" &&
+          /^\/api\/v1\/artifacts\/[^/]+\/responses(?:\/[^/]+)?$/u.test(context.req.path))
+      ) {
+        throw new AuthorizationDenied({message: "Service bearers may only read artifact responses."});
+      }
       context.set("principal", principal);
       context.set("sessionCsrfDigest", null);
       context.set("sessionToken", null);
@@ -2288,7 +2297,7 @@ export function createHttpApp(
   app.get("/api/v1/artifacts/:artifactId/responses", async (context) => {
     const query = artifactResponseQuerySchema.parse(context.req.query());
     const page = await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((service) => service.listResponses({
-      after: query.after ?? null, artifactId: context.req.param("artifactId"),
+      after: encodePageCursor(decodePageCursor(query.after)), artifactId: context.req.param("artifactId"),
       limit: query.limit, principal: context.get("principal"), projectId: requestedProjectId(context),
       questionId: query.questionId ?? null, versionId: query.versionId ?? null,
     })));
@@ -3080,6 +3089,10 @@ export function createHttpApp(
   );
 
   app.onError(async (error, context) => {
+    const guestResponseRoute = context.req.path.includes("/guest/responses");
+    if (guestResponseRoute && isArtifactServerFailure(error) && error._tag !== "ArtifactResponseTooLarge") {
+      return guestNotFound(context);
+    }
     if (isArtifactServerFailure(error)) {
       const response = httpFailure(error);
       if (response.status >= 500) {
@@ -3109,6 +3122,7 @@ export function createHttpApp(
       );
     }
     if (error instanceof z.ZodError) {
+      if (guestResponseRoute) return guestNotFound(context);
       return context.json(
         {
           error: {

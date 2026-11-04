@@ -770,6 +770,7 @@ function makeInstallationAccessService(
       installationId: dependencies.installationId,
       kind: record.member === null ? principalKinds.service : principalKinds.human,
       membershipRole: record.member?.role ?? membershipRoles.member,
+      directoryGroupIds: record.member === null ? [] : undefined,
     }, record);
   });
 
@@ -970,6 +971,11 @@ function makeInstallationAccessService(
   const resolveExternalMember = Effect.fn(
     "InstallationAccessService.resolveExternalMember",
   )(function*(identity: ExternalIdentity) {
+    if (identity.email === null) {
+      return yield* Effect.fail(new IdentityAdmissionDenied({
+        message: "The login provider did not supply an email address.",
+      }));
+    }
     if (!identity.emailVerified) {
       return yield* Effect.fail(new IdentityAdmissionDenied({
         message: "The login provider did not verify the email address.",
@@ -1062,7 +1068,7 @@ function makeInstallationAccessService(
       ).map((group) => group.id);
       return {
         authorizedByPrincipalId: null,
-        capabilities: [principalCapabilities.readArtifacts],
+        capabilities: [principalCapabilities.readArtifactResponses],
         directoryGroupIds,
         displayName: identity.displayName,
         email: null,
@@ -1157,6 +1163,7 @@ function makeInstallationAccessService(
     const principal: Principal = {
       authorizedByPrincipalId: key.authorizedByPrincipalId,
       capabilities: key.capabilities,
+      directoryGroupIds: key.principalKind === principalKinds.service ? [] : undefined,
       displayName: key.name,
       id: key.principalId,
       installationId: key.installationId,
