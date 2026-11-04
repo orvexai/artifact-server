@@ -41,7 +41,9 @@ const profileClaims = {
   given_name: Schema.optionalKey(Schema.String),
   name: Schema.optionalKey(Schema.String),
   preferred_username: Schema.optionalKey(Schema.String),
-  groups: Schema.optionalKey(Schema.Array(Schema.String)),
+  // The configured group-claim reader owns validation so malformed claims are
+  // ignored when groups are unused and reported as provider failures when used.
+  groups: Schema.optionalKey(Schema.Unknown),
 };
 const accessTokenClaims = Schema.Struct({
   ...profileClaims,

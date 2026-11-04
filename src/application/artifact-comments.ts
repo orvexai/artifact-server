@@ -1,4 +1,4 @@
-import {Context, DateTime, Effect, Layer, Option, Schema} from "effect";
+import {Context, DateTime, Effect, Layer, Option, Predicate, Schema} from "effect";
 
 import type {ProjectRole} from "../core/project-access.js";
 import {decodeArtifactResponseCursor, normalizeResponseTimestamp} from "../core/artifact-response-cursor.js";
@@ -1308,32 +1308,58 @@ function validateResponseValues(questionId: string, choice: string | null, data:
     if (questionId.length < 1) return yield* new InvalidArtifactResponse({message: "questionId must not be empty."});
     if (questionId.length > maximumResponseQuestionIdCharacters) return yield* new ArtifactResponseTooLarge({message: `questionId exceeds the ${maximumResponseQuestionIdCharacters} character limit.`});
     if (choice !== null && choice.length > maximumResponseChoiceCharacters) return yield* new ArtifactResponseTooLarge({message: `choice exceeds the ${maximumResponseChoiceCharacters} character limit.`});
+    const safety = inspectArtifactResponseData(data);
+    if (safety === "key") return yield* new InvalidArtifactResponse({message: "data contains a prohibited object key."});
+    if (safety === "depth") return yield* new ArtifactResponseTooLarge({message: "data exceeds the maximum nesting depth of 32."});
+    if (safety === "json") return yield* new InvalidArtifactResponse({message: "data must be a JSON value."});
     const dataJson = data === null ? null : JSON.stringify(data);
-    if (dataJson !== null) {
-      const safety = inspectSerializedResponseData(dataJson);
-      if (safety === "key") return yield* new InvalidArtifactResponse({message: "data contains a prohibited object key."});
-      if (safety === "depth") return yield* new ArtifactResponseTooLarge({message: "data exceeds the maximum nesting depth of 32."});
-    }
     if (dataJson !== null && new TextEncoder().encode(dataJson).byteLength > maximumResponseDataBytes) return yield* new ArtifactResponseTooLarge({message: `data exceeds the ${maximumResponseDataBytes / 1024} KB response limit.`});
     return {questionId, choice, dataJson};
   });
 }
 
-function inspectSerializedResponseData(value: string): "key" | "depth" | null {
-  if (/(?:^|[,{])\s*"(?:__proto__|constructor|prototype)"\s*:/u.test(value)) return "key";
-  let depth = 0;
-  let quoted = false;
-  let escaped = false;
-  for (const character of value) {
-    if (quoted) {
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') quoted = false;
-    } else if (character === '"') quoted = true;
-    else if (character === "{" || character === "[") {
-      depth += 1;
-      if (depth > 32) return "depth";
-    } else if (character === "}" || character === "]") depth -= 1;
+export function inspectArtifactResponseData(
+  root: ArtifactResponseData,
+): "key" | "depth" | "json" | null {
+  const pending: {value: ArtifactResponseData; depth: number; exit: boolean}[] = [
+    {depth: 0, exit: false, value: root},
+  ];
+  const active = new WeakSet<object>();
+  while (pending.length > 0) {
+    const entry = pending.pop();
+    if (entry === undefined) continue;
+    const value = entry.value;
+    if (entry.exit) {
+      if (Predicate.isObject(value)) active.delete(value);
+      continue;
+    }
+    if (value === null || Predicate.isString(value) || Predicate.isBoolean(value)) continue;
+    if (Predicate.isNumber(value)) {
+      if (!Number.isFinite(value)) return "json";
+      continue;
+    }
+    if (!Predicate.isObject(value)) return "json";
+    const depth = entry.depth + 1;
+    if (depth > 32) return "depth";
+    if (active.has(value)) return "json";
+    active.add(value);
+    pending.push({depth: entry.depth, exit: true, value});
+    if (Array.isArray(value)) {
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        pending.push({depth, exit: false, value: value[index]});
+      }
+      continue;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return "json";
+    const entries = Object.entries(value);
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entryValue = entries[index];
+      if (entryValue === undefined) continue;
+      const [key, child] = entryValue;
+      if (key === "__proto__" || key === "constructor" || key === "prototype") return "key";
+      pending.push({depth, exit: false, value: child});
+    }
   }
   return null;
 }

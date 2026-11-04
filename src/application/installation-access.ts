@@ -737,7 +737,11 @@ function makeInstallationAccessService(
       principal.id,
     );
     if (record === null) return null;
-    if (principal.kind === principalKinds.service && principal.directoryGroupIds !== undefined) {
+    if (
+      principal.kind === principalKinds.service &&
+      principal.serviceAccountSource === "oidc" &&
+      principal.directoryGroupIds !== undefined
+    ) {
       const groupIds = new Set(principal.directoryGroupIds);
       const grants = yield* dependencies.repository.listProjectGroupGrants(
         dependencies.installationId,
@@ -770,7 +774,6 @@ function makeInstallationAccessService(
       installationId: dependencies.installationId,
       kind: record.member === null ? principalKinds.service : principalKinds.human,
       membershipRole: record.member?.role ?? membershipRoles.member,
-      directoryGroupIds: record.member === null ? [] : undefined,
     }, record);
   });
 
@@ -971,6 +974,11 @@ function makeInstallationAccessService(
   const resolveExternalMember = Effect.fn(
     "InstallationAccessService.resolveExternalMember",
   )(function*(identity: ExternalIdentity) {
+    if (identity.serviceAccount === true) {
+      return yield* Effect.fail(new IdentityAdmissionDenied({
+        message: "Service accounts cannot authenticate as members.",
+      }));
+    }
     if (identity.email === null) {
       return yield* Effect.fail(new IdentityAdmissionDenied({
         message: "The login provider did not supply an email address.",
@@ -1076,6 +1084,7 @@ function makeInstallationAccessService(
         installationId: dependencies.installationId,
         kind: principalKinds.service,
         membershipRole: role,
+        serviceAccountSource: "oidc" as const,
       };
     }
     return humanPrincipal(yield* resolveExternalMember(identity));
@@ -1163,7 +1172,6 @@ function makeInstallationAccessService(
     const principal: Principal = {
       authorizedByPrincipalId: key.authorizedByPrincipalId,
       capabilities: key.capabilities,
-      directoryGroupIds: key.principalKind === principalKinds.service ? [] : undefined,
       displayName: key.name,
       id: key.principalId,
       installationId: key.installationId,

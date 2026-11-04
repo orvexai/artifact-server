@@ -47,13 +47,14 @@ const principalSchema = z.object({
   ])),
   email: z.string().nullable().optional(),
   directoryGroupIds: z.array(z.string()).optional(),
+  serviceAccountSource: z.literal("oidc").optional(),
   displayName: z.string().min(1),
   id: z.string().min(1),
   installationId: z.string().min(1),
   kind: z.enum([principalKinds.human, principalKinds.service]),
   membershipRole: z.enum(Object.values(membershipRoles)),
 }).strict().superRefine((principal, context) => {
-  if (principal.kind === principalKinds.service && principal.directoryGroupIds === undefined) {
+  if (principal.serviceAccountSource === "oidc" && principal.directoryGroupIds === undefined) {
     context.addIssue({code: "custom", message: "Service principals require directoryGroupIds."});
   }
 });
@@ -201,7 +202,7 @@ async function authenticateToken(
       ),
       {requestId, spanName: "mcp.authenticate"},
     );
-    if (authenticated.principal.kind === "service") {
+    if (authenticated.principal.serviceAccountSource === "oidc") {
       throw new OAuthError(
         OAuthErrorCode.InsufficientScope,
         "Service principals cannot use Artifact Server MCP.",

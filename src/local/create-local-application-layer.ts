@@ -808,7 +808,6 @@ export function createApplicationLayer(
       principalCapabilities.writeComments,
     ],
     displayName: "Local",
-    directoryGroupIds: [],
     id: "local-api-token",
     installationId: adapters.installationId,
     kind: principalKinds.service,

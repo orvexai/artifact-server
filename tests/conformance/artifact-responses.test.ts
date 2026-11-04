@@ -3,6 +3,7 @@ import {DatabaseSync} from "node:sqlite";
 import nodePath from "node:path";
 import {z} from "zod";
 
+import {resolveProjectAccess} from "../../src/core/project-access.js";
 import {createTestInstallation, issueLocalBrowserLogin, removeTestInstallation, startTestServer, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
 import {publishNew} from "../support/publishing.js";
 
@@ -63,6 +64,23 @@ describe("artifact responses", () => {
     expect((await listed.json()).items).toEqual([created]);
     const fetched = await memberRequest("GET", `/api/v1/artifacts/${artifactId}/responses/${created.id}?projectId=${projectId}`);
     expect(await fetched.json()).toEqual(created);
+    const issuedKey = await memberRequest("POST", "/api/v1/api-keys", JSON.stringify({
+      capabilities: ["artifact:read", "artifact:responses:read"],
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      name: "restricted-project-service-key",
+    }));
+    expect(issuedKey.status).toBe(201);
+    const serviceToken = z.object({token: z.string()}).parse(await issuedKey.json()).token;
+    const restrictedAccess = await memberRequest("PUT", `/api/v1/projects/${projectId}/access`, JSON.stringify({accessMode: "restricted"}));
+    expect(restrictedAccess.status).toBe(200);
+    const serviceProject = await fetch(`${server.baseUrl}/api/v1/projects/${projectId}`, {
+      headers: {Authorization: `Bearer ${serviceToken}`},
+    });
+    expect(serviceProject.status).toBe(200);
+    const serviceList = await fetch(`${server.baseUrl}${path}`, {
+      headers: {Authorization: `Bearer ${serviceToken}`},
+    });
+    expect(serviceList.status).toBe(200);
     const tooLarge = await memberRequest("POST", path, JSON.stringify({questionId: "approval", versionId, data: "x".repeat(16_385)}));
     expect(tooLarge.status).toBe(413);
     expect((await tooLarge.json()).error.message).toContain("16 KB");
@@ -121,6 +139,23 @@ describe("artifact responses", () => {
     expect(seen).toEqual(["rsp_cursor_a", "rsp_cursor_b", "rsp_cursor_c"]);
   });
 
+  test("a service principal that owns a restricted project keeps administrator access", () => {
+    expect(resolveProjectAccess({
+      authorizedByPrincipalId: null,
+      capabilities: [],
+      displayName: "Service owner",
+      id: "service:owner",
+      installationId: "inst_test",
+      kind: "service",
+      membershipRole: "member",
+    }, {
+      accessMode: "restricted",
+      grantRoles: [],
+      isCreator: true,
+      member: null,
+    })).toEqual({mode: "restricted", role: "administrator"});
+  });
+
   test("guest response routes expose only that guest's immutable answers", async () => {
     const invitation = await memberRequest("POST", `/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`, "{}");
     const inviteUrl = new URL(z.object({url: z.url()}).parse(await invitation.json()).url);
@@ -173,5 +208,12 @@ describe("artifact responses", () => {
     const badBody = await guestRequest(guestA, "POST", JSON.stringify({questionId: "", versionId}));
     expect(badBody.status).toBe(404);
     expect(await badBody.text()).toBe(genericBody);
+    const createdCount = 1;
+    for (let index = createdCount; index < 30; index += 1) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- Each response consumes the shared guest write budget.
+      expect((await guestRequest(guestA, "POST", JSON.stringify({questionId: `budget-${index}`, versionId}))).status).toBe(201);
+    }
+    const rateLimited = await guestRequest(guestA, "POST", JSON.stringify({questionId: "over-budget", versionId}));
+    expect(rateLimited.status).toBe(429);
   });
 });

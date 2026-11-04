@@ -42,6 +42,7 @@ import {
 } from "../application/agent-dispatch.js";
 import {
   ArtifactCommentService,
+  inspectArtifactResponseData,
   type CommentThreadDetails,
   type ReadCommentThreadCommand,
   type UpdateCommentThreadCommand,
@@ -106,6 +107,7 @@ import {
   type ArtifactDeletion,
   type ArtifactPage,
   type ArtifactState,
+  type ArtifactResponseData,
   type ArtifactVersion,
   commentThreadStates,
   type CommentThreadPage,
@@ -292,9 +294,15 @@ const guestCreateThreadSchema = z.object({
   path: z.string().min(1).max(4_096).optional(),
   versionId: z.string().min(1).max(200),
 }).strict();
+const artifactResponseDataSchema = z.custom<ArtifactResponseData>().superRefine((data, context) => {
+  const safety = inspectArtifactResponseData(data);
+  if (safety !== null) {
+    context.addIssue({code: "custom", message: `artifact-response-data:${safety}`});
+  }
+});
 const artifactResponseWriteSchema = z.object({
   choice: z.string().nullable().optional(),
-  data: z.json().nullable().optional(),
+  data: artifactResponseDataSchema.nullable().optional(),
   questionId: z.string().min(1),
   versionId: z.string().min(1).max(200),
 }).strict();
@@ -1156,7 +1164,7 @@ export function createHttpApp(
       );
       context.set("authenticationMethod", "bearer");
       if (
-        principal.kind === "service" &&
+        principal.serviceAccountSource === "oidc" &&
         principal.capabilities.includes(principalCapabilities.readArtifactResponses) &&
         !(context.req.method === "GET" &&
           /^\/api\/v1\/artifacts\/[^/]+\/responses(?:\/[^/]+)?$/u.test(context.req.path))
@@ -3090,7 +3098,7 @@ export function createHttpApp(
 
   app.onError(async (error, context) => {
     const guestResponseRoute = context.req.path.includes("/guest/responses");
-    if (guestResponseRoute && isArtifactServerFailure(error) && error._tag !== "ArtifactResponseTooLarge") {
+    if (guestResponseRoute && isArtifactServerFailure(error) && error._tag !== "ArtifactResponseTooLarge" && error._tag !== "GuestRateLimitExceeded") {
       return guestNotFound(context);
     }
     if (isArtifactServerFailure(error)) {
@@ -3122,6 +3130,16 @@ export function createHttpApp(
       );
     }
     if (error instanceof z.ZodError) {
+      const responseDataIssue = error.issues.find((issue) =>
+        issue.path[0] === "data" && issue.message.startsWith("artifact-response-data:")
+      );
+      if (responseDataIssue !== undefined) {
+        if (responseDataIssue.message.endsWith(":depth")) {
+          return context.json({error: {code: "RESPONSE_TOO_LARGE", message: "data exceeds the maximum nesting depth of 32."}}, 413);
+        }
+        if (guestResponseRoute) return guestNotFound(context);
+        return context.json({error: {code: errorCodes.invalidInput, message: "data must be a JSON value without prohibited object keys."}}, 400);
+      }
       if (guestResponseRoute) return guestNotFound(context);
       return context.json(
         {

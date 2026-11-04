@@ -77,6 +77,8 @@ export interface Principal {
   readonly membershipRole: MembershipRole;
   /** Directory group IDs carried by a constrained OIDC service identity. */
   readonly directoryGroupIds?: readonly string[] | undefined;
+  /** Marks an OIDC client-credentials principal with group-bound access. */
+  readonly serviceAccountSource?: "oidc" | undefined;
 }
 
 /** Determine whether a principal has an explicit capability. */

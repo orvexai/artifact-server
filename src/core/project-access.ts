@@ -81,7 +81,11 @@ export function resolveProjectAccess(
   principal: Principal,
   record: ProjectAccessRecord,
 ): ProjectAccess {
-  if (principal.kind === principalKinds.service && principal.directoryGroupIds === undefined) {
+  if (
+    principal.kind === principalKinds.service &&
+    principal.serviceAccountSource === "oidc" &&
+    principal.directoryGroupIds === undefined
+  ) {
     return {mode: "restricted", role: null};
   }
   if (record.accessMode === projectAccessModes.installation) {
@@ -92,6 +96,9 @@ export function resolveProjectAccess(
     };
   }
   if (principal.kind === principalKinds.service) {
+    if (principal.serviceAccountSource !== "oidc") {
+      return {mode: "restricted", role: "administrator"};
+    }
     return {
       mode: "restricted",
       role: record.grantRoles.reduce<ProjectRole | null>(
