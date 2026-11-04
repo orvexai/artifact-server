@@ -559,6 +559,9 @@ export function createApplicationLayer(
     ids: adapters.ids,
     installationId: adapters.installationId,
     repository: {
+      createResponse: (command) => commentEffect("createArtifactResponse", () => adapters.repository.createResponse(command)),
+      findResponse: (projectId, artifactId, responseId, authorSubject) => commentEffect("findArtifactResponse", () => adapters.repository.findResponse(projectId, artifactId, responseId, authorSubject)),
+      listResponses: (command) => commentEffect("listArtifactResponses", () => adapters.repository.listResponses(command)),
       clearThreads: (command) => commentEffect(
         "clearCommentThreads",
         () => adapters.repository.clearThreads(command),

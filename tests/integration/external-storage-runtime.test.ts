@@ -2163,6 +2163,51 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
     await server.stop();
   });
 
+  test("external-storage foundation: Postgres stores dense 15 KB artifact response data", async () => {
+    expect.hasAssertions();
+    const identity = {
+      apiToken: managedTestKey("postgres-response-size"),
+      installationId: `postgres-response-size-${randomUUID()}`,
+    };
+    const server = await startInProcessExternalStorageServer(environment, identity);
+    const published = await publishNew(server.baseUrl, identity.apiToken, {
+      content: "<p>response size</p>",
+      idempotencyKey: `response-size-${randomUUID()}`,
+      name: "Response size",
+    });
+    const artifactId = published.body.artifact.id;
+    const versionId = published.body.version.id;
+    const responseData = {value: "x".repeat(15 * 1024)};
+    const database = await PostgresDatabase.open({
+      maxConnections: 2,
+      url: Redacted.make(environment.databaseUrl),
+    }, "validate");
+    try {
+      const repository = await PostgresArtifactRepository.open(database, identity.installationId);
+      const created = await repository.createResponse({
+        artifactId,
+        authorDisplayName: "Size test",
+        authorEmail: "size@example.test",
+        authorKind: "member",
+        authorSubject: "member-response-size",
+        choice: null,
+        createdAt: "2026-08-18T09:15:00.000Z",
+        dataJson: JSON.stringify(responseData),
+        guestSessionId: null,
+        id: `rsp_${randomUUID()}`,
+        installationId: identity.installationId,
+        projectId: published.body.artifact.projectId,
+        questionId: "dense-data",
+        versionId,
+      });
+      expect(created.data).toEqual(responseData);
+      expect(new TextEncoder().encode(JSON.stringify(responseData)).byteLength).toBeGreaterThan(15_000);
+    } finally {
+      await database.close();
+      await server.stop();
+    }
+  });
+
   test("external-storage foundation: Postgres serves the dispatch mailbox, lease reclaim, and consumptive comment listings", async () => {
     expect.hasAssertions();
     const dispatchIdentity = {

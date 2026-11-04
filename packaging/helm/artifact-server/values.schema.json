@@ -134,6 +134,7 @@
         "oidcClientId": {"type": "string"},
         "oidcIssuer": {"type": "string"},
         "oidcScopes": {"type": "string"},
+        "oidcServiceClients": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
         "oidcGroupsClaim": {"type": "string"},
         "oidcGroupRoleSeed": {
           "type": "array",

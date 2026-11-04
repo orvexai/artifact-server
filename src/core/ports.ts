@@ -31,6 +31,8 @@ import type {
   AgentCapabilities,
   CommentClearScope,
   CommentThreadClearing,
+  ArtifactResponsePage,
+  ArtifactResponseRecord,
   PageCursor,
   PublishedVersion,
   ProjectAuditEvent,
@@ -229,6 +231,35 @@ export interface CreateCommentThread {
   readonly versionId: string;
 }
 
+/** Values committed when one response is appended to an artifact. */
+export interface CreateArtifactResponse {
+  readonly artifactId: string;
+  readonly authorDisplayName: string;
+  readonly authorEmail: string | null;
+  readonly authorKind: "member" | "guest";
+  readonly authorSubject: string;
+  readonly choice: string | null;
+  readonly createdAt: string;
+  readonly dataJson: string | null;
+  readonly guestSessionId: string | null;
+  readonly id: string;
+  readonly installationId: string;
+  readonly questionId: string;
+  readonly projectId: string;
+  readonly versionId: string;
+}
+
+/** Filters for one bounded page of responses. */
+export interface ListArtifactResponses {
+  readonly after: string | null;
+  readonly artifactId: string;
+  readonly authorSubject?: string;
+  readonly limit: number;
+  readonly projectId: string;
+  readonly questionId: string | null;
+  readonly versionId: string | null;
+}
+
 /** Values used to store one per-artifact JSON state entry. */
 export interface WriteArtifactStateEntry {
   readonly artifactId: string;
@@ -362,6 +393,9 @@ export interface DeleteCommentReply {
  * Every mutation appends its attributed action record in the same transaction.
  */
 export interface CommentRepository {
+  createResponse(command: CreateArtifactResponse): Promise<ArtifactResponseRecord>;
+  findResponse(projectId: string, artifactId: string, responseId: string, authorSubject?: string): Promise<ArtifactResponseRecord | null>;
+  listResponses(command: ListArtifactResponses): Promise<ArtifactResponsePage>;
   clearThreads(command: ClearCommentThreads): Promise<CommentThreadClearing>;
   createReply(command: CreateCommentReply): Promise<CommentReplyCreation>;
   createThread(command: CreateCommentThread): Promise<CommentThreadCreation>;
@@ -800,6 +834,7 @@ export interface IdGenerator {
   artifactId(): string;
   commentReplyId(): string;
   commentThreadId(): string;
+  artifactResponseId(): string;
   guestInvitationId(): string;
   guestSessionId(): string;
   contentToken(): string;

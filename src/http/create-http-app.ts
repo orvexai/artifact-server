@@ -42,6 +42,7 @@ import {
 } from "../application/agent-dispatch.js";
 import {
   ArtifactCommentService,
+  inspectArtifactResponseData,
   type CommentThreadDetails,
   type ReadCommentThreadCommand,
   type UpdateCommentThreadCommand,
@@ -106,6 +107,7 @@ import {
   type ArtifactDeletion,
   type ArtifactPage,
   type ArtifactState,
+  type ArtifactResponseData,
   type ArtifactVersion,
   commentThreadStates,
   type CommentThreadPage,
@@ -292,6 +294,25 @@ const guestCreateThreadSchema = z.object({
   path: z.string().min(1).max(4_096).optional(),
   versionId: z.string().min(1).max(200),
 }).strict();
+const artifactResponseDataSchema = z.custom<ArtifactResponseData>().superRefine((data, context) => {
+  const safety = inspectArtifactResponseData(data);
+  if (safety !== null) {
+    context.addIssue({code: "custom", message: `artifact-response-data:${safety}`});
+  }
+});
+const artifactResponseWriteSchema = z.object({
+  choice: z.string().nullable().optional(),
+  data: artifactResponseDataSchema.nullable().optional(),
+  questionId: z.string().min(1),
+  versionId: z.string().min(1).max(200),
+}).strict();
+const artifactResponseQuerySchema = z.object({
+  after: z.string().min(1).max(1_024).regex(/^[A-Za-z0-9_-]+$/u).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  projectId: projectIdSchema.optional(),
+  questionId: z.string().min(1).max(200).optional(),
+  versionId: z.string().min(1).max(200).optional(),
+}).strict();
 interface GuestThreadUpdate {
   anchor?: unknown;
   body?: string;
@@ -463,6 +484,7 @@ const principalCapabilitySchema = z.enum([
   principalCapabilities.manageProjects,
   principalCapabilities.publishAnyArtifact,
   principalCapabilities.readArtifacts,
+  principalCapabilities.readArtifactResponses,
   principalCapabilities.writeComments,
 ]);
 const issueApiKeySchema = z.object({
@@ -991,6 +1013,35 @@ export function createHttpApp(
     return context.body(null, 204);
   });
 
+  app.get("/api/v1/public/artifacts/:artifactId/guest/responses", async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, false);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    const query = artifactResponseQuerySchema.parse(context.req.query());
+    const page = await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((service) => service.guestListResponses({
+      after: encodePageCursor(decodePageCursor(query.after)), guest, limit: query.limit,
+      questionId: query.questionId ?? null, versionId: query.versionId ?? null,
+    })));
+    return context.json(page);
+  });
+
+  app.get("/api/v1/public/artifacts/:artifactId/guest/responses/:responseId", async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, false);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    const response = await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((service) => service.guestGetResponse({guest, responseId: context.req.param("responseId")})));
+    return response === null ? guestNotFound(context) : context.json(response);
+  });
+
+  app.post("/api/v1/public/artifacts/:artifactId/guest/responses", boundedJsonBody, async (context) => {
+    const guest = await requireGuestReviewer(context, dependencies, true);
+    if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
+    const body = artifactResponseWriteSchema.parse(await context.req.json());
+    const response = await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((service) => service.guestCreateResponse({
+      choice: body.choice ?? null, data: body.data ?? null, guest,
+      questionId: body.questionId, versionId: body.versionId,
+    })));
+    return context.json(response, 201);
+  });
+
   app.get("/api/v1/public/artifacts/:artifactId/guest/comments", async (context) => {
     const guest = await requireGuestReviewer(context, dependencies, false);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
@@ -1112,6 +1163,14 @@ export function createHttpApp(
         ),
       );
       context.set("authenticationMethod", "bearer");
+      if (
+        principal.serviceAccountSource === "oidc" &&
+        principal.capabilities.includes(principalCapabilities.readArtifactResponses) &&
+        !(context.req.method === "GET" &&
+          /^\/api\/v1\/artifacts\/[^/]+\/responses(?:\/[^/]+)?$/u.test(context.req.path))
+      ) {
+        throw new AuthorizationDenied({message: "Service bearers may only read artifact responses."});
+      }
       context.set("principal", principal);
       context.set("sessionCsrfDigest", null);
       context.set("sessionToken", null);
@@ -2243,6 +2302,35 @@ export function createHttpApp(
     ));
   });
 
+  app.get("/api/v1/artifacts/:artifactId/responses", async (context) => {
+    const query = artifactResponseQuerySchema.parse(context.req.query());
+    const page = await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((service) => service.listResponses({
+      after: encodePageCursor(decodePageCursor(query.after)), artifactId: context.req.param("artifactId"),
+      limit: query.limit, principal: context.get("principal"), projectId: requestedProjectId(context),
+      questionId: query.questionId ?? null, versionId: query.versionId ?? null,
+    })));
+    return context.json(page);
+  });
+
+  app.get("/api/v1/artifacts/:artifactId/responses/:responseId", async (context) => {
+    const response = await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((service) => service.getResponse({
+      artifactId: context.req.param("artifactId"), principal: context.get("principal"),
+      projectId: requestedProjectId(context), responseId: context.req.param("responseId"),
+    })));
+    return response === null ? context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404) : context.json(response);
+  });
+
+  app.post("/api/v1/artifacts/:artifactId/responses", boundedJsonBody, async (context) => {
+    const body = artifactResponseWriteSchema.parse(await context.req.json());
+    const response = await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((service) => service.createResponse({
+      artifactId: context.req.param("artifactId"), choice: body.choice ?? null,
+      data: body.data ?? null, principal: context.get("principal"),
+      projectId: requestedProjectId(context), questionId: body.questionId,
+      versionId: body.versionId,
+    })));
+    return context.json(response, 201);
+  });
+
   app.get("/api/v1/artifacts/:artifactId/state", async (context) => {
     const entries = await runHttpApplicationEffect(
       context,
@@ -3009,6 +3097,10 @@ export function createHttpApp(
   );
 
   app.onError(async (error, context) => {
+    const guestResponseRoute = context.req.path.includes("/guest/responses");
+    if (guestResponseRoute && isArtifactServerFailure(error) && error._tag !== "ArtifactResponseTooLarge" && error._tag !== "GuestRateLimitExceeded") {
+      return guestNotFound(context);
+    }
     if (isArtifactServerFailure(error)) {
       const response = httpFailure(error);
       if (response.status >= 500) {
@@ -3038,6 +3130,17 @@ export function createHttpApp(
       );
     }
     if (error instanceof z.ZodError) {
+      const responseDataIssue = error.issues.find((issue) =>
+        issue.path[0] === "data" && issue.message.startsWith("artifact-response-data:")
+      );
+      if (responseDataIssue !== undefined) {
+        if (responseDataIssue.message.endsWith(":depth")) {
+          return context.json({error: {code: "RESPONSE_TOO_LARGE", message: "data exceeds the maximum nesting depth of 32."}}, 413);
+        }
+        if (guestResponseRoute) return guestNotFound(context);
+        return context.json({error: {code: errorCodes.invalidInput, message: "data must be a JSON value without prohibited object keys."}}, 400);
+      }
+      if (guestResponseRoute) return guestNotFound(context);
       return context.json(
         {
           error: {
@@ -4184,6 +4287,40 @@ function liveContentHeaders(
   });
 }
 
+// The invited guest page shares the same async bridge contract as the member review frame.
+const guestResponseBridgeScript = `<script>(() => {
+  let sequence = 0;
+  const pending = new Map();
+  const request = (fields) => new Promise((resolve, reject) => {
+    const id = "guest-page-" + Date.now() + "-" + (++sequence) + "-" + Math.random().toString(36).slice(2);
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error("Artifact bridge timed out.")); }, 15000);
+    pending.set(id, {resolve, reject, timer});
+    window.parent.postMessage({type:"as-artifact-bridge-request", v:1, id, operation:"respond", ...fields}, "*");
+  });
+  const respond = (response) => {
+    if (typeof response?.questionId !== "string" || response.questionId.length === 0) return Promise.reject(new Error("questionId must not be empty."));
+    if (response.questionId.length > 200) return Promise.reject(new Error("questionId exceeds the 200 character limit."));
+    if (response.choice != null && (typeof response.choice !== "string" || response.choice.length > 200)) return Promise.reject(new Error("choice exceeds the 200 character limit."));
+    let dataBytes;
+    try { dataBytes = new TextEncoder().encode(JSON.stringify(response.data ?? null)).byteLength; }
+    catch { return Promise.reject(new Error("data must be JSON serializable.")); }
+    if (dataBytes > 16 * 1_024) return Promise.reject(new Error("data exceeds the 16 KB response limit."));
+    return request(response);
+  };
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (message?.type !== "as-artifact-bridge-response" || message.v !== 1 || typeof message.id !== "string") return;
+    const call = pending.get(message.id);
+    if (!call) return;
+    clearTimeout(call.timer);
+    pending.delete(message.id);
+    if (message.ok === true) call.resolve(message.result);
+    else call.reject(new Error(typeof message.error === "string" ? message.error : "Artifact bridge request failed."));
+  });
+  Object.defineProperty(window, "artifactServer", {configurable:false, value:Object.freeze({respond})});
+})();</script>`;
+
 async function serveVersionContent(
   context: Context<HttpEnvironment>,
   requestUrl: URL,
@@ -4228,6 +4365,7 @@ async function serveVersionContent(
     publiclyCacheable,
     false,
     dependencies,
+    content.guestSessionId !== undefined && content.guestSessionId !== null,
   );
 }
 
@@ -4269,6 +4407,7 @@ async function serveStoredVersionContent(
   publiclyCacheable: boolean,
   previewLease: boolean,
   dependencies: HttpAppDependencies,
+  injectGuestResponseBridge = false,
 ): Promise<Response> {
   const headers = contentHeaders(
     content.entry,
@@ -4281,14 +4420,20 @@ async function serveStoredVersionContent(
     headers.set("Cross-Origin-Resource-Policy", "cross-origin");
     headers.set("Referrer-Policy", "no-referrer");
   }
+  const bridgeHtml = injectGuestResponseBridge && content.entry.mediaType === "text/html";
+  if (bridgeHtml) {
+    headers.set("Cache-Control", "private, no-store");
+    headers.delete("Content-Length");
+    headers.delete("ETag");
+  }
 
   const strongEtag = `"${content.entry.sha256}"`;
-  if (etagMatches(context.req.header("if-none-match"), strongEtag)) {
+  if (!bridgeHtml && etagMatches(context.req.header("if-none-match"), strongEtag)) {
     headers.delete("Content-Length");
     return new Response(null, {headers, status: 304});
   }
 
-  const rangeDecision = ifRangeAllowsPartialResponse(
+  const rangeDecision = !bridgeHtml && ifRangeAllowsPartialResponse(
     context.req.header("if-range"),
     strongEtag,
   )
@@ -4330,7 +4475,14 @@ async function serveStoredVersionContent(
     await blob.body.cancel();
     assertBlobSize(blob.size, content.entry.size, content.entry.sha256);
   }
-  return new Response(blob.body, {
+  const body = bridgeHtml
+    ? blob.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      flush(controller) {
+        controller.enqueue(new TextEncoder().encode(guestResponseBridgeScript));
+      },
+    }))
+    : blob.body;
+  return new Response(body, {
     headers,
     status: 200,
   });

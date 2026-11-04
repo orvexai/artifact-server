@@ -34,6 +34,7 @@ const oidcEnvironmentSchema = z.object({
   ARTIFACT_SERVER_OIDC_ISSUER: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_SCOPES: z.string().min(1).optional(),
+  ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS: z.string().optional(),
   ARTIFACT_SERVER_ORIGIN: z.url().optional(),
 });
 
@@ -62,6 +63,8 @@ export interface OidcConfiguration {
   readonly groupRoles: OidcGroupRoles | null;
   readonly issuer: string;
   readonly scopes: string;
+  /** Explicit OAuth clients allowed to use service-account bearer access. */
+  readonly serviceClients: readonly string[];
 }
 
 /** Load all-or-nothing OIDC settings, including a file-backed client secret. */
@@ -93,6 +96,7 @@ export async function loadOidcConfiguration(
     parsed.ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_API_RESOURCE === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_API_JWKS_URI === undefined
+    && (parsed.ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS ?? "").trim() === ""
   ) {
     return null;
   }
@@ -139,6 +143,8 @@ export async function loadOidcConfiguration(
     groupRoles,
     issuer,
     scopes: parsed.ARTIFACT_SERVER_OIDC_SCOPES ?? defaultOidcScopes,
+    serviceClients: (parsed.ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS ?? "")
+      .split(",").map((client) => client.trim()).filter(Boolean),
   };
 }
 

@@ -45,6 +45,9 @@ identity:
   oidcClientId: ""
   oidcIssuer: ""
   oidcScopes: ""
+  # OAuth clients explicitly allowed to use group-bound service bearer access.
+  # Empty by default; entries are sent as ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS.
+  oidcServiceClients: []
   # Opt-in issuer group roles, unset by default so admission stays manual.
   # Installation roles (viewer, operator, admin, owner) belong to directory
   # groups and are changed in the application. The seed gives groups their

@@ -417,7 +417,9 @@ function makeContentAccessService(
       command.contentToken,
       now,
     );
-    return session === null ? yield* sessionRequired() : content;
+    return session === null
+      ? yield* sessionRequired()
+      : {...content, guestSessionId: session.guestSessionId ?? null};
   });
 
   const authorizePreviewContent = Effect.fn(
