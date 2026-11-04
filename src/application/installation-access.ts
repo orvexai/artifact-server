@@ -1343,6 +1343,7 @@ function humanPrincipal(member: InstallationMember): Principal {
     authorizedByPrincipalId: null,
     capabilities: [],
     displayName: member.displayName,
+    email: member.email,
     id: member.id,
     installationId: member.installationId,
     kind: principalKinds.human,

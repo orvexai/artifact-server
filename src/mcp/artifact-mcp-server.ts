@@ -292,6 +292,12 @@ const commentThreadSchema = z.object({
   updatedAt: z.string(),
   versionId: z.string(),
 }).strict();
+const artifactResponseSchema = z.object({
+  artifactId: z.string(), authorDisplayName: z.string(), authorEmail: z.string().nullable(),
+  authorKind: z.enum(["member", "guest"]), authorSubject: z.string(), choice: z.string().nullable(),
+  createdAt: z.string(), data: z.unknown().nullable(), externalQuestion: z.boolean(),
+  guestSessionId: z.string().nullable(), id: z.string(), questionId: z.string(), versionId: z.string(),
+}).strict();
 const commentReplySchema = z.object({
   author: commentAuthorSchema,
   body: z.string(),
@@ -1998,6 +2004,48 @@ export function createArtifactMcpServer(
       );
       return {deleted: true};
     }),
+  );
+
+  registerNudgedTool(
+    "artifact_response_list",
+    {
+      title: "List artifact responses",
+      description: "Poll immutable answers recorded for an artifact. Filter by questionId or versionId, and pass the last createdAt value as after to read only newer responses.",
+      inputSchema: z.object({
+        after: z.iso.datetime().nullable().default(null),
+        artifactId: artifactIdSchema,
+        limit: z.number().int().min(1).max(100).default(50),
+        projectId: optionalProjectIdSchema,
+        questionId: z.string().min(1).max(200).nullable().default(null),
+        versionId: versionIdSchema.nullable().default(null),
+      }).strict(),
+      outputSchema: z.object({items: z.array(artifactResponseSchema)}).strict(),
+      annotations: readOnlyAnnotations,
+    },
+    async ({after, artifactId, limit, projectId, questionId, versionId}) =>
+      toolResult(async () => {
+        const page = await runMcpApplicationEffect(dependencies, ArtifactCommentService.use((service) => service.listResponses({
+          after, artifactId, limit, principal: identity.principal, projectId,
+          questionId, versionId,
+        })));
+        return {
+          items: page.items.map((response) => ({
+            artifactId: response.artifactId,
+            authorDisplayName: response.authorDisplayName,
+            authorEmail: identity.principal.kind === "human" ? response.authorEmail : null,
+            authorKind: response.authorKind,
+            authorSubject: response.authorSubject,
+            choice: response.choice,
+            createdAt: response.createdAt,
+            data: response.data,
+            externalQuestion: response.externalQuestion,
+            guestSessionId: response.guestSessionId,
+            id: response.id,
+            questionId: response.questionId,
+            versionId: response.versionId,
+          })),
+        };
+      }),
   );
 
   registerNudgedTool(

@@ -43,6 +43,8 @@ import {
   type ArtifactPage,
   type ArtifactRecord,
   type ArtifactStateEntry,
+  type ArtifactResponsePage,
+  type ArtifactResponseRecord,
   type ArtifactState,
   type ArtifactTombstone,
   type ArtifactVersion,
@@ -89,6 +91,8 @@ import type {
   CreateAgentDispatch,
   CreateCommentReply,
   CreateCommentThread,
+  CreateArtifactResponse,
+  ListArtifactResponses,
   CreateContentBootstrap,
   CreatePreviewLease,
   CreateProject,
@@ -239,6 +243,12 @@ const artifactRowSchema = z.object({
   id: z.string(),
   name: z.string(),
   projectId: z.string(),
+});
+const artifactResponseRowSchema = z.object({
+  artifactId: z.string(), authorDisplayName: z.string(), authorEmail: z.string().nullable(),
+  authorKind: z.enum(["member", "guest"]), authorSubject: z.string(), choice: z.string().nullable(),
+  createdAt: z.string(), data: z.json().nullable(), externalQuestion: z.boolean(),
+  guestSessionId: z.string().nullable(), id: z.string(), questionId: z.string(), versionId: z.string(),
 });
 const artifactListRowSchema = artifactRowSchema.extend({
   commentCount: z.coerce.number().int().nonnegative(),
@@ -2792,6 +2802,69 @@ export class PostgresArtifactRepository implements
     }));
   }
 
+  async createResponse(command: CreateArtifactResponse): Promise<ArtifactResponseRecord> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql<z.infer<typeof artifactResponseRowSchema>>`INSERT INTO artifact_responses (
+        installation_id, project_id, id, artifact_id, version_id, question_id,
+        choice, data, author_kind, author_subject, author_display_name,
+        author_email, guest_session_id, created_at
+      ) VALUES (
+        ${installationId}, ${command.projectId}, ${command.id}, ${command.artifactId},
+        ${command.versionId}, ${command.questionId}, ${command.choice},
+        CASE WHEN ${command.dataJson}::text IS NULL THEN NULL ELSE ${command.dataJson}::jsonb END,
+        ${command.authorKind}, ${command.authorSubject}, ${command.authorDisplayName},
+        ${command.authorEmail}, ${command.guestSessionId}, ${command.createdAt}
+      ) RETURNING artifact_id AS "artifactId", author_display_name AS "authorDisplayName",
+        author_email AS "authorEmail", author_kind AS "authorKind",
+        author_subject AS "authorSubject", choice, created_at AS "createdAt", data,
+        external_question AS "externalQuestion", guest_session_id AS "guestSessionId",
+        id, question_id AS "questionId", version_id AS "versionId"`;
+      const row = artifactResponseRowSchema.parse(rows[0]);
+      return artifactResponseFromRow(row);
+    }));
+  }
+
+  async findResponse(projectId: string, artifactId: string, responseId: string, authorSubject?: string): Promise<ArtifactResponseRecord | null> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql<z.infer<typeof artifactResponseRowSchema>>`SELECT artifact_id AS "artifactId",
+        author_display_name AS "authorDisplayName", author_email AS "authorEmail",
+        author_kind AS "authorKind", author_subject AS "authorSubject", choice,
+        created_at AS "createdAt", data, external_question AS "externalQuestion",
+        guest_session_id AS "guestSessionId", id, question_id AS "questionId",
+        version_id AS "versionId" FROM artifact_responses
+        WHERE installation_id = ${installationId} AND project_id = ${projectId}
+          AND artifact_id = ${artifactId} AND id = ${responseId}
+          AND (${authorSubject ?? null}::text IS NULL OR author_subject = ${authorSubject ?? null})`;
+      const row = rows[0];
+      return row === undefined ? null : artifactResponseFromRow(artifactResponseRowSchema.parse(row));
+    }));
+  }
+
+  async listResponses(command: ListArtifactResponses): Promise<ArtifactResponsePage> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql<z.infer<typeof artifactResponseRowSchema>>`SELECT artifact_id AS "artifactId",
+        author_display_name AS "authorDisplayName", author_email AS "authorEmail",
+        author_kind AS "authorKind", author_subject AS "authorSubject", choice,
+        created_at AS "createdAt", data, external_question AS "externalQuestion",
+        guest_session_id AS "guestSessionId", id, question_id AS "questionId",
+        version_id AS "versionId" FROM artifact_responses
+        WHERE installation_id = ${installationId} AND project_id = ${command.projectId}
+          AND artifact_id = ${command.artifactId}
+          AND (${command.authorSubject ?? null}::text IS NULL OR author_subject = ${command.authorSubject ?? null})
+          AND (${command.questionId}::text IS NULL OR question_id = ${command.questionId})
+          AND (${command.versionId}::text IS NULL OR version_id = ${command.versionId})
+          AND (${command.after}::text IS NULL OR created_at > ${command.after})
+        ORDER BY created_at, id LIMIT ${command.limit}`;
+      return {items: rows.map((row) => artifactResponseFromRow(artifactResponseRowSchema.parse(row))), nextCursor: null};
+    }));
+  }
+
   async findThread(
     projectId: string,
     artifactId: string,
@@ -5306,6 +5379,17 @@ function commentReplyFromRow(
     projectId: row.projectId,
     threadId: row.threadId,
     updatedAt: row.updatedAt,
+  };
+}
+
+function artifactResponseFromRow(row: z.infer<typeof artifactResponseRowSchema>): ArtifactResponseRecord {
+  return {
+    artifactId: row.artifactId, authorDisplayName: row.authorDisplayName,
+    authorEmail: row.authorKind === "member" ? row.authorEmail : null,
+    authorKind: row.authorKind, authorSubject: row.authorSubject, choice: row.choice,
+    createdAt: row.createdAt, data: row.data, externalQuestion: row.externalQuestion,
+    guestSessionId: row.guestSessionId, id: row.id, questionId: row.questionId,
+    versionId: row.versionId,
   };
 }
 

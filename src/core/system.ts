@@ -29,6 +29,10 @@ export class SystemIdGenerator implements IdGenerator {
     return `cmt_${randomUUID()}`;
   }
 
+  artifactResponseId(): string {
+    return `rsp_${randomUUID()}`;
+  }
+
   guestInvitationId(): string {
     return `gri_${randomUUID()}`;
   }

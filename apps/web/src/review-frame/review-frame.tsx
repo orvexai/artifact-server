@@ -67,6 +67,16 @@ const artifactBridgeScript = `<script>(() => {
     pending.set(id, {resolve, reject, timer});
     window.parent.postMessage({type:"as-artifact-bridge-request", v:1, id, operation, ...fields}, "*");
   });
+  const respond = (response) => {
+    if (typeof response?.questionId !== "string" || response.questionId.length === 0) return Promise.reject(new Error("questionId must not be empty."));
+    if (response.questionId.length > 200) return Promise.reject(new Error("questionId exceeds the 200 character limit."));
+    if (response.choice != null && (typeof response.choice !== "string" || response.choice.length > 200)) return Promise.reject(new Error("choice exceeds the 200 character limit."));
+    let dataBytes;
+    try { dataBytes = new TextEncoder().encode(JSON.stringify(response.data ?? null)).byteLength; }
+    catch { return Promise.reject(new Error("data must be JSON serializable.")); }
+    if (dataBytes > 16 * 1_024) return Promise.reject(new Error("data exceeds the 16 KB response limit."));
+    return request("respond", response);
+  };
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
     const message = event.data;
@@ -80,7 +90,8 @@ const artifactBridgeScript = `<script>(() => {
   });
   Object.defineProperty(window, "artifactServer", {configurable:false, value:Object.freeze({
     state:Object.freeze({list:() => request("list"), get:(key) => request("get", {key}), set:(key, value) => request("set", {key, value}), delete:(key) => request("delete", {key})}),
-    comments:Object.freeze({create:(body, options = {}) => request("comment_create", {body, ...options})})
+    comments:Object.freeze({create:(body, options = {}) => request("comment_create", {body, ...options})}),
+    respond
   })});
 })();</script>`;
 

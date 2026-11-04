@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+const artifactResponseDataSchema = z.json();
+type ArtifactResponseData = z.infer<typeof artifactResponseDataSchema>;
+
 const accessSettingSchema = z.enum(["account_required", "public_link"]);
 const membershipRoleSchema = z.enum(["viewer", "member", "administrator", "owner"]);
 
@@ -550,6 +553,12 @@ const commentThreadDetailsSchema = z.object({
   replies: z.array(commentReplySchema),
   thread: commentThreadSchema,
 });
+const artifactResponseSchema = z.object({
+  artifactId: z.string(), authorDisplayName: z.string(), authorEmail: z.string().nullable(),
+  authorKind: z.enum(["member", "guest"]), authorSubject: z.string(), choice: z.string().nullable(),
+  createdAt: z.string(), data: artifactResponseDataSchema.nullable(), externalQuestion: z.boolean(),
+  guestSessionId: z.string().nullable(), id: z.string(), questionId: z.string(), versionId: z.string(),
+});
 const artifactStateEntrySchema = z.object({
   artifactId: z.string(),
   key: z.string(),
@@ -1002,6 +1011,11 @@ export const api = {
     `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/heartbeat`,
     {headers: guestMutationHeaders(), method: "POST"},
   ),
+  guestCreateArtifactResponse: (artifactId: string, versionId: string, questionId: string, choice: string | null, data: ArtifactResponseData) => request(
+    artifactResponseSchema,
+    `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/responses`,
+    {body: JSON.stringify({choice, data, questionId, versionId}), headers: guestMutationHeaders(), method: "POST"},
+  ),
   guestComments: (artifactId: string) => request(
     guestCommentsSchema,
     `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/comments`,
@@ -1382,6 +1396,11 @@ export const api = {
   comment: (projectId: string, artifactId: string, threadId: string) => request(
     commentThreadDetailsSchema,
     `/api/v1/artifacts/${encodeURIComponent(artifactId)}/comments/${encodeURIComponent(threadId)}?${projectQuery(projectId)}`,
+  ),
+  createArtifactResponse: (projectId: string, artifactId: string, versionId: string, questionId: string, choice: string | null, data: ArtifactResponseData) => request(
+    artifactResponseSchema,
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/responses?${projectQuery(projectId)}`,
+    {body: JSON.stringify({choice, data, questionId, versionId}), headers: mutationHeaders(), method: "POST"},
   ),
   createComment: (
     projectId: string,

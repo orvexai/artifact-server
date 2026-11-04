@@ -234,6 +234,8 @@ export interface VersionContent {
   readonly contentToken: string;
   readonly entry: ManifestEntry;
   readonly isCurrent: boolean;
+  /** Present only when content is authorized through an invited guest session. */
+  readonly guestSessionId?: string | null;
   readonly projectId: string;
   readonly versionId: string;
 }
@@ -386,6 +388,37 @@ export interface CommentReplyRecord {
   readonly projectId: string;
   readonly threadId: string;
   readonly updatedAt: string;
+}
+
+/** One immutable answer submitted to an interactive artifact question. */
+export type ArtifactResponseData =
+  | boolean
+  | number
+  | string
+  | null
+  | readonly ArtifactResponseData[]
+  | {readonly [key: string]: ArtifactResponseData};
+
+export interface ArtifactResponseRecord {
+  readonly artifactId: string;
+  readonly authorDisplayName: string;
+  readonly authorEmail: string | null;
+  readonly authorKind: "member" | "guest";
+  readonly authorSubject: string;
+  readonly choice: string | null;
+  readonly createdAt: string;
+  readonly data: ArtifactResponseData;
+  readonly externalQuestion: boolean;
+  readonly guestSessionId: string | null;
+  readonly id: string;
+  readonly questionId: string;
+  readonly versionId: string;
+}
+
+/** One bounded immutable response page. */
+export interface ArtifactResponsePage {
+  readonly items: readonly ArtifactResponseRecord[];
+  readonly nextCursor: PageCursor | null;
 }
 
 /** Dispatched-thread visibility filters accepted by comment listings. */
