@@ -736,7 +736,19 @@ function makeInstallationAccessService(
       projectId,
       principal.id,
     );
-    return record === null ? null : resolveProjectAccess(principal, record);
+    if (record === null) return null;
+    if (principal.kind === principalKinds.service && principal.directoryGroupIds !== undefined) {
+      const groupIds = new Set(principal.directoryGroupIds);
+      const grants = yield* dependencies.repository.listProjectGroupGrants(
+        dependencies.installationId,
+        projectId,
+      );
+      return resolveProjectAccess(principal, {
+        ...record,
+        grantRoles: grants.filter((grant) => groupIds.has(grant.groupId)).map((grant) => grant.role),
+      });
+    }
+    return resolveProjectAccess(principal, record);
   });
 
   const ownerProjectAccess = Effect.fn(
@@ -1019,6 +1031,47 @@ function makeInstallationAccessService(
   const authenticateExternalIdentity = Effect.fn(
     "InstallationAccessService.authenticateExternalIdentity",
   )(function*(identity: ExternalIdentity) {
+    if (identity.serviceAccount === true) {
+      if (groupRolePolicy === null) {
+        return yield* new IdentityAdmissionDenied({
+          message: "Service accounts require an installation group role.",
+        });
+      }
+      const assignments = (yield* dependencies.repository.isGroupRoleSeedApplied(
+          dependencies.installationId,
+        ))
+        ? yield* dependencies.repository.listGroupRoles(dependencies.installationId)
+        : configuredGroupRoleAssignments(groupRolePolicy.seed);
+      const role = groupMembershipRole(assignments, identity.groups);
+      if (role === null) {
+        return yield* new IdentityAdmissionDenied({
+          message: "This service account is not in a group admitted to the Artifact Server.",
+        });
+      }
+      const storedGroups = yield* dependencies.repository.listDirectoryGroups(
+        dependencies.installationId,
+      );
+      const reported = new Set(identity.groups ?? []);
+      const nameCounts = new Map<string, number>();
+      for (const group of storedGroups) {
+        nameCounts.set(group.name, (nameCounts.get(group.name) ?? 0) + 1);
+      }
+      const directoryGroupIds = storedGroups.filter((group) =>
+        reported.has(group.path) ||
+        (nameCounts.get(group.name) === 1 && reported.has(group.name))
+      ).map((group) => group.id);
+      return {
+        authorizedByPrincipalId: null,
+        capabilities: [principalCapabilities.readArtifacts],
+        directoryGroupIds,
+        displayName: identity.displayName,
+        email: null,
+        id: `oidc-service:${identity.provider}:${identity.subject}`,
+        installationId: dependencies.installationId,
+        kind: principalKinds.service,
+        membershipRole: role,
+      };
+    }
     return humanPrincipal(yield* resolveExternalMember(identity));
   });
 

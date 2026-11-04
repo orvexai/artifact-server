@@ -74,6 +74,8 @@ export interface Principal {
   readonly installationId: string;
   readonly kind: PrincipalKind;
   readonly membershipRole: MembershipRole;
+  /** Directory group IDs carried by a constrained OIDC service identity. */
+  readonly directoryGroupIds?: readonly string[];
 }
 
 /** Determine whether a principal has an explicit capability. */

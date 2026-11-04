@@ -39,6 +39,8 @@ export interface ExternalIdentity {
   readonly groups: readonly string[] | null;
   readonly provider: string;
   readonly subject: string;
+  /** True only for a verified client-credentials service account token. */
+  readonly serviceAccount?: boolean;
 }
 
 /** One server-side browser session after its opaque credential is verified. */

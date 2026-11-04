@@ -1186,6 +1186,9 @@ function makeArtifactCommentService(
   const createResponse = Effect.fn("ArtifactCommentService.createResponse")(
     function*(command: CreateArtifactResponseCommand) {
       const project = yield* resolveProjectForWrite(command.principal, command.projectId, "viewer");
+      if (command.principal.kind !== "human") {
+        return yield* new AuthorizationDenied({message: "Only members can submit artifact responses."});
+      }
       yield* authorization.requireCommentRead(command.principal);
       const artifact = yield* requireArtifact(project.id, command.artifactId);
       const version = yield* requireVersion(project.id, artifact.id, command.versionId);
@@ -1225,10 +1228,13 @@ function makeArtifactCommentService(
       const project = yield* resolveProjectForRead(command.principal, command.projectId);
       yield* authorization.requireCommentRead(command.principal);
       yield* requireArtifact(project.id, command.artifactId);
-      return yield* dependencies.repository.listResponses({
+      const page = yield* dependencies.repository.listResponses({
         after: command.after, artifactId: command.artifactId, limit,
         projectId: project.id, questionId: command.questionId, versionId: command.versionId,
       });
+      return command.principal.kind === "human"
+        ? page
+        : {...page, items: page.items.map((response) => Object.assign({}, response, {authorEmail: null}))};
     },
   );
   const guestListResponses = Effect.fn("ArtifactCommentService.guestListResponses")(
@@ -1247,7 +1253,10 @@ function makeArtifactCommentService(
       const project = yield* resolveProjectForRead(command.principal, command.projectId);
       yield* authorization.requireCommentRead(command.principal);
       yield* requireArtifact(project.id, command.artifactId);
-      return yield* dependencies.repository.findResponse(project.id, command.artifactId, command.responseId);
+      const response = yield* dependencies.repository.findResponse(project.id, command.artifactId, command.responseId);
+      return response === null || command.principal.kind === "human"
+        ? response
+        : {...response, authorEmail: null};
     },
   );
   const guestGetResponse = Effect.fn("ArtifactCommentService.guestGetResponse")(

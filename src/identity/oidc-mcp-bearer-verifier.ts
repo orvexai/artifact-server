@@ -41,6 +41,7 @@ const profileClaims = {
   given_name: Schema.optionalKey(Schema.String),
   name: Schema.optionalKey(Schema.String),
   preferred_username: Schema.optionalKey(Schema.String),
+  groups: Schema.optionalKey(Schema.Array(Schema.String)),
 };
 const accessTokenClaims = Schema.Struct({
   ...profileClaims,
@@ -155,6 +156,21 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
       const groups = yield* readOidcGroupsClaim(payload, this.#groupsClaim);
       const email = emailOf(claims);
       if (email !== null) return this.#identityOf(claims, email, groups);
+      const clientId = claims.client_id ?? claims.azp;
+      if (
+        (claims.preferred_username?.startsWith("service-account-") === true ||
+          clientId !== undefined) && clientId !== undefined
+      ) {
+        return {
+          displayName: clientId,
+          email: "",
+          emailVerified: false,
+          groups,
+          provider: this.#provider,
+          serviceAccount: true,
+          subject: claims.sub,
+        };
+      }
       return yield* this.#userInfoIdentity(credential, claims.sub, groups);
     },
   );
