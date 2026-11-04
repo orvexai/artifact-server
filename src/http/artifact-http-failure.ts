@@ -42,6 +42,10 @@ export function artifactServerFailureResponse(failure: ArtifactServerFailure) {
       return {code: errorCodes.rateLimitExceeded, message: failure.message, status: 429};
     case "InvalidComment":
       return {code: errorCodes.invalidComment, message: failure.message, status: 422};
+    case "ArtifactResponseTooLarge":
+      return {code: "RESPONSE_TOO_LARGE", message: failure.message, status: 413};
+    case "InvalidArtifactResponse":
+      return {code: errorCodes.invalidInput, message: failure.message, status: 400};
     case "ContentBootstrapRejected":
       return {code: errorCodes.contentBootstrapRejected, message: failure.message, status: 401};
     case "ContentSessionRequired":

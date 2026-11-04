@@ -226,6 +226,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
   value: {{ .Values.identity.oidcClientId | quote }}
 - name: ARTIFACT_SERVER_OIDC_ISSUER
   value: {{ .Values.identity.oidcIssuer | quote }}
+{{- if .Values.identity.oidcServiceClients }}
+- name: ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS
+  value: {{ join "," .Values.identity.oidcServiceClients | quote }}
+{{- end }}
 {{- if .Values.identity.oidcScopes }}
 - name: ARTIFACT_SERVER_OIDC_SCOPES
   value: {{ .Values.identity.oidcScopes | quote }}

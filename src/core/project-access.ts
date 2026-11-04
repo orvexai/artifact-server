@@ -70,8 +70,8 @@ export type ProjectAccess =
   | {readonly mode: "restricted"; readonly role: ProjectRole | null};
 
 /**
- * Decide one principal's access from storage. A service principal (a service
- * key, the bootstrap key) keeps full reach. Every human principal, whether a
+ * Decide one principal's access from storage. Service principals use only
+ * their matching project grants. Every human principal, whether a
  * browser session, an MCP client, or an API key issued for that member, is
  * judged as the member in `principal.id`, by its current stored role and
  * status rather than by what the credential carries. The member who created
@@ -81,6 +81,13 @@ export function resolveProjectAccess(
   principal: Principal,
   record: ProjectAccessRecord,
 ): ProjectAccess {
+  if (
+    principal.kind === principalKinds.service &&
+    principal.serviceAccountSource === "oidc" &&
+    principal.directoryGroupIds === undefined
+  ) {
+    return {mode: "restricted", role: null};
+  }
   if (record.accessMode === projectAccessModes.installation) {
     return {
       isCreator: principal.kind === principalKinds.human && record.isCreator &&
@@ -89,7 +96,18 @@ export function resolveProjectAccess(
     };
   }
   if (principal.kind === principalKinds.service) {
-    return {mode: "restricted", role: "administrator"};
+    if (principal.serviceAccountSource !== "oidc") {
+      return {mode: "restricted", role: "administrator"};
+    }
+    return {
+      mode: "restricted",
+      role: record.grantRoles.reduce<ProjectRole | null>(
+        (best, role) => best === null || roleRank[role] > roleRank[best]
+          ? role
+          : best,
+        null,
+      ),
+    };
   }
   const member = record.member;
   if (member === null || member.status !== "active") {

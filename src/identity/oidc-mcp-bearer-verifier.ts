@@ -41,6 +41,9 @@ const profileClaims = {
   given_name: Schema.optionalKey(Schema.String),
   name: Schema.optionalKey(Schema.String),
   preferred_username: Schema.optionalKey(Schema.String),
+  // The configured group-claim reader owns validation so malformed claims are
+  // ignored when groups are unused and reported as provider failures when used.
+  groups: Schema.optionalKey(Schema.Unknown),
 };
 const accessTokenClaims = Schema.Struct({
   ...profileClaims,
@@ -78,6 +81,8 @@ export interface OidcMcpBearerVerifierConfig {
   readonly groupsClaim?: string | null;
   readonly issuer: string;
   readonly jwksUri: string;
+  /** OAuth clients permitted to authenticate as group-bound services. */
+  readonly serviceClients?: readonly string[];
   readonly userInfoEndpoint?: string | null;
 }
 
@@ -90,6 +95,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
   readonly #issuer: string;
   readonly #jwks: ReturnType<typeof createRemoteJWKSet>;
   readonly #provider: string;
+  readonly #serviceClients: ReadonlySet<string>;
   readonly #userInfoEndpoint: string | null;
 
   constructor(config: OidcMcpBearerVerifierConfig) {
@@ -102,6 +108,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
     // Browser login records the same provider name, so one person keeps one
     // membership whether they arrive through the interface or through MCP.
     this.#provider = oidcIdentityProviderName(this.#issuer);
+    this.#serviceClients = new Set(config.serviceClients ?? []);
     this.#userInfoEndpoint = config.userInfoEndpoint ?? null;
     this.#jwks = createRemoteJWKSet(new URL(config.jwksUri), {
       cacheMaxAge: jwksCacheMilliseconds,
@@ -120,7 +127,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
   readonly verify = Effect.fn("OidcMcpBearerVerifier.verify")(
     function*(this: OidcMcpBearerVerifier, credential: Redacted.Redacted) {
       const {claims} = yield* this.#verifiedToken(credential);
-      const clientId = claims.client_id ?? claims.azp;
+      const clientId = claims.azp ?? claims.client_id;
       if (clientId === undefined || clientId.trim().length === 0) {
         return yield* invalidToken(
           "The OIDC access token must identify its OAuth client.",
@@ -155,6 +162,21 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
       const groups = yield* readOidcGroupsClaim(payload, this.#groupsClaim);
       const email = emailOf(claims);
       if (email !== null) return this.#identityOf(claims, email, groups);
+      const clientId = claims.azp ?? claims.client_id;
+      if (
+        clientId !== undefined && this.#serviceClients.has(clientId) &&
+        claims.preferred_username === `service-account-${clientId}`
+      ) {
+        return {
+          displayName: clientId,
+          email: null,
+          emailVerified: false,
+          groups,
+          provider: this.#provider,
+          serviceAccount: true,
+          subject: claims.sub,
+        };
+      }
       return yield* this.#userInfoIdentity(credential, claims.sub, groups);
     },
   );

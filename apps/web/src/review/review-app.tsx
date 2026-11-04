@@ -78,6 +78,7 @@ import { ReviewPreview } from "./review-preview.tsx";
 import {ReviewProjectPicker} from "./review-project-picker.tsx";
 import {isSettingsPath} from "./review-routes.ts";
 import {ReviewSettings} from "./review-settings.tsx";
+import {frameMessageSchema, reviewProtocolVersion} from "../review-frame/protocol.ts";
 import {ReviewPanelEdge} from "./review-panel-edge.tsx";
 import {AgentLogos, ReviewShareControl} from "./review-share.tsx";
 import {useReviewPanelMotion} from "./use-review-panel-motion.ts";
@@ -2756,6 +2757,7 @@ function PublicArtifactReview({
   const [guestMessage, setGuestMessage] = useState<string | null>(null);
   const [threads, setThreads] = useState<readonly GuestCommentThread[]>([]);
   const [newComment, setNewComment] = useState("");
+  const guestFrameRef = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -2791,6 +2793,30 @@ function PublicArtifactReview({
       document.removeEventListener("visibilitychange", heartbeat);
     };
   }, [artifactId, state.kind]);
+  useEffect(() => {
+    if (state.kind !== "guest") return undefined;
+    const frameOrigin = new URL(state.guest.bootstrapUrl).origin;
+    const onBridgeRequest = (event: MessageEvent<unknown>): void => {
+      if (event.source !== guestFrameRef.current?.contentWindow || event.origin !== frameOrigin) return;
+      const parsed = frameMessageSchema.safeParse(event.data);
+      if (!parsed.success || parsed.data.type !== "as-artifact-bridge-request" || parsed.data.operation !== "respond") return;
+      const request = parsed.data;
+      void (async () => {
+        try {
+          const preview = JSON.stringify({choice: request.choice ?? null, data: request.data ?? null});
+          if (!window.confirm(`This page wants to submit a response as you to question “${request.questionId}”:\n\n${preview.slice(0, 500)}`)) throw new Error("The viewer declined the response.");
+          const response = await api.guestCreateArtifactResponse(artifactId, state.guest.versionId, request.questionId, request.choice ?? null, request.data ?? null);
+          guestFrameRef.current?.contentWindow?.postMessage({id: request.id, ok: true, result: response, type: "as-artifact-bridge-response", v: reviewProtocolVersion}, frameOrigin);
+        } catch (cause) {
+          const error = cause instanceof Error ? cause.message : "The response could not be submitted.";
+          guestFrameRef.current?.contentWindow?.postMessage({error: error.slice(0, 500), id: request.id, ok: false, type: "as-artifact-bridge-response", v: reviewProtocolVersion}, frameOrigin);
+          setGuestMessage(error);
+        }
+      })();
+    };
+    window.addEventListener("message", onBridgeRequest);
+    return () => window.removeEventListener("message", onBridgeRequest);
+  }, [artifactId, state]);
   const joinAsGuest = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (inviteSecret === null) return;
@@ -2824,7 +2850,7 @@ function PublicArtifactReview({
     return <main className="as-gate"><form onSubmit={(event) => void joinAsGuest(event)}><h1>Join artifact review</h1><label>Your name<input autoComplete="name" maxLength={80} minLength={1} onChange={(event) => setGuestName(event.target.value)} required value={guestName} /></label><button className="as-button as-button--primary" type="submit">Continue</button>{guestMessage === null ? null : <p role="alert">{guestMessage}</p>}</form></main>;
   }
   if (state.kind === "guest") {
-    return <main className="as-public-review"><header className="as-public-review__bar"><h1>{state.guest.artifactName}</h1><small>Version {state.guest.number} · commenting as {state.guest.displayName}</small></header><iframe className="as-public-review__frame" referrerPolicy="no-referrer" src={state.guest.bootstrapUrl} title={state.guest.artifactName} /><aside aria-label="Comments"><h2>Comments</h2><form onSubmit={(event) => void submitGuestComment(event)}><label>Add a comment<textarea onChange={(event) => setNewComment(event.target.value)} value={newComment} /></label><button className="as-button as-button--primary" type="submit">Comment</button></form>{threads.map((thread) => <article key={thread.id}><strong>{thread.author.displayName}</strong><p>{thread.body}</p><GuestReplyForm artifactId={artifactId} threadId={thread.id} onReply={async () => setThreads((await api.guestComments(artifactId)).items)} />{thread.replyCount > 0 ? <button className="as-button" onClick={async () => { const details = await api.guestComment(artifactId, thread.id); setGuestMessage(details.replies.map((reply) => `${reply.author.displayName}: ${reply.body}`).join("\n")); }} type="button">Read {thread.replyCount} replies</button> : null}</article>)}{guestMessage === null ? null : <p role="status">{guestMessage}</p>}</aside></main>;
+    return <main className="as-public-review"><header className="as-public-review__bar"><h1>{state.guest.artifactName}</h1><small>Version {state.guest.number} · commenting as {state.guest.displayName}</small></header><iframe className="as-public-review__frame" ref={guestFrameRef} referrerPolicy="no-referrer" src={state.guest.bootstrapUrl} title={state.guest.artifactName} /><aside aria-label="Comments"><h2>Comments</h2><form onSubmit={(event) => void submitGuestComment(event)}><label>Add a comment<textarea onChange={(event) => setNewComment(event.target.value)} value={newComment} /></label><button className="as-button as-button--primary" type="submit">Comment</button></form>{threads.map((thread) => <article key={thread.id}><strong>{thread.author.displayName}</strong><p>{thread.body}</p><GuestReplyForm artifactId={artifactId} threadId={thread.id} onReply={async () => setThreads((await api.guestComments(artifactId)).items)} />{thread.replyCount > 0 ? <button className="as-button" onClick={async () => { const details = await api.guestComment(artifactId, thread.id); setGuestMessage(details.replies.map((reply) => `${reply.author.displayName}: ${reply.body}`).join("\n")); }} type="button">Read {thread.replyCount} replies</button> : null}</article>)}{guestMessage === null ? null : <p role="status">{guestMessage}</p>}</aside></main>;
   }
   if (state.kind === "missing") {
     return (

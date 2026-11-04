@@ -53,6 +53,8 @@ import {
   type ArtifactPage,
   type ArtifactRecord,
   type ArtifactStateEntry,
+  type ArtifactResponsePage,
+  type ArtifactResponseRecord,
   type ArtifactState,
   type ArtifactTombstone,
   type ArtifactVersion,
@@ -83,6 +85,7 @@ import {
   type VersionContent,
   type VersionRecord,
 } from "../core/model.js";
+import {decodeArtifactResponseCursor, encodeArtifactResponseCursor, normalizeResponseTimestamp} from "../core/artifact-response-cursor.js";
 import type {
   AgentDispatchRepository,
   ArtifactRepository,
@@ -100,6 +103,8 @@ import type {
   GuestReviewRepository,
   CreateCommentReply,
   CreateCommentThread,
+  CreateArtifactResponse,
+  ListArtifactResponses,
   CreateContentBootstrap,
   CreatePreviewLease,
   CreateStagedUpload,
@@ -473,6 +478,12 @@ const commentThreadRowSchema = z.object({
   state: commentThreadStateSchema,
   updatedAt: z.string(),
   versionId: z.string(),
+});
+const artifactResponseRowSchema = z.object({
+  artifactId: z.string(), authorDisplayName: z.string(), authorEmail: z.string().nullable(),
+  authorKind: z.enum(["member", "guest"]), authorSubject: z.string(), choice: z.string().nullable(),
+  createdAt: z.string(), dataJson: z.string().nullable(), externalQuestion: z.union([z.literal(0), z.literal(1)]),
+  guestSessionId: z.string().nullable(), id: z.string(), questionId: z.string(), versionId: z.string(),
 });
 const artifactStateRowSchema = z.object({
   artifactId: z.string(),
@@ -3634,6 +3645,67 @@ export class SqliteArtifactRepository implements
     );
   }
 
+  createResponse(command: CreateArtifactResponse): Promise<ArtifactResponseRecord> {
+    return Promise.resolve().then(() => this.#transaction(() => {
+      this.#database.prepare(`INSERT INTO artifact_responses (
+        id, installation_id, project_id, artifact_id, version_id, question_id,
+        choice, data_json, author_kind, author_subject, author_display_name,
+        author_email, guest_session_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        command.id, command.installationId, command.projectId, command.artifactId,
+        command.versionId, command.questionId, command.choice, command.dataJson,
+        command.authorKind, command.authorSubject, command.authorDisplayName,
+        command.authorEmail, command.guestSessionId, command.createdAt,
+      );
+      const row = this.#readResponse(command.projectId, command.artifactId, command.id);
+      if (row === null) throw new Error("Inserted artifact response disappeared.");
+      return row;
+    }));
+  }
+
+  findResponse(projectId: string, artifactId: string, responseId: string, authorSubject?: string): Promise<ArtifactResponseRecord | null> {
+    return Promise.resolve().then(() => {
+      const row = artifactResponseRowSchema.nullable().parse(this.#database.prepare(`SELECT
+        artifact_id AS artifactId, author_display_name AS authorDisplayName,
+        author_email AS authorEmail, author_kind AS authorKind,
+        author_subject AS authorSubject, choice, created_at AS createdAt,
+        data_json AS dataJson, external_question AS externalQuestion,
+        guest_session_id AS guestSessionId, id, question_id AS questionId,
+        version_id AS versionId FROM artifact_responses
+        WHERE project_id = ? AND artifact_id = ? AND id = ?
+          AND (? IS NULL OR author_subject = ?)`)
+        .get(projectId, artifactId, responseId, authorSubject ?? null, authorSubject ?? null) ?? null);
+      return row === null ? null : artifactResponseFromRow(row);
+    });
+  }
+
+  listResponses(command: ListArtifactResponses): Promise<ArtifactResponsePage> {
+    return Promise.resolve().then(() => {
+      const cursor = decodeArtifactResponseCursor(command.after);
+      const rows = artifactResponseRowSchema.array().parse(this.#database.prepare(`SELECT
+        artifact_id AS artifactId, author_display_name AS authorDisplayName,
+        author_email AS authorEmail, author_kind AS authorKind,
+        author_subject AS authorSubject, choice, created_at AS createdAt,
+        data_json AS dataJson, external_question AS externalQuestion,
+        guest_session_id AS guestSessionId, id, question_id AS questionId,
+        version_id AS versionId FROM artifact_responses
+        WHERE project_id = ? AND artifact_id = ?
+          AND (? IS NULL OR author_subject = ?) AND (? IS NULL OR question_id = ?)
+          AND (? IS NULL OR version_id = ?)
+          AND (? IS NULL OR created_at > ? OR (created_at = ? AND id > ?))
+        ORDER BY created_at, id LIMIT ?`).all(
+        command.projectId, command.artifactId, command.authorSubject ?? null,
+        command.authorSubject ?? null, command.questionId, command.questionId,
+        command.versionId, command.versionId, cursor?.createdAt ?? null,
+        cursor?.createdAt ?? null, cursor?.createdAt ?? null, cursor?.id ?? null,
+        command.limit + 1,
+      ));
+      const items = rows.slice(0, command.limit).map((row) => Object.assign(artifactResponseFromRow(row), {createdAt: normalizeResponseTimestamp(row.createdAt)}));
+      const last = items.at(-1);
+      return {items, nextCursor: rows.length > command.limit && last !== undefined ? encodeArtifactResponseCursor(last) : null};
+    });
+  }
+
   findThread(
     projectId: string,
     artifactId: string,
@@ -4983,6 +5055,18 @@ export class SqliteArtifactRepository implements
     return row;
   }
 
+  #readResponse(projectId: string, artifactId: string, responseId: string): ArtifactResponseRecord | null {
+    const row = artifactResponseRowSchema.nullable().parse(this.#database.prepare(`SELECT
+      artifact_id AS artifactId, author_display_name AS authorDisplayName,
+      author_email AS authorEmail, author_kind AS authorKind,
+      author_subject AS authorSubject, choice, created_at AS createdAt,
+      data_json AS dataJson, external_question AS externalQuestion,
+      guest_session_id AS guestSessionId, id, question_id AS questionId,
+      version_id AS versionId FROM artifact_responses
+      WHERE project_id = ? AND artifact_id = ? AND id = ?`).get(projectId, artifactId, responseId) ?? null);
+    return row === null ? null : artifactResponseFromRow(row);
+  }
+
   #readThreadRowOrNull(
     projectId: string,
     artifactId: string,
@@ -5182,6 +5266,40 @@ export class SqliteArtifactRepository implements
       ON content_bootstraps (guest_session_id, expires_at);
       CREATE INDEX IF NOT EXISTS content_sessions_guest_session
       ON content_sessions (guest_session_id, expires_at);`);
+  }
+
+  #addArtifactResponsesTableIfMissing(): void {
+    this.#database.exec(`
+      CREATE TABLE IF NOT EXISTS artifact_responses (
+        id TEXT PRIMARY KEY,
+        installation_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+        version_id TEXT NOT NULL REFERENCES versions(id),
+        question_id TEXT NOT NULL CHECK (length(question_id) BETWEEN 1 AND 200),
+        choice TEXT CHECK (choice IS NULL OR length(choice) <= 200),
+        data_json TEXT CHECK (data_json IS NULL OR length(CAST(data_json AS BLOB)) <= 16384),
+        author_kind TEXT NOT NULL CHECK (author_kind IN ('member', 'guest')),
+        author_subject TEXT NOT NULL,
+        author_display_name TEXT NOT NULL,
+        author_email TEXT,
+        guest_session_id TEXT,
+        external_question INTEGER NOT NULL DEFAULT 0 CHECK (external_question IN (0, 1)),
+        created_at TEXT NOT NULL,
+        CHECK ((author_kind = 'guest') = (guest_session_id IS NOT NULL)),
+        CHECK (author_kind <> 'guest' OR author_email IS NULL)
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS artifact_responses_artifact_question_created
+        ON artifact_responses (artifact_id, question_id, created_at, id);
+      CREATE TRIGGER IF NOT EXISTS artifact_responses_no_update
+        BEFORE UPDATE ON artifact_responses BEGIN
+          SELECT RAISE(ABORT, 'artifact responses are immutable');
+        END;
+      CREATE TRIGGER IF NOT EXISTS artifact_responses_no_delete
+        BEFORE DELETE ON artifact_responses BEGIN
+          SELECT RAISE(ABORT, 'artifact responses are immutable');
+        END;
+    `);
   }
 
   #addAgentDispatchTablesIfMissing(): void {
@@ -5503,6 +5621,7 @@ export class SqliteArtifactRepository implements
     this.#addCommentTablesIfMissing();
     this.#addAgentDispatchTablesIfMissing();
     this.#addGuestReviewTablesIfMissing();
+    this.#addArtifactResponsesTableIfMissing();
     this.#widenRegisteredAgentsIfNeeded();
     this.#addSourceBindingColumnsIfMissing();
     this.#addGitHistoryMirrorTablesIfMissing();
@@ -6503,6 +6622,17 @@ function commentReplyFromRow(
     projectId: row.projectId,
     threadId: row.threadId,
     updatedAt: row.updatedAt,
+  };
+}
+
+function artifactResponseFromRow(row: z.infer<typeof artifactResponseRowSchema>): ArtifactResponseRecord {
+  return {
+    artifactId: row.artifactId, authorDisplayName: row.authorDisplayName,
+    authorEmail: row.authorKind === "member" ? row.authorEmail : null,
+    authorKind: row.authorKind, authorSubject: row.authorSubject, choice: row.choice,
+    createdAt: row.createdAt, data: row.dataJson === null ? null : z.json().parse(JSON.parse(row.dataJson)),
+    externalQuestion: row.externalQuestion === 1, guestSessionId: row.guestSessionId,
+    id: row.id, questionId: row.questionId, versionId: row.versionId,
   };
 }
 
