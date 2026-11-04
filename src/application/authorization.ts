@@ -45,6 +45,9 @@ export interface AuthorizationOperations {
   readonly requireCommentRead: (
     principal: Principal,
   ) => Effect.Effect<void, AuthorizationDenied>;
+  readonly requireArtifactResponseRead: (
+    principal: Principal,
+  ) => Effect.Effect<void, AuthorizationDenied>;
   readonly requireCommentWrite: (
     principal: Principal,
   ) => Effect.Effect<void, AuthorizationDenied>;
@@ -224,6 +227,19 @@ function makeAuthorizationService(
     yield* denied();
   });
 
+  const requireArtifactResponseRead = Effect.fn(
+    "AuthorizationService.requireArtifactResponseRead",
+  )(function*(principal: Principal) {
+    yield* requireInstallation(principal);
+    if (
+      isDirectHumanPrincipal(principal) ||
+      hasCapability(principal, principalCapabilities.readArtifacts) ||
+      hasCapability(principal, principalCapabilities.manageAnyArtifact) ||
+      hasCapability(principal, principalCapabilities.readArtifactResponses)
+    ) return;
+    yield* denied();
+  });
+
   const requireArtifactManagement = Effect.fn(
     "AuthorizationService.requireArtifactManagement",
   )(function*(principal: Principal) {
@@ -263,6 +279,7 @@ function makeAuthorizationService(
       hasCapability(principal, principalCapabilities.manageProjects) ||
       hasCapability(principal, principalCapabilities.publishAnyArtifact) ||
       hasCapability(principal, principalCapabilities.readArtifacts) ||
+      hasCapability(principal, principalCapabilities.readArtifactResponses) ||
       hasCapability(principal, principalCapabilities.writeComments)
     ) {
       return;
@@ -306,6 +323,7 @@ function makeAuthorizationService(
     requireArtifactManagement,
     requireArtifactRead,
     requireCommentRead,
+    requireArtifactResponseRead,
     requireCommentWrite,
     requireContentSession,
     requirePublicationPreparation,

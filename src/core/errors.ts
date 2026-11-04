@@ -132,6 +132,18 @@ export class InvalidComment extends Schema.TaggedError<InvalidComment>()(
   messageField,
 ) {}
 
+/** A response value exceeded the immutable response storage contract. */
+export class ArtifactResponseTooLarge extends Schema.TaggedError<ArtifactResponseTooLarge>()(
+  "ArtifactResponseTooLarge",
+  messageField,
+) {}
+
+/** A response identifier, question, choice, or data value is invalid. */
+export class InvalidArtifactResponse extends Schema.TaggedError<InvalidArtifactResponse>()(
+  "InvalidArtifactResponse",
+  messageField,
+) {}
+
 /** The requested registered agent does not exist in this installation. */
 export class AgentNotFound extends Schema.TaggedError<AgentNotFound>()(
   "AgentNotFound",
@@ -381,6 +393,7 @@ export class ArtifactRepositoryFailure extends Schema.TaggedError<ArtifactReposi
       "createAgentDispatch",
       "createCommentReply",
       "createCommentThread",
+      "createArtifactResponse",
       "createContentBootstrap",
       "createGuestInvitation",
       "findGuestInvitation",
@@ -401,6 +414,7 @@ export class ArtifactRepositoryFailure extends Schema.TaggedError<ArtifactReposi
       "disconnectRegisteredAgent",
       "findAgentDispatch",
       "findArtifact",
+      "findArtifactResponse",
       "findArtifactForAdministration",
       "findGitHistoryRepository",
       "findVersionRecord",
@@ -417,6 +431,7 @@ export class ArtifactRepositoryFailure extends Schema.TaggedError<ArtifactReposi
       "deleteArtifact",
       "listAgentDispatches",
       "listArtifactActions",
+      "listArtifactResponses",
       "listArtifacts",
       "listCommentReplies",
       "listCommentThreads",
@@ -526,6 +541,8 @@ const artifactServerFailureSchema = Schema.Union([
   GuestRateLimitExceeded,
   DispatchStateConflict,
   InvalidComment,
+  ArtifactResponseTooLarge,
+  InvalidArtifactResponse,
   InvalidDispatch,
   IdentityAdmissionDenied,
   IdentityConflict,

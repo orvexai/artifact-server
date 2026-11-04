@@ -868,6 +868,13 @@ async function runArtifactBridgeOperation(
     case "delete":
       await api.deleteArtifactStateValue(projectId, artifactId, request.key);
       return {deleted: true};
+    case "respond": {
+      const preview = JSON.stringify({choice: request.choice ?? null, data: request.data ?? null});
+      if (!window.confirm(`This page wants to submit a response as you to question “${request.questionId}”${preview.length > 0 ? `:\n\n${preview.slice(0, 500)}` : ""}`)) {
+        throw new Error("The viewer declined the response.");
+      }
+      return api.createArtifactResponse(projectId, artifactId, versionId, request.questionId, request.choice ?? null, request.data ?? null);
+    }
     default: {
       // A page script is untrusted; it posts as the viewer only with their consent.
       const preview = request.body.length > 500 ? `${request.body.slice(0, 500)}…` : request.body;

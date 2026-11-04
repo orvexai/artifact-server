@@ -33,12 +33,14 @@ export interface InstallationMember {
 /** Identity information returned by a configured interactive-login provider. */
 export interface ExternalIdentity {
   readonly displayName: string;
-  readonly email: string;
+  readonly email: string | null;
   readonly emailVerified: boolean;
   /** Issuer group names, or null when the provider did not report any. */
   readonly groups: readonly string[] | null;
   readonly provider: string;
   readonly subject: string;
+  /** True only for a verified client-credentials service account token. */
+  readonly serviceAccount?: boolean;
 }
 
 /** One server-side browser session after its opaque credential is verified. */

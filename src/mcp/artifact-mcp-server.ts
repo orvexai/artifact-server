@@ -109,7 +109,7 @@ import {
   type ToolResultNudgeFacts,
 } from "./tool-result-nudges.js";
 
-const serverVersion = "0.1.13";
+const serverVersion = "0.1.14";
 const maximumListedArtifacts = 100;
 const maximumTextDiffBytes = 256 * 1_024;
 const accessSettingSchema = z.enum([
@@ -291,6 +291,12 @@ const commentThreadSchema = z.object({
   state: commentStateSchema,
   updatedAt: z.string(),
   versionId: z.string(),
+}).strict();
+const artifactResponseSchema = z.object({
+  artifactId: z.string(), authorDisplayName: z.string(), authorEmail: z.string().nullable(),
+  authorKind: z.enum(["member", "guest"]), authorSubject: z.string(), choice: z.string().nullable(),
+  createdAt: z.string(), data: z.unknown().nullable(), externalQuestion: z.boolean(),
+  guestSessionId: z.string().nullable(), id: z.string(), questionId: z.string(), versionId: z.string(),
 }).strict();
 const commentReplySchema = z.object({
   author: commentAuthorSchema,
@@ -1998,6 +2004,49 @@ export function createArtifactMcpServer(
       );
       return {deleted: true};
     }),
+  );
+
+  registerNudgedTool(
+    "artifact_response_list",
+    {
+      title: "List artifact responses",
+      description: "Poll immutable answers recorded for an artifact. Filter by questionId or versionId, and pass the returned opaque nextCursor as after to continue without skipping tied timestamps.",
+      inputSchema: z.object({
+        after: z.string().min(1).max(1_024).nullable().default(null),
+        artifactId: artifactIdSchema,
+        limit: z.number().int().min(1).max(100).default(50),
+        projectId: optionalProjectIdSchema,
+        questionId: z.string().min(1).max(200).nullable().default(null),
+        versionId: versionIdSchema.nullable().default(null),
+      }).strict(),
+      outputSchema: z.object({items: z.array(artifactResponseSchema), nextCursor: z.string().nullable()}).strict(),
+      annotations: readOnlyAnnotations,
+    },
+    async ({after, artifactId, limit, projectId, questionId, versionId}) =>
+      toolResult(async () => {
+        const page = await runMcpApplicationEffect(dependencies, ArtifactCommentService.use((service) => service.listResponses({
+          after, artifactId, limit, principal: identity.principal, projectId,
+          questionId, versionId,
+        })));
+        return {
+          items: page.items.map((response) => ({
+            artifactId: response.artifactId,
+            authorDisplayName: response.authorDisplayName,
+            authorEmail: identity.principal.kind === "human" ? response.authorEmail : null,
+            authorKind: response.authorKind,
+            authorSubject: response.authorSubject,
+            choice: response.choice,
+            createdAt: response.createdAt,
+            data: response.data,
+            externalQuestion: response.externalQuestion,
+            guestSessionId: response.guestSessionId,
+            id: response.id,
+            questionId: response.questionId,
+            versionId: response.versionId,
+          })),
+          nextCursor: page.nextCursor,
+        };
+      }),
   );
 
   registerNudgedTool(

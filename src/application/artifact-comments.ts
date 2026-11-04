@@ -1,6 +1,7 @@
-import {Context, DateTime, Effect, Layer, Option, Schema} from "effect";
+import {Context, DateTime, Effect, Layer, Option, Predicate, Schema} from "effect";
 
 import type {ProjectRole} from "../core/project-access.js";
+import {decodeArtifactResponseCursor, normalizeResponseTimestamp} from "../core/artifact-response-cursor.js";
 import type {ApplicationClock} from "./application-clock.js";
 import {
   type AuthorizationOperations,
@@ -17,6 +18,8 @@ import {
 } from "./project-management.js";
 import {
   ArtifactNotFound,
+  ArtifactResponseTooLarge,
+  InvalidArtifactResponse,
   type ArtifactRepositoryFailure,
   AuthorizationDenied,
   CommentNotFound,
@@ -51,6 +54,9 @@ import {
   type CommentThreadDeletion,
   type CommentThreadPage,
   type CommentThreadRecord,
+  type ArtifactResponsePage,
+  type ArtifactResponseRecord,
+  type ArtifactResponseData,
   type CommentThreadState,
   type PageCursor,
 } from "../core/model.js";
@@ -66,6 +72,8 @@ import type {
   UpdateCommentReply,
   UpdateCommentThread,
   WriteArtifactStateEntry,
+  CreateArtifactResponse,
+  ListArtifactResponses,
 } from "../core/ports.js";
 import {
   maximumArtifactStateEntryBytes,
@@ -81,6 +89,8 @@ import type {GuestReviewer} from "./guest-review.js";
 export type CommentRepositoryFailure =
   | ArtifactNotFound
   | ArtifactRepositoryFailure
+  | ArtifactResponseTooLarge
+  | InvalidArtifactResponse
   | CommentNotFound
   | CommentResolved
   | DispatchStateConflict
@@ -127,6 +137,25 @@ export interface ReadArtifactStateCommand extends ReadArtifactCommentsCommand {
 /** Input for storing one JSON value shared across all saved versions. */
 export interface WriteArtifactStateCommand extends ReadArtifactStateCommand {
   readonly value: unknown;
+}
+
+/** Values supplied by an interactive artifact response. */
+export interface CreateArtifactResponseCommand {
+  readonly artifactId: string;
+  readonly choice: string | null;
+  readonly data: ArtifactResponseData;
+  readonly principal: Principal;
+  readonly projectId: string | null;
+  readonly questionId: string;
+  readonly versionId: string;
+}
+
+/** Response polling filters and caller identity. */
+export interface ListArtifactResponsesCommand extends ReadArtifactCommentsCommand {
+  readonly after: string | null;
+  readonly limit: number;
+  readonly questionId: string | null;
+  readonly versionId: string | null;
 }
 
 /** Input shared by every operation scoped to one existing reply. */
@@ -181,6 +210,9 @@ export interface ClearCommentThreadsCommand extends ReadArtifactCommentsCommand 
 
 /** Persistence required by comment threads and replies. */
 export interface ArtifactCommentRepository {
+  readonly createResponse: (command: CreateArtifactResponse) => Effect.Effect<ArtifactResponseRecord, CommentRepositoryFailure>;
+  readonly findResponse: (projectId: string, artifactId: string, responseId: string, authorSubject?: string) => Effect.Effect<ArtifactResponseRecord | null, CommentRepositoryFailure>;
+  readonly listResponses: (command: ListArtifactResponses) => Effect.Effect<ArtifactResponsePage, CommentRepositoryFailure>;
   readonly clearThreads: (
     command: ClearCommentThreads,
   ) => Effect.Effect<CommentThreadClearing, CommentRepositoryFailure>;
@@ -256,6 +288,7 @@ export interface ArtifactCommentDependencies {
 /** Expected failures produced by comment operations. */
 export type ArtifactCommentFailure =
   | ArtifactNotFound
+  | ArtifactResponseTooLarge
   | ArtifactRepositoryFailure
   | AuthorizationDenied
   | CommentNotFound
@@ -263,6 +296,7 @@ export type ArtifactCommentFailure =
   | DispatchStateConflict
   | IdempotencyConflict
   | InvalidComment
+  | InvalidArtifactResponse
   | InvalidIdempotencyKey
   | InvalidPagination
   | GuestRateLimitExceeded
@@ -271,6 +305,12 @@ export type ArtifactCommentFailure =
   | LinkedCommentCaptureFailure;
 
 interface ArtifactCommentOperations {
+  readonly createResponse: (command: CreateArtifactResponseCommand) => Effect.Effect<ArtifactResponseRecord, ArtifactCommentFailure>;
+  readonly guestCreateResponse: (command: {readonly guest: GuestReviewer; readonly choice: string | null; readonly data: ArtifactResponseData; readonly questionId: string; readonly versionId: string}) => Effect.Effect<ArtifactResponseRecord, ArtifactCommentFailure>;
+  readonly getResponse: (command: ReadArtifactCommentsCommand & {readonly responseId: string}) => Effect.Effect<ArtifactResponseRecord | null, ArtifactCommentFailure>;
+  readonly guestGetResponse: (command: {readonly guest: GuestReviewer; readonly responseId: string}) => Effect.Effect<ArtifactResponseRecord | null, ArtifactCommentFailure>;
+  readonly listResponses: (command: ListArtifactResponsesCommand) => Effect.Effect<ArtifactResponsePage, ArtifactCommentFailure>;
+  readonly guestListResponses: (command: Omit<ListArtifactResponsesCommand, "principal" | "projectId" | "artifactId"> & {readonly guest: GuestReviewer}) => Effect.Effect<ArtifactResponsePage, ArtifactCommentFailure>;
   readonly guestListThreads: (command: Omit<ListCommentThreadsCommand, "principal" | "projectId" | "artifactId"> & {readonly guest: GuestReviewer}) => Effect.Effect<CommentThreadPage, ArtifactCommentFailure>;
   readonly guestGetThread: (command: {readonly guest: GuestReviewer; readonly threadId: string}) => Effect.Effect<CommentThreadDetails, ArtifactCommentFailure>;
   readonly guestCreateThread: (command: {readonly guest: GuestReviewer; readonly anchor: unknown; readonly body: string; readonly idempotencyKey: string; readonly path: string | null; readonly versionId: string}) => Effect.Effect<CommentThreadCreation, ArtifactCommentFailure>;
@@ -362,6 +402,11 @@ function makeGuestAuthor(guest: GuestReviewer): CommentAuthor {
     principalKind: "human",
   };
 }
+
+const maximumResponseDataBytes = 16 * 1024;
+const maximumResponseChoiceCharacters = 200;
+const maximumResponseQuestionIdCharacters = 200;
+const maximumResponsePageSize = 100;
 
 function makeArtifactCommentService(
   dependencies: ArtifactCommentDependencies,
@@ -1139,7 +1184,101 @@ function makeArtifactCommentService(
       return undefined;
     },
   );
+  const createResponse = Effect.fn("ArtifactCommentService.createResponse")(
+    function*(command: CreateArtifactResponseCommand) {
+      const project = yield* resolveProjectForWrite(command.principal, command.projectId, "viewer");
+      if (command.principal.kind !== "human") {
+        return yield* new AuthorizationDenied({message: "Only members can submit artifact responses."});
+      }
+      yield* authorization.requireCommentRead(command.principal);
+      const artifact = yield* requireArtifact(project.id, command.artifactId);
+      const version = yield* requireVersion(project.id, artifact.id, command.versionId);
+      const values = yield* validateResponseValues(command.questionId, command.choice, command.data);
+      // Inbox notification deferred until an artifact subscription exists.
+      return yield* dependencies.repository.createResponse({
+        artifactId: artifact.id, authorDisplayName: command.principal.displayName,
+        authorEmail: command.principal.email ?? null, authorKind: "member",
+        authorSubject: command.principal.id, choice: values.choice,
+        createdAt: normalizeResponseTimestamp(DateTime.formatIso(yield* dependencies.clock.now)),
+        dataJson: values.dataJson, guestSessionId: null,
+        id: dependencies.ids.artifactResponseId(), installationId: dependencies.installationId,
+        projectId: project.id, questionId: values.questionId, versionId: version.version.id,
+      });
+    },
+  );
+  const guestCreateResponse = Effect.fn("ArtifactCommentService.guestCreateResponse")(
+    function*(command: {readonly guest: GuestReviewer; readonly choice: string | null; readonly data: ArtifactResponseData; readonly questionId: string; readonly versionId: string}) {
+      const artifact = yield* requireArtifact(command.guest.projectId, command.guest.artifactId);
+      const version = yield* requireVersion(command.guest.projectId, artifact.id, command.versionId);
+      const values = yield* validateResponseValues(command.questionId, command.choice, command.data);
+      const createdAt = normalizeResponseTimestamp(DateTime.formatIso(yield* dependencies.clock.now));
+      yield* reserveGuestWrite(command.guest, createdAt);
+      return yield* dependencies.repository.createResponse({
+        artifactId: artifact.id, authorDisplayName: command.guest.displayName,
+        authorEmail: null, authorKind: "guest", authorSubject: `guest_${command.guest.guestId}`,
+        choice: values.choice, createdAt, dataJson: values.dataJson,
+        guestSessionId: command.guest.guestId, id: dependencies.ids.artifactResponseId(),
+        installationId: dependencies.installationId, projectId: command.guest.projectId,
+        questionId: values.questionId, versionId: version.version.id,
+      });
+    },
+  );
+  const listResponses = Effect.fn("ArtifactCommentService.listResponses")(
+    function*(command: ListArtifactResponsesCommand) {
+      const limit = yield* requireResponsePageSize(command.limit);
+      if (command.after !== null && decodeArtifactResponseCursor(command.after) === null) {
+        return yield* new InvalidPagination({message: "The response cursor is invalid or no longer supported."});
+      }
+      const project = yield* resolveProjectForRead(command.principal, command.projectId);
+      yield* authorization.requireArtifactResponseRead(command.principal);
+      yield* requireArtifact(project.id, command.artifactId);
+      const page = yield* dependencies.repository.listResponses({
+        after: command.after, artifactId: command.artifactId, limit,
+        projectId: project.id, questionId: command.questionId, versionId: command.versionId,
+      });
+      return command.principal.kind === "human"
+        ? page
+        : {...page, items: page.items.map((response) => Object.assign({}, response, {authorEmail: null}))};
+    },
+  );
+  const guestListResponses = Effect.fn("ArtifactCommentService.guestListResponses")(
+    function*(command: Omit<ListArtifactResponsesCommand, "principal" | "projectId" | "artifactId"> & {readonly guest: GuestReviewer}) {
+      const limit = yield* requireResponsePageSize(command.limit);
+      if (command.after !== null && decodeArtifactResponseCursor(command.after) === null) {
+        return yield* new InvalidPagination({message: "The response cursor is invalid or no longer supported."});
+      }
+      yield* requireArtifact(command.guest.projectId, command.guest.artifactId);
+      return yield* dependencies.repository.listResponses({
+        after: command.after, artifactId: command.guest.artifactId, authorSubject: `guest_${command.guest.guestId}`,
+        limit, projectId: command.guest.projectId, questionId: command.questionId,
+        versionId: command.versionId,
+      });
+    },
+  );
+  const getResponse = Effect.fn("ArtifactCommentService.getResponse")(
+    function*(command: ReadArtifactCommentsCommand & {readonly responseId: string}) {
+      const project = yield* resolveProjectForRead(command.principal, command.projectId);
+      yield* authorization.requireArtifactResponseRead(command.principal);
+      yield* requireArtifact(project.id, command.artifactId);
+      const response = yield* dependencies.repository.findResponse(project.id, command.artifactId, command.responseId);
+      return response === null || command.principal.kind === "human"
+        ? response
+        : {...response, authorEmail: null};
+    },
+  );
+  const guestGetResponse = Effect.fn("ArtifactCommentService.guestGetResponse")(
+    function*(command: {readonly guest: GuestReviewer; readonly responseId: string}) {
+      yield* requireArtifact(command.guest.projectId, command.guest.artifactId);
+      return yield* dependencies.repository.findResponse(command.guest.projectId, command.guest.artifactId, command.responseId, `guest_${command.guest.guestId}`);
+    },
+  );
   return ArtifactCommentService.of({
+    createResponse,
+    getResponse,
+    guestCreateResponse,
+    guestGetResponse,
+    guestListResponses,
+    listResponses,
     guestCreateReply,
     guestCreateThread,
     guestDeleteReply,
@@ -1162,6 +1301,73 @@ function makeArtifactCommentService(
     updateReply,
     updateThread,
   });
+}
+
+function validateResponseValues(questionId: string, choice: string | null, data: ArtifactResponseData): Effect.Effect<{questionId: string; choice: string | null; dataJson: string | null}, InvalidArtifactResponse | ArtifactResponseTooLarge> {
+  return Effect.gen(function*() {
+    if (questionId.length < 1) return yield* new InvalidArtifactResponse({message: "questionId must not be empty."});
+    if (questionId.length > maximumResponseQuestionIdCharacters) return yield* new ArtifactResponseTooLarge({message: `questionId exceeds the ${maximumResponseQuestionIdCharacters} character limit.`});
+    if (choice !== null && choice.length > maximumResponseChoiceCharacters) return yield* new ArtifactResponseTooLarge({message: `choice exceeds the ${maximumResponseChoiceCharacters} character limit.`});
+    const safety = inspectArtifactResponseData(data);
+    if (safety === "key") return yield* new InvalidArtifactResponse({message: "data contains a prohibited object key."});
+    if (safety === "depth") return yield* new ArtifactResponseTooLarge({message: "data exceeds the maximum nesting depth of 32."});
+    if (safety === "json") return yield* new InvalidArtifactResponse({message: "data must be a JSON value."});
+    const dataJson = data === null ? null : JSON.stringify(data);
+    if (dataJson !== null && new TextEncoder().encode(dataJson).byteLength > maximumResponseDataBytes) return yield* new ArtifactResponseTooLarge({message: `data exceeds the ${maximumResponseDataBytes / 1024} KB response limit.`});
+    return {questionId, choice, dataJson};
+  });
+}
+
+export function inspectArtifactResponseData(
+  root: ArtifactResponseData,
+): "key" | "depth" | "json" | null {
+  const pending: {value: ArtifactResponseData; depth: number; exit: boolean}[] = [
+    {depth: 0, exit: false, value: root},
+  ];
+  const active = new WeakSet<object>();
+  while (pending.length > 0) {
+    const entry = pending.pop();
+    if (entry === undefined) continue;
+    const value = entry.value;
+    if (entry.exit) {
+      if (Predicate.isObject(value)) active.delete(value);
+      continue;
+    }
+    if (value === null || Predicate.isString(value) || Predicate.isBoolean(value)) continue;
+    if (Predicate.isNumber(value)) {
+      if (!Number.isFinite(value)) return "json";
+      continue;
+    }
+    if (!Predicate.isObject(value)) return "json";
+    const depth = entry.depth + 1;
+    if (depth > 32) return "depth";
+    if (active.has(value)) return "json";
+    active.add(value);
+    pending.push({depth: entry.depth, exit: true, value});
+    if (Array.isArray(value)) {
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        pending.push({depth, exit: false, value: value[index]});
+      }
+      continue;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return "json";
+    const entries = Object.entries(value);
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entryValue = entries[index];
+      if (entryValue === undefined) continue;
+      const [key, child] = entryValue;
+      if (key === "__proto__" || key === "constructor" || key === "prototype") return "key";
+      pending.push({depth, exit: false, value: child});
+    }
+  }
+  return null;
+}
+
+function requireResponsePageSize(limit: number): Effect.Effect<number, InvalidPagination> {
+  return Number.isInteger(limit) && limit >= 1 && limit <= maximumResponsePageSize
+    ? Effect.succeed(limit)
+    : Effect.fail(new InvalidPagination({message: `A response page must contain between 1 and ${maximumResponsePageSize} records.`}));
 }
 
 function commentAuthor(principal: Principal): CommentAuthor {

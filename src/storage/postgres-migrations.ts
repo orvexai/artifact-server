@@ -752,6 +752,42 @@ const addGuestInvitationBudgets = Effect.gen(function*() {
     ADD COLUMN bootstrap_issue_count INTEGER NOT NULL DEFAULT 0`);
 });
 
+const addArtifactResponses = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`CREATE TABLE artifact_responses (
+    installation_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    version_id TEXT NOT NULL,
+    question_id TEXT NOT NULL CHECK (char_length(question_id) BETWEEN 1 AND 200),
+    choice TEXT CHECK (choice IS NULL OR char_length(choice) <= 200),
+    data JSONB,
+    author_kind TEXT NOT NULL CHECK (author_kind IN ('member', 'guest')),
+    author_subject TEXT NOT NULL,
+    author_display_name TEXT NOT NULL,
+    author_email TEXT,
+    guest_session_id TEXT,
+    external_question BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (installation_id, id),
+    UNIQUE (installation_id, project_id, id),
+    FOREIGN KEY (installation_id, project_id, artifact_id)
+      REFERENCES artifacts(installation_id, project_id, id),
+    FOREIGN KEY (installation_id, project_id, version_id)
+      REFERENCES versions(installation_id, project_id, id),
+    CHECK ((author_kind = 'guest') = (guest_session_id IS NOT NULL)),
+    CHECK (author_kind <> 'guest' OR author_email IS NULL)
+  )`);
+  yield* sql.unsafe(`CREATE INDEX artifact_responses_artifact_question_created
+    ON artifact_responses (installation_id, project_id, artifact_id, question_id, created_at, id)`);
+  yield* sql.unsafe(`CREATE FUNCTION reject_artifact_response_mutation() RETURNS trigger
+    LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'artifact responses are immutable'; END $$`);
+  yield* sql.unsafe(`CREATE TRIGGER artifact_responses_immutable
+    BEFORE UPDATE OR DELETE ON artifact_responses
+    FOR EACH ROW EXECUTE FUNCTION reject_artifact_response_mutation()`);
+});
+
 const addProjectArchiveAudit = Effect.gen(function*() {
   const sql = yield* SqlClient;
   yield* sql.unsafe(`CREATE TABLE project_archive_events (
@@ -892,6 +928,7 @@ const postgresMigrations = {
   "0021_guest_review_rate_limits": addGuestReviewRateLimits,
   "0022_guest_invitation_exchange_limit": addGuestInvitationExchangeLimit,
   "0023_guest_invitation_budgets": addGuestInvitationBudgets,
+  "0024_artifact_responses": addArtifactResponses,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);
