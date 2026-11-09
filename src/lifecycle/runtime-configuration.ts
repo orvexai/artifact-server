@@ -46,6 +46,10 @@ const bearerCredentialSchema = Schema.String.check(
   Schema.isMaxLength(200),
   Schema.isPattern(managedApiKeyCredentialPattern),
 );
+const embedBindingSecretSchema = Schema.String.check(
+  Schema.isMinLength(32),
+  Schema.isMaxLength(512),
+);
 const emailSchema = Schema.String.check(
   Schema.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/u),
   Schema.isMaxLength(320),
@@ -85,6 +89,8 @@ type ConfiguredCredentialSource = "environment" | "file";
 /** Parsed compact configuration used by serving and lifecycle commands. */
 export interface CompactRuntimeConfiguration {
   readonly apiToken: Redacted.Redacted;
+  readonly embedBindingSecret?: Redacted.Redacted | undefined;
+  readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
   readonly applicationOrigin: string;
   readonly bootstrapAdministratorEmail: string;
   readonly completedRequestLogSampleRate: number;
@@ -106,6 +112,8 @@ export interface CompactRuntimeConfiguration {
 /** Parsed external-storage configuration used by serving and lifecycle commands. */
 export interface ExternalStorageRuntimeConfiguration {
   readonly apiToken: Redacted.Redacted;
+  readonly embedBindingSecret?: Redacted.Redacted | undefined;
+  readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
   readonly applicationOrigin: string;
   readonly bootstrapAdministratorEmail: string;
   readonly completedRequestLogSampleRate: number;
@@ -231,6 +239,16 @@ export const parseCompactRuntimeConfiguration = Effect.fn(
     "ARTIFACT_SERVER_API_TOKEN",
     bearerCredentialSchema,
   );
+  const embedBindingSecret = yield* loadOptionalCredential(
+    input.environment,
+    "ARTIFACT_SERVER_EMBED_BINDING_SECRET",
+    embedBindingSecretSchema,
+  );
+  const embedBindingPreviousSecret = yield* loadOptionalCredential(
+    input.environment,
+    "ARTIFACT_SERVER_EMBED_BINDING_SECRET_PREVIOUS",
+    embedBindingSecretSchema,
+  );
   const applicationOrigin = yield* parseRequiredEnvironment(
     "ARTIFACT_SERVER_ORIGIN",
     input.environment["ARTIFACT_SERVER_ORIGIN"],
@@ -245,6 +263,8 @@ export const parseCompactRuntimeConfiguration = Effect.fn(
   yield* ensureWritableDirectory(layout.dataDirectory);
   return {
     apiToken,
+    embedBindingSecret: embedBindingSecret === null ? undefined : embedBindingSecret.value,
+    embedBindingPreviousSecret: embedBindingPreviousSecret === null ? undefined : embedBindingPreviousSecret.value,
     applicationOrigin,
     bootstrapAdministratorEmail: installation.bootstrapAdministratorEmail,
     completedRequestLogSampleRate: yield* parseSampleRate(input.environment),
@@ -304,6 +324,16 @@ export const parseExternalStorageRuntimeConfiguration = Effect.fn(
     "ARTIFACT_SERVER_API_TOKEN",
     bearerCredentialSchema,
   );
+  const embedBindingSecret = yield* loadOptionalCredential(
+    environment,
+    "ARTIFACT_SERVER_EMBED_BINDING_SECRET",
+    embedBindingSecretSchema,
+  );
+  const embedBindingPreviousSecret = yield* loadOptionalCredential(
+    environment,
+    "ARTIFACT_SERVER_EMBED_BINDING_SECRET_PREVIOUS",
+    embedBindingSecretSchema,
+  );
   const databaseUrl = yield* readSecret(
     environment,
     "ARTIFACT_SERVER_DATABASE_URL",
@@ -312,6 +342,8 @@ export const parseExternalStorageRuntimeConfiguration = Effect.fn(
   yield* assertPostgresUrl(Redacted.value(databaseUrl.value));
   return {
     apiToken: apiToken.value,
+    embedBindingSecret: embedBindingSecret === null ? undefined : embedBindingSecret.value,
+    embedBindingPreviousSecret: embedBindingPreviousSecret === null ? undefined : embedBindingPreviousSecret.value,
     applicationOrigin,
     bootstrapAdministratorEmail: yield* parseRequiredEnvironment(
       "ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL",

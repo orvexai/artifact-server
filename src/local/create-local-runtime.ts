@@ -103,6 +103,9 @@ export interface LocalRuntimeConfig {
   readonly clock?: Clock;
   readonly completedRequestLogSampleRate?: number;
   readonly contentDomain: string;
+  readonly embedBindingSecret?: Redacted.Redacted | undefined;
+  readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
+  readonly embedOrigins?: readonly string[];
   readonly dataDirectory: string;
   /** Server-only credential shared with a co-launched development proxy. */
   readonly developmentProxyCredential?: string;
@@ -332,12 +335,17 @@ export async function createLocalRuntime(
         config.completedRequestLogSampleRate ??
           defaultCompletedRequestLogSampleRate,
       contentDomain: config.contentDomain,
+      embedBindingSecret: config.embedBindingSecret,
+      embedBindingPreviousSecret: config.embedBindingPreviousSecret,
       gitHistory: gitHistoryMonitor?.reader ??
         fixedGitHistoryCapabilityReader(gitHistory.capability),
       linkedArtifacts: linkedFilesEnabled,
       trustedApplicationOrigin: config.applicationOrigin ?? null,
       webAssets: createNodeWebAssetStore(config.webAssetsRoot),
     };
+    if (config.embedOrigins !== undefined) {
+      appDependenciesWithoutOAuth = {...appDependenciesWithoutOAuth, embedOrigins: config.embedOrigins};
+    }
     if (config.developmentProxyCredential !== undefined) {
       appDependenciesWithoutOAuth = {
         ...appDependenciesWithoutOAuth,

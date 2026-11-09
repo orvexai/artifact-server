@@ -12,6 +12,7 @@ export default defineConfig({
       // application's API client.
       input: {
         "review-frame": new URL("./review-frame.html", import.meta.url).pathname,
+        embed: new URL("./embed.html", import.meta.url).pathname,
         review: new URL("./review.html", import.meta.url).pathname,
       },
     },
@@ -64,6 +65,8 @@ function documentRoutes(): Plugin {
         }
         if (pathname === "/review-frame") {
           request.url = `/review-frame.html${query}`;
+        } else if (pathname === "/embed") {
+          request.url = `/embed.html${query}`;
         } else if (pathname === "/review" || pathname.startsWith("/review/")) {
           request.url = `/review.html${query}`;
         }

@@ -28,7 +28,7 @@ import {
   InvalidPagination,
   VersionNotFound,
 } from "../core/errors.js";
-import type { Principal } from "../core/identity.js";
+import {principalCapabilities, type Principal} from "../core/identity.js";
 import type {
   AccessSetting,
   ArtifactActionPage,
@@ -377,7 +377,14 @@ function makeArtifactManagementService(
       if (artifact === null) {
         return yield* new ArtifactNotFound({message: "The artifact does not exist."});
       }
-      yield* authorization.requireArtifactRead(command.principal);
+      if (
+        command.principal.capabilities.includes(principalCapabilities.bindArtifactEmbed) &&
+        command.principal.capabilities.includes(principalCapabilities.readArtifactResponses)
+      ) {
+        yield* authorization.requireArtifactResponseRead(command.principal);
+      } else {
+        yield* authorization.requireArtifactRead(command.principal);
+      }
       if (version === null) {
         return yield* new VersionNotFound({
           message: "The saved version does not exist on this artifact.",

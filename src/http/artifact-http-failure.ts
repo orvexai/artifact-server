@@ -18,6 +18,8 @@ export function artifactServerFailureResponse(failure: ArtifactServerFailure) {
       return {code: errorCodes.artifactNotFound, message: failure.message, status: 404};
     case "ArtifactMutationConflict":
       return {code: errorCodes.artifactMutationConflict, message: failure.message, status: 409};
+    case "EmbedBindingUsed":
+      return {code: errorCodes.embedBindingUsed, message: failure.message, status: 409};
     case "AuthenticationRequired":
       return {code: errorCodes.authenticationRequired, message: failure.message, status: 401};
     case "IdentityAdmissionDenied":

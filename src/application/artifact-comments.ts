@@ -19,6 +19,7 @@ import {
 import {
   ArtifactNotFound,
   ArtifactResponseTooLarge,
+  EmbedBindingUsed,
   InvalidArtifactResponse,
   type ArtifactRepositoryFailure,
   AuthorizationDenied,
@@ -90,6 +91,7 @@ export type CommentRepositoryFailure =
   | ArtifactNotFound
   | ArtifactRepositoryFailure
   | ArtifactResponseTooLarge
+  | EmbedBindingUsed
   | InvalidArtifactResponse
   | CommentNotFound
   | CommentResolved
@@ -144,10 +146,18 @@ export interface CreateArtifactResponseCommand {
   readonly artifactId: string;
   readonly choice: string | null;
   readonly data: ArtifactResponseData;
+  readonly externalQuestion?: boolean;
+  readonly embedBindingJti?: string | undefined;
   readonly principal: Principal;
   readonly projectId: string | null;
   readonly questionId: string;
   readonly versionId: string;
+}
+
+/** The response returned by POST, with replay status from its binding token. */
+export interface ArtifactResponseCreation {
+  readonly record: ArtifactResponseRecord;
+  readonly replayed: boolean;
 }
 
 /** Response polling filters and caller identity. */
@@ -289,6 +299,7 @@ export interface ArtifactCommentDependencies {
 export type ArtifactCommentFailure =
   | ArtifactNotFound
   | ArtifactResponseTooLarge
+  | EmbedBindingUsed
   | ArtifactRepositoryFailure
   | AuthorizationDenied
   | CommentNotFound
@@ -305,7 +316,7 @@ export type ArtifactCommentFailure =
   | LinkedCommentCaptureFailure;
 
 interface ArtifactCommentOperations {
-  readonly createResponse: (command: CreateArtifactResponseCommand) => Effect.Effect<ArtifactResponseRecord, ArtifactCommentFailure>;
+  readonly createResponse: (command: CreateArtifactResponseCommand) => Effect.Effect<ArtifactResponseCreation, ArtifactCommentFailure>;
   readonly guestCreateResponse: (command: {readonly guest: GuestReviewer; readonly choice: string | null; readonly data: ArtifactResponseData; readonly questionId: string; readonly versionId: string}) => Effect.Effect<ArtifactResponseRecord, ArtifactCommentFailure>;
   readonly getResponse: (command: ReadArtifactCommentsCommand & {readonly responseId: string}) => Effect.Effect<ArtifactResponseRecord | null, ArtifactCommentFailure>;
   readonly guestGetResponse: (command: {readonly guest: GuestReviewer; readonly responseId: string}) => Effect.Effect<ArtifactResponseRecord | null, ArtifactCommentFailure>;
@@ -1195,15 +1206,24 @@ function makeArtifactCommentService(
       const version = yield* requireVersion(project.id, artifact.id, command.versionId);
       const values = yield* validateResponseValues(command.questionId, command.choice, command.data);
       // Inbox notification deferred until an artifact subscription exists.
-      return yield* dependencies.repository.createResponse({
+      const id = dependencies.ids.artifactResponseId();
+      const response = yield* dependencies.repository.createResponse({
         artifactId: artifact.id, authorDisplayName: command.principal.displayName,
         authorEmail: command.principal.email ?? null, authorKind: "member",
         authorSubject: command.principal.id, choice: values.choice,
         createdAt: normalizeResponseTimestamp(DateTime.formatIso(yield* dependencies.clock.now)),
-        dataJson: values.dataJson, guestSessionId: null,
-        id: dependencies.ids.artifactResponseId(), installationId: dependencies.installationId,
+        dataJson: values.dataJson, externalQuestion: command.externalQuestion === true,
+        embedBindingJti: command.embedBindingJti,
+        guestSessionId: null,
+        id, installationId: dependencies.installationId,
         projectId: project.id, questionId: values.questionId, versionId: version.version.id,
       });
+      if (command.embedBindingJti !== undefined && response.authorSubject !== command.principal.id) {
+        return yield* new EmbedBindingUsed({
+          message: "This embed response binding has already been used by another viewer.",
+        });
+      }
+      return {record: response, replayed: response.id !== id};
     },
   );
   const guestCreateResponse = Effect.fn("ArtifactCommentService.guestCreateResponse")(

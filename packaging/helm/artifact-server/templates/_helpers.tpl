@@ -163,6 +163,14 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 - key: {{ .Values.secret.keys.oidcDirectoryClientSecret | quote }}
   path: oidc-directory-client-secret
 {{- end }}
+{{- if .Values.secret.keys.embedBindingSecret }}
+- key: {{ .Values.secret.keys.embedBindingSecret | quote }}
+  path: embed-binding-secret
+{{- end }}
+{{- if .Values.secret.keys.embedBindingSecretPrevious }}
+- key: {{ .Values.secret.keys.embedBindingSecretPrevious | quote }}
+  path: embed-binding-secret-previous
+{{- end }}
 {{- end -}}
 
 {{/* Non-empty when the Keycloak directory sync CronJob should exist. */}}
@@ -173,6 +181,14 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- define "artifact-server.runtimeEnvironment" -}}
 - name: ARTIFACT_SERVER_API_TOKEN_FILE
   value: /run/secrets/artifact-server/api-token
+{{- if .Values.secret.keys.embedBindingSecret }}
+- name: ARTIFACT_SERVER_EMBED_BINDING_SECRET_FILE
+  value: /run/secrets/artifact-server/embed-binding-secret
+{{- end }}
+{{- if .Values.secret.keys.embedBindingSecretPrevious }}
+- name: ARTIFACT_SERVER_EMBED_BINDING_SECRET_PREVIOUS_FILE
+  value: /run/secrets/artifact-server/embed-binding-secret-previous
+{{- end }}
 - name: ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL
   value: {{ .Values.configuration.bootstrapAdministratorEmail | quote }}
 - name: ARTIFACT_SERVER_CONTENT_DOMAIN
@@ -229,6 +245,14 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- if .Values.identity.oidcServiceClients }}
 - name: ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS
   value: {{ join "," .Values.identity.oidcServiceClients | quote }}
+{{- end }}
+{{- if .Values.identity.oidcEmbedBindClients }}
+- name: ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS
+  value: {{ join "," .Values.identity.oidcEmbedBindClients | quote }}
+{{- end }}
+{{- if .Values.identity.embedOrigins }}
+- name: ARTIFACT_SERVER_EMBED_ORIGINS
+  value: {{ join "," .Values.identity.embedOrigins | quote }}
 {{- end }}
 {{- if .Values.identity.oidcScopes }}
 - name: ARTIFACT_SERVER_OIDC_SCOPES

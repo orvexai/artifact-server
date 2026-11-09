@@ -6,6 +6,7 @@ import path from "node:path";
 import {DatabaseSync} from "node:sqlite";
 
 import {z} from "zod";
+import type {Redacted} from "effect";
 
 import {
   type LocalServerConfig,
@@ -93,6 +94,9 @@ export async function startTestServer(
     readonly bootstrapAdministratorEmail?: string;
     readonly browserAccess?: BrowserAccess;
     readonly contentDomain?: string;
+    readonly embedOrigins?: readonly string[];
+    readonly embedBindingSecret?: Redacted.Redacted | undefined;
+    readonly embedBindingPreviousSecret?: Redacted.Redacted;
     readonly apiOAuthResource?: ApiOAuthResourceConfiguration;
     readonly clock?: Clock;
     readonly completedRequestLogSampleRate?: number;
@@ -133,6 +137,13 @@ export async function startTestServer(
   let config: LocalServerConfig = baseConfig;
   if (options.applicationOrigin !== undefined) {
     config = {...config, applicationOrigin: options.applicationOrigin};
+  }
+  if (options.embedBindingSecret !== undefined || options.embedBindingPreviousSecret !== undefined) {
+    config = {
+      ...config,
+      embedBindingSecret: options.embedBindingSecret,
+      embedBindingPreviousSecret: options.embedBindingPreviousSecret,
+    };
   }
   if (options.clock !== undefined) {
     config = {...config, clock: options.clock};
@@ -208,6 +219,9 @@ export async function startTestServer(
   }
   if (options.webAssetsRoot !== undefined) {
     config = {...config, webAssetsRoot: options.webAssetsRoot};
+  }
+  if (options.embedOrigins !== undefined) {
+    config = {...config, embedOrigins: options.embedOrigins};
   }
   const server = await startLocalServer(config);
 

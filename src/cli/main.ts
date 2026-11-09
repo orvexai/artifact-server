@@ -32,6 +32,7 @@ import {configureLinkCommand} from "./link-command.js";
 import {configureMcpOnboardingCommands} from "./mcp-onboarding-commands.js";
 import {configurePublishCommand} from "./publish-command.js";
 import {configureCommentsCommand} from "./comments-command.js";
+import {loadEmbedOrigins} from "./embed-configuration.js";
 import {configureArtifactStateCommand} from "./artifact-state-command.js";
 import {configureDownloadCommand} from "./download-command.js";
 import {configureGitHistoryCommands} from "./git-history-commands.js";
@@ -152,6 +153,7 @@ function configureDirectLocalStart(programToConfigure: Command): void {
         completedRequestLogSampleRate:
           observability.ARTIFACT_SERVER_REQUEST_LOG_SAMPLE_RATE,
         dataDirectory,
+        embedOrigins: loadEmbedOrigins(process.env),
         gitHistory,
         linkedFiles,
         linkRoots,
