@@ -902,6 +902,7 @@ export function createHttpApp(
         dependencies.contentDomain,
         dependencies.embedOrigins ?? [],
       ));
+      headers.set("Cache-Control", "no-store");
       return new Response(asset.body, {headers, status: asset.status});
     },
   );
@@ -2292,9 +2293,8 @@ export function createHttpApp(
     if (signingSecret === undefined) return context.notFound();
     const artifactId = context.req.param("artifactId");
     await runHttpApplicationEffect(context, dependencies,
-      ArtifactCommentService.use((comments) => comments.listResponses({
-        after: null, artifactId, limit: 1, principal, projectId: requestedProjectId(context),
-        questionId: null, versionId: body.versionId,
+      ArtifactManagementService.use((management) => management.getVersion({
+        artifactId, principal, projectId: requestedProjectId(context), versionId: body.versionId,
       })));
     const exp = Math.floor(Date.now() / 1_000) + 60 * 60;
     const binding = signEmbedBinding(Redacted.value(signingSecret), {

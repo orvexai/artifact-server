@@ -7,9 +7,24 @@ import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
 
 import {loadEmbedOrigins} from "../../src/cli/embed-configuration.js";
+import {loadOidcConfiguration} from "../../src/cli/oidc-configuration.js";
 import {membershipRoles, principalCapabilities, principalKinds} from "../../src/core/identity.js";
 import {createTestInstallation, issueLocalBrowserLogin, removeTestInstallation, startTestServer, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
 import {publishNew} from "../support/publishing.js";
+
+function signBinding(secret: string, claims: {
+  readonly artifactId: string;
+  readonly exp: number;
+  readonly jti: string;
+  readonly mode: "view" | "respond";
+  readonly questionId: string;
+  readonly versionId: string;
+}): string {
+  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+  const signature = createHmac("sha256", secret)
+    .update("artifact-embed-v1." + payload).digest("base64url");
+  return payload + "." + signature;
+}
 
 describe("artifact embeds", () => {
   type JsonValue = string | number | boolean | null | readonly JsonValue[] | {[key: string]: JsonValue};
@@ -22,6 +37,7 @@ describe("artifact embeds", () => {
   let sessionCookie: string;
   let csrf: string;
   const bindingSecret = "dedicated-embed-binding-secret-with-32-bytes-minimum";
+  const previousBindingSecret = "previous-embed-binding-secret-with-32-bytes-minimum";
   const servicePrincipal = {
     authorizedByPrincipalId: null,
     capabilities: [principalCapabilities.readArtifactResponses, principalCapabilities.bindArtifactEmbed],
@@ -44,8 +60,24 @@ describe("artifact embeds", () => {
     await writeFile(path.join(webAssetsRoot, "review-frame.html"), "<!doctype html><title>Frame</title>");
     server = await startTestServer(installation, {
       embedBindingSecret: Redacted.make(bindingSecret),
+      embedBindingPreviousSecret: Redacted.make(previousBindingSecret),
       embedOrigins: ["https://houston.example.test", "https://another.example.test"],
-      externalApiBearerVerifier: {verify: () => Effect.succeed(servicePrincipal)},
+      externalApiBearerVerifier: {verify: (credential) => {
+        if (Redacted.value(credential) === "test-houston-service-no-embed-bind") {
+          return Effect.succeed({...servicePrincipal, capabilities: [principalCapabilities.readArtifactResponses]});
+        }
+        if (Redacted.value(credential) === "test-other-human") {
+          return Effect.succeed({
+            ...servicePrincipal,
+            capabilities: [],
+            id: "different-human",
+            kind: principalKinds.human,
+            membershipRole: membershipRoles.owner,
+            serviceAccountSource: undefined,
+          });
+        }
+        return Effect.succeed(servicePrincipal);
+      }},
       webAssetsRoot,
     });
     const published = await publishNew(server, installation, {
@@ -90,6 +122,11 @@ describe("artifact embeds", () => {
     return fetch(server.baseUrl + route, init);
   }
 
+  function otherHumanRequest(method: string, route: string, body: JsonValue): Promise<Response> {
+    const headers = new Headers({Authorization: "Bearer test-other-human", "Content-Type": "application/json"});
+    return fetch(server.baseUrl + route, {headers, method, body: JSON.stringify(body)});
+  }
+
   test("is disabled with no configured embedding origins", async () => {
     const disabled = await startTestServer(installation, {webAssetsRoot});
     try {
@@ -116,11 +153,13 @@ describe("artifact embeds", () => {
     expect(plainFrame.headers.get("content-security-policy")).not.toContain("https://houston.example.test");
     const embeddedFrame = await fetch(server.baseUrl + "/review-frame?embed=1");
     expect(embeddedFrame.headers.get("content-security-policy")).toContain("frame-ancestors 'self' https://houston.example.test https://another.example.test");
+    expect(embeddedFrame.headers.get("cache-control")).toBe("no-store");
     const signedIn = await fetch(server.baseUrl + "/embed/signed-in");
     expect(signedIn.headers.get("content-security-policy")).toContain("script-src 'self'");
     expect(await signedIn.text()).toContain("/assets/embed-signed-in.js");
     expect((await fetch(server.baseUrl + "/assets/embed-signed-in.js")).status).toBe(200);
     expect(embed.headers.get("content-security-policy")).toContain("frame-src 'self' http://*.localhost:* https://*.localhost");
+    expect(embed.headers.get("cache-control")).toBe("no-store");
   });
 
   test("rejects malformed configured origins", () => {
@@ -136,11 +175,37 @@ describe("artifact embeds", () => {
     expect(loadEmbedOrigins({ARTIFACT_SERVER_EMBED_ORIGINS: "https://houston.example.test,"})).toEqual(["https://houston.example.test"]);
   });
 
+  test("limits embed binding to the configured subset of OIDC service clients", async () => {
+    const oidc = await loadOidcConfiguration({
+      ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL: "admin@example.test",
+      ARTIFACT_SERVER_ORIGIN: "https://artifacts.example.test",
+      ARTIFACT_SERVER_OIDC_CLIENT_ID: "browser",
+      ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS: "houston-v2",
+      ARTIFACT_SERVER_OIDC_ISSUER: "https://auth.example.test",
+      ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS: "houston-v2,other-service",
+    });
+    expect(oidc?.embedBindingClients).toEqual(["houston-v2"]);
+    await expect(loadOidcConfiguration({
+      ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL: "admin@example.test",
+      ARTIFACT_SERVER_ORIGIN: "https://artifacts.example.test",
+      ARTIFACT_SERVER_OIDC_CLIENT_ID: "browser",
+      ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS: "not-a-service-client",
+      ARTIFACT_SERVER_OIDC_ISSUER: "https://auth.example.test",
+      ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS: "houston-v2",
+    })).rejects.toThrow("must also appear in ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS");
+  });
+
   test("binds external responses to the server question despite a different submitted id", async () => {
     const humanMint = await memberRequest("POST", "/api/v1/embed/artifacts/" + artifactId + "/binding?projectId=" + projectId, {
       mode: "respond", questionId: "bound-question", versionId,
     });
     expect(humanMint.status).toBe(403);
+    const nonOptedService = await fetch(server.baseUrl + "/api/v1/embed/artifacts/" + artifactId + "/binding?projectId=" + projectId, {
+      headers: {Authorization: "Bearer test-houston-service-no-embed-bind", "Content-Type": "application/json"},
+      method: "POST",
+      body: JSON.stringify({mode: "respond", questionId: "bound-question", versionId}),
+    });
+    expect(nonOptedService.status).toBe(403);
     const bindingResponse = await serviceRequest("POST", "/api/v1/embed/artifacts/" + artifactId + "/binding?projectId=" + projectId, {
       mode: "respond", questionId: "bound-question", versionId,
     });
@@ -153,6 +218,17 @@ describe("artifact embeds", () => {
     );
     expect(response.status).toBe(201);
     expect(await response.json()).toMatchObject({externalQuestion: true, questionId: "bound-question", versionId});
+
+    const secondViewer = await otherHumanRequest(
+      "POST",
+      "/api/v1/artifacts/" + artifactId + "/responses?projectId=" + projectId,
+      {choice: "no", embedBinding: binding, questionId: "attacker-question", versionId},
+    );
+    expect(secondViewer.status).toBe(409);
+    expect(await secondViewer.json()).toMatchObject({error: {
+      code: "embed_binding_used",
+      message: "This embed response binding has already been used by another viewer.",
+    }});
   });
 
   test("rejects forged and expired response bindings and refuses view-mode binding", async () => {
@@ -202,6 +278,56 @@ describe("artifact embeds", () => {
     const listedBody = await listed.json();
     expect(listedBody).toMatchObject({items: [firstBody]});
     expect(z.object({items: z.array(z.unknown())}).parse(listedBody).items).toHaveLength(1);
+  });
+
+  test("allows concurrent submissions for one viewer to return the one recorded response", async () => {
+    const bindingResponse = await serviceRequest("POST", "/api/v1/embed/artifacts/" + artifactId + "/binding?projectId=" + projectId, {
+      mode: "respond", questionId: "concurrent-question", versionId,
+    });
+    const binding = z.object({binding: z.string()}).parse(await bindingResponse.json()).binding;
+    const responsePath = "/api/v1/artifacts/" + artifactId + "/responses?projectId=" + projectId;
+    const submitted = await Promise.all(["first", "second"].map((choice) => memberRequest("POST", responsePath, {
+      choice, embedBinding: binding, questionId: "ignored", versionId,
+    })));
+    expect(submitted.map((response) => response.status)).toEqual([201, 201]);
+    const records = await Promise.all(submitted.map(async (response) => z.object({
+      id: z.string(),
+      choice: z.string().nullable(),
+      externalQuestion: z.boolean(),
+      questionId: z.string(),
+      versionId: z.string(),
+    }).parse(await response.json())));
+    expect(records[0]).toEqual(records[1]);
+    const listed = await memberRequest("GET", responsePath + "&questionId=concurrent-question&versionId=" + versionId);
+    expect(z.object({items: z.array(z.unknown())}).parse(await listed.json()).items).toHaveLength(1);
+  });
+
+  test("accepts a response binding signed by the previous rotation key", async () => {
+    const binding = signBinding(previousBindingSecret, {
+      artifactId,
+      exp: Math.floor(Date.now() / 1_000) + 300,
+      jti: "00000000-0000-4000-8000-000000000099",
+      mode: "respond",
+      questionId: "rotated-question",
+      versionId,
+    });
+    const response = await memberRequest("POST", "/api/v1/artifacts/" + artifactId + "/responses?projectId=" + projectId, {
+      choice: "yes", embedBinding: binding, questionId: "ignored", versionId,
+    });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({externalQuestion: true, questionId: "rotated-question"});
+  });
+
+  test("rejects a binding version that belongs to another artifact", async () => {
+    const other = await publishNew(server, installation, {
+      accessSetting: "account_required",
+      content: "<!doctype html><title>Other artifact</title>",
+      idempotencyKey: "embed-other-artifact",
+    });
+    const response = await serviceRequest("POST", "/api/v1/embed/artifacts/" + artifactId + "/binding?projectId=" + projectId, {
+      mode: "respond", questionId: "bound-question", versionId: other.body.version.id,
+    });
+    expect(response.status).toBe(404);
   });
 
   test("returns 404 for a manifest path outside the requested version", async () => {

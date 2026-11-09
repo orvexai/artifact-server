@@ -50,6 +50,9 @@ identity:
   # OAuth clients explicitly allowed to use group-bound service bearer access.
   # Empty by default; entries are sent as ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS.
   oidcServiceClients: []
+  # Subset of oidcServiceClients allowed to bind embed question responses.
+  # Entries are sent as ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS.
+  oidcEmbedBindClients: []
   # Empty by default; exact parent origins allowed to embed artifacts.
   embedOrigins: []
   # Opt-in issuer group roles, unset by default so admission stays manual.

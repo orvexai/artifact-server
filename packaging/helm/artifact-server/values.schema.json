@@ -137,7 +137,8 @@
         "oidcIssuer": {"type": "string"},
         "oidcScopes": {"type": "string"},
         "oidcServiceClients": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-        "embedOrigins": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^https?://[^/*]+$"}},
+        "oidcEmbedBindClients": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "embedOrigins": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^https://[A-Za-z0-9.-]+(:[0-9]+)?$"}},
         "oidcGroupsClaim": {"type": "string"},
         "oidcGroupRoleSeed": {
           "type": "array",

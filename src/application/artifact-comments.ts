@@ -19,6 +19,7 @@ import {
 import {
   ArtifactNotFound,
   ArtifactResponseTooLarge,
+  EmbedBindingUsed,
   InvalidArtifactResponse,
   type ArtifactRepositoryFailure,
   AuthorizationDenied,
@@ -90,6 +91,7 @@ export type CommentRepositoryFailure =
   | ArtifactNotFound
   | ArtifactRepositoryFailure
   | ArtifactResponseTooLarge
+  | EmbedBindingUsed
   | InvalidArtifactResponse
   | CommentNotFound
   | CommentResolved
@@ -291,6 +293,7 @@ export interface ArtifactCommentDependencies {
 export type ArtifactCommentFailure =
   | ArtifactNotFound
   | ArtifactResponseTooLarge
+  | EmbedBindingUsed
   | ArtifactRepositoryFailure
   | AuthorizationDenied
   | CommentNotFound
@@ -1197,7 +1200,7 @@ function makeArtifactCommentService(
       const version = yield* requireVersion(project.id, artifact.id, command.versionId);
       const values = yield* validateResponseValues(command.questionId, command.choice, command.data);
       // Inbox notification deferred until an artifact subscription exists.
-      return yield* dependencies.repository.createResponse({
+      const response = yield* dependencies.repository.createResponse({
         artifactId: artifact.id, authorDisplayName: command.principal.displayName,
         authorEmail: command.principal.email ?? null, authorKind: "member",
         authorSubject: command.principal.id, choice: values.choice,
@@ -1208,6 +1211,12 @@ function makeArtifactCommentService(
         id: dependencies.ids.artifactResponseId(), installationId: dependencies.installationId,
         projectId: project.id, questionId: values.questionId, versionId: version.version.id,
       });
+      if (command.embedBindingJti !== undefined && response.authorSubject !== command.principal.id) {
+        return yield* new EmbedBindingUsed({
+          message: "This embed response binding has already been used by another viewer.",
+        });
+      }
+      return response;
     },
   );
   const guestCreateResponse = Effect.fn("ArtifactCommentService.guestCreateResponse")(

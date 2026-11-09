@@ -35,6 +35,7 @@ const oidcEnvironmentSchema = z.object({
   ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_SCOPES: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS: z.string().optional(),
+  ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS: z.string().optional(),
   ARTIFACT_SERVER_ORIGIN: z.url().optional(),
 });
 
@@ -59,6 +60,8 @@ export interface OidcConfiguration {
   readonly clientSecret: Redacted.Redacted | null;
   /** Directory sync settings; null when the directory is not synced. */
   readonly directory: OidcDirectoryConfiguration | null;
+  /** Service clients explicitly allowed to bind external embed questions. */
+  readonly embedBindingClients: readonly string[];
   /** Issuer groups that admit people and set their role; null keeps it manual. */
   readonly groupRoles: OidcGroupRoles | null;
   readonly issuer: string;
@@ -97,6 +100,7 @@ export async function loadOidcConfiguration(
     parsed.ARTIFACT_SERVER_OIDC_API_RESOURCE === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_API_JWKS_URI === undefined
     && (parsed.ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS ?? "").trim() === ""
+    && (parsed.ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS ?? "").trim() === ""
   ) {
     return null;
   }
@@ -125,6 +129,15 @@ export async function loadOidcConfiguration(
     );
   }
   const groupRoles = oidcGroupRoles(parsed);
+  const serviceClients = (parsed.ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS ?? "")
+    .split(",").map((client) => client.trim()).filter(Boolean);
+  const embedBindingClients = (parsed.ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS ?? "")
+    .split(",").map((client) => client.trim()).filter(Boolean);
+  if (embedBindingClients.some((client) => !serviceClients.includes(client))) {
+    throw new Error(
+      "Every ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS entry must also appear in ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS.",
+    );
+  }
   return {
     apiResource: parsed.ARTIFACT_SERVER_OIDC_API_RESOURCE ?? null,
     apiJwksUri,
@@ -140,11 +153,11 @@ export async function loadOidcConfiguration(
       issuer,
       groupRoles,
     ),
+    embedBindingClients,
     groupRoles,
     issuer,
     scopes: parsed.ARTIFACT_SERVER_OIDC_SCOPES ?? defaultOidcScopes,
-    serviceClients: (parsed.ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS ?? "")
-      .split(",").map((client) => client.trim()).filter(Boolean),
+    serviceClients,
   };
 }
 
