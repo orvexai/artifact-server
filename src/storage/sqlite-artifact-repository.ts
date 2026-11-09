@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import {
   AgentDispatchNotFound,
+  EmbedBindingUsed,
   ArtifactMutationConflict,
   ArtifactNotFound,
   CommentNotFound,
@@ -3662,6 +3663,9 @@ export class SqliteArtifactRepository implements
       const row = command.embedBindingJti === undefined
         ? this.#readResponse(command.projectId, command.artifactId, command.id)
         : this.#readResponseByEmbedBindingJti(command.installationId, command.embedBindingJti);
+      if (row === null && command.embedBindingJti !== undefined) {
+        throw new EmbedBindingUsed({message: "This embed response binding has already been used."});
+      }
       if (row === null) throw new Error("Inserted artifact response disappeared.");
       return row;
     }));

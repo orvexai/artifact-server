@@ -3,6 +3,7 @@ import {SqlClient} from "effect/unstable/sql/SqlClient";
 import {z} from "zod";
 
 import {
+  EmbedBindingUsed,
   AgentDispatchNotFound,
   ArtifactMutationConflict,
   ArtifactNotFound,
@@ -2834,6 +2835,11 @@ export class PostgresArtifactRepository implements
           version_id AS "versionId" FROM artifact_responses
           WHERE installation_id = ${installationId} AND embed_binding_jti = ${command.embedBindingJti}`;
         rowValue = existing[0];
+        if (rowValue === undefined) {
+          return yield* new EmbedBindingUsed({
+            message: "This embed response binding has already been used.",
+          });
+        }
       }
       const row = artifactResponseRowSchema.parse(rowValue);
       return artifactResponseFromRow(row);

@@ -2492,7 +2492,7 @@ export function createHttpApp(
       projectId: requestedProjectId(context), questionId: bindingClaims?.questionId ?? body.questionId,
       versionId: body.versionId,
     })));
-    return context.json(response, 201);
+    return context.json({...response.record, replayed: response.replayed}, 201);
   });
 
   app.get("/api/v1/artifacts/:artifactId/state", async (context) => {

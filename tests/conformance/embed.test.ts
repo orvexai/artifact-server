@@ -169,9 +169,13 @@ describe("artifact embeds", () => {
       "https://*.example.test",
       "https://user@houston.example.test",
       "https://houston.example.test?x=1",
+      "http://embed.example.test",
     ]) {
       expect(() => loadEmbedOrigins({ARTIFACT_SERVER_EMBED_ORIGINS: value})).toThrow("Invalid ARTIFACT_SERVER_EMBED_ORIGINS entry");
     }
+    expect(loadEmbedOrigins({ARTIFACT_SERVER_EMBED_ORIGINS: "http://localhost:3000,http://127.0.0.1:8787,http://[::1]:5173"})).toEqual([
+      "http://localhost:3000", "http://127.0.0.1:8787", "http://[::1]:5173",
+    ]);
     expect(loadEmbedOrigins({ARTIFACT_SERVER_EMBED_ORIGINS: "https://houston.example.test,"})).toEqual(["https://houston.example.test"]);
   });
 
@@ -217,7 +221,12 @@ describe("artifact embeds", () => {
       {choice: "yes", embedBinding: binding, questionId: "caller-question", versionId},
     );
     expect(response.status).toBe(201);
-    expect(await response.json()).toMatchObject({externalQuestion: true, questionId: "bound-question", versionId});
+    const firstRecord = z.object({
+      id: z.string(), authorDisplayName: z.string(), authorEmail: z.string().nullable(),
+      authorSubject: z.string(), choice: z.string().nullable(), externalQuestion: z.boolean(),
+      questionId: z.string(), replayed: z.boolean(), versionId: z.string(),
+    }).parse(await response.json());
+    expect(firstRecord).toMatchObject({externalQuestion: true, questionId: "bound-question", replayed: false, versionId});
 
     const secondViewer = await otherHumanRequest(
       "POST",
@@ -225,10 +234,22 @@ describe("artifact embeds", () => {
       {choice: "no", embedBinding: binding, questionId: "attacker-question", versionId},
     );
     expect(secondViewer.status).toBe(409);
-    expect(await secondViewer.json()).toMatchObject({error: {
-      code: "embed_binding_used",
-      message: "This embed response binding has already been used by another viewer.",
-    }});
+    const conflictBody = JSON.stringify(await secondViewer.json());
+    expect(conflictBody).toContain('"code":"embed_binding_used"');
+    expect(conflictBody).toContain("already been used by another viewer");
+    const privateValues = [
+      firstRecord.id,
+      firstRecord.authorSubject,
+      firstRecord.authorDisplayName,
+      firstRecord.authorEmail,
+      firstRecord.choice,
+    ].filter((value): value is string => value !== null);
+    expect(privateValues.every((privateValue) => !conflictBody.includes(privateValue))).toBe(true);
+    const responsePath = "/api/v1/artifacts/" + artifactId + "/responses?projectId=" + projectId;
+    const listed = z.object({items: z.array(z.unknown())}).parse(await (await memberRequest(
+      "GET", responsePath + "&questionId=bound-question&versionId=" + versionId,
+    )).json());
+    expect(listed.items).toHaveLength(1);
   });
 
   test("rejects forged and expired response bindings and refuses view-mode binding", async () => {
@@ -268,15 +289,22 @@ describe("artifact embeds", () => {
     const first = await memberRequest("POST", responsePath, {
       choice: "first", embedBinding: binding, questionId: "ignored-a", versionId,
     });
-    const firstBody = z.object({id: z.string(), choice: z.string().nullable(), externalQuestion: z.boolean(), questionId: z.string()}).parse(await first.json());
+    const firstBody = z.object({id: z.string(), choice: z.string().nullable(), externalQuestion: z.boolean(), questionId: z.string(), replayed: z.boolean()}).parse(await first.json());
+    expect(firstBody.replayed).toBe(false);
     const replay = await memberRequest("POST", responsePath, {
       choice: "second", embedBinding: binding, questionId: "ignored-b", versionId,
     });
     expect(replay.status).toBe(201);
-    expect(await replay.json()).toMatchObject(firstBody);
+    const replayBody = z.object({id: z.string(), choice: z.string().nullable(), externalQuestion: z.boolean(), questionId: z.string(), replayed: z.boolean()}).parse(await replay.json());
+    expect(replayBody).toMatchObject({...firstBody, replayed: true});
     const listed = await memberRequest("GET", responsePath + "&questionId=replay-question&versionId=" + versionId);
     const listedBody = await listed.json();
-    expect(listedBody).toMatchObject({items: [firstBody]});
+    expect(listedBody).toMatchObject({items: [{
+      id: firstBody.id,
+      choice: firstBody.choice,
+      externalQuestion: firstBody.externalQuestion,
+      questionId: firstBody.questionId,
+    }]});
     expect(z.object({items: z.array(z.unknown())}).parse(listedBody).items).toHaveLength(1);
   });
 
@@ -295,9 +323,11 @@ describe("artifact embeds", () => {
       choice: z.string().nullable(),
       externalQuestion: z.boolean(),
       questionId: z.string(),
+      replayed: z.boolean(),
       versionId: z.string(),
     }).parse(await response.json())));
-    expect(records[0]).toEqual(records[1]);
+    expect(records.map((record) => record.replayed).toSorted((left, right) => Number(left) - Number(right))).toEqual([false, true]);
+    expect(records[0]?.id).toBe(records[1]?.id);
     const listed = await memberRequest("GET", responsePath + "&questionId=concurrent-question&versionId=" + versionId);
     expect(z.object({items: z.array(z.unknown())}).parse(await listed.json()).items).toHaveLength(1);
   });
