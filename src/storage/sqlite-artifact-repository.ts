@@ -3650,12 +3650,13 @@ export class SqliteArtifactRepository implements
       this.#database.prepare(`INSERT INTO artifact_responses (
         id, installation_id, project_id, artifact_id, version_id, question_id,
         choice, data_json, author_kind, author_subject, author_display_name,
-        author_email, guest_session_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        author_email, guest_session_id, created_at, external_question
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         command.id, command.installationId, command.projectId, command.artifactId,
         command.versionId, command.questionId, command.choice, command.dataJson,
         command.authorKind, command.authorSubject, command.authorDisplayName,
         command.authorEmail, command.guestSessionId, command.createdAt,
+        command.externalQuestion === true ? 1 : 0,
       );
       const row = this.#readResponse(command.projectId, command.artifactId, command.id);
       if (row === null) throw new Error("Inserted artifact response disappeared.");

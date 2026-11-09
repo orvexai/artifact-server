@@ -333,7 +333,6 @@ export async function createLocalRuntime(
         config.completedRequestLogSampleRate ??
           defaultCompletedRequestLogSampleRate,
       contentDomain: config.contentDomain,
-      embedOrigins: config.embedOrigins,
       embedBindingSecret: config.apiToken,
       gitHistory: gitHistoryMonitor?.reader ??
         fixedGitHistoryCapabilityReader(gitHistory.capability),
@@ -341,6 +340,9 @@ export async function createLocalRuntime(
       trustedApplicationOrigin: config.applicationOrigin ?? null,
       webAssets: createNodeWebAssetStore(config.webAssetsRoot),
     };
+    if (config.embedOrigins !== undefined) {
+      appDependenciesWithoutOAuth = {...appDependenciesWithoutOAuth, embedOrigins: config.embedOrigins};
+    }
     if (config.developmentProxyCredential !== undefined) {
       appDependenciesWithoutOAuth = {
         ...appDependenciesWithoutOAuth,

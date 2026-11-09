@@ -2810,13 +2810,14 @@ export class PostgresArtifactRepository implements
       const rows = yield* sql<z.infer<typeof artifactResponseRowSchema>>`INSERT INTO artifact_responses (
         installation_id, project_id, id, artifact_id, version_id, question_id,
         choice, data, author_kind, author_subject, author_display_name,
-        author_email, guest_session_id, created_at
+        author_email, guest_session_id, created_at, external_question
       ) VALUES (
         ${installationId}, ${command.projectId}, ${command.id}, ${command.artifactId},
         ${command.versionId}, ${command.questionId}, ${command.choice},
         CASE WHEN ${command.dataJson}::text IS NULL THEN NULL ELSE ${command.dataJson}::jsonb END,
         ${command.authorKind}, ${command.authorSubject}, ${command.authorDisplayName},
-        ${command.authorEmail}, ${command.guestSessionId}, ${command.createdAt}
+        ${command.authorEmail}, ${command.guestSessionId}, ${command.createdAt},
+        ${command.externalQuestion === true}
       ) RETURNING artifact_id AS "artifactId", author_display_name AS "authorDisplayName",
         author_email AS "authorEmail", author_kind AS "authorKind",
         author_subject AS "authorSubject", choice, created_at AS "createdAt", data,

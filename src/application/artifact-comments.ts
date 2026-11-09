@@ -144,6 +144,7 @@ export interface CreateArtifactResponseCommand {
   readonly artifactId: string;
   readonly choice: string | null;
   readonly data: ArtifactResponseData;
+  readonly externalQuestion?: boolean;
   readonly principal: Principal;
   readonly projectId: string | null;
   readonly questionId: string;
@@ -1200,7 +1201,8 @@ function makeArtifactCommentService(
         authorEmail: command.principal.email ?? null, authorKind: "member",
         authorSubject: command.principal.id, choice: values.choice,
         createdAt: normalizeResponseTimestamp(DateTime.formatIso(yield* dependencies.clock.now)),
-        dataJson: values.dataJson, guestSessionId: null,
+        dataJson: values.dataJson, externalQuestion: command.externalQuestion === true,
+        guestSessionId: null,
         id: dependencies.ids.artifactResponseId(), installationId: dependencies.installationId,
         projectId: project.id, questionId: values.questionId, versionId: version.version.id,
       });

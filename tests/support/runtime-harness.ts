@@ -93,6 +93,7 @@ export async function startTestServer(
     readonly bootstrapAdministratorEmail?: string;
     readonly browserAccess?: BrowserAccess;
     readonly contentDomain?: string;
+    readonly embedOrigins?: readonly string[];
     readonly apiOAuthResource?: ApiOAuthResourceConfiguration;
     readonly clock?: Clock;
     readonly completedRequestLogSampleRate?: number;
@@ -208,6 +209,9 @@ export async function startTestServer(
   }
   if (options.webAssetsRoot !== undefined) {
     config = {...config, webAssetsRoot: options.webAssetsRoot};
+  }
+  if (options.embedOrigins !== undefined) {
+    config = {...config, embedOrigins: options.embedOrigins};
   }
   const server = await startLocalServer(config);
 

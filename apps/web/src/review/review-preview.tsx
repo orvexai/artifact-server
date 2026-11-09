@@ -330,6 +330,7 @@ function HtmlPreview({
       const parsed = frameMessageSchema.safeParse(event.data);
       if (!parsed.success) return;
       const message = parsed.data;
+      if (message.type === "as-artifact-resize") return;
       if (message.type === "as-artifact-bridge-request") {
         void handleArtifactBridgeRequest(
           message,

@@ -203,6 +203,9 @@ interface ContentAccessOperations {
   readonly resolvePublicArtifact: (
     artifactId: string,
   ) => Effect.Effect<PublishedVersion, ContentAccessFailure>;
+  readonly resolvePublicArtifactVersion: (
+    artifactId: string,
+  ) => Effect.Effect<{readonly artifact: PublishedVersion["artifact"]; readonly version: ArtifactVersion}, ContentAccessFailure>;
 }
 
 /** Owns public-link and private version-scoped browser authorization. */
@@ -464,6 +467,19 @@ function makeContentAccessService(
     return current;
   });
 
+  const resolvePublicArtifactVersion = Effect.fn(
+    "ContentAccessService.resolvePublicArtifactVersion",
+  )(function*(artifactId: string) {
+    const current = yield* resolvePublicArtifact(artifactId);
+    const version = yield* dependencies.repository.findVersionRecord(
+      current.artifact.projectId, current.artifact.id, current.version.id,
+    );
+    if (version === null) {
+      return yield* Effect.fail(new VersionNotFound({message: "The requested route does not exist."}));
+    }
+    return {artifact: current.artifact, version};
+  });
+
   return ContentAccessService.of({
     authorizePreviewContent,
     authorizeVersionContent,
@@ -472,6 +488,7 @@ function makeContentAccessService(
     issueGuestContentBootstrap,
     issuePreviewLease,
     resolvePublicArtifact,
+    resolvePublicArtifactVersion,
   });
 }
 

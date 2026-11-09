@@ -241,6 +241,7 @@ export interface CreateArtifactResponse {
   readonly choice: string | null;
   readonly createdAt: string;
   readonly dataJson: string | null;
+  readonly externalQuestion?: boolean;
   readonly guestSessionId: string | null;
   readonly id: string;
   readonly installationId: string;

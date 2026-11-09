@@ -1,4 +1,4 @@
-import {Effect, Layer, ManagedRuntime, type Redacted} from "effect";
+import {Effect, Layer, ManagedRuntime, Redacted} from "effect";
 
 import type {ApplicationRuntime} from "../application/application-runtime.js";
 import type {
@@ -271,7 +271,6 @@ export async function createExternalStorageRuntime(
         config.completedRequestLogSampleRate ??
           defaultCompletedRequestLogSampleRate,
       contentDomain: config.contentDomain,
-      embedOrigins: config.embedOrigins,
       embedBindingSecret: Redacted.value(config.apiToken),
       gitHistory: gitHistoryMonitor?.reader ??
         fixedGitHistoryCapabilityReader(gitHistory.capability),
@@ -279,7 +278,11 @@ export async function createExternalStorageRuntime(
       trustedApplicationOrigin: config.applicationOrigin ?? null,
       webAssets: createNodeWebAssetStore(),
     };
-    let appDependencies: HttpAppDependencies = appDependenciesWithoutOAuth;
+    let configuredAppDependencies: HttpAppDependencies = appDependenciesWithoutOAuth;
+    if (config.embedOrigins !== undefined) {
+      configuredAppDependencies = {...configuredAppDependencies, embedOrigins: config.embedOrigins};
+    }
+    let appDependencies: HttpAppDependencies = configuredAppDependencies;
     if (config.apiOAuthResource !== undefined) {
       appDependencies = {
         ...appDependencies,

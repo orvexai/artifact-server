@@ -61,6 +61,13 @@ function sessionFrom(init: ReviewInit): ReviewSession {
 const artifactBridgeScript = `<script>(() => {
   let sequence = 0;
   const pending = new Map();
+  const reportHeight = () => {
+    const height = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0);
+    window.parent.postMessage({type:"as-artifact-resize", v:1, height}, "*");
+  };
+  const resizeObserver = new ResizeObserver(reportHeight);
+  resizeObserver.observe(document.documentElement);
+  window.addEventListener("load", reportHeight);
   const request = (operation, fields = {}) => new Promise((resolve, reject) => {
     const id = "page-" + Date.now() + "-" + (++sequence) + "-" + Math.random().toString(36).slice(2);
     const timer = setTimeout(() => { pending.delete(id); reject(new Error("Artifact bridge timed out.")); }, 15000);
@@ -184,7 +191,12 @@ export function ReviewFrame(): React.ReactNode {
       const contentFrame = document.querySelector("iframe");
       if (contentFrame?.contentWindow !== event.source || event.origin !== "null") return;
       const parsed = frameMessageSchema.safeParse(event.data);
-      if (!parsed.success || parsed.data.type !== "as-artifact-bridge-request") return;
+      if (!parsed.success) return;
+      if (parsed.data.type === "as-artifact-resize") {
+        send(parsed.data);
+        return;
+      }
+      if (parsed.data.type !== "as-artifact-bridge-request") return;
       send(parsed.data);
     };
     window.addEventListener("message", onContentMessage);
