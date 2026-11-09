@@ -541,6 +541,8 @@ export interface HttpAppDependencies {
   readonly browserAccess: BrowserAccess;
   readonly completedRequestLogSampleRate: number;
   readonly contentDomain: string;
+  readonly embedOrigins?: readonly string[];
+  readonly embedBindingSecret?: string;
   /** Server-only credential accepted from the co-launched Vite proxy. */
   readonly developmentProxyCredential?: Redacted.Redacted;
   /**

@@ -59,6 +59,7 @@ import {
 import {loadWorkOsConfiguration} from "./workos-configuration.js";
 import {writeGitHistoryConfigurationWarnings} from
   "./git-history-configuration-warnings.js";
+import {loadEmbedOrigins} from "./embed-configuration.js";
 import {
   browserLoginKinds,
   privateTeamBrowserAccess,
@@ -386,6 +387,7 @@ function configureExternalStorageStart(
     .addOption(portOption())
     .action(async (options: StartExternalStorageOptions) => {
       const parsed = await parseExternalConfiguration(options.host, options.port);
+      const embedOrigins = loadEmbedOrigins(process.env);
       writeGitHistoryConfigurationWarnings(parsed.gitHistory);
       assertAtMostOneBrowserLoginProvider(process.env);
       const workOs = await loadWorkOsConfiguration(process.env);
@@ -409,6 +411,7 @@ function configureExternalStorageStart(
         completedRequestLogSampleRate: parsed.completedRequestLogSampleRate,
         contentDomain: parsed.contentDomain,
         databaseUrl: parsed.databaseUrl,
+        embedOrigins,
         gitHistory: parsed.gitHistory,
         hostname: parsed.hostname,
         installationId: parsed.installationId,
@@ -465,6 +468,7 @@ async function startCompactServer(
       configuration.bootstrapAdministratorEmail,
     ARTIFACT_SERVER_ORIGIN: configuration.applicationOrigin,
   });
+  const embedOrigins = loadEmbedOrigins(process.env);
   const hostedAuthentication = workOs === null
     ? null
     : await createWorkOsHostedAuthentication(workOs);
@@ -484,6 +488,7 @@ async function startCompactServer(
     completedRequestLogSampleRate: configuration.completedRequestLogSampleRate,
     contentDomain: configuration.contentDomain,
     dataDirectory: configuration.dataDirectory,
+    embedOrigins,
     gitHistory: configuration.gitHistory,
     hostname: configuration.hostname,
     installationId: configuration.installation.installationId,

@@ -103,6 +103,7 @@ export interface LocalRuntimeConfig {
   readonly clock?: Clock;
   readonly completedRequestLogSampleRate?: number;
   readonly contentDomain: string;
+  readonly embedOrigins?: readonly string[];
   readonly dataDirectory: string;
   /** Server-only credential shared with a co-launched development proxy. */
   readonly developmentProxyCredential?: string;
@@ -332,6 +333,8 @@ export async function createLocalRuntime(
         config.completedRequestLogSampleRate ??
           defaultCompletedRequestLogSampleRate,
       contentDomain: config.contentDomain,
+      embedOrigins: config.embedOrigins,
+      embedBindingSecret: config.apiToken,
       gitHistory: gitHistoryMonitor?.reader ??
         fixedGitHistoryCapabilityReader(gitHistory.capability),
       linkedArtifacts: linkedFilesEnabled,
