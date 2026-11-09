@@ -405,6 +405,8 @@ function configureExternalStorageStart(
         : missingPrivateTeamIdentityProvider();
       let serverConfig: ExternalStorageServerConfig = {
         apiToken: parsed.apiToken,
+        embedBindingSecret: parsed.embedBindingSecret,
+        embedBindingPreviousSecret: parsed.embedBindingPreviousSecret,
         applicationOrigin: parsed.applicationOrigin,
         bootstrapAdministratorEmail: parsed.bootstrapAdministratorEmail,
         browserAccess,
@@ -482,6 +484,8 @@ async function startCompactServer(
     : missingPrivateTeamIdentityProvider();
   let serverConfig: LocalServerConfig = {
     apiToken: Redacted.value(configuration.apiToken),
+    embedBindingSecret: configuration.embedBindingSecret,
+    embedBindingPreviousSecret: configuration.embedBindingPreviousSecret,
     applicationOrigin: configuration.applicationOrigin,
     bootstrapAdministratorEmail: configuration.bootstrapAdministratorEmail,
     browserAccess,

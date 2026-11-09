@@ -964,6 +964,7 @@ const publicArtifactSchema = z.object({
 });
 const embedBootstrapSchema = z.object({
   artifact: z.object({id: z.string(), name: z.string(), projectId: z.string().optional()}),
+  canRespond: z.boolean(),
   entry: manifestEntrySchema,
   projectId: z.string(),
   version: artifactVersionSchema,
@@ -992,13 +993,6 @@ export const api = {
     const query = new URLSearchParams({path});
     if (versionId !== undefined) query.set("version", versionId);
     return request(embedBootstrapSchema, `/api/v1/public/embed/artifacts/${encodeURIComponent(artifactId)}/bootstrap?${query}`);
-  },
-  embedBinding: (artifactId: string, path: string, versionId: string, questionId: string, mode: "view" | "respond") => {
-    const query = new URLSearchParams({path});
-    return request(z.object({binding: z.string(), expiresAt: z.string()}),
-      `/api/v1/embed/artifacts/${encodeURIComponent(artifactId)}/binding?${query}`, {
-        body: JSON.stringify({mode, questionId, versionId}), headers: mutationHeaders(), method: "POST",
-      });
   },
   createEmbeddedArtifactResponse: (projectId: string, artifactId: string, versionId: string, questionId: string, choice: string | null, data: ArtifactResponseData, embedBinding: string) => request(
     artifactResponseSchema,

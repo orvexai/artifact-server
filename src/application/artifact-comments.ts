@@ -145,6 +145,7 @@ export interface CreateArtifactResponseCommand {
   readonly choice: string | null;
   readonly data: ArtifactResponseData;
   readonly externalQuestion?: boolean;
+  readonly embedBindingJti?: string | undefined;
   readonly principal: Principal;
   readonly projectId: string | null;
   readonly questionId: string;
@@ -1202,6 +1203,7 @@ function makeArtifactCommentService(
         authorSubject: command.principal.id, choice: values.choice,
         createdAt: normalizeResponseTimestamp(DateTime.formatIso(yield* dependencies.clock.now)),
         dataJson: values.dataJson, externalQuestion: command.externalQuestion === true,
+        embedBindingJti: command.embedBindingJti,
         guestSessionId: null,
         id: dependencies.ids.artifactResponseId(), installationId: dependencies.installationId,
         projectId: project.id, questionId: values.questionId, versionId: version.version.id,

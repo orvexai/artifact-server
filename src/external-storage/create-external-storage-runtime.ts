@@ -1,4 +1,4 @@
-import {Effect, Layer, ManagedRuntime, Redacted} from "effect";
+import {Effect, Layer, ManagedRuntime, type Redacted} from "effect";
 
 import type {ApplicationRuntime} from "../application/application-runtime.js";
 import type {
@@ -90,6 +90,8 @@ export interface ExternalStorageRuntimeConfig {
   readonly clock?: Clock;
   readonly completedRequestLogSampleRate?: number;
   readonly contentDomain: string;
+  readonly embedBindingSecret?: Redacted.Redacted | undefined;
+  readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
   readonly embedOrigins?: readonly string[];
   readonly databaseUrl: Redacted.Redacted;
   /** OIDC OAuth that turns on when the issuer is discovered, instead of the static resources. */
@@ -271,7 +273,8 @@ export async function createExternalStorageRuntime(
         config.completedRequestLogSampleRate ??
           defaultCompletedRequestLogSampleRate,
       contentDomain: config.contentDomain,
-      embedBindingSecret: Redacted.value(config.apiToken),
+      embedBindingSecret: config.embedBindingSecret,
+      embedBindingPreviousSecret: config.embedBindingPreviousSecret,
       gitHistory: gitHistoryMonitor?.reader ??
         fixedGitHistoryCapabilityReader(gitHistory.capability),
       readiness: () => externalStorageReadiness(database, connectedObjectStorage),

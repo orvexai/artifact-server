@@ -3650,15 +3650,18 @@ export class SqliteArtifactRepository implements
       this.#database.prepare(`INSERT INTO artifact_responses (
         id, installation_id, project_id, artifact_id, version_id, question_id,
         choice, data_json, author_kind, author_subject, author_display_name,
-        author_email, guest_session_id, created_at, external_question
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        author_email, guest_session_id, created_at, external_question, embed_binding_jti
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (installation_id, embed_binding_jti) WHERE embed_binding_jti IS NOT NULL DO NOTHING`).run(
         command.id, command.installationId, command.projectId, command.artifactId,
         command.versionId, command.questionId, command.choice, command.dataJson,
         command.authorKind, command.authorSubject, command.authorDisplayName,
         command.authorEmail, command.guestSessionId, command.createdAt,
-        command.externalQuestion === true ? 1 : 0,
+        command.externalQuestion === true ? 1 : 0, command.embedBindingJti ?? null,
       );
-      const row = this.#readResponse(command.projectId, command.artifactId, command.id);
+      const row = command.embedBindingJti === undefined
+        ? this.#readResponse(command.projectId, command.artifactId, command.id)
+        : this.#readResponseByEmbedBindingJti(command.installationId, command.embedBindingJti);
       if (row === null) throw new Error("Inserted artifact response disappeared.");
       return row;
     }));
@@ -5068,6 +5071,18 @@ export class SqliteArtifactRepository implements
     return row === null ? null : artifactResponseFromRow(row);
   }
 
+  #readResponseByEmbedBindingJti(installationId: string, jti: string): ArtifactResponseRecord | null {
+    const row = artifactResponseRowSchema.nullable().parse(this.#database.prepare(`SELECT
+      artifact_id AS artifactId, author_display_name AS authorDisplayName,
+      author_email AS authorEmail, author_kind AS authorKind,
+      author_subject AS authorSubject, choice, created_at AS createdAt,
+      data_json AS dataJson, external_question AS externalQuestion,
+      guest_session_id AS guestSessionId, id, question_id AS questionId,
+      version_id AS versionId FROM artifact_responses
+      WHERE installation_id = ? AND embed_binding_jti = ?`).get(installationId, jti) ?? null);
+    return row === null ? null : artifactResponseFromRow(row);
+  }
+
   #readThreadRowOrNull(
     projectId: string,
     artifactId: string,
@@ -5286,6 +5301,7 @@ export class SqliteArtifactRepository implements
         author_email TEXT,
         guest_session_id TEXT,
         external_question INTEGER NOT NULL DEFAULT 0 CHECK (external_question IN (0, 1)),
+        embed_binding_jti TEXT,
         created_at TEXT NOT NULL,
         CHECK ((author_kind = 'guest') = (guest_session_id IS NOT NULL)),
         CHECK (author_kind <> 'guest' OR author_email IS NULL)
@@ -5301,6 +5317,12 @@ export class SqliteArtifactRepository implements
           SELECT RAISE(ABORT, 'artifact responses are immutable');
         END;
     `);
+    if (!this.#tableColumns("artifact_responses").includes("embed_binding_jti")) {
+      this.#database.exec("ALTER TABLE artifact_responses ADD COLUMN embed_binding_jti TEXT");
+    }
+    this.#database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS artifact_responses_embed_binding_jti
+      ON artifact_responses (installation_id, embed_binding_jti)
+      WHERE embed_binding_jti IS NOT NULL`);
   }
 
   #addAgentDispatchTablesIfMissing(): void {
@@ -6194,6 +6216,7 @@ export class SqliteArtifactRepository implements
   #tableColumns(
     table:
       | "actions"
+      | "artifact_responses"
       | "artifacts"
       | "comment_threads"
       | "comment_replies"

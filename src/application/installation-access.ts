@@ -1076,7 +1076,10 @@ function makeInstallationAccessService(
       ).map((group) => group.id);
       return {
         authorizedByPrincipalId: null,
-        capabilities: [principalCapabilities.readArtifactResponses],
+        capabilities: [
+          principalCapabilities.readArtifactResponses,
+          principalCapabilities.bindArtifactEmbed,
+        ],
         directoryGroupIds,
         displayName: identity.displayName,
         email: null,

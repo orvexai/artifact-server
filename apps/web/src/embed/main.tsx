@@ -31,7 +31,7 @@ function EmbedApp(): React.ReactNode {
   const artifactId = decodeURIComponent(window.location.pathname.split("/").at(-1) ?? "");
   const path = query.get("path") ?? "";
   const versionId = query.get("version") ?? undefined;
-  const mode = query.get("mode") === "respond" ? "respond" : "view";
+  const requestedMode = query.get("mode") === "respond" ? "respond" : "view";
   const questionId = query.get("question");
   const parentOrigin = document.querySelector<HTMLMetaElement>('meta[name="as-embed-parent"]')?.content ?? null;
 
@@ -40,20 +40,18 @@ function EmbedApp(): React.ReactNode {
     void (async () => {
       try {
         const bootstrap = await api.embedBootstrap(artifactId, path, versionId);
+        const mode = requestedMode === "respond" && bootstrap.canRespond ? "respond" : "view";
         const version = bootstrap.version;
-        const [html, lease, binding] = await Promise.all([
+        const [html, lease] = await Promise.all([
           api.versionFile(bootstrap.projectId, artifactId, version.version.id, path),
           api.previewLease(bootstrap.projectId, artifactId, version.version.id),
-          mode === "respond" && questionId !== null
-            ? api.embedBinding(artifactId, path, version.version.id, questionId, mode)
-            : Promise.resolve(null),
         ]);
         if (lease.versionId !== version.version.id) throw new Error("The preview lease resolved a different version.");
         if (current) setLoaded({
           artifactId, artifactName: bootstrap.artifact.name, entryPath: path, html,
           mode, parentOrigin, projectId: bootstrap.projectId, publicView: false,
           previewBaseUrl: lease.baseUrl,
-          responseBinding: binding?.binding ?? null, version,
+          responseBinding: mode === "respond" ? questionId : null, version,
         });
       } catch {
         try {
@@ -73,7 +71,7 @@ function EmbedApp(): React.ReactNode {
       }
     })();
     return () => { current = false; };
-  }, [artifactId, mode, parentOrigin, path, questionId, versionId]);
+  }, [artifactId, parentOrigin, path, questionId, requestedMode, versionId]);
 
   useEffect(() => {
     const onPopupMessage = (event: MessageEvent<unknown>): void => {
@@ -170,7 +168,7 @@ function EmbedApp(): React.ReactNode {
     publicUrl.hash = window.location.hash;
     return <iframe className="as-embed-public" ref={frame} src={publicUrl.toString()} title={loaded.artifactName} />;
   }
-  return <iframe className="as-embed-frame" ref={frame} src="/review-frame" title={loaded.artifactName} />;
+  return <iframe className="as-embed-frame" ref={frame} src="/review-frame?embed=1" title={loaded.artifactName} />;
 }
 
 function addFragmentScript(html: string, fragment: string): string {
@@ -192,7 +190,12 @@ function postParent(
   message: ParentEmbedMessage,
 ): void {
   if (origin === null || !/^https?:\/\//u.test(origin)) return;
-  window.parent.postMessage(message, origin);
+  window.parent.postMessage(
+    message.type === "as-embed-resize"
+      ? {...message, height: Math.min(10_000, Math.max(0, Math.ceil(message.height)))}
+      : message,
+    origin,
+  );
 }
 
 const root = document.getElementById("embed-root");

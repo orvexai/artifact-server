@@ -114,6 +114,8 @@
           ],
           "properties": {
             "apiToken": {"type": "string", "minLength": 1},
+            "embedBindingSecret": {"type": "string"},
+            "embedBindingSecretPrevious": {"type": "string"},
             "databaseUrl": {"type": "string", "minLength": 1},
             "s3AccessKeyId": {"type": "string"},
             "s3SecretAccessKey": {"type": "string"},
@@ -135,7 +137,7 @@
         "oidcIssuer": {"type": "string"},
         "oidcScopes": {"type": "string"},
         "oidcServiceClients": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-        "embedOrigins": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "embedOrigins": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^https?://[^/*]+$"}},
         "oidcGroupsClaim": {"type": "string"},
         "oidcGroupRoleSeed": {
           "type": "array",

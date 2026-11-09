@@ -4,7 +4,7 @@ import {
   oauthMetadataResponse,
   type OAuthMetadata,
 } from "@modelcontextprotocol/server";
-import {createHmac, timingSafeEqual} from "node:crypto";
+import {createHmac, randomUUID, timingSafeEqual} from "node:crypto";
 import {Clock, Effect, Exit, Redacted, type Tracer} from "effect";
 import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -550,7 +550,8 @@ export interface HttpAppDependencies {
   readonly completedRequestLogSampleRate: number;
   readonly contentDomain: string;
   readonly embedOrigins?: readonly string[];
-  readonly embedBindingSecret?: string;
+  readonly embedBindingSecret?: Redacted.Redacted | undefined;
+  readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
   /** Server-only credential accepted from the co-launched Vite proxy. */
   readonly developmentProxyCredential?: Redacted.Redacted;
   /**
@@ -893,8 +894,16 @@ export function createHttpApp(
   app.on(
     ["GET", "HEAD"],
     "/review-frame",
-    (context) =>
-      serveWebAsset(context, dependencies, "/review-frame.html", "review-frame"),
+    async (context) => {
+      const asset = await serveWebAsset(context, dependencies, "/review-frame.html", "review-frame");
+      if (context.req.query("embed") !== "1") return asset;
+      const headers = new Headers(asset.headers);
+      headers.set("Content-Security-Policy", reviewFrameContentSecurityPolicy(
+        dependencies.contentDomain,
+        dependencies.embedOrigins ?? [],
+      ));
+      return new Response(asset.body, {headers, status: asset.status});
+    },
   );
 
   app.on(["GET", "HEAD"], "/embed/artifacts/:artifactId", async (context) => {
@@ -902,26 +911,23 @@ export function createHttpApp(
     const query = z.object({
       mode: z.enum(["view", "respond"]).default("view"),
       path: z.string().min(1).max(4_096),
-      question: z.string().min(1).max(200).optional(),
+      question: z.string().min(1).max(2_048).optional(),
       version: z.string().min(1).max(200).optional(),
-      parent: z.string().optional(),
     }).strict().safeParse(context.req.query());
     if (!query.success) return context.notFound();
-    const parentCandidate = query.data.parent ?? context.req.header("referer");
+    const parentCandidate = context.req.header("referer");
     let parentOrigin: string | null = null;
     if (parentCandidate !== undefined) {
       try {
         const parentUrl = new URL(parentCandidate);
         if (
-          (query.data.parent === undefined || parentCandidate === parentUrl.origin)
-          && dependencies.embedOrigins?.includes(parentUrl.origin)
+          dependencies.embedOrigins?.includes(parentUrl.origin)
         ) {
           parentOrigin = parentUrl.origin;
         }
       } catch {
         return context.notFound();
       }
-      if (query.data.parent !== undefined && parentOrigin === null) return context.notFound();
     }
     const artifactId = context.req.param("artifactId");
     const bootstrapQuery = new URLSearchParams({path: query.data.path});
@@ -944,14 +950,11 @@ export function createHttpApp(
     const asset = await serveWebAsset(context, dependencies, "/embed.html", "embed-shell");
     if (asset.status === 404) return asset;
     const headers = new Headers(asset.headers);
-    headers.set("Content-Security-Policy", embedContentSecurityPolicy(dependencies.embedOrigins ?? []));
+    headers.set("Content-Security-Policy", embedContentSecurityPolicy(dependencies.embedOrigins ?? [], dependencies.contentDomain));
     headers.set("Cache-Control", "no-store");
     headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
     headers.delete("Content-Length");
     headers.delete("ETag");
-    headers.set("X-Artifact-Embed-Bootstrap", tokenPath);
-    headers.set("X-Artifact-Embed-Mode", query.data.mode);
-    if (query.data.question !== undefined) headers.set("X-Artifact-Embed-Question", query.data.question);
     const html = parentOrigin === null || context.req.method === "HEAD"
       ? null
       : (await asset.text()).replace("</head>", `<meta name="as-embed-parent" content="${escapeHtmlAttribute(parentOrigin)}"></head>`);
@@ -962,7 +965,7 @@ export function createHttpApp(
     context.header("Content-Security-Policy", applicationContentSecurityPolicy(dependencies.contentDomain));
     context.header("Cache-Control", "no-store");
     context.header("Referrer-Policy", "no-referrer");
-    return context.html("<!doctype html><meta charset=utf-8><title>Signed in</title><script>if(window.opener){window.opener.postMessage({type:'as-embed-signed-in',v:1},window.location.origin)}window.close()</script>");
+    return context.html("<!doctype html><meta charset=utf-8><title>Signed in</title><script src=\"/assets/embed-signed-in.js\" defer></script>");
   });
 
   app.on(
@@ -1057,6 +1060,7 @@ export function createHttpApp(
     if (entry === undefined) return context.notFound();
     return context.json({
       artifact: {id: current.artifact.id, name: current.artifact.name},
+      canRespond: false,
       entry,
       projectId: current.artifact.projectId,
       version: artifactVersionResponse(responseApplicationUrl(context, dependencies), dependencies.contentDomain, current.version),
@@ -1224,7 +1228,7 @@ export function createHttpApp(
 
   app.use("/api/*", async (context, next) => {
     const authorization = context.req.header("authorization");
-    if (
+      if (
       authorization === undefined &&
       isMcpUploadCapabilityRequest(context)
     ) {
@@ -1262,8 +1266,11 @@ export function createHttpApp(
       if (
         principal.serviceAccountSource === "oidc" &&
         principal.capabilities.includes(principalCapabilities.readArtifactResponses) &&
-        !(context.req.method === "GET" &&
-          /^\/api\/v1\/artifacts\/[^/]+\/responses(?:\/[^/]+)?$/u.test(context.req.path))
+        !((context.req.method === "GET" &&
+          /^\/api\/v1\/artifacts\/[^/]+\/responses(?:\/[^/]+)?$/u.test(context.req.path)) ||
+          (context.req.method === "POST" &&
+            /^\/api\/v1\/embed\/artifacts\/[^/]+\/binding$/u.test(context.req.path) &&
+            principal.capabilities.includes(principalCapabilities.bindArtifactEmbed)))
       ) {
         throw new AuthorizationDenied({message: "Service bearers may only read artifact responses."});
       }
@@ -2274,26 +2281,27 @@ export function createHttpApp(
 
   app.post("/api/v1/embed/artifacts/:artifactId/binding", boundedJsonBody, async (context) => {
     const body = embedBindingRequestSchema.parse(await context.req.json());
-    if (body.mode === "view" || body.questionId === "") {
-      return context.json({error: {code: errorCodes.invalidInput, message: "Responses are disabled in view mode."}}, 422);
-    }
     const principal = context.get("principal");
-    if (principal.kind !== "human" || dependencies.embedBindingSecret === undefined) {
-      throw new AuthorizationDenied({message: "An authenticated member is required to respond from an embed."});
+    if (
+      principal.kind !== "service" || principal.serviceAccountSource !== "oidc" ||
+      !principal.capabilities.includes(principalCapabilities.bindArtifactEmbed)
+    ) {
+      throw new AuthorizationDenied({message: "An OIDC service principal with artifact:embed:bind is required."});
     }
+    const signingSecret = dependencies.embedBindingSecret;
+    if (signingSecret === undefined) return context.notFound();
     const artifactId = context.req.param("artifactId");
-    const version = await runHttpApplicationEffect(context, dependencies,
-      ArtifactManagementService.use((management) => management.getVersion({
-        artifactId, principal, projectId: requestedProjectId(context), versionId: body.versionId,
+    await runHttpApplicationEffect(context, dependencies,
+      ArtifactCommentService.use((comments) => comments.listResponses({
+        after: null, artifactId, limit: 1, principal, projectId: requestedProjectId(context),
+        questionId: null, versionId: body.versionId,
       })));
-    const entry = version.manifest.entries.find((candidate) => candidate.path === new URL(context.req.url).searchParams.get("path"));
-    if (entry === undefined) return context.notFound();
-    const expiresAt = Date.now() + 60 * 60 * 1_000;
-    const binding = signEmbedBinding(dependencies.embedBindingSecret, {
-      artifactId, expiresAt, principalId: principal.id, questionId: body.questionId,
-      versionId: version.version.id,
+    const exp = Math.floor(Date.now() / 1_000) + 60 * 60;
+    const binding = signEmbedBinding(Redacted.value(signingSecret), {
+      artifactId, exp, jti: randomUUID(), mode: body.mode, questionId: body.questionId,
+      versionId: body.versionId,
     });
-    return context.json({binding, expiresAt: new Date(expiresAt).toISOString()});
+    return context.json({binding, expiresAt: new Date(exp * 1_000).toISOString()});
   });
 
   app.get("/api/v1/embed/artifacts/:artifactId/bootstrap", async (context) => {
@@ -2312,6 +2320,7 @@ export function createHttpApp(
     const entry = saved.manifest.entries.find((candidate) => candidate.path === query.data.path);
     if (entry === undefined) return context.notFound();
     return context.json({artifact: details.artifact, entry, projectId: details.artifact.projectId,
+      canRespond: dependencies.embedBindingSecret !== undefined,
       version: artifactVersionResponse(responseApplicationUrl(context, dependencies), dependencies.contentDomain, saved)});
   });
 
@@ -2461,23 +2470,26 @@ export function createHttpApp(
 
   app.post("/api/v1/artifacts/:artifactId/responses", boundedJsonBody, async (context) => {
     const body = artifactResponseWriteSchema.parse(await context.req.json());
-    const boundQuestionId = body.embedBinding === undefined ? null : verifyEmbedBinding(
-      dependencies.embedBindingSecret,
+    const bindingClaims = body.embedBinding === undefined ? null : verifyEmbedBinding(
+      [dependencies.embedBindingSecret, dependencies.embedBindingPreviousSecret],
       body.embedBinding,
       {
         artifactId: context.req.param("artifactId"),
-        principalId: context.get("principal").id,
         versionId: body.versionId,
       },
     );
-    if (body.embedBinding !== undefined && boundQuestionId === null) {
+    if (body.embedBinding !== undefined && bindingClaims === null) {
       throw new AuthorizationDenied({message: "The embed response binding is invalid or expired."});
+    }
+    if (bindingClaims?.mode === "view") {
+      throw new AuthorizationDenied({message: "Responses are disabled for this view-only embed."});
     }
     const response = await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((service) => service.createResponse({
       artifactId: context.req.param("artifactId"), choice: body.choice ?? null,
       data: body.data ?? null, principal: context.get("principal"),
-      externalQuestion: boundQuestionId !== null,
-      projectId: requestedProjectId(context), questionId: boundQuestionId ?? body.questionId,
+      externalQuestion: bindingClaims !== null,
+      embedBindingJti: bindingClaims?.jti,
+      projectId: requestedProjectId(context), questionId: bindingClaims?.questionId ?? body.questionId,
       versionId: body.versionId,
     })));
     return context.json(response, 201);
@@ -5077,7 +5089,7 @@ function isContentBootstrapRequest(requestUrl: URL): boolean {
  * host, so the inherited policy permits network access only to configured
  * content hosts. The frame still cannot reach the trusted application origin.
  */
-function reviewFrameContentSecurityPolicy(contentDomain: string): string {
+function reviewFrameContentSecurityPolicy(contentDomain: string, embedOrigins?: readonly string[]): string {
   const contentSources = contentHostSources(contentDomain);
   return [
     "default-src 'none'",
@@ -5095,7 +5107,7 @@ function reviewFrameContentSecurityPolicy(contentDomain: string): string {
     // srcdoc iframe. Without this explicit source, default-src 'none' blocks
     // the nested frame and Chrome displays its broken-document placeholder.
     "frame-src 'self'",
-    "frame-ancestors 'self'",
+    `frame-ancestors 'self'${embedOrigins === undefined || embedOrigins.length === 0 ? "" : ` ${embedOrigins.join(" ")}`}`,
   ].join("; ");
 }
 
@@ -5129,7 +5141,7 @@ function applicationContentSecurityPolicy(contentDomain: string): string {
   ].join("; ");
 }
 
-function embedContentSecurityPolicy(origins: readonly string[]): string {
+function embedContentSecurityPolicy(origins: readonly string[], contentDomain: string): string {
   return [
     "default-src 'self'",
     "base-uri 'none'",
@@ -5137,7 +5149,7 @@ function embedContentSecurityPolicy(origins: readonly string[]): string {
     "font-src 'self'",
     "form-action 'self'",
     `frame-ancestors ${origins.join(" ")}`,
-    "frame-src 'self'",
+    `frame-src 'self' ${contentHostSources(contentDomain)}`,
     "img-src 'self' data:",
     "object-src 'none'",
     "script-src 'self'",
@@ -5152,8 +5164,9 @@ function escapeHtmlAttribute(value: string): string {
 
 interface EmbedBindingClaims {
   readonly artifactId: string;
-  readonly expiresAt: number;
-  readonly principalId: string;
+  readonly exp: number;
+  readonly jti: string;
+  readonly mode: "view" | "respond";
   readonly questionId: string;
   readonly versionId: string;
 }
@@ -5165,36 +5178,41 @@ function signEmbedBinding(secret: string, claims: EmbedBindingClaims): string {
 }
 
 function verifyEmbedBinding(
-  secret: string | undefined,
+  secrets: readonly (Redacted.Redacted | undefined)[],
   token: string,
-  expected: Pick<EmbedBindingClaims, "artifactId" | "principalId" | "versionId">,
-): string | null {
-  if (secret === undefined) return null;
+  expected: Pick<EmbedBindingClaims, "artifactId" | "versionId">,
+): EmbedBindingClaims | null {
   const parts = token.split(".");
   if (parts.length !== 2) return null;
   const payload = parts[0] ?? "";
   const signature = parts[1] ?? "";
   const actual = Buffer.from(signature, "base64url");
-  const wanted = createHmac("sha256", secret).update(`artifact-embed-v1.${payload}`).digest();
-  if (actual.length !== wanted.length || !timingSafeEqual(actual, wanted)) return null;
+  let validSignature = false;
+  for (const secret of secrets) {
+    if (secret === undefined) continue;
+    const wanted = createHmac("sha256", Redacted.value(secret))
+      .update(`artifact-embed-v1.${payload}`).digest();
+    validSignature ||= actual.length === wanted.length && timingSafeEqual(actual, wanted);
+  }
+  if (!validSignature) return null;
   let claims: EmbedBindingClaims;
   try {
     claims = z.object({
-      artifactId: z.string().min(1), expiresAt: z.number().int(),
-      principalId: z.string().min(1), questionId: z.string().min(1).max(200),
+      artifactId: z.string().min(1), exp: z.number().int(), jti: z.string().uuid(),
+      mode: z.enum(["view", "respond"]), questionId: z.string().min(1).max(200),
       versionId: z.string().min(1),
     }).strict().parse(JSON.parse(Buffer.from(payload, "base64url").toString("utf8")));
   } catch {
     return null;
   }
+  const now = Math.floor(Date.now() / 1_000);
   if (
-    claims.expiresAt <= Date.now()
-    || claims.expiresAt > Date.now() + 60 * 60 * 1_000
+    claims.exp <= now
+    || claims.exp > now + 60 * 60
     || claims.artifactId !== expected.artifactId
-    || claims.principalId !== expected.principalId
     || claims.versionId !== expected.versionId
   ) return null;
-  return claims.questionId;
+  return claims;
 }
 
 type WebAssetKind = "application-shell" | "embed-shell" | "review-frame" | "static-asset";

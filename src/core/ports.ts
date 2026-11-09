@@ -242,6 +242,7 @@ export interface CreateArtifactResponse {
   readonly createdAt: string;
   readonly dataJson: string | null;
   readonly externalQuestion?: boolean;
+  readonly embedBindingJti?: string | undefined;
   readonly guestSessionId: string | null;
   readonly id: string;
   readonly installationId: string;

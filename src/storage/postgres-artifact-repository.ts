@@ -2810,20 +2810,32 @@ export class PostgresArtifactRepository implements
       const rows = yield* sql<z.infer<typeof artifactResponseRowSchema>>`INSERT INTO artifact_responses (
         installation_id, project_id, id, artifact_id, version_id, question_id,
         choice, data, author_kind, author_subject, author_display_name,
-        author_email, guest_session_id, created_at, external_question
+        author_email, guest_session_id, created_at, external_question, embed_binding_jti
       ) VALUES (
         ${installationId}, ${command.projectId}, ${command.id}, ${command.artifactId},
         ${command.versionId}, ${command.questionId}, ${command.choice},
         CASE WHEN ${command.dataJson}::text IS NULL THEN NULL ELSE ${command.dataJson}::jsonb END,
         ${command.authorKind}, ${command.authorSubject}, ${command.authorDisplayName},
         ${command.authorEmail}, ${command.guestSessionId}, ${command.createdAt},
-        ${command.externalQuestion === true}
-      ) RETURNING artifact_id AS "artifactId", author_display_name AS "authorDisplayName",
+        ${command.externalQuestion === true}, ${command.embedBindingJti ?? null}
+      ) ON CONFLICT (installation_id, embed_binding_jti) WHERE embed_binding_jti IS NOT NULL DO NOTHING
+      RETURNING artifact_id AS "artifactId", author_display_name AS "authorDisplayName",
         author_email AS "authorEmail", author_kind AS "authorKind",
         author_subject AS "authorSubject", choice, created_at AS "createdAt", data,
         external_question AS "externalQuestion", guest_session_id AS "guestSessionId",
         id, question_id AS "questionId", version_id AS "versionId"`;
-      const row = artifactResponseRowSchema.parse(rows[0]);
+      let rowValue = rows[0];
+      if (rowValue === undefined && command.embedBindingJti !== undefined) {
+        const existing = yield* sql<z.infer<typeof artifactResponseRowSchema>>`SELECT artifact_id AS "artifactId",
+          author_display_name AS "authorDisplayName", author_email AS "authorEmail",
+          author_kind AS "authorKind", author_subject AS "authorSubject", choice,
+          created_at AS "createdAt", data, external_question AS "externalQuestion",
+          guest_session_id AS "guestSessionId", id, question_id AS "questionId",
+          version_id AS "versionId" FROM artifact_responses
+          WHERE installation_id = ${installationId} AND embed_binding_jti = ${command.embedBindingJti}`;
+        rowValue = existing[0];
+      }
+      const row = artifactResponseRowSchema.parse(rowValue);
       return artifactResponseFromRow(row);
     }));
   }

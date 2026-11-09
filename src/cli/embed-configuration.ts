@@ -5,6 +5,7 @@ export function loadEmbedOrigins(environment: NodeJS.ProcessEnv): readonly strin
   const configured = environment["ARTIFACT_SERVER_EMBED_ORIGINS"] ?? "";
   if (configured.trim() === "") return [];
   const origins = configured.split(",").map((item) => item.trim());
+  if (origins.at(-1) === "") origins.pop();
   validateEmbedOrigins(origins);
   return origins;
 }

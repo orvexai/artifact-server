@@ -73,6 +73,7 @@ const principalCapabilitySchema = z.enum([
   principalCapabilities.publishAnyArtifact,
   principalCapabilities.readArtifacts,
   principalCapabilities.readArtifactResponses,
+  principalCapabilities.bindArtifactEmbed,
   principalCapabilities.writeComments,
 ]);
 const memberRowSchema = z.object({

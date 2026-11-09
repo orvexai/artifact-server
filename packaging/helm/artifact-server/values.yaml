@@ -32,6 +32,8 @@ secret:
   rolloutChecksum: ""
   keys:
     apiToken: api-token
+    embedBindingSecret: ""
+    embedBindingSecretPrevious: ""
     databaseUrl: database-url
     s3AccessKeyId: ""
     s3SecretAccessKey: ""

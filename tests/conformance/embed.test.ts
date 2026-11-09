@@ -1,11 +1,13 @@
 import {createHmac} from "node:crypto";
-import {mkdtemp, rm, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
+import {Effect, Redacted} from "effect";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
 
 import {loadEmbedOrigins} from "../../src/cli/embed-configuration.js";
+import {membershipRoles, principalCapabilities, principalKinds} from "../../src/core/identity.js";
 import {createTestInstallation, issueLocalBrowserLogin, removeTestInstallation, startTestServer, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
 import {publishNew} from "../support/publishing.js";
 
@@ -19,15 +21,31 @@ describe("artifact embeds", () => {
   let versionId: string;
   let sessionCookie: string;
   let csrf: string;
+  const bindingSecret = "dedicated-embed-binding-secret-with-32-bytes-minimum";
+  const servicePrincipal = {
+    authorizedByPrincipalId: null,
+    capabilities: [principalCapabilities.readArtifactResponses, principalCapabilities.bindArtifactEmbed],
+    directoryGroupIds: [],
+    displayName: "Houston V2",
+    id: "oidc-service:test:houston-v2",
+    installationId: "local",
+    kind: principalKinds.service,
+    membershipRole: membershipRoles.viewer,
+    serviceAccountSource: "oidc" as const,
+  };
 
   beforeEach(async () => {
     installation = await createTestInstallation();
     webAssetsRoot = await mkdtemp(path.join(tmpdir(), "artifact-server-embed-"));
+    await mkdir(path.join(webAssetsRoot, "assets"));
+    await writeFile(path.join(webAssetsRoot, "assets", "embed-signed-in.js"), "window.close();");
     await writeFile(path.join(webAssetsRoot, "embed.html"), "<!doctype html><html><head></head><body><div id=\"embed-root\"></div></body></html>");
     await writeFile(path.join(webAssetsRoot, "review.html"), "<!doctype html><title>Review</title>");
     await writeFile(path.join(webAssetsRoot, "review-frame.html"), "<!doctype html><title>Frame</title>");
     server = await startTestServer(installation, {
+      embedBindingSecret: Redacted.make(bindingSecret),
       embedOrigins: ["https://houston.example.test", "https://another.example.test"],
+      externalApiBearerVerifier: {verify: () => Effect.succeed(servicePrincipal)},
       webAssetsRoot,
     });
     const published = await publishNew(server, installation, {
@@ -64,6 +82,14 @@ describe("artifact embeds", () => {
     return fetch(server.baseUrl + route, init);
   }
 
+  function serviceRequest(method: string, route: string, body?: JsonValue): Promise<Response> {
+    const headers = new Headers({Authorization: "Bearer test-houston-service"});
+    if (body !== undefined) headers.set("Content-Type", "application/json");
+    const init: RequestInit = {headers, method};
+    if (body !== undefined) init.body = JSON.stringify(body);
+    return fetch(server.baseUrl + route, init);
+  }
+
   test("is disabled with no configured embedding origins", async () => {
     const disabled = await startTestServer(installation, {webAssetsRoot});
     try {
@@ -74,12 +100,27 @@ describe("artifact embeds", () => {
   });
 
   test("sets only the embed document's frame ancestor allowlist", async () => {
-    const embed = await fetch(server.baseUrl + "/embed/artifacts/" + artifactId + "?path=index.html&parent=https%3A%2F%2Fhouston.example.test");
+    const embed = await fetch(server.baseUrl + "/embed/artifacts/" + artifactId + "?path=index.html", {
+      headers: {Referer: "https://houston.example.test/page"},
+    });
     expect(embed.status).toBe(200);
     expect(embed.headers.get("content-security-policy")).toContain("frame-ancestors https://houston.example.test https://another.example.test");
     expect(await embed.text()).toContain('name="as-embed-parent" content="https://houston.example.test"');
     const review = await fetch(server.baseUrl + "/review");
     expect(review.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(embed.headers.get("x-artifact-embed-bootstrap")).toBeNull();
+    expect(embed.headers.get("x-artifact-embed-mode")).toBeNull();
+    expect(embed.headers.get("x-artifact-embed-question")).toBeNull();
+    const plainFrame = await fetch(server.baseUrl + "/review-frame");
+    expect(plainFrame.headers.get("content-security-policy")).toContain("frame-ancestors 'self'");
+    expect(plainFrame.headers.get("content-security-policy")).not.toContain("https://houston.example.test");
+    const embeddedFrame = await fetch(server.baseUrl + "/review-frame?embed=1");
+    expect(embeddedFrame.headers.get("content-security-policy")).toContain("frame-ancestors 'self' https://houston.example.test https://another.example.test");
+    const signedIn = await fetch(server.baseUrl + "/embed/signed-in");
+    expect(signedIn.headers.get("content-security-policy")).toContain("script-src 'self'");
+    expect(await signedIn.text()).toContain("/assets/embed-signed-in.js");
+    expect((await fetch(server.baseUrl + "/assets/embed-signed-in.js")).status).toBe(200);
+    expect(embed.headers.get("content-security-policy")).toContain("frame-src 'self' http://*.localhost:* https://*.localhost");
   });
 
   test("rejects malformed configured origins", () => {
@@ -92,10 +133,15 @@ describe("artifact embeds", () => {
     ]) {
       expect(() => loadEmbedOrigins({ARTIFACT_SERVER_EMBED_ORIGINS: value})).toThrow("Invalid ARTIFACT_SERVER_EMBED_ORIGINS entry");
     }
+    expect(loadEmbedOrigins({ARTIFACT_SERVER_EMBED_ORIGINS: "https://houston.example.test,"})).toEqual(["https://houston.example.test"]);
   });
 
   test("binds external responses to the server question despite a different submitted id", async () => {
-    const bindingResponse = await memberRequest("POST", "/api/v1/embed/artifacts/" + artifactId + "/binding?path=index.html", {
+    const humanMint = await memberRequest("POST", "/api/v1/embed/artifacts/" + artifactId + "/binding?projectId=" + projectId, {
+      mode: "respond", questionId: "bound-question", versionId,
+    });
+    expect(humanMint.status).toBe(403);
+    const bindingResponse = await serviceRequest("POST", "/api/v1/embed/artifacts/" + artifactId + "/binding?projectId=" + projectId, {
       mode: "respond", questionId: "bound-question", versionId,
     });
     expect(bindingResponse.status).toBe(200);
@@ -117,20 +163,45 @@ describe("artifact embeds", () => {
 
     const claims = Buffer.from(JSON.stringify({
       artifactId,
-      expiresAt: Date.now() - 1,
-      principalId: "local-owner",
+      exp: Math.floor(Date.now() / 1_000) - 1,
+      jti: "00000000-0000-4000-8000-000000000001",
+      mode: "respond",
       questionId: "expired",
       versionId,
     })).toString("base64url");
-    const signature = createHmac("sha256", installation.apiToken)
+    const signature = createHmac("sha256", bindingSecret)
       .update("artifact-embed-v1." + claims).digest("base64url");
     const expired = await memberRequest("POST", responsePath, {...base, embedBinding: claims + "." + signature});
     expect(expired.status).toBe(403);
 
-    const view = await memberRequest("POST", "/api/v1/embed/artifacts/" + artifactId + "/binding?path=index.html", {
+    const view = await serviceRequest("POST", "/api/v1/embed/artifacts/" + artifactId + "/binding?projectId=" + projectId, {
       mode: "view", questionId: "external", versionId,
     });
-    expect(view.status).toBe(422);
+    expect(view.status).toBe(200);
+    const viewBinding = z.object({binding: z.string()}).parse(await view.json()).binding;
+    const refused = await memberRequest("POST", responsePath, {...base, embedBinding: viewBinding});
+    expect(refused.status).toBe(403);
+  });
+
+  test("treats a binding jti as single-use and returns the existing response on replay", async () => {
+    const bindingResponse = await serviceRequest("POST", "/api/v1/embed/artifacts/" + artifactId + "/binding?projectId=" + projectId, {
+      mode: "respond", questionId: "replay-question", versionId,
+    });
+    const binding = z.object({binding: z.string()}).parse(await bindingResponse.json()).binding;
+    const responsePath = "/api/v1/artifacts/" + artifactId + "/responses?projectId=" + projectId;
+    const first = await memberRequest("POST", responsePath, {
+      choice: "first", embedBinding: binding, questionId: "ignored-a", versionId,
+    });
+    const firstBody = z.object({id: z.string(), choice: z.string().nullable(), externalQuestion: z.boolean(), questionId: z.string()}).parse(await first.json());
+    const replay = await memberRequest("POST", responsePath, {
+      choice: "second", embedBinding: binding, questionId: "ignored-b", versionId,
+    });
+    expect(replay.status).toBe(201);
+    expect(await replay.json()).toMatchObject(firstBody);
+    const listed = await memberRequest("GET", responsePath + "&questionId=replay-question&versionId=" + versionId);
+    const listedBody = await listed.json();
+    expect(listedBody).toMatchObject({items: [firstBody]});
+    expect(z.object({items: z.array(z.unknown())}).parse(listedBody).items).toHaveLength(1);
   });
 
   test("returns 404 for a manifest path outside the requested version", async () => {
