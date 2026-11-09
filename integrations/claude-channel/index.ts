@@ -39,7 +39,7 @@ import {
 } from "@plannotator/agent-bridge";
 
 const channelName = "artifact-server";
-const channelVersion = "0.1.14";
+const channelVersion = "0.1.15";
 
 function environmentConfiguration(): EnvironmentConfiguration {
   return {
