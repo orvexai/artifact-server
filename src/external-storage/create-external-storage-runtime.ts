@@ -90,6 +90,9 @@ export interface ExternalStorageRuntimeConfig {
   readonly clock?: Clock;
   readonly completedRequestLogSampleRate?: number;
   readonly contentDomain: string;
+  readonly embedBindingSecret?: Redacted.Redacted | undefined;
+  readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
+  readonly embedOrigins?: readonly string[];
   readonly databaseUrl: Redacted.Redacted;
   /** OIDC OAuth that turns on when the issuer is discovered, instead of the static resources. */
   readonly discoveredOAuth?: DiscoveredOAuthResources;
@@ -270,13 +273,19 @@ export async function createExternalStorageRuntime(
         config.completedRequestLogSampleRate ??
           defaultCompletedRequestLogSampleRate,
       contentDomain: config.contentDomain,
+      embedBindingSecret: config.embedBindingSecret,
+      embedBindingPreviousSecret: config.embedBindingPreviousSecret,
       gitHistory: gitHistoryMonitor?.reader ??
         fixedGitHistoryCapabilityReader(gitHistory.capability),
       readiness: () => externalStorageReadiness(database, connectedObjectStorage),
       trustedApplicationOrigin: config.applicationOrigin ?? null,
       webAssets: createNodeWebAssetStore(),
     };
-    let appDependencies: HttpAppDependencies = appDependenciesWithoutOAuth;
+    let configuredAppDependencies: HttpAppDependencies = appDependenciesWithoutOAuth;
+    if (config.embedOrigins !== undefined) {
+      configuredAppDependencies = {...configuredAppDependencies, embedOrigins: config.embedOrigins};
+    }
+    let appDependencies: HttpAppDependencies = configuredAppDependencies;
     if (config.apiOAuthResource !== undefined) {
       appDependencies = {
         ...appDependencies,

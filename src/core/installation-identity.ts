@@ -41,6 +41,8 @@ export interface ExternalIdentity {
   readonly subject: string;
   /** True only for a verified client-credentials service account token. */
   readonly serviceAccount?: boolean;
+  /** True when its OAuth client opted in to embed question binding. */
+  readonly embedBindingServiceAccount?: boolean;
 }
 
 /** One server-side browser session after its opaque credential is verified. */

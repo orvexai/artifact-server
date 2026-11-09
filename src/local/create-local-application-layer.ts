@@ -87,6 +87,7 @@ import {
   CommentNotFound,
   CommentResolved,
   DispatchStateConflict,
+  EmbedBindingUsed,
   IdempotencyConflict,
   IdentityConflict,
   IdentityNotFound,
@@ -1585,6 +1586,7 @@ function classifyCommentFailure(
 ): CommentRepositoryFailure {
   if (
     cause instanceof ArtifactNotFound ||
+    cause instanceof EmbedBindingUsed ||
     cause instanceof CommentNotFound ||
     cause instanceof CommentResolved ||
     cause instanceof DispatchStateConflict ||

@@ -42,6 +42,7 @@ export interface OidcHostedAuthenticationConfig {
   readonly applicationOrigin: string;
   readonly clientId: string;
   readonly clientSecret: Redacted.Redacted | null;
+  readonly embedBindingClients?: readonly string[];
   readonly fetch?: typeof globalThis.fetch;
   readonly groupRoles?: OidcGroupRoles | null;
   readonly issuer: string;
@@ -81,6 +82,7 @@ export async function createOidcHostedAuthentication(
     issuer,
     jwksUri: authorizationServer.jwksUri,
     serviceClients: config.serviceClients ?? [],
+    embedBindingClients: config.embedBindingClients ?? [],
     userInfoEndpoint: authorizationServer.userInfoEndpoint,
   };
   if (config.fetch !== undefined) {

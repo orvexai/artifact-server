@@ -43,6 +43,7 @@ const principalSchema = z.object({
     principalCapabilities.publishAnyArtifact,
     principalCapabilities.readArtifacts,
     principalCapabilities.readArtifactResponses,
+    principalCapabilities.bindArtifactEmbed,
     principalCapabilities.writeComments,
   ])),
   email: z.string().nullable().optional(),
