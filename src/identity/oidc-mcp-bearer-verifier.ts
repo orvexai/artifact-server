@@ -83,6 +83,8 @@ export interface OidcMcpBearerVerifierConfig {
   readonly jwksUri: string;
   /** OAuth clients permitted to authenticate as group-bound services. */
   readonly serviceClients?: readonly string[];
+  /** Subset of service clients allowed to bind embed questions. */
+  readonly embedBindingClients?: readonly string[];
   readonly userInfoEndpoint?: string | null;
 }
 
@@ -96,6 +98,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
   readonly #jwks: ReturnType<typeof createRemoteJWKSet>;
   readonly #provider: string;
   readonly #serviceClients: ReadonlySet<string>;
+  readonly #embedBindingClients: ReadonlySet<string>;
   readonly #userInfoEndpoint: string | null;
 
   constructor(config: OidcMcpBearerVerifierConfig) {
@@ -109,6 +112,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
     // membership whether they arrive through the interface or through MCP.
     this.#provider = oidcIdentityProviderName(this.#issuer);
     this.#serviceClients = new Set(config.serviceClients ?? []);
+    this.#embedBindingClients = new Set(config.embedBindingClients ?? []);
     this.#userInfoEndpoint = config.userInfoEndpoint ?? null;
     this.#jwks = createRemoteJWKSet(new URL(config.jwksUri), {
       cacheMaxAge: jwksCacheMilliseconds,
@@ -171,6 +175,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
           displayName: clientId,
           email: null,
           emailVerified: false,
+          embedBindingServiceAccount: this.#embedBindingClients.has(clientId),
           groups,
           provider: this.#provider,
           serviceAccount: true,

@@ -129,6 +129,11 @@ export type ReviewTheme = Extract<HostMessage, {type: "as-review-theme"}>;
 export const frameMessageSchema = z.discriminatedUnion("type", [
   artifactBridgeRequestSchema,
   z.object({
+    height: z.number().int().min(0).max(1_000_000),
+    type: z.literal("as-artifact-resize"),
+    v: versionSchema,
+  }).strict(),
+  z.object({
     type: z.literal("as-review-ready"),
     v: versionSchema,
   }),

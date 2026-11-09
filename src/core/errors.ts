@@ -5,6 +5,7 @@ export const errorCodes = {
   agentNotFound: "AGENT_NOT_FOUND",
   artifactNotFound: "ARTIFACT_NOT_FOUND",
   artifactMutationConflict: "ARTIFACT_MUTATION_CONFLICT",
+  embedBindingUsed: "embed_binding_used",
   authorizationDenied: "AUTHORIZATION_DENIED",
   authenticationRequired: "AUTHENTICATION_REQUIRED",
   commentNotFound: "COMMENT_NOT_FOUND",
@@ -63,6 +64,12 @@ export class ArtifactNotFound extends Schema.TaggedError<ArtifactNotFound>()(
 /** The artifact changed after a management client read its current state. */
 export class ArtifactMutationConflict extends Schema.TaggedError<ArtifactMutationConflict>()(
   "ArtifactMutationConflict",
+  messageField,
+) {}
+
+/** An embed response binding was already consumed by another viewer. */
+export class EmbedBindingUsed extends Schema.TaggedError<EmbedBindingUsed>()(
+  "EmbedBindingUsed",
   messageField,
 ) {}
 
@@ -535,6 +542,7 @@ const artifactServerFailureSchema = Schema.Union([
   AgentNotFound,
   ArtifactNotFound,
   ArtifactMutationConflict,
+  EmbedBindingUsed,
   AuthenticationRequired,
   CommentNotFound,
   CommentResolved,

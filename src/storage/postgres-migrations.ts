@@ -788,6 +788,14 @@ const addArtifactResponses = Effect.gen(function*() {
     FOR EACH ROW EXECUTE FUNCTION reject_artifact_response_mutation()`);
 });
 
+const addEmbedResponseBindingReplay = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE artifact_responses ADD COLUMN embed_binding_jti TEXT`);
+  yield* sql.unsafe(`CREATE UNIQUE INDEX artifact_responses_embed_binding_jti
+    ON artifact_responses (installation_id, embed_binding_jti)
+    WHERE embed_binding_jti IS NOT NULL`);
+});
+
 const addProjectArchiveAudit = Effect.gen(function*() {
   const sql = yield* SqlClient;
   yield* sql.unsafe(`CREATE TABLE project_archive_events (
@@ -929,6 +937,7 @@ const postgresMigrations = {
   "0022_guest_invitation_exchange_limit": addGuestInvitationExchangeLimit,
   "0023_guest_invitation_budgets": addGuestInvitationBudgets,
   "0024_artifact_responses": addArtifactResponses,
+  "0025_embed_response_binding_replay": addEmbedResponseBindingReplay,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

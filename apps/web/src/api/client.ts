@@ -962,6 +962,13 @@ const publicArtifactSchema = z.object({
     number: z.number().int(),
   }),
 });
+const embedBootstrapSchema = z.object({
+  artifact: z.object({id: z.string(), name: z.string(), projectId: z.string().optional()}),
+  canRespond: z.boolean(),
+  entry: manifestEntrySchema,
+  projectId: z.string(),
+  version: artifactVersionSchema,
+});
 export type PublicArtifact = z.infer<typeof publicArtifactSchema>;
 const guestInvitationStatusSchema = z.object({activeSessionCount: z.number().int(), createdAt: z.string().nullable(), enabled: z.boolean(), limitHitRecently: z.boolean()});
 const guestInvitationSessionsSchema = z.object({sessions: z.array(z.object({createdAt: z.string(), displayName: z.string(), guestId: z.string(), lastUsedAt: z.string()}))});
@@ -977,6 +984,21 @@ const guestCreatedReplySchema = z.object({replayed: z.boolean(), reply: guestCom
 export type GuestCommentThread = z.infer<typeof guestCommentThreadSchema>;
 
 export const api = {
+  embedBootstrap: (artifactId: string, path: string, versionId?: string) => {
+    const query = new URLSearchParams({path});
+    if (versionId !== undefined) query.set("version", versionId);
+    return request(embedBootstrapSchema, `/api/v1/embed/artifacts/${encodeURIComponent(artifactId)}/bootstrap?${query}`);
+  },
+  publicEmbedBootstrap: (artifactId: string, path: string, versionId?: string) => {
+    const query = new URLSearchParams({path});
+    if (versionId !== undefined) query.set("version", versionId);
+    return request(embedBootstrapSchema, `/api/v1/public/embed/artifacts/${encodeURIComponent(artifactId)}/bootstrap?${query}`);
+  },
+  createEmbeddedArtifactResponse: (projectId: string, artifactId: string, versionId: string, questionId: string, choice: string | null, data: ArtifactResponseData, embedBinding: string) => request(
+    artifactResponseSchema,
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/responses?${projectQuery(projectId)}`,
+    {body: JSON.stringify({choice, data, embedBinding, questionId, versionId}), headers: mutationHeaders(), method: "POST"},
+  ),
   guestInvitationStatus: (projectId: string, artifactId: string) => request(
     guestInvitationStatusSchema,
     `/api/v1/artifacts/${encodeURIComponent(artifactId)}/guest-invitation?${projectQuery(projectId)}`,
