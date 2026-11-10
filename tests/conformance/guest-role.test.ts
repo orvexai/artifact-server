@@ -1,5 +1,7 @@
 import {Effect, Layer, ManagedRuntime, Redacted, Result} from "effect";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
+import {DatabaseSync} from "node:sqlite";
+import nodePath from "node:path";
 import {z} from "zod";
 
 import {AuthorizationService} from "../../src/application/authorization.js";
@@ -71,6 +73,39 @@ describe("guest installation role", () => {
 
   test("GUEST-003-B: guests receive empty directory and sharing lists and cannot list members or create projects", async () => {
     expect.hasAssertions();
+    const existingProjects = z.object({projects: z.array(z.object({id: z.string()}))})
+      .parse(await (await ownerFetch("/api/v1/projects")).json()).projects;
+    expect(existingProjects).toHaveLength(1);
+    const defaultProjectId = existingProjects[0]?.id;
+    if (defaultProjectId === undefined) throw new Error("The test installation has no default project.");
+    const createdProject = await ownerFetch("/api/v1/projects", {
+      body: JSON.stringify({
+        name: "Guest shared project",
+        shareWith: [{group: "/Guests", role: "manager"}],
+      }),
+      method: "POST",
+    });
+    expect(createdProject.status).toBe(201);
+    const projectId = z.object({project: z.object({id: z.string()})})
+      .parse(await createdProject.json()).project.id;
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    try {
+      const installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_groups WHERE id = 'group-Guests'").get()).installationId;
+      const now = new Date().toISOString();
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'guest', 'active', ?, ?)`).run(
+        "member_guest_conformance", installationId, "guest@example.test", "Guest", now, now,
+      );
+      database.prepare(`INSERT INTO directory_group_members (
+        installation_id, group_id, subject, email, provider
+      ) VALUES (?, ?, ?, ?, ?)`).run(
+        installationId, "group-Guests", "guest-subject", "guest@example.test", "guest-role-conformance",
+      );
+    } finally {
+      database.close();
+    }
     const groups = await guestFetch("/api/v1/groups");
     expect(groups.status).toBe(200);
     expect(await groups.json()).toEqual({groups: []});
@@ -79,6 +114,11 @@ describe("guest installation role", () => {
     expect(await sharing.json()).toEqual({sharing: {
       accessMode: "restricted", groups: [], projectId: "unshared", yourRole: null,
     }});
+    const visibleProjectsResponse = await guestFetch("/api/v1/projects");
+    expect(await visibleProjectsResponse.clone().text()).not.toContain("@");
+    const visibleProjects = z.object({projects: z.array(z.object({id: z.string()}))})
+      .parse(await visibleProjectsResponse.json()).projects;
+    expect(visibleProjects.map(({id}) => id)).toEqual([projectId]);
     expect((await guestFetch("/api/v1/members")).status).toBe(403);
     expect((await guestFetch("/api/v1/projects", {body: JSON.stringify({name: "Guest project"}), method: "POST"})).status).toBe(403);
     expect((await guestFetch("/api/v1/administration/public-links")).status).toBe(403);
@@ -87,11 +127,10 @@ describe("guest installation role", () => {
       content: "private artifact for guest boundary",
       idempotencyKey: "guest-boundary-artifact",
       name: "Private artifact",
+      projectId: defaultProjectId,
     });
     expect((await guestFetch(`/api/v1/artifacts/${artifact.body.artifact.id}`)).status).toBe(404);
-    expect([403, 404]).toContain((await guestFetch(`/api/v1/artifacts/${artifact.body.artifact.id}/content-sessions`, {
-      body: "{}", method: "POST",
-    })).status);
+    expect((await guestFetch(`/api/v1/embed/artifacts/${artifact.body.artifact.id}/bootstrap?path=index.html`)).status).toBe(404);
     expect([403, 404]).toContain((await guestFetch(`/api/v1/artifacts/${artifact.body.artifact.id}/guest-invitation`, {
       body: "{}", method: "POST",
     })).status);
