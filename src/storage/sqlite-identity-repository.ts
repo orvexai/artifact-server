@@ -193,10 +193,16 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     installationId: string,
     snapshot: DirectoryGroupSnapshot,
   ): Promise<DirectoryGroupApplyResult> {
+    if (snapshot.groups.length === 0 || !snapshot.groups.some((group) =>
+      group.members !== null && group.members.length > 0
+    )) {
+      throw new IdentityConflict({message: "Refusing an empty or memberless directory snapshot."});
+    }
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
-      const beforePrivileged = z.object({owners: z.number().nullable(), administrators: z.number().nullable()}).parse(this.#database.prepare(`
-        SELECT SUM(role = 'owner' AND status = 'active') AS owners,
+      const beforePrivileged = z.object({active: z.number().nullable(), owners: z.number().nullable(), administrators: z.number().nullable()}).parse(this.#database.prepare(`
+        SELECT SUM(status = 'active') AS active,
+          SUM(role = 'owner' AND status = 'active') AS owners,
           SUM(role IN ('administrator','owner') AND status = 'active') AS administrators
         FROM installation_members WHERE installation_id = ?
       `).get(installationId));
@@ -261,6 +267,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           );
         }
       }
+      if (snapshot.recomputeRoles !== false) {
       this.#database.prepare(`
         WITH resolved AS (
           SELECT member.id, member.role AS old_role,
@@ -297,7 +304,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           FROM resolved
         )
         UPDATE installation_members SET
-          role = (SELECT next_role FROM policy WHERE policy.id = installation_members.id),
+          role = COALESCE((SELECT next_role FROM policy WHERE policy.id = installation_members.id), role),
           status = CASE WHEN (SELECT next_role FROM policy WHERE policy.id = installation_members.id) IS NULL THEN 'inactive' ELSE status END,
           updated_at = ?
         WHERE installation_id = ? AND id IN (SELECT id FROM policy)
@@ -319,14 +326,23 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           SELECT id FROM installation_members WHERE installation_id = ? AND role = 'guest' AND status = 'active'
         )
       `).run(snapshot.syncedAt, installationId, installationId);
-      const afterPrivileged = z.object({owners: z.number().nullable(), administrators: z.number().nullable()}).parse(this.#database.prepare(`
-        SELECT SUM(role = 'owner' AND status = 'active') AS owners,
+      }
+      const afterPrivileged = z.object({active: z.number().nullable(), owners: z.number().nullable(), administrators: z.number().nullable()}).parse(this.#database.prepare(`
+        SELECT SUM(status = 'active') AS active,
+          SUM(role = 'owner' AND status = 'active') AS owners,
           SUM(role IN ('administrator','owner') AND status = 'active') AS administrators
         FROM installation_members WHERE installation_id = ?
       `).get(installationId));
-      if ((beforePrivileged.owners ?? 0) > 0 && (afterPrivileged.owners ?? 0) === 0 ||
-          (beforePrivileged.administrators ?? 0) > 0 && (afterPrivileged.administrators ?? 0) === 0) {
-        throw new IdentityConflict({message: "Directory sync cannot remove the last active owner or administrator."});
+      if ((beforePrivileged.owners ?? 0) > 0 && (afterPrivileged.owners ?? 0) === 0) {
+        throw new IdentityConflict({message: "Directory sync cannot remove the last active owner."});
+      }
+      if ((beforePrivileged.administrators ?? 0) > 0 && (afterPrivileged.administrators ?? 0) === 0) {
+        throw new IdentityConflict({message: "Directory sync cannot remove the last active administrator."});
+      }
+      const deactivated = (beforePrivileged.active ?? 0) - (afterPrivileged.active ?? 0);
+      const threshold = Math.max(snapshot.maxDeactivations ?? 5, Math.ceil((beforePrivileged.active ?? 0) * 0.2));
+      if (deactivated > threshold) {
+        throw new IdentityConflict({message: `Directory sync would deactivate ${deactivated} members, exceeding the configured safety threshold of ${threshold}.`});
       }
       this.#database.exec("COMMIT;");
       return plan.result;
@@ -459,7 +475,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           FROM resolved
         )
         UPDATE installation_members
-        SET role = (SELECT next_role FROM policy WHERE policy.id = installation_members.id),
+        SET role = COALESCE((SELECT next_role FROM policy WHERE policy.id = installation_members.id), role),
             status = CASE WHEN (SELECT next_role FROM policy WHERE policy.id = installation_members.id) IS NULL THEN 'inactive' ELSE status END,
             updated_at = ?
         WHERE installation_id = ? AND id IN (SELECT id FROM policy)
@@ -493,9 +509,11 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           SUM(role IN ('administrator','owner') AND status = 'active') AS administrators
         FROM installation_members WHERE installation_id = ?
       `).get(installationId));
-      if ((beforePrivileged.owners ?? 0) > 0 && (privilegedCounts.owners ?? 0) === 0 ||
-          (beforePrivileged.administrators ?? 0) > 0 && (privilegedCounts.administrators ?? 0) === 0) {
-        throw new IdentityConflict({message: "The last active owner or administrator cannot be removed."});
+      if ((beforePrivileged.owners ?? 0) > 0 && (privilegedCounts.owners ?? 0) === 0) {
+        throw new IdentityConflict({message: "The last active owner cannot be removed by this group role change."});
+      }
+      if ((beforePrivileged.administrators ?? 0) > 0 && (privilegedCounts.administrators ?? 0) === 0) {
+        throw new IdentityConflict({message: "The last active administrator cannot be demoted by this group role change."});
       }
       this.#database.exec("COMMIT;");
     } catch (cause) {
@@ -937,15 +955,52 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         const seeded = presenceRowSchema.parse(this.#database.prepare(`
           SELECT EXISTS(SELECT 1 FROM directory_group_role_seeds WHERE installation_id = ?) AS present
         `).get(installationId)).present === 1;
-        if (seeded && assigned.length === 0) throw new IdentityNotFound({message: "The member no longer belongs to an admitted group."});
+        if (seeded && assigned.length === 0) {
+          if (member.status === memberStatuses.active && isAdministratorRole(member.role)) {
+            const adminCount = z.object({count: z.number()}).parse(this.#database.prepare(`
+              SELECT COUNT(*) AS count FROM installation_members
+              WHERE installation_id = ? AND status = 'active' AND role IN ('administrator','owner')
+            `).get(installationId)).count;
+            if (adminCount <= 1) {
+              this.#database.exec("COMMIT;");
+              return member;
+            }
+          }
+          this.#database.prepare(`UPDATE installation_members SET status = ?, updated_at = ? WHERE installation_id = ? AND id = ?`)
+            .run(memberStatuses.inactive, updatedAt, installationId, memberId);
+          this.#database.prepare(`UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE installation_id = ? AND member_id = ?`)
+            .run(updatedAt, installationId, memberId);
+          this.#database.prepare(`UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ?) WHERE installation_id = ? AND principal_kind = 'human' AND principal_id = ?`)
+            .run(updatedAt, installationId, memberId);
+          const inactive = this.#findMember(installationId, memberId);
+          if (inactive === null) throw new IdentityNotFound({message: "The member does not exist."});
+          this.#database.exec("COMMIT;");
+          return inactive;
+        }
         const currentRole = assigned.includes(membershipRoles.owner) ? membershipRoles.owner
           : assigned.includes(membershipRoles.administrator) ? membershipRoles.administrator
           : assigned.includes(membershipRoles.guest) ? membershipRoles.guest
           : assigned.reduce<MembershipRole | null>((best, value) =>
             best === null || !membershipRoleAtLeast(best, value) ? value : best, null) ?? role;
+        const activeAdministrators = z.object({count: z.number()}).parse(this.#database.prepare(`
+          SELECT COUNT(*) AS count FROM installation_members
+          WHERE installation_id = ? AND status = 'active' AND role IN ('administrator','owner')
+        `).get(installationId)).count;
+        const effectiveRole = member.status === memberStatuses.active && isAdministratorRole(member.role) &&
+            !isAdministratorRole(currentRole) && activeAdministrators <= 1
+          ? member.role : currentRole;
         this.#database.prepare(`UPDATE installation_members SET role = ?, status = ?, updated_at = ? WHERE installation_id = ? AND id = ?`)
-          .run(currentRole, memberStatuses.active, updatedAt, installationId, memberId);
-        if (currentRole === membershipRoles.guest) this.#database.prepare(`
+          .run(effectiveRole, memberStatuses.active, updatedAt, installationId, memberId);
+        if (member.status === memberStatuses.active && isAdministratorRole(member.role) && !isAdministratorRole(effectiveRole)) {
+          const afterAdministrators = z.object({count: z.number()}).parse(this.#database.prepare(`
+            SELECT COUNT(*) AS count FROM installation_members
+            WHERE installation_id = ? AND status = 'active' AND role IN ('administrator','owner')
+          `).get(installationId)).count;
+          if (afterAdministrators === 0) this.#database.prepare(`
+            UPDATE installation_members SET role = ?, status = ? WHERE installation_id = ? AND id = ?
+          `).run(member.role, member.status, installationId, memberId);
+        }
+        if (effectiveRole === membershipRoles.guest) this.#database.prepare(`
           UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ?)
           WHERE installation_id = ? AND principal_kind = 'human' AND principal_id = ?
         `).run(updatedAt, installationId, memberId);

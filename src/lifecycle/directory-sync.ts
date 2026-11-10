@@ -32,7 +32,12 @@ export function runDirectoryGroupSyncPass(
   syncedAt: string,
   provider: string,
 ): Promise<DirectoryGroupSyncReport> {
-  return runtime.runPromise(syncDirectoryGroups(directory, syncedAt, provider).pipe(
+  const configured = process.env["ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS"];
+  const maxDeactivations = configured === undefined ? 5 : Number(configured);
+  if (!Number.isSafeInteger(maxDeactivations) || maxDeactivations < 0) {
+    return Promise.reject(new Error("ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS must be a non-negative integer."));
+  }
+  return runtime.runPromise(syncDirectoryGroups(directory, syncedAt, provider, maxDeactivations).pipe(
     Effect.mapError((error) => new Error(`${error._tag}: ${error.message}`)),
   ));
 }

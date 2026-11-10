@@ -425,6 +425,7 @@ export interface InstallationAccessOperations {
     readonly GroupRoleAssignment[],
     IdentityRepositoryFailure
   >;
+  readonly isGroupRoleSeedApplied: () => Effect.Effect<boolean, IdentityRepositoryFailure>;
   readonly setGroupRole: (
     principal: Principal,
     groupId: string,
@@ -697,6 +698,12 @@ function makeInstallationAccessService(
     );
   });
 
+  const isGroupRoleSeedApplied = Effect.fn(
+    "InstallationAccessService.isGroupRoleSeedApplied",
+  )(function*() {
+    return yield* dependencies.repository.isGroupRoleSeedApplied(dependencies.installationId);
+  });
+
   const seedGroupRoles = Effect.fn(
     "InstallationAccessService.seedGroupRoles",
   )(function*(seed: readonly GroupRoleSeedEntry[]) {
@@ -920,20 +927,26 @@ function makeInstallationAccessService(
   ) {
     // The configured roles decide until the directory sync has stored them,
     // and always without a directory sync; after that the stored roles do.
-    const assignments = (yield* dependencies.repository.isGroupRoleSeedApplied(
-        dependencies.installationId,
-      ))
+    const seeded = yield* dependencies.repository.isGroupRoleSeedApplied(dependencies.installationId);
+    const assignments = seeded
       ? yield* dependencies.repository.listGroupRoles(dependencies.installationId)
       : configuredGroupRoleAssignments(policy.seed);
+    const now = dependencies.clock.now().toISOString();
     // With every stored role removed nobody is turned away for good: the
     // roles are simply not set up.
     if (assignments.length === 0) {
+      if (member !== null && seeded) {
+        const refreshed = yield* dependencies.repository.setMemberRole(
+          dependencies.installationId, member.id, member.role, now, true,
+        );
+        clearAuthenticationCaches();
+        if (refreshed.status === memberStatuses.active) return refreshed;
+      }
       return yield* Effect.fail(new IdentityAdmissionDenied({
         message: "No group has been given a role in the Artifact Server yet.",
       }));
     }
     const role = groupMembershipRole(assignments, identity.groups);
-    const now = dependencies.clock.now().toISOString();
     // The last active Admin or Owner keeps their role, so someone can always
     // give the roles out again after a group that held them is lost.
     if (
@@ -968,6 +981,11 @@ function makeInstallationAccessService(
         true,
       );
       clearAuthenticationCaches();
+      if (changed.status !== memberStatuses.active) {
+        return yield* Effect.fail(new IdentityAdmissionDenied({
+          message: "This person is no longer in an admitted group.",
+        }));
+      }
       return changed;
     }
     // A member deactivated earlier keeps its email, so restore that member
@@ -977,13 +995,19 @@ function makeInstallationAccessService(
     );
     const previous = members.find((candidate) => candidate.email === email);
     if (previous !== undefined) {
-      return yield* dependencies.repository.setMemberRole(
+      const restored = yield* dependencies.repository.setMemberRole(
         dependencies.installationId,
         previous.id,
         role,
         now,
         true,
       );
+      if (restored.status !== memberStatuses.active) {
+        return yield* Effect.fail(new IdentityAdmissionDenied({
+          message: "This person is no longer in an admitted group.",
+        }));
+      }
+      return restored;
     }
     const admitted = yield* dependencies.repository.admitMember({
       createdAt: now,
@@ -993,13 +1017,10 @@ function makeInstallationAccessService(
       installationId: dependencies.installationId,
       role,
     });
-    return yield* dependencies.repository.setMemberRole(
-      dependencies.installationId,
-      admitted.id,
-      role,
-      now,
-      true,
-    );
+    // `role` was resolved from the complete group assignment set above, before
+    // admitting the row. Do not create an active member and then discover a
+    // missing role during a second lookup.
+    return admitted;
   }, Effect.catchTag("IdentityNotFound", () =>
     Effect.fail(new IdentityConflict({
       message: "The member changed while its groups were applied.",
@@ -1437,6 +1458,7 @@ function makeInstallationAccessService(
     applyDirectoryGroups,
     listDirectoryGroups,
     listGroupRoles,
+    isGroupRoleSeedApplied,
     setGroupRole,
     seedGroupRoles,
     projectAccess,

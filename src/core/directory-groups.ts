@@ -29,6 +29,10 @@ export interface DirectoryGroupSnapshot {
   /** The identity provider whose user ids the member subjects are. */
   readonly provider: string;
   readonly syncedAt: string;
+  /** Absolute deactivation floor; the repository also allows 20% of active members. */
+  readonly maxDeactivations?: number;
+  /** False only during the initial sync before any group roles are stored. */
+  readonly recomputeRoles?: boolean;
 }
 
 /** A stored directory group with its current member count. */

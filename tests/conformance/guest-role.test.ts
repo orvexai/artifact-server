@@ -314,9 +314,11 @@ describe("guest installation role", () => {
     } finally {
       database.close();
     }
-    expect((await ownerFetch("/api/v1/groups/group-Owners/role", {
+    const lastOwnerResponse = await ownerFetch("/api/v1/groups/group-Owners/role", {
       body: JSON.stringify({role: null}), method: "PUT",
-    })).status).toBe(409);
+    });
+    expect(lastOwnerResponse.status).toBe(409);
+    expect(await lastOwnerResponse.text()).toMatch(/last active owner/u);
     expect((await ownerFetch("/api/v1/groups/group-Guests/role", {
       body: JSON.stringify({role: "viewer"}), method: "PUT",
     })).status).toBe(204);
@@ -400,6 +402,72 @@ describe("guest installation role", () => {
       });
       expect(database.prepare("SELECT role FROM installation_members WHERE id = ?")
         .get("member_directory_sync_guest")).toEqual({role: "guest"});
+    } finally {
+      repository.close();
+      database.close();
+    }
+  });
+
+  test("GUEST-006-C: an empty directory snapshot leaves members active", async () => {
+    const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
+    const database = new DatabaseSync(databasePath);
+    const repository = new SqliteIdentityRepository(databasePath);
+    try {
+      const installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_groups WHERE id = 'group-Guests'").get()).installationId;
+      const now = new Date().toISOString();
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'guest', 'active', ?, ?)`).run(
+        "member_empty_snapshot", installationId, "empty-snapshot@example.test", "Empty Snapshot", now, now,
+      );
+      await expect(repository.applyDirectoryGroups(installationId, {
+        groups: [], provider: "guest-role-empty-snapshot", syncedAt: now,
+      })).rejects.toThrow(/empty|memberless/u);
+      expect(database.prepare("SELECT status FROM installation_members WHERE id = ?")
+        .get("member_empty_snapshot")).toEqual({status: "active"});
+    } finally {
+      repository.close();
+      database.close();
+    }
+  });
+
+  test("GUEST-006-D: removing a member's last role deactivates it and revokes sessions and keys", async () => {
+    const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
+    const database = new DatabaseSync(databasePath);
+    const repository = new SqliteIdentityRepository(databasePath);
+    try {
+      const installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_groups WHERE id = 'group-Guests'").get()).installationId;
+      const now = new Date().toISOString();
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'guest', 'active', ?, ?)`).run(
+        "member_removed_role", installationId, "removed-role@example.test", "Removed Role", now, now,
+      );
+      database.prepare(`INSERT INTO directory_group_members (
+        installation_id, group_id, subject, email, provider
+      ) VALUES (?, ?, ?, ?, ?)`).run(
+        installationId, "group-Guests", "removed-role-subject", "removed-role@example.test", "guest-role-remove-test",
+      );
+      database.prepare(`INSERT INTO application_sessions (
+        installation_id, id, member_id, token_digest, csrf_digest, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+        installationId, "session_removed_role", "member_removed_role", "token-digest", "csrf-digest", now, "2099-01-01T00:00:00.000Z",
+      );
+      database.prepare(`INSERT INTO managed_api_keys (
+        installation_id, id, name, prefix, secret_digest, principal_id, principal_kind,
+        capabilities_json, authorized_by_principal_id, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'human', '[]', ?, ?, ?)`).run(
+        installationId, "key_removed_role", "test key", "test-prefix", "key-digest", "member_removed_role", "owner", now, "2099-01-01T00:00:00.000Z",
+      );
+      await repository.setGroupRole(installationId, "group-Guests", null, now, "owner");
+      expect(database.prepare("SELECT status FROM installation_members WHERE id = ?")
+        .get("member_removed_role")).toEqual({status: "inactive"});
+      expect(database.prepare("SELECT revoked_at FROM application_sessions WHERE id = ?")
+        .get("session_removed_role")).toEqual({revoked_at: now});
+      expect(database.prepare("SELECT revoked_at FROM managed_api_keys WHERE id = ?")
+        .get("key_removed_role")).toEqual({revoked_at: now});
     } finally {
       repository.close();
       database.close();

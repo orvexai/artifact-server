@@ -219,6 +219,13 @@ the Keycloak directory:
 artifactserver maintenance sync-directory --once --mode external-storage
 ```
 
+Directory group sync refuses a snapshot that would deactivate more than the
+larger of five members or 20% of currently active members. Set
+`ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS` to change the absolute
+floor; it must be a non-negative integer. The percentage guard always remains
+in effect. Group membership is applied only after every listed Keycloak group
+and its member list have been fetched successfully.
+
 One pass reads every configured group completely, then makes the installation's
 human members match it:
 
