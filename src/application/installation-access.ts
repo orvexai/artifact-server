@@ -982,9 +982,10 @@ function makeInstallationAccessService(
         previous.id,
         role,
         now,
+        true,
       );
     }
-    return yield* dependencies.repository.admitMember({
+    const admitted = yield* dependencies.repository.admitMember({
       createdAt: now,
       displayName: identity.displayName,
       email,
@@ -992,6 +993,13 @@ function makeInstallationAccessService(
       installationId: dependencies.installationId,
       role,
     });
+    return yield* dependencies.repository.setMemberRole(
+      dependencies.installationId,
+      admitted.id,
+      role,
+      now,
+      true,
+    );
   }, Effect.catchTag("IdentityNotFound", () =>
     Effect.fail(new IdentityConflict({
       message: "The member changed while its groups were applied.",
