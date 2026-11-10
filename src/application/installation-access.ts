@@ -1190,7 +1190,7 @@ function makeInstallationAccessService(
       cacheKey(presentedDigest),
       requestTime.getTime(),
     );
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && cached.kind !== principalKinds.human) return cached;
     const key = yield* dependencies.repository.findApiKey(
       dependencies.installationId,
       parsed[1],
@@ -1202,6 +1202,18 @@ function makeInstallationAccessService(
     ) {
       return yield* invalidApiKey();
     }
+    const boundMember = key.principalKind === principalKinds.human
+      ? yield* dependencies.repository.findMember(
+        dependencies.installationId,
+        key.principalId,
+      )
+      : null;
+    if (
+      key.principalKind === principalKinds.human &&
+      (boundMember === null || boundMember.status !== memberStatuses.active)
+    ) {
+      return yield* invalidApiKey();
+    }
     const principal: Principal = {
       authorizedByPrincipalId: key.authorizedByPrincipalId,
       capabilities: key.capabilities,
@@ -1209,7 +1221,7 @@ function makeInstallationAccessService(
       id: key.principalId,
       installationId: key.installationId,
       kind: key.principalKind,
-      membershipRole: membershipRoles.member,
+      membershipRole: boundMember?.role ?? membershipRoles.member,
     };
     apiKeyCache?.set(
       cacheKey(presentedDigest),
@@ -1297,6 +1309,11 @@ function makeInstallationAccessService(
     if (command.memberId !== undefined && member?.status !== memberStatuses.active) {
       return yield* Effect.fail(new IdentityNotFound({
         message: "The active member for this API key does not exist.",
+      }));
+    }
+    if (member?.role === membershipRoles.guest) {
+      return yield* Effect.fail(new AuthorizationDenied({
+        message: "API keys cannot be issued for guest members.",
       }));
     }
     const key: StoredManagedApiKey = {

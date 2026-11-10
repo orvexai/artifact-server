@@ -161,6 +161,14 @@ describe("guest installation role", () => {
       .parse(await visibleProjectsResponse.json()).projects;
     expect(visibleProjects.map(({id}) => id)).toEqual([projectId]);
     expect((await guestFetch("/api/v1/members")).status).toBe(403);
+    const guestKey = await ownerFetch("/api/v1/api-keys", {
+      body: JSON.stringify({
+        capabilities: ["artifact:read"], expiresAt: "2099-01-01T00:00:00.000Z",
+        memberId: "member_guest_conformance", name: "Guest key",
+      }),
+      method: "POST",
+    });
+    expect(guestKey.status).toBe(403);
     expect((await guestFetch("/api/v1/agents")).status).toBe(403);
     expect((await guestFetch("/api/v1/agent-dispatches")).status).toBe(403);
     expect((await guestFetch("/api/v1/agent-dispatches/dispatch-private")).status).toBe(403);
@@ -226,6 +234,13 @@ describe("guest installation role", () => {
     expect((await ownerFetch("/api/v1/groups/group-Viewers/role", {
       body: JSON.stringify({role: "viewer"}), method: "PUT",
     })).status).toBe(204);
+    const issuedViewerKey = z.object({token: z.string()}).parse(await (await ownerFetch("/api/v1/api-keys", {
+      body: JSON.stringify({
+        capabilities: ["artifact:read"], expiresAt: "2099-01-01T00:00:00.000Z",
+        memberId: session.id, name: "Viewer member key",
+      }),
+      method: "POST",
+    })).json()).token;
     const projectListPath = `${server.baseUrl}/api/v1/projects`;
     const viewerProjects = z.object({projects: z.array(z.object({id: z.string()}))})
       .parse(await (await fetch(projectListPath, {headers: {Cookie: cookie}})).json()).projects;
@@ -239,6 +254,11 @@ describe("guest installation role", () => {
     const guestProjects = z.object({projects: z.array(z.object({id: z.string()}))})
       .parse(await (await fetch(projectListPath, {headers: {Cookie: cookie}})).json()).projects;
     expect(guestProjects).toEqual([]);
+    const keyProjects = z.object({projects: z.array(z.object({id: z.string()}))})
+      .parse(await (await fetch(projectListPath, {
+        headers: {Authorization: `Bearer ${issuedViewerKey}`},
+      })).json()).projects;
+    expect(keyProjects).toEqual([]);
   });
 
   async function expectAllowed(
