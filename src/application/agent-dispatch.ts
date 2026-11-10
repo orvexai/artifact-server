@@ -534,6 +534,14 @@ function makeAgentDispatchService(
 
   const listAgents = Effect.fn("AgentDispatchService.listAgents")(
     function*(command: ListAgentsCommand) {
+      if (
+        command.principal.kind === "human" &&
+        command.principal.membershipRole === "guest"
+      ) {
+        return yield* new AuthorizationDenied({
+          message: "Guests cannot list registered agents.",
+        });
+      }
       yield* authorization.requireArtifactRead(command.principal);
       const readTime = yield* now();
       const agents = yield* dependencies.repository.listAgents(

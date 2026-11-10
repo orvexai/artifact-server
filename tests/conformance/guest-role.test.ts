@@ -142,6 +142,7 @@ describe("guest installation role", () => {
       .parse(await visibleProjectsResponse.json()).projects;
     expect(visibleProjects.map(({id}) => id)).toEqual([projectId]);
     expect((await guestFetch("/api/v1/members")).status).toBe(403);
+    expect((await guestFetch("/api/v1/agents")).status).toBe(403);
     expect((await guestFetch("/api/v1/projects", {body: JSON.stringify({name: "Guest project"}), method: "POST"})).status).toBe(403);
     expect((await guestFetch("/api/v1/administration/public-links")).status).toBe(403);
     const artifact = await publishNew(server, installation, {
