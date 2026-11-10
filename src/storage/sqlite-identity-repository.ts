@@ -945,6 +945,10 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
             best === null || !membershipRoleAtLeast(best, value) ? value : best, null) ?? role;
         this.#database.prepare(`UPDATE installation_members SET role = ?, status = ?, updated_at = ? WHERE installation_id = ? AND id = ?`)
           .run(currentRole, memberStatuses.active, updatedAt, installationId, memberId);
+        if (currentRole === membershipRoles.guest) this.#database.prepare(`
+          UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ?)
+          WHERE installation_id = ? AND principal_kind = 'human' AND principal_id = ?
+        `).run(updatedAt, installationId, memberId);
         const updated = this.#findMember(installationId, memberId);
         if (updated === null) throw new IdentityNotFound({message: "The member does not exist."});
         this.#database.exec("COMMIT;");
@@ -965,6 +969,10 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     if (member === null) {
       throw new IdentityNotFound({message: "The member does not exist."});
     }
+    if (role === membershipRoles.guest) this.#database.prepare(`
+      UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ?)
+      WHERE installation_id = ? AND principal_kind = 'human' AND principal_id = ?
+    `).run(updatedAt, installationId, memberId);
     return member;
   }
 

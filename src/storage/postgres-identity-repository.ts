@@ -903,6 +903,11 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
              created_at AS "createdAt", updated_at AS "updatedAt"`,
           [effectiveRole, memberStatuses.active, updatedAt, installationId, memberId],
         );
+        if (rows.length > 0 && effectiveRole === membershipRoles.guest) yield* sql.unsafe(
+          `UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, $1)
+           WHERE installation_id = $2 AND principal_kind = 'human' AND principal_id = $3`,
+          [updatedAt, installationId, memberId],
+        );
         return memberRowSchema.nullable().parse(rows[0] ?? null);
       }));
     }));
