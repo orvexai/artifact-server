@@ -29,10 +29,16 @@ export interface DirectoryGroupSnapshot {
   /** The identity provider whose user ids the member subjects are. */
   readonly provider: string;
   readonly syncedAt: string;
+  /** Absolute deactivation floor; the repository also allows 20% of active members. */
+  readonly maxDeactivations?: number;
+  /** False only during the initial sync before any group roles are stored. */
+  readonly recomputeRoles?: boolean;
 }
 
 /** A stored directory group with its current member count. */
 export interface StoredDirectoryGroup extends DirectoryGroupRecord {
+  /** True when members of this guest group also have a higher assigned role. */
+  readonly hasHigherRoleOverlap: boolean;
   readonly memberCount: number;
   readonly syncedAt: string;
 }
@@ -43,6 +49,8 @@ export interface DirectoryGroupApplyResult {
   readonly deleted: number;
   readonly membershipsKept: number;
   readonly membershipsReplaced: number;
+  /** Present only when recomputing stored member roles changed at least one role. */
+  readonly roleChanged?: number;
   readonly renamed: number;
 }
 

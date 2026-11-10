@@ -99,7 +99,7 @@ function makeAuthorizationService(
   )(function*(principal: Principal) {
     yield* requireInstallation(principal);
     if (
-      isDirectHumanPrincipal(principal) ||
+      (isDirectHumanPrincipal(principal) && principal.membershipRole !== "guest") ||
       hasCapability(principal, principalCapabilities.createArtifact)
     ) {
       return;
@@ -129,7 +129,7 @@ function makeAuthorizationService(
   )(function*(principal: Principal) {
     yield* requireInstallation(principal);
     if (
-      isDirectHumanPrincipal(principal) ||
+      (isDirectHumanPrincipal(principal) && principal.membershipRole !== "guest") ||
       (principal.kind === principalKinds.service &&
         hasCapability(principal, principalCapabilities.connectAgents))
     ) return;
@@ -143,7 +143,7 @@ function makeAuthorizationService(
   )(function*(principal: Principal) {
     yield* requireInstallation(principal);
     if (
-      isDirectHumanPrincipal(principal) ||
+      (isDirectHumanPrincipal(principal) && principal.membershipRole !== "guest") ||
       hasCapability(principal, principalCapabilities.manageAnyArtifact)
     ) {
       return;
@@ -244,7 +244,7 @@ function makeAuthorizationService(
     "AuthorizationService.requireArtifactManagement",
   )(function*(principal: Principal) {
     yield* requireInstallation(principal);
-    if (isDirectHumanPrincipal(principal)) return;
+    if (isDirectHumanPrincipal(principal) && principal.membershipRole !== "guest") return;
     if (
       hasCapability(principal, principalCapabilities.manageAnyArtifact)
     ) {
@@ -258,7 +258,7 @@ function makeAuthorizationService(
   )(function*(principal: Principal) {
     yield* requireInstallation(principal);
     if (
-      isDirectHumanPrincipal(principal) ||
+      (isDirectHumanPrincipal(principal) && principal.membershipRole !== "guest") ||
       hasCapability(principal, principalCapabilities.createArtifact) ||
       hasCapability(principal, principalCapabilities.publishAnyArtifact)
     ) {
@@ -304,7 +304,7 @@ function makeAuthorizationService(
     "AuthorizationService.requireVersionPublication",
   )(function*(principal: Principal) {
     yield* requireInstallation(principal);
-    if (isDirectHumanPrincipal(principal)) return;
+    if (isDirectHumanPrincipal(principal) && principal.membershipRole !== "guest") return;
     if (
       hasCapability(principal, principalCapabilities.publishAnyArtifact)
     ) {

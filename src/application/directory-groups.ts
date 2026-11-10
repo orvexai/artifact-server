@@ -12,6 +12,7 @@ import {InstallationAccessService} from "./installation-access.js";
 export const listDirectoryGroups = Effect.fn("listDirectoryGroups")(function*(
   principal: Principal,
 ) {
+  if (principal.kind === "human" && principal.membershipRole === "guest") return [];
   yield* AuthorizationService.use((authorization) =>
     authorization.requireArtifactListing(principal)
   );

@@ -170,6 +170,7 @@ export interface DirectoryGroupSyncReport {
   readonly renamed: number;
   readonly deleted: number;
   readonly membershipsReplaced: number;
+  readonly roleChanged?: number;
   /** Groups whose members could not be read; they keep their stored members. */
   readonly groupsFailed: number;
 }
@@ -183,24 +184,20 @@ export const syncDirectoryGroups = Effect.fn("syncDirectoryGroups")(function*(
   directory: GroupDirectory,
   syncedAt: string,
   provider: string,
+  maxDeactivations = 5,
+  recomputeRoles = true,
 ) {
   const listed = yield* directory.listAllGroups();
+  if (listed.length === 0) {
+    return yield* Effect.fail(new DirectoryUnavailable({message: "Refusing an empty directory group snapshot."}));
+  }
   const groups: DirectoryGroupObservation[] = [];
-  let groupsFailed = 0;
   for (const group of listed) {
-    const users = yield* directory.listGroupMembers(group).pipe(
-      Effect.map((read): readonly DirectoryUser[] | null => read),
-      Effect.catchTag("DirectoryUnavailable", (failure) =>
-        Effect.logWarning(
-          `Keeping the stored members of ${group.path}: ${failure.message}`,
-        ).pipe(Effect.as(null))
-      ),
-    );
-    if (users === null) groupsFailed += 1;
+    const users = yield* directory.listGroupMembers(group);
     groups.push({
       ...group,
       // A disabled directory user belongs to no group here.
-      members: users === null ? null : users.filter((user) => user.enabled).map((user) => ({
+      members: users.filter((user) => user.enabled).map((user) => ({
         email: user.emailVerified && user.email !== null
           ? normalizeMemberEmail(user.email)
           : null,
@@ -208,17 +205,29 @@ export const syncDirectoryGroups = Effect.fn("syncDirectoryGroups")(function*(
       })),
     });
   }
+  const roleGroups = yield* InstallationAccessService.use((access) => access.listGroupRoles());
+  const rolesSeeded = yield* InstallationAccessService.use((access) => access.isGroupRoleSeedApplied());
+  const roleGroupIds = new Set(roleGroups.map(({groupId}) => groupId));
+  if (roleGroupIds.size > 0 && !groups.some((group) => roleGroupIds.has(group.id) && (group.members?.length ?? 0) > 0)) {
+    return yield* Effect.fail(new DirectoryUnavailable({message: "Refusing a directory snapshot with no members in any role-bearing group."}));
+  }
   const applied = yield* InstallationAccessService.use((access) =>
-    access.applyDirectoryGroups({groups, provider, syncedAt})
+    access.applyDirectoryGroups({
+      groups, provider, syncedAt, maxDeactivations,
+      recomputeRoles: recomputeRoles && (rolesSeeded || roleGroupIds.size > 0),
+    })
   );
   // Field order is the order operators read the one-line summary in.
-  const report: DirectoryGroupSyncReport = {
+  const reportBase = {
     groups: groups.length,
     created: applied.created,
     renamed: applied.renamed,
     deleted: applied.deleted,
     membershipsReplaced: applied.membershipsReplaced,
-    groupsFailed,
+    groupsFailed: 0,
   };
+  const report: DirectoryGroupSyncReport = applied.roleChanged === undefined
+    ? reportBase
+    : {...reportBase, roleChanged: applied.roleChanged};
   return report;
 });

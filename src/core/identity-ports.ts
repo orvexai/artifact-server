@@ -191,7 +191,8 @@ export interface IdentityRepository {
     memberId: string,
     role: InstallationMember["role"],
     updatedAt: string,
-  ): Promise<InstallationMember>;
+    recomputeFromCurrentGroups?: boolean,
+  ): Promise<InstallationMember | null>;
 }
 
 /** Atomic first-key operation required by private-team composition roots. */

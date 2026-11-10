@@ -12,6 +12,7 @@ import {
 } from "./project-management.js";
 import {
   type ArtifactRepositoryFailure,
+  AuthorizationDenied,
   CapabilityUnavailable,
 } from "../core/errors.js";
 import type {
@@ -227,6 +228,9 @@ function makeProjectGitHistoryService(
 
   const read = Effect.fn("ProjectGitHistoryService.read")(
     function*(command: ReadProjectGitHistoryCommand) {
+      if (command.principal.kind === "human" && command.principal.membershipRole === "guest") {
+        return yield* new AuthorizationDenied({message: "Guests cannot read Git history status."});
+      }
       yield* projects.getProject(command);
       const stored = yield* dependencies.repository
         .readProjectGitHistorySetting(command.projectId);
@@ -239,6 +243,9 @@ function makeProjectGitHistoryService(
 
   const estimate = Effect.fn("ProjectGitHistoryService.estimate")(
     function*(command: EstimateProjectGitHistoryCommand) {
+      if (command.principal.kind === "human" && command.principal.membershipRole === "guest") {
+        return yield* new AuthorizationDenied({message: "Guests cannot estimate Git history."});
+      }
       yield* projects.requireManagement(command);
       const capability = yield* requireConfigured();
       const values = yield* dependencies.repository.estimateProjectGitHistory(

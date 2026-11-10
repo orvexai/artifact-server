@@ -35,6 +35,7 @@ import {
   type StoredManagedApiKey,
 } from "../core/installation-identity.js";
 import {
+  membershipRoleAtLeast,
   isAdministratorRole,
   type MembershipRole,
   membershipRoles,
@@ -151,6 +152,7 @@ const accessMemberRowSchema = z.object({
   status: z.enum(["active", "inactive"]),
 });
 const storedDirectoryGroupRowSchema = z.object({
+  hasHigherRoleOverlap: z.boolean(),
   id: z.string(),
   memberCount: z.coerce.number().int().nonnegative(),
   name: z.string(),
@@ -190,9 +192,29 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     return this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql.withTransaction(Effect.gen(function*() {
+        if (snapshot.groups.length === 0 || !snapshot.groups.some((group) =>
+          group.members !== null && group.members.length > 0
+        )) {
+          return yield* Effect.fail(new IdentityConflict({message: "Refusing an empty or memberless directory snapshot."}));
+        }
         yield* sql`SELECT pg_advisory_xact_lock(
           hashtextextended(${`artifact-server:directory-groups:${installationId}`}, 0)
         )`;
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:member-policy:${installationId}`}, 0)
+        )`;
+        const beforeRoleRows = yield* sql.unsafe<object>(
+          `SELECT COUNT(*) FILTER (WHERE status = 'active')::integer AS active,
+             COUNT(*) FILTER (WHERE status = 'active' AND role = 'owner')::integer AS owners,
+             COUNT(*) FILTER (WHERE status = 'active' AND role IN ('administrator','owner'))::integer AS administrators
+           FROM installation_members WHERE installation_id = $1`, [installationId]);
+        const beforeRoles = z.object({active: z.number(), owners: z.number(), administrators: z.number()}).parse(beforeRoleRows[0]);
+        const beforeMemberRoleRows = yield* sql.unsafe<object>(
+          `SELECT id, role FROM installation_members WHERE installation_id = $1`,
+          [installationId],
+        );
+        const beforeMemberRoles = z.array(z.object({id: z.string(), role: membershipRoleSchema}))
+          .parse(beforeMemberRoleRows);
         const rows = yield* sql.unsafe<object>(
           "SELECT id, name, path FROM directory_groups WHERE installation_id = $1",
           [installationId],
@@ -236,7 +258,91 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
             ) ON CONFLICT DO NOTHING`;
           }
         }
-        return plan.result;
+        if (snapshot.recomputeRoles !== false) {
+        yield* sql.unsafe(
+          `WITH resolved AS (
+             SELECT member.id, member.role AS old_role,
+               (SELECT assigned.role FROM directory_group_members gm
+                JOIN directory_group_roles assigned ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
+                WHERE gm.installation_id = member.installation_id AND (
+                  EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                  OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider))
+                ) ORDER BY CASE assigned.role WHEN 'owner' THEN 5 WHEN 'administrator' THEN 4 WHEN 'guest' THEN 3 WHEN 'member' THEN 2 ELSE 1 END DESC LIMIT 1) AS desired_role
+             FROM installation_members member WHERE member.installation_id = $1 AND (
+               EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id)
+               OR EXISTS (SELECT 1 FROM directory_group_members gm WHERE gm.installation_id = member.installation_id AND (
+                 EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                 OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider))
+               ))
+             )
+           ), policy AS (
+             SELECT resolved.id,
+               CASE WHEN resolved.old_role = 'owner' AND (resolved.desired_role IS NULL OR resolved.desired_role <> 'owner')
+                 AND NOT EXISTS (SELECT 1 FROM installation_members other
+                   LEFT JOIN resolved projected ON projected.id = other.id
+                   WHERE other.installation_id = $1 AND other.status = 'active'
+                     AND other.id <> resolved.id
+                     AND ((projected.id IS NULL AND other.role = 'owner') OR projected.desired_role = 'owner')) THEN 'owner'
+               WHEN resolved.old_role IN ('administrator','owner') AND (resolved.desired_role IS NULL OR resolved.desired_role NOT IN ('administrator','owner'))
+                 AND NOT EXISTS (SELECT 1 FROM installation_members other
+                   LEFT JOIN resolved projected ON projected.id = other.id
+                   WHERE other.installation_id = $1 AND other.status = 'active'
+                     AND other.id <> resolved.id
+                     AND ((projected.id IS NULL AND other.role IN ('administrator','owner'))
+                       OR projected.desired_role IN ('administrator','owner'))) THEN resolved.old_role
+               ELSE resolved.desired_role END AS next_role FROM resolved
+           )
+           UPDATE installation_members member SET role = COALESCE(policy.next_role, member.role),
+             status = CASE WHEN policy.next_role IS NULL THEN 'inactive' ELSE member.status END,
+             updated_at = $2 FROM policy WHERE member.installation_id = $1 AND member.id = policy.id`,
+          [installationId, snapshot.syncedAt],
+        );
+        yield* sql.unsafe(
+          `UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, $1)
+           WHERE installation_id = $2 AND member_id IN (SELECT id FROM installation_members WHERE installation_id = $2 AND status = 'inactive')`,
+          [snapshot.syncedAt, installationId],
+        );
+        yield* sql.unsafe(
+          `UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, $1)
+           WHERE installation_id = $2 AND principal_kind = 'human' AND principal_id IN
+             (SELECT id FROM installation_members WHERE installation_id = $2 AND status = 'inactive')`,
+          [snapshot.syncedAt, installationId],
+        );
+        yield* sql.unsafe(
+          `UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, $1)
+           WHERE installation_id = $2 AND principal_kind = 'human' AND principal_id IN
+             (SELECT id FROM installation_members WHERE installation_id = $2 AND status = 'active' AND role = 'guest')`,
+          [snapshot.syncedAt, installationId],
+        );
+        }
+        const afterRoleRows = yield* sql.unsafe<object>(
+          `SELECT COUNT(*) FILTER (WHERE status = 'active')::integer AS active,
+             COUNT(*) FILTER (WHERE status = 'active' AND role = 'owner')::integer AS owners,
+             COUNT(*) FILTER (WHERE status = 'active' AND role IN ('administrator','owner'))::integer AS administrators
+           FROM installation_members WHERE installation_id = $1`, [installationId]);
+        const afterRoles = z.object({active: z.number(), owners: z.number(), administrators: z.number()}).parse(afterRoleRows[0]);
+        if (beforeRoles.owners > 0 && afterRoles.owners === 0) {
+          return yield* Effect.fail(new IdentityConflict({message: "Directory sync cannot remove the last active owner."}));
+        }
+        if (beforeRoles.administrators > 0 && afterRoles.administrators === 0) {
+          return yield* Effect.fail(new IdentityConflict({message: "Directory sync cannot remove the last active administrator."}));
+        }
+        const deactivated = beforeRoles.active - afterRoles.active;
+        const threshold = Math.max(snapshot.maxDeactivations ?? 5, Math.ceil(beforeRoles.active * 0.2));
+        if (deactivated > threshold) {
+          return yield* Effect.fail(new IdentityConflict({message: `Directory sync would deactivate ${deactivated} members, exceeding the configured safety threshold of ${threshold}.`}));
+        }
+        const afterMemberRoleRows = yield* sql.unsafe<object>(
+          `SELECT id, role FROM installation_members WHERE installation_id = $1`,
+          [installationId],
+        );
+        const afterMemberRoles = z.array(z.object({id: z.string(), role: membershipRoleSchema}))
+          .parse(afterMemberRoleRows);
+        const previousRoles = new Map(beforeMemberRoles.map((member) => [member.id, member.role]));
+        const roleChanged = afterMemberRoles.filter((member) =>
+          previousRoles.has(member.id) && previousRoles.get(member.id) !== member.role
+        ).length;
+        return roleChanged === 0 ? plan.result : {...plan.result, roleChanged};
       }));
     }));
   }
@@ -249,7 +355,24 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
       const sql = yield* SqlClient;
       const rows = yield* sql.unsafe<object>(
         `SELECT g.id, g.name, g.path, g.synced_at AS "syncedAt",
-          COUNT(m.subject) AS "memberCount"
+          COUNT(m.subject) AS "memberCount",
+          EXISTS (
+            SELECT 1 FROM directory_group_roles guest_role
+            JOIN directory_group_members guest_member
+              ON guest_member.installation_id = guest_role.installation_id
+              AND guest_member.group_id = guest_role.group_id
+            JOIN directory_group_members other_member
+              ON other_member.installation_id = guest_member.installation_id
+              AND other_member.provider = guest_member.provider
+              AND other_member.subject = guest_member.subject
+              AND other_member.group_id <> guest_member.group_id
+            JOIN directory_group_roles other_role
+              ON other_role.installation_id = other_member.installation_id
+              AND other_role.group_id = other_member.group_id
+            WHERE guest_role.installation_id = g.installation_id
+              AND guest_role.group_id = g.id AND guest_role.role = 'guest'
+              AND other_role.role IN ('viewer', 'member', 'administrator', 'owner')
+          ) AS "hasHigherRoleOverlap"
          FROM directory_groups g
          LEFT JOIN directory_group_members m
            ON m.installation_id = g.installation_id AND m.group_id = g.id
@@ -425,29 +548,125 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     const found = await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql.withTransaction(Effect.gen(function*() {
+        yield* sql.unsafe(
+          `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+          [`artifact-server:directory-groups:${installationId}`],
+        );
+        yield* sql.unsafe(
+          `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+          [`artifact-server:member-policy:${installationId}`],
+        );
         const groups = yield* sql.unsafe<object>(
           `SELECT id FROM directory_groups
            WHERE installation_id = $1 AND id = $2 FOR SHARE`,
           [installationId, groupId],
         );
         if (groups.length === 0) return false;
+        const currentRows = yield* sql.unsafe<object>(
+          `SELECT role FROM directory_group_roles WHERE installation_id = $1 AND group_id = $2 FOR UPDATE`,
+          [installationId, groupId],
+        );
+        const currentRole = currentRows[0] === undefined ? null
+          : z.object({role: membershipRoleSchema}).parse(currentRows[0]).role;
+        if (currentRole === membershipRoles.owner && role !== membershipRoles.owner) {
+          const ownerRows = yield* sql.unsafe<object>(
+            `SELECT COUNT(*)::integer AS count FROM installation_members member
+             WHERE member.installation_id = $1 AND member.status = 'active' AND member.role = 'owner'
+               AND EXISTS (SELECT 1 FROM directory_group_members gm WHERE gm.installation_id = member.installation_id
+                 AND gm.group_id = $2 AND (EXISTS (SELECT 1 FROM external_identities identity
+                   WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                   OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
+                     WHERE identity.member_id = member.id AND identity.provider = gm.provider))))
+               AND NOT EXISTS (SELECT 1 FROM directory_group_members gm JOIN directory_group_roles other_role
+                 ON other_role.installation_id = gm.installation_id AND other_role.group_id = gm.group_id
+                 WHERE gm.installation_id = member.installation_id AND gm.group_id <> $2 AND other_role.role = 'owner'
+                   AND (EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id
+                     AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                     OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
+                       WHERE identity.member_id = member.id AND identity.provider = gm.provider))))`,
+            [installationId, groupId],
+          );
+          if (z.object({count: z.number()}).parse(ownerRows[0]).count > 0) {
+            return yield* Effect.fail(new IdentityConflict({message: "The last active owner cannot be removed."}));
+          }
+        }
         if (role === null) {
           yield* sql.unsafe(
             `DELETE FROM directory_group_roles
              WHERE installation_id = $1 AND group_id = $2`,
             [installationId, groupId],
           );
-          return true;
+        } else {
+          yield* sql.unsafe(
+            `INSERT INTO directory_group_roles (
+               installation_id, group_id, role, assigned_at, assigned_by_principal_id
+             ) VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (installation_id, group_id) DO UPDATE SET
+               role = EXCLUDED.role, assigned_at = EXCLUDED.assigned_at,
+               assigned_by_principal_id = EXCLUDED.assigned_by_principal_id`,
+            [installationId, groupId, role, assignedAt, assignedByPrincipalId],
+          );
         }
+        const beforeRows = yield* sql.unsafe<object>(
+          `SELECT COUNT(*) FILTER (WHERE status = 'active')::integer AS active,
+             COUNT(*) FILTER (WHERE status = 'active' AND role = 'owner')::integer AS owners,
+             COUNT(*) FILTER (WHERE status = 'active' AND role IN ('administrator','owner'))::integer AS administrators
+           FROM installation_members WHERE installation_id = $1`, [installationId]);
+        const before = z.object({active: z.number(), owners: z.number(), administrators: z.number()}).parse(beforeRows[0]);
+        const result = yield* sql.unsafe<object>(
+          `WITH resolved AS (
+             SELECT member.id, member.role AS old_role,
+               (SELECT assigned.role FROM directory_group_members gm
+                JOIN directory_group_roles assigned ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
+                WHERE gm.installation_id = member.installation_id AND (
+                  EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                  OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider))
+                ) ORDER BY CASE assigned.role WHEN 'owner' THEN 5 WHEN 'administrator' THEN 4 WHEN 'guest' THEN 3 WHEN 'member' THEN 2 ELSE 1 END DESC LIMIT 1) AS desired_role
+             FROM installation_members member WHERE member.installation_id = $1 AND EXISTS (
+               SELECT 1 FROM directory_group_members gm WHERE gm.installation_id = member.installation_id AND gm.group_id = $2 AND (
+                 EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                 OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider))
+               )
+             )
+           ), policy AS (
+             SELECT resolved.id, resolved.desired_role,
+               CASE WHEN resolved.old_role = 'owner' AND (resolved.desired_role IS NULL OR resolved.desired_role <> 'owner')
+                 AND NOT EXISTS (SELECT 1 FROM installation_members other WHERE other.installation_id = $1 AND other.status = 'active' AND other.role = 'owner' AND other.id <> resolved.id) THEN 'owner'
+               WHEN resolved.old_role IN ('administrator','owner') AND (resolved.desired_role IS NULL OR resolved.desired_role NOT IN ('administrator','owner'))
+                 AND NOT EXISTS (SELECT 1 FROM installation_members other WHERE other.installation_id = $1 AND other.status = 'active' AND other.role IN ('administrator','owner') AND other.id <> resolved.id) THEN resolved.old_role
+               ELSE resolved.desired_role END AS next_role FROM resolved
+           )
+           UPDATE installation_members member SET role = COALESCE(policy.next_role, member.role),
+             status = CASE WHEN policy.next_role IS NULL THEN 'inactive' ELSE member.status END,
+             updated_at = $3 FROM policy WHERE member.installation_id = $1 AND member.id = policy.id`,
+          [installationId, groupId, assignedAt]);
+        void result;
         yield* sql.unsafe(
-          `INSERT INTO directory_group_roles (
-             installation_id, group_id, role, assigned_at, assigned_by_principal_id
-           ) VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (installation_id, group_id) DO UPDATE SET
-             role = EXCLUDED.role, assigned_at = EXCLUDED.assigned_at,
-             assigned_by_principal_id = EXCLUDED.assigned_by_principal_id`,
-          [installationId, groupId, role, assignedAt, assignedByPrincipalId],
-        );
+          `UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, $1)
+           WHERE installation_id = $2 AND member_id IN (SELECT id FROM installation_members WHERE installation_id = $2 AND status = 'inactive')`, [assignedAt, installationId]);
+        yield* sql.unsafe(
+          `UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, $1)
+           WHERE installation_id = $2 AND principal_kind = 'human' AND principal_id IN
+             (SELECT id FROM installation_members WHERE installation_id = $2 AND status = 'inactive')`, [assignedAt, installationId]);
+        yield* sql.unsafe(
+          `UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, $1)
+           WHERE installation_id = $2 AND principal_kind = 'human' AND principal_id IN (
+             SELECT member.id FROM installation_members member JOIN directory_group_members gm ON gm.installation_id = member.installation_id
+             WHERE member.installation_id = $2 AND member.status = 'active' AND member.role = 'guest' AND gm.group_id = $3 AND (
+               EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+               OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider)))
+           )`, [assignedAt, installationId, groupId]);
+        const afterRows = yield* sql.unsafe<object>(
+          `SELECT COUNT(*) FILTER (WHERE status = 'active' AND role = 'owner')::integer AS owners,
+             COUNT(*) FILTER (WHERE status = 'active' AND role IN ('administrator','owner'))::integer AS administrators
+           FROM installation_members WHERE installation_id = $1`, [installationId]);
+        const after = z.object({owners: z.number(), administrators: z.number()}).parse(afterRows[0]);
+        if (before.owners > 0 && after.owners === 0) {
+          return yield* Effect.fail(new IdentityConflict({message: "The last active owner cannot be removed by this group role change."}));
+        }
+        if (before.administrators > 0 && after.administrators === 0) {
+          return yield* Effect.fail(new IdentityConflict({message: "The last active administrator cannot be demoted by this group role change."}));
+        }
         return true;
       }));
     }));
@@ -690,28 +909,97 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     memberId: string,
     role: InstallationMember["role"],
     updatedAt: string,
-  ): Promise<InstallationMember> {
+    recomputeFromCurrentGroups = false,
+  ): Promise<InstallationMember | null> {
     this.#assertInstallationScope(installationId);
     const member = await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql.withTransaction(Effect.gen(function*() {
-        // Serialize with deactivation, which counts administrators under it.
+        // Serialize sign-in role resolution with group sync and group-role edits.
+        if (recomputeFromCurrentGroups) yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:directory-groups:${installationId}`}, 0)
+        )`;
         yield* sql`SELECT pg_advisory_xact_lock(
           hashtextextended(${`artifact-server:member-policy:${installationId}`}, 0)
         )`;
-        const rows = yield* sql.unsafe<object>(
+        let effectiveRole = role;
+        let priorAdministratorCount: number | null = null;
+        let originalMember: InstallationMember | null = null;
+        if (recomputeFromCurrentGroups) {
+          const members = yield* sql.unsafe<object>(
+            `SELECT id, installation_id AS "installationId", email, display_name AS "displayName",
+               role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+             FROM installation_members WHERE installation_id = $1 AND id = $2`, [installationId, memberId]);
+          if (members[0] === undefined) {
+            return yield* new IdentityNotFound({message: "The member does not exist."});
+          }
+          const current = memberRowSchema.parse(members[0]);
+          originalMember = current;
+          if (current.status === memberStatuses.active && isAdministratorRole(current.role)) {
+            const priorCounts = yield* sql.unsafe<object>(
+              `SELECT COUNT(*)::integer AS count FROM installation_members
+               WHERE installation_id = $1 AND status = 'active' AND role IN ('administrator','owner')`, [installationId]);
+            priorAdministratorCount = z.object({count: z.number()}).parse(priorCounts[0]).count;
+          }
+          const email = current.email;
+          const roleRows = yield* sql.unsafe<object>(
+            `SELECT DISTINCT assigned.role FROM directory_group_members gm JOIN directory_group_roles assigned
+              ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
+             WHERE gm.installation_id = $1 AND (
+               EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = $2
+                 AND identity.provider = gm.provider AND identity.subject = gm.subject)
+               OR (gm.email = $3 AND NOT EXISTS (SELECT 1 FROM external_identities identity
+                 WHERE identity.member_id = $2 AND identity.provider = gm.provider))
+             )`, [installationId, memberId, email]);
+          const assigned = z.array(z.object({role: membershipRoleSchema})).parse(roleRows).map(({role: value}) => value);
+          const seedRows = yield* sql.unsafe<object>(`SELECT installation_id FROM directory_group_role_seeds WHERE installation_id = $1`, [installationId]);
+          if (seedRows.length > 0 && assigned.length === 0) {
+            return null;
+          }
+          effectiveRole = assigned.includes(membershipRoles.owner) ? membershipRoles.owner
+            : assigned.includes(membershipRoles.administrator) ? membershipRoles.administrator
+            : assigned.includes(membershipRoles.guest) ? membershipRoles.guest
+            : assigned.reduce<MembershipRole | null>((best, value) =>
+              best === null || !membershipRoleAtLeast(best, value) ? value : best, null) ?? role;
+          if (current.status === memberStatuses.active && isAdministratorRole(current.role) && !isAdministratorRole(effectiveRole)) {
+            const counts = yield* sql.unsafe<object>(
+              `SELECT COUNT(*)::integer AS count FROM installation_members
+               WHERE installation_id = $1 AND status = 'active' AND role IN ('administrator','owner')`, [installationId]);
+            if (z.object({count: z.number()}).parse(counts[0]).count <= 1) effectiveRole = current.role;
+          }
+        }
+        let rows = yield* sql.unsafe<object>(
           `UPDATE installation_members
            SET role = $1, status = $2, updated_at = $3
            WHERE installation_id = $4 AND id = $5
            RETURNING id, installation_id AS "installationId", email,
              display_name AS "displayName", role, status,
              created_at AS "createdAt", updated_at AS "updatedAt"`,
-          [role, memberStatuses.active, updatedAt, installationId, memberId],
+          [effectiveRole, memberStatuses.active, updatedAt, installationId, memberId],
+        );
+        if (rows.length > 0 && priorAdministratorCount !== null && priorAdministratorCount > 0 && !isAdministratorRole(effectiveRole)) {
+          const afterCounts = yield* sql.unsafe<object>(
+            `SELECT COUNT(*)::integer AS count FROM installation_members
+             WHERE installation_id = $1 AND status = 'active' AND role IN ('administrator','owner')`, [installationId]);
+          if (z.object({count: z.number()}).parse(afterCounts[0]).count === 0) {
+            rows = yield* sql.unsafe<object>(
+              `UPDATE installation_members SET role = $1, status = $2, updated_at = $3
+               WHERE installation_id = $4 AND id = $5
+               RETURNING id, installation_id AS "installationId", email,
+                 display_name AS "displayName", role, status,
+                 created_at AS "createdAt", updated_at AS "updatedAt"`,
+              [originalMember?.role, originalMember?.status, updatedAt, installationId, memberId]);
+          }
+        }
+        if (rows.length > 0 && effectiveRole === membershipRoles.guest) yield* sql.unsafe(
+          `UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, $1)
+           WHERE installation_id = $2 AND principal_kind = 'human' AND principal_id = $3`,
+          [updatedAt, installationId, memberId],
         );
         return memberRowSchema.nullable().parse(rows[0] ?? null);
       }));
     }));
-    if (member === null) {
+    if (member === null && !recomputeFromCurrentGroups) {
       throw new IdentityNotFound({message: "The member does not exist."});
     }
     return member;

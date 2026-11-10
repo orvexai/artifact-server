@@ -14,6 +14,7 @@ export type PrincipalKind =
  * original names so existing members, sessions and clients are unchanged.
  */
 export const membershipRoles = {
+  guest: "guest",
   viewer: "viewer",
   member: "member",
   administrator: "administrator",
@@ -25,6 +26,7 @@ export type MembershipRole =
   (typeof membershipRoles)[keyof typeof membershipRoles];
 
 const membershipRoleRank = {
+  guest: 0,
   viewer: 1,
   member: 2,
   administrator: 3,
