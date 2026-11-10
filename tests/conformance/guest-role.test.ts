@@ -233,6 +233,17 @@ describe("guest installation role", () => {
       .parse(await mcpGuestResponses.json()).result.structuredContent;
     expect(JSON.stringify(mcpResponsePayload)).not.toContain("authorSubject");
     expect(JSON.stringify(mcpResponsePayload)).not.toContain("owner@example.test");
+    expect((await ownerFetch(`/api/v1/artifacts/${sharedArtifact.body.artifact.id}/state/staff-key?projectId=${projectId}`, {
+      body: JSON.stringify({value: "staff value"}), method: "PUT",
+    })).status).toBe(200);
+    const guestState = await guestFetch(`/api/v1/artifacts/${sharedArtifact.body.artifact.id}/state?projectId=${projectId}`);
+    const guestStateBody = await guestState.text();
+    expect(guestStateBody).not.toContain("owner@example.test");
+    expect(guestStateBody).toContain("Team member");
+    const mcpGuestState = await guestMcpCall("artifact_state_list", {artifactId: sharedArtifact.body.artifact.id, projectId});
+    const mcpStatePayload = z.object({result: z.object({structuredContent: z.unknown()}).loose()})
+      .parse(await mcpGuestState.json()).result.structuredContent;
+    expect(JSON.stringify(mcpStatePayload)).not.toContain("owner@example.test");
     expect((await guestFetch(`/api/v1/artifacts/${sharedArtifact.body.artifact.id}/state/guest-key?projectId=${projectId}`, {
       body: JSON.stringify({value: "guest write"}), method: "PUT",
     })).status).toBe(403);

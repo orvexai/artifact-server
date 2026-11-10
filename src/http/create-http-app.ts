@@ -109,6 +109,7 @@ import {
   type ArtifactDeletion,
   type ArtifactPage,
   type ArtifactState,
+  type ArtifactStateEntry,
   type ArtifactResponseData,
   type ArtifactResponseRecord,
   type ArtifactVersion,
@@ -2534,7 +2535,8 @@ export function createHttpApp(
         projectId: requestedProjectId(context),
       })),
     );
-    return context.json({entries});
+    const isGuest = context.get("principal").membershipRole === membershipRoles.guest;
+    return context.json({entries: isGuest ? entries.map(guestStateEntryProjection) : entries});
   });
 
   app.get("/api/v1/artifacts/:artifactId/state/:key", async (context) => {
@@ -2548,7 +2550,8 @@ export function createHttpApp(
         projectId: requestedProjectId(context),
       })),
     );
-    return context.json({entry});
+    const isGuest = context.get("principal").membershipRole === membershipRoles.guest;
+    return context.json({entry: entry === null || !isGuest ? entry : guestStateEntryProjection(entry)});
   });
 
   app.put(
@@ -4224,6 +4227,13 @@ function guestResponseProjection(response: ArtifactResponseRecord): Omit<Artifac
   const {authorSubject, ...visibleResponse} = response;
   void authorSubject;
   return {...visibleResponse, authorEmail: null};
+}
+
+function guestStateEntryProjection(entry: ArtifactStateEntry): ArtifactStateEntry {
+  return {...entry, updatedBy: {
+    ...entry.updatedBy,
+    displayName: entry.updatedBy.displayName.includes("@") ? "Team member" : entry.updatedBy.displayName,
+  }};
 }
 
 function guestAuthorResponse(author: CommentAuthor, guest: GuestReviewer) {

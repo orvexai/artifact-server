@@ -57,6 +57,7 @@ import {
   type AgentDispatchState,
   type ArtifactVersion,
   type ArtifactResponseRecord,
+  type ArtifactStateEntry,
   type CommentAuthor,
   type CommentReplyRecord,
   type CommentThreadRecord,
@@ -1955,7 +1956,8 @@ export function createArtifactMcpServer(
           projectId,
         })),
       );
-      return {entries};
+      const isGuest = identity.principal.kind === "human" && identity.principal.membershipRole === "guest";
+      return {entries: isGuest ? entries.map(guestStateEntryProjection) : entries};
     }),
   );
 
@@ -1972,8 +1974,8 @@ export function createArtifactMcpServer(
       outputSchema: z.object({entry: artifactStateEntrySchema.nullable()}).strict(),
       annotations: readOnlyAnnotations,
     },
-    async ({artifactId, key, projectId}) => toolResult(async () => ({
-      entry: await runMcpApplicationEffect(
+    async ({artifactId, key, projectId}) => toolResult(async () => {
+      const entry = await runMcpApplicationEffect(
         dependencies,
         ArtifactCommentService.use((comments) => comments.getState({
           artifactId,
@@ -1981,8 +1983,10 @@ export function createArtifactMcpServer(
           principal: identity.principal,
           projectId,
         })),
-      ),
-    })),
+      );
+      const isGuest = identity.principal.kind === "human" && identity.principal.membershipRole === "guest";
+      return {entry: entry === null || !isGuest ? entry : guestStateEntryProjection(entry)};
+    }),
   );
 
   registerNudgedTool(
@@ -3156,6 +3160,13 @@ function artifactResponseProjection(response: ArtifactResponseRecord, isGuest: b
   return isGuest
     ? {...visibleResponse, authorEmail: null}
     : {...visibleResponse, authorSubject};
+}
+
+function guestStateEntryProjection(entry: ArtifactStateEntry): ArtifactStateEntry {
+  return {...entry, updatedBy: {
+    ...entry.updatedBy,
+    displayName: entry.updatedBy.displayName.includes("@") ? "Team member" : entry.updatedBy.displayName,
+  }};
 }
 
 function commentAuthorProjection(author: CommentAuthor, isGuest: boolean): Omit<CommentAuthor, "principalId"> | CommentAuthor {
