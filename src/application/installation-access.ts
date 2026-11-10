@@ -920,6 +920,24 @@ function makeInstallationAccessService(
    * Make the member's state match the role its issuer groups grant: admit or
    * restore it, change its role, or deactivate it and refuse admission.
    */
+  const isSoleActiveAdministrator = Effect.fn(
+    "InstallationAccessService.isSoleActiveAdministrator",
+  )(function*(member: InstallationMember, tokenRole: MembershipRole) {
+    if (
+      member.status !== memberStatuses.active ||
+      !isAdministratorRole(member.role) ||
+      !isAdministratorRole(tokenRole)
+    ) return false;
+    const members = yield* dependencies.repository.listMembers(
+      dependencies.installationId,
+    );
+    return !members.some((candidate) =>
+      candidate.id !== member.id &&
+      candidate.status === memberStatuses.active &&
+      isAdministratorRole(candidate.role)
+    );
+  });
+
   const applyGroupRole = Effect.fn(
     "InstallationAccessService.applyGroupRole",
   )(function*(
@@ -977,6 +995,7 @@ function makeInstallationAccessService(
         true,
       );
       if (changed === null) {
+        if (yield* isSoleActiveAdministrator(member, role)) return member;
         return yield* Effect.fail(new IdentityAdmissionDenied({
           message: "This person's current group memberships are not in the stored directory mirror.",
         }));
@@ -1004,6 +1023,7 @@ function makeInstallationAccessService(
         true,
       );
       if (restored === null) {
+        if (yield* isSoleActiveAdministrator(previous, role)) return previous;
         return yield* Effect.fail(new IdentityAdmissionDenied({
           message: "This person's current group memberships are not in the stored directory mirror.",
         }));

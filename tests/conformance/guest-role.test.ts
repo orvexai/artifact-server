@@ -505,6 +505,88 @@ describe("guest installation role", () => {
     }
   });
 
+  test("GUEST-006-E: a sole owner can sign in when the stored mirror misses their owner group", async () => {
+    await server.stop();
+    const identity: ExternalIdentity = {
+      displayName: "Sole owner",
+      email: "sole-owner-stale-mirror@example.test",
+      emailVerified: true,
+      groups: ["/Owners"],
+      provider: "guest-role-last-owner-test",
+      subject: "guest-role-last-owner-subject",
+    };
+    const provider: InteractiveIdentityProvider = {
+      name: identity.provider,
+      start: () => Effect.succeed({
+        authorizationUrl: "https://identity.example/authorize",
+        codeVerifier: "test-code-verifier-with-sufficient-entropy",
+        nonce: null,
+        state: "guest-role-last-owner-state-with-sufficient-entropy",
+      }),
+      complete: (code) => code === "guest-role-last-owner-code"
+        ? Effect.succeed(identity)
+        : Effect.fail(new IdentityProviderFailure({message: "Invalid code."})),
+    };
+    server = await startTestServer(installation, {
+      browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
+      groupRolePolicy: {seed: [
+        {role: membershipRoles.guest, selector: "/Guests"},
+        {role: membershipRoles.viewer, selector: "/Viewers"},
+        {role: membershipRoles.owner, selector: "/Owners"},
+      ]},
+      interactiveIdentityProvider: provider,
+    });
+
+    const originalUpdatedAt = "2026-11-10T10:00:00.000Z";
+    const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
+    const database = new DatabaseSync(databasePath);
+    try {
+      const installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_groups WHERE id = 'group-Owners'").get()).installationId;
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'owner', 'active', ?, ?)`).run(
+        "member_sole_stale_owner", installationId, identity.email, identity.displayName,
+        originalUpdatedAt, originalUpdatedAt,
+      );
+      expect(database.prepare("SELECT COUNT(*) AS count FROM directory_group_members WHERE email = ?")
+        .get(identity.email)).toEqual({count: 0});
+    } finally {
+      database.close();
+    }
+
+    const login = await fetch(`${server.baseUrl}/auth/login`, {redirect: "manual"});
+    expect(login.status).toBe(302);
+    const callback = new URL("/auth/callback", server.baseUrl);
+    callback.searchParams.set("code", "guest-role-last-owner-code");
+    callback.searchParams.set("state", "guest-role-last-owner-state-with-sufficient-entropy");
+    const response = await fetch(callback, {
+      headers: {Cookie: loginHandshakeCookie(login)},
+      redirect: "manual",
+    });
+    expect(response.status).toBe(303);
+    const sessionCookie = response.headers.getSetCookie()
+      .filter((cookie) => cookie.startsWith("artifact_session="))
+      .map((cookie) => cookie.split(";", 1)[0]).join("; ");
+    const session = z.object({principal: z.object({
+      id: z.literal("member_sole_stale_owner"),
+      membershipRole: z.literal("owner"),
+    })}).parse(await (await fetch(`${server.baseUrl}/api/v1/session`, {
+      headers: {Cookie: sessionCookie},
+    })).json());
+    expect(session.principal.membershipRole).toBe("owner");
+
+    const verifyDatabase = new DatabaseSync(databasePath);
+    try {
+      expect(verifyDatabase.prepare("SELECT role, status, updated_at AS updatedAt FROM installation_members WHERE id = ?")
+        .get("member_sole_stale_owner")).toEqual({
+        role: "owner", status: "active", updatedAt: originalUpdatedAt,
+      });
+    } finally {
+      verifyDatabase.close();
+    }
+  });
+
   test("GUEST-006-C: an empty directory snapshot leaves members active", async () => {
     const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
     const database = new DatabaseSync(databasePath);

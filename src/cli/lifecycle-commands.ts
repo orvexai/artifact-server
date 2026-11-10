@@ -200,13 +200,9 @@ function configureMaintenance(program: Command): void {
         console.log(JSON.stringify({groupSync}));
         const groupRoleSeed = await runtime.seedGroupRoles(groupRoles.seed);
         console.log(JSON.stringify({groupRoleSeed}));
-        if (groupRoleSeed.unresolved.length > 0) {
-          console.error(
-            `ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED names groups that match no single directory group: ${groupRoleSeed.unresolved.join(", ")}. No starting role was stored.`,
-          );
-        }
+        const groupRoleSeedApplied = await runtime.isGroupRoleSeedApplied();
         let roleChangedDuringRecompute = 0;
-        if (await runtime.isGroupRoleSeedApplied()) {
+        if (groupRoleSeedApplied) {
           const roleRecompute = await runtime.syncDirectoryGroups(
             directory,
             new Date().toISOString(),
@@ -214,6 +210,13 @@ function configureMaintenance(program: Command): void {
           );
           roleChangedDuringRecompute = roleRecompute.roleChanged ?? 0;
           console.log(JSON.stringify({roleRecompute}));
+        }
+        if (groupRoleSeed.unresolved.length > 0) {
+          console.error(
+            groupRoleSeedApplied
+              ? `ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED names groups that match no single directory group: ${groupRoleSeed.unresolved.join(", ")}. Role recomputation ran using the previously stored roles.`
+              : `ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED names groups that match no single directory group: ${groupRoleSeed.unresolved.join(", ")}. No starting role was stored.`,
+          );
         }
         const memberSync = await runtime.syncDirectory(directory);
         console.log(JSON.stringify(roleChangedDuringRecompute === 0
