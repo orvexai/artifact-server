@@ -110,6 +110,7 @@ import {
   type ArtifactPage,
   type ArtifactState,
   type ArtifactResponseData,
+  type ArtifactResponseRecord,
   type ArtifactVersion,
   commentThreadStates,
   type CommentThreadPage,
@@ -2482,7 +2483,7 @@ export function createHttpApp(
       questionId: query.questionId ?? null, versionId: query.versionId ?? null,
     })));
     return context.json(context.get("principal").membershipRole === membershipRoles.guest
-      ? {...page, items: page.items.map((response) => ({...response, authorEmail: null}))}
+      ? {...page, items: page.items.map(guestResponseProjection)}
       : page);
   });
 
@@ -2492,7 +2493,7 @@ export function createHttpApp(
       projectId: requestedProjectId(context), responseId: context.req.param("responseId"),
     })));
     return response === null ? context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404) : context.json(
-      context.get("principal").membershipRole === membershipRoles.guest ? {...response, authorEmail: null} : response,
+      context.get("principal").membershipRole === membershipRoles.guest ? guestResponseProjection(response) : response,
     );
   });
 
@@ -4217,6 +4218,12 @@ function commentAuthorResponse(author: CommentAuthor, isGuest: boolean): Omit<Co
 
 function commentReplyResponse(reply: CommentReplyRecord, isGuest: boolean) {
   return {...reply, author: commentAuthorResponse(reply.author, isGuest)};
+}
+
+function guestResponseProjection(response: ArtifactResponseRecord): Omit<ArtifactResponseRecord, "authorSubject"> {
+  const {authorSubject, ...visibleResponse} = response;
+  void authorSubject;
+  return {...visibleResponse, authorEmail: null};
 }
 
 function guestAuthorResponse(author: CommentAuthor, guest: GuestReviewer) {

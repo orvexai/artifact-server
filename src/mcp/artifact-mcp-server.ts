@@ -56,7 +56,9 @@ import {
   type AgentDispatchRecord,
   type AgentDispatchState,
   type ArtifactVersion,
+  type ArtifactResponseRecord,
   type CommentAuthor,
+  type CommentReplyRecord,
   type CommentThreadRecord,
   type PageCursor,
   type PublishedVersion,
@@ -2061,22 +2063,10 @@ export function createArtifactMcpServer(
           questionId, versionId,
         })));
         return {
-          items: page.items.map((response) => ({
-            artifactId: response.artifactId,
-            authorDisplayName: response.authorDisplayName,
-            authorEmail: identity.principal.kind === "human" && identity.principal.membershipRole !== "guest" ? response.authorEmail : null,
-            authorKind: response.authorKind,
-            ...(identity.principal.kind === "human" && identity.principal.membershipRole === "guest"
-              ? {} : {authorSubject: response.authorSubject}),
-            choice: response.choice,
-            createdAt: response.createdAt,
-            data: response.data,
-            externalQuestion: response.externalQuestion,
-            guestSessionId: response.guestSessionId,
-            id: response.id,
-            questionId: response.questionId,
-            versionId: response.versionId,
-          })),
+          items: page.items.map((response) => artifactResponseProjection(
+            response,
+            identity.principal.kind === "human" && identity.principal.membershipRole === "guest",
+          )),
           nextCursor: page.nextCursor,
         };
       }),
@@ -3159,6 +3149,13 @@ function commentThreadProjection(thread: CommentThreadRecord, isGuest = false) {
     updatedAt: thread.updatedAt,
     versionId: thread.versionId,
   };
+}
+
+function artifactResponseProjection(response: ArtifactResponseRecord, isGuest: boolean) {
+  const {authorSubject, ...visibleResponse} = response;
+  return isGuest
+    ? {...visibleResponse, authorEmail: null}
+    : {...visibleResponse, authorSubject};
 }
 
 function commentAuthorProjection(author: CommentAuthor, isGuest: boolean): Omit<CommentAuthor, "principalId"> | CommentAuthor {

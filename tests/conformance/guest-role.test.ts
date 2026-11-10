@@ -196,7 +196,9 @@ describe("guest installation role", () => {
       `/api/v1/artifacts/${sharedArtifact.body.artifact.id}/versions/${sharedArtifact.body.version.id}/comments?projectId=${projectId}`,
       {body: JSON.stringify({body: "Staff note"}), headers: {"Idempotency-Key": "guest-comment-privacy"}, method: "POST"},
     );
-    expect(createdComment.status, await createdComment.clone().text()).toBe(201);
+    const createdCommentStatus = createdComment.status;
+    expect(await createdComment.clone().text()).not.toContain("PROJECT_NOT_FOUND");
+    expect(createdCommentStatus).toBe(201);
     const threadId = z.object({thread: z.object({id: z.string()})})
       .parse(await createdComment.json()).thread.id;
     const staffThread = await ownerFetch(
@@ -211,6 +213,26 @@ describe("guest installation role", () => {
     expect(guestThreadBody).not.toContain("owner@example.test");
     expect(guestThreadBody).not.toContain("principalId");
     expect(guestThreadBody).toContain("Team member");
+    const staffResponse = await ownerFetch(
+      `/api/v1/artifacts/${sharedArtifact.body.artifact.id}/responses?projectId=${projectId}`,
+      {body: JSON.stringify({choice: "yes", questionId: "privacy-question", versionId: sharedArtifact.body.version.id}), method: "POST"},
+    );
+    expect(staffResponse.status).toBe(201);
+    const guestResponses = await guestFetch(
+      `/api/v1/artifacts/${sharedArtifact.body.artifact.id}/responses?projectId=${projectId}`,
+    );
+    const guestResponseBody = await guestResponses.text();
+    expect(guestResponseBody).not.toContain("owner@example.test");
+    expect(guestResponseBody).not.toContain("authorSubject");
+    expect(guestResponseBody).toContain("Team member");
+    const mcpGuestResponses = await guestMcpCall("artifact_response_list", {
+      after: null, artifactId: sharedArtifact.body.artifact.id, limit: 10,
+      projectId, questionId: null, versionId: null,
+    });
+    const mcpResponsePayload = z.object({result: z.object({structuredContent: z.unknown()}).loose()})
+      .parse(await mcpGuestResponses.json()).result.structuredContent;
+    expect(JSON.stringify(mcpResponsePayload)).not.toContain("authorSubject");
+    expect(JSON.stringify(mcpResponsePayload)).not.toContain("owner@example.test");
     expect((await guestFetch(`/api/v1/artifacts/${sharedArtifact.body.artifact.id}/state/guest-key?projectId=${projectId}`, {
       body: JSON.stringify({value: "guest write"}), method: "PUT",
     })).status).toBe(403);
@@ -224,15 +246,18 @@ describe("guest installation role", () => {
     expect((await guestFetch(`/api/v1/projects/${projectId}/artifacts/${sharedArtifact.body.artifact.id}/history/clone-token`, {
       body: "{}", method: "POST",
     })).status).toBe(403);
-    for (const [name, args] of [
+    const protectedMcpCalls = await Promise.all(([
       ["artifact_state_set", {artifactId: sharedArtifact.body.artifact.id, key: "guest-key", projectId, value: "guest write"}],
       ["artifact_state_delete", {artifactId: sharedArtifact.body.artifact.id, key: "guest-key", projectId}],
       ["project_git_history_status", {projectId}],
       ["project_git_history_estimate", {projectId}],
       ["artifact_history_clone_token", {artifactId: sharedArtifact.body.artifact.id, projectId}],
-    ] as const) {
-      expect(z.object({isError: z.literal(true)}).parse(await guestMcpCall(name, args)).isError).toBe(true);
-    }
+    ] as const).map(([name, args]) => guestMcpCall(name, args)));
+    const mcpErrors = await Promise.all(protectedMcpCalls.map(async (response) =>
+      z.object({result: z.object({isError: z.literal(true)}).passthrough()})
+        .parse(await response.json()).result.isError,
+    ));
+    expect(mcpErrors).toEqual([true, true, true, true, true]);
     expect((await guestFetch(`/api/v1/artifacts/${artifact.body.artifact.id}`)).status).toBe(404);
     expect((await guestFetch(`/api/v1/embed/artifacts/${artifact.body.artifact.id}/bootstrap?path=index.html`)).status).toBe(404);
     expect([403, 404]).toContain((await guestFetch(`/api/v1/artifacts/${artifact.body.artifact.id}/guest-invitation`, {
@@ -368,14 +393,18 @@ describe("guest installation role", () => {
 
   async function guestMcpTool(
     name: "group_list" | "project_sharing",
-    args: {readonly projectId?: string},
+    args: Readonly<Record<string, string | number | boolean | null | undefined>>,
   ): Promise<z.infer<typeof guestMcpResultSchema>> {
-    const result = await guestMcpCall(name, args);
-    return guestMcpResultSchema.parse(z.object({structuredContent: z.unknown()}).loose().parse(result).structuredContent);
+    const result = z.object({result: z.object({structuredContent: z.unknown()}).loose()})
+      .parse(await (await guestMcpCall(name, args)).json());
+    return guestMcpResultSchema.parse(result.result.structuredContent);
   }
 
-  async function guestMcpCall(name: string, args: Record<string, unknown>): Promise<unknown> {
-    const response = await fetch(`${server.baseUrl}/mcp`, {
+  async function guestMcpCall(
+    name: string,
+    args: Readonly<Record<string, string | number | boolean | null | undefined>>,
+  ): Promise<Response> {
+    return fetch(`${server.baseUrl}/mcp`, {
       body: JSON.stringify({
         id: crypto.randomUUID(),
         jsonrpc: "2.0",
@@ -399,9 +428,10 @@ describe("guest installation role", () => {
         "Mcp-Name": name,
       },
       method: "POST",
+    }).then((response) => {
+      expect(response.status).toBe(200);
+      return response;
     });
-    expect(response.status).toBe(200);
-    return z.object({result: z.unknown()}).parse(await response.json()).result;
   }
 });
 

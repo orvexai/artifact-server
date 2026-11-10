@@ -569,7 +569,7 @@ function makeArtifactCommentService(
   const deleteState = Effect.fn("ArtifactCommentService.deleteState")(
     function*(command: ReadArtifactStateCommand) {
       if (command.principal.kind === "human" && command.principal.membershipRole === "guest") {
-        return yield* new AuthorizationDenied({message: "Guests cannot change artifact state."});
+        yield* Effect.fail(new AuthorizationDenied({message: "Guests cannot change artifact state."}));
       }
       const project = yield* resolveProjectForWrite(
         command.principal,
@@ -1263,8 +1263,7 @@ function makeArtifactCommentService(
         projectId: project.id, questionId: command.questionId, versionId: command.versionId,
       });
       if (command.principal.kind !== "human" || command.principal.membershipRole !== "guest") return page;
-      return {...page, items: page.items.map(({authorSubject: _authorSubject, ...response}) => ({
-        ...response,
+      return {...page, items: page.items.map((response) => Object.assign({}, response, {
         authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName,
         authorEmail: null,
       }))};
@@ -1291,8 +1290,7 @@ function makeArtifactCommentService(
       yield* requireArtifact(project.id, command.artifactId);
       const response = yield* dependencies.repository.findResponse(project.id, command.artifactId, command.responseId);
       if (response === null || command.principal.kind !== "human" || command.principal.membershipRole !== "guest") return response;
-      const {authorSubject: _authorSubject, ...visibleResponse} = response;
-      return {...visibleResponse, authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName, authorEmail: null};
+      return {...response, authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName, authorEmail: null};
     },
   );
   const guestGetResponse = Effect.fn("ArtifactCommentService.guestGetResponse")(
