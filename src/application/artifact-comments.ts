@@ -1262,11 +1262,13 @@ function makeArtifactCommentService(
         after: command.after, artifactId: command.artifactId, limit,
         projectId: project.id, questionId: command.questionId, versionId: command.versionId,
       });
-      if (command.principal.kind !== "human" || command.principal.membershipRole !== "guest") return page;
-      return {...page, items: page.items.map((response) => Object.assign({}, response, {
-        authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName,
-        authorEmail: null,
-      }))};
+      const isGuest = command.principal.kind === "human" && command.principal.membershipRole === "guest";
+      const canSeeEmails = command.principal.kind === "human" && !isGuest;
+      return {...page, items: page.items.map((response) => {
+        const projected = Object.assign({}, response, {authorEmail: canSeeEmails ? response.authorEmail : null});
+        if (isGuest) Object.assign(projected, {authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName});
+        return projected;
+      })};
     },
   );
   const guestListResponses = Effect.fn("ArtifactCommentService.guestListResponses")(
@@ -1289,8 +1291,13 @@ function makeArtifactCommentService(
       yield* authorization.requireArtifactResponseRead(command.principal);
       yield* requireArtifact(project.id, command.artifactId);
       const response = yield* dependencies.repository.findResponse(project.id, command.artifactId, command.responseId);
-      if (response === null || command.principal.kind !== "human" || command.principal.membershipRole !== "guest") return response;
-      return {...response, authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName, authorEmail: null};
+      if (response === null) return response;
+      const isGuest = command.principal.kind === "human" && command.principal.membershipRole === "guest";
+      const projected = Object.assign({}, response, {
+        authorEmail: command.principal.kind === "human" && !isGuest ? response.authorEmail : null,
+      });
+      if (isGuest) Object.assign(projected, {authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName});
+      return projected;
     },
   );
   const guestGetResponse = Effect.fn("ArtifactCommentService.guestGetResponse")(

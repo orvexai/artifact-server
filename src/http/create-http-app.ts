@@ -92,6 +92,7 @@ import {
   type BrowserAccess,
 } from "../core/browser-access.js";
 import {
+  isAdministratorRole,
   membershipRoles,
   principalCapabilities,
   type Principal,
@@ -1537,12 +1538,14 @@ export function createHttpApp(
 
   app.get("/api/v1/groups", async (context) => {
     const principal = context.get("principal");
-    if (principal.membershipRole === membershipRoles.guest) return context.json({groups: []});
+    if (principal.kind === "human" && principal.membershipRole === membershipRoles.guest) return context.json({groups: []});
     const groups = await runHttpApplicationEffect(
       context,
       dependencies,
       listDirectoryGroups(principal),
     );
+    const privilegedHuman = principal.kind === "human" && isAdministratorRole(principal.membershipRole);
+    if (!privilegedHuman) return context.json({groups: groups.map(({hasHigherRoleOverlap: _overlap, ...visible}) => visible)});
     const roles = await runHttpApplicationEffect(context, dependencies,
       InstallationAccessService.use((access) => access.listGroupRoles()));
     const roleByGroup = new Map(roles.map(({groupId, role}) => [groupId, role]));
@@ -1961,7 +1964,7 @@ export function createHttpApp(
   });
 
   app.get("/api/v1/projects/:projectId/sharing", async (context) => {
-    if (context.get("principal").membershipRole === membershipRoles.guest) {
+    if (context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest) {
       return context.json({sharing: {
         accessMode: "restricted", groups: [], projectId: context.req.param("projectId"), yourRole: null,
       }});
@@ -2231,6 +2234,7 @@ export function createHttpApp(
       requestUrl,
       dependencies.contentDomain,
       read.details,
+      context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest,
     );
     if (read.binding === null) return context.json(response);
     const live = liveLink(requestUrl, dependencies, read.details.artifact.id);
@@ -2260,6 +2264,7 @@ export function createHttpApp(
         requestUrl,
         dependencies.contentDomain,
         version,
+        context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest,
       )),
     });
   });
@@ -2301,6 +2306,7 @@ export function createHttpApp(
         responseApplicationUrl(context, dependencies),
         dependencies.contentDomain,
         saved,
+        context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest,
       ));
     },
   );
@@ -2472,7 +2478,7 @@ export function createHttpApp(
     return context.json(commentThreadPageResponse(
       responseApplicationUrl(context, dependencies),
       page,
-      context.get("principal").membershipRole === "guest",
+      context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest",
     ));
   });
 
@@ -2483,7 +2489,7 @@ export function createHttpApp(
       limit: query.limit, principal: context.get("principal"), projectId: requestedProjectId(context),
       questionId: query.questionId ?? null, versionId: query.versionId ?? null,
     })));
-    return context.json(context.get("principal").membershipRole === membershipRoles.guest
+    return context.json(context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest
       ? {...page, items: page.items.map(guestResponseProjection)}
       : page);
   });
@@ -2494,7 +2500,7 @@ export function createHttpApp(
       projectId: requestedProjectId(context), responseId: context.req.param("responseId"),
     })));
     return response === null ? context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404) : context.json(
-      context.get("principal").membershipRole === membershipRoles.guest ? guestResponseProjection(response) : response,
+      context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest ? guestResponseProjection(response) : response,
     );
   });
 
@@ -2535,7 +2541,7 @@ export function createHttpApp(
         projectId: requestedProjectId(context),
       })),
     );
-    const isGuest = context.get("principal").membershipRole === membershipRoles.guest;
+    const isGuest = context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest;
     return context.json({entries: isGuest ? entries.map(guestStateEntryProjection) : entries});
   });
 
@@ -2550,7 +2556,7 @@ export function createHttpApp(
         projectId: requestedProjectId(context),
       })),
     );
-    const isGuest = context.get("principal").membershipRole === membershipRoles.guest;
+    const isGuest = context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest;
     return context.json({entry: entry === null || !isGuest ? entry : guestStateEntryProjection(entry)});
   });
 
@@ -2616,7 +2622,7 @@ export function createHttpApp(
         thread: commentThreadResponse(
           responseApplicationUrl(context, dependencies),
           created.thread,
-          context.get("principal").membershipRole === "guest",
+          context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest",
         ),
       }, 201);
     },
@@ -2640,7 +2646,7 @@ export function createHttpApp(
       return context.json(commentThreadDetailsResponse(
         responseApplicationUrl(context, dependencies),
         details,
-        context.get("principal").membershipRole === "guest",
+        context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest",
       ));
     },
   );
@@ -2669,7 +2675,7 @@ export function createHttpApp(
         thread: commentThreadResponse(
           responseApplicationUrl(context, dependencies),
           thread,
-          context.get("principal").membershipRole === "guest",
+          context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest",
         ),
       });
     },
@@ -2716,7 +2722,7 @@ export function createHttpApp(
         ),
       );
       return context.json(
-        {replayed: created.replayed, reply: commentReplyResponse(created.reply, context.get("principal").membershipRole === "guest")},
+        {replayed: created.replayed, reply: commentReplyResponse(created.reply, context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest")},
         201,
       );
     },
@@ -2741,7 +2747,7 @@ export function createHttpApp(
           })
         ),
       );
-      return context.json({reply: commentReplyResponse(reply, context.get("principal").membershipRole === "guest")});
+      return context.json({reply: commentReplyResponse(reply, context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest")});
     },
   );
 
@@ -3937,10 +3943,11 @@ function artifactDetailsResponse(
   requestUrl: URL,
   contentDomain: string,
   details: ArtifactDetails,
+  isGuest = false,
 ) {
   return {
     artifact: details.artifact,
-    current: artifactVersionResponse(requestUrl, contentDomain, details.current),
+    current: artifactVersionResponse(requestUrl, contentDomain, details.current, isGuest),
     links: {
       artifact: artifactBrowserUrl(requestUrl, details.artifact.id),
       management: new URL(
@@ -4229,10 +4236,11 @@ function guestResponseProjection(response: ArtifactResponseRecord): Omit<Artifac
   return {...visibleResponse, authorEmail: null};
 }
 
-function guestStateEntryProjection(entry: ArtifactStateEntry): ArtifactStateEntry {
+function guestStateEntryProjection(entry: ArtifactStateEntry) {
+  const {principalId: _principalId, ...updatedBy} = entry.updatedBy;
   return {...entry, updatedBy: {
-    ...entry.updatedBy,
-    displayName: entry.updatedBy.displayName.includes("@") ? "Team member" : entry.updatedBy.displayName,
+    ...updatedBy,
+    displayName: updatedBy.displayName.includes("@") ? "Team member" : updatedBy.displayName,
   }};
 }
 
@@ -4342,6 +4350,7 @@ function artifactVersionResponse(
   requestUrl: URL,
   contentDomain: string,
   saved: ArtifactVersion,
+  isGuest = false,
 ) {
   return {
     manifest: {
@@ -4350,7 +4359,7 @@ function artifactVersionResponse(
       entryPath: saved.manifest.entryPath,
       routingMode: saved.manifest.routingMode,
     },
-    ...versionResponse(requestUrl, contentDomain, saved.version),
+    ...versionResponse(requestUrl, contentDomain, saved.version, isGuest),
   };
 }
 
@@ -4358,7 +4367,9 @@ function versionResponse(
   requestUrl: URL,
   contentDomain: string,
   version: VersionRecord,
+  isGuest = false,
 ) {
+  const {publisherPrincipalId: _publisherPrincipalId, ...guestVersion} = version;
   return {
     links: {
       review: artifactReviewUrl(
@@ -4373,7 +4384,7 @@ function versionResponse(
         version.contentToken,
       ),
     },
-    version,
+    version: isGuest ? guestVersion : version,
   };
 }
 

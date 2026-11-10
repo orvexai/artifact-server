@@ -15,9 +15,11 @@ import {AuthenticationRequired, type AuthorizationDenied} from "../../src/core/e
 import {groupMembershipRole} from "../../src/core/group-role-policy.js";
 import {
   membershipRoles,
+  principalCapabilities,
   type Principal,
 } from "../../src/core/identity.js";
 import {resolveProjectAccess, type ProjectAccessRecord} from "../../src/core/project-access.js";
+import {SqliteIdentityRepository} from "../../src/storage/sqlite-identity-repository.js";
 import {createTestInstallation, issueLocalBrowserLogin, removeTestInstallation, startTestServer, storeTestGroupRoles, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
 import {publishNew} from "../support/publishing.js";
 
@@ -218,6 +220,11 @@ describe("guest installation role", () => {
       {body: JSON.stringify({choice: "yes", questionId: "privacy-question", versionId: sharedArtifact.body.version.id}), method: "POST"},
     );
     expect(staffResponse.status).toBe(201);
+    const serviceResponse = await serviceFetch(
+      `/api/v1/artifacts/${sharedArtifact.body.artifact.id}/responses?projectId=${projectId}`,
+    );
+    expect(serviceResponse.status).toBe(200);
+    expect(JSON.stringify(await serviceResponse.json())).not.toContain("authorEmail\":\"owner@example.test");
     const guestResponses = await guestFetch(
       `/api/v1/artifacts/${sharedArtifact.body.artifact.id}/responses?projectId=${projectId}`,
     );
@@ -225,6 +232,10 @@ describe("guest installation role", () => {
     expect(guestResponseBody).not.toContain("owner@example.test");
     expect(guestResponseBody).not.toContain("authorSubject");
     expect(guestResponseBody).toContain("Team member");
+    const guestHttpVersions = await guestFetch(`/api/v1/artifacts/${sharedArtifact.body.artifact.id}/versions?projectId=${projectId}`);
+    expect((await guestHttpVersions.text())).not.toContain("publisherPrincipalId");
+    const guestMcpVersions = await guestMcpCall("artifact_version_list", {artifactId: sharedArtifact.body.artifact.id, projectId});
+    expect(JSON.stringify(await guestMcpVersions.json())).not.toContain("publisherPrincipalId");
     const mcpGuestResponses = await guestMcpCall("artifact_response_list", {
       after: null, artifactId: sharedArtifact.body.artifact.id, limit: 10,
       projectId, questionId: null, versionId: null,
@@ -260,6 +271,7 @@ describe("guest installation role", () => {
     const protectedMcpCalls = await Promise.all(([
       ["artifact_state_set", {artifactId: sharedArtifact.body.artifact.id, key: "guest-key", projectId, value: "guest write"}],
       ["artifact_state_delete", {artifactId: sharedArtifact.body.artifact.id, key: "guest-key", projectId}],
+      ["comment_clear", {artifactId: sharedArtifact.body.artifact.id, projectId, state: "resolved", versionId: null}],
       ["project_git_history_status", {projectId}],
       ["project_git_history_estimate", {projectId}],
       ["artifact_history_clone_token", {artifactId: sharedArtifact.body.artifact.id, projectId}],
@@ -268,7 +280,7 @@ describe("guest installation role", () => {
       z.object({result: z.object({isError: z.literal(true)}).passthrough()})
         .parse(await response.json()).result.isError,
     ));
-    expect(mcpErrors).toEqual([true, true, true, true, true]);
+    expect(mcpErrors).toEqual([true, true, true, true, true, true]);
     expect((await guestFetch(`/api/v1/artifacts/${artifact.body.artifact.id}`)).status).toBe(404);
     expect((await guestFetch(`/api/v1/embed/artifacts/${artifact.body.artifact.id}/bootstrap?path=index.html`)).status).toBe(404);
     expect([403, 404]).toContain((await guestFetch(`/api/v1/artifacts/${artifact.body.artifact.id}/guest-invitation`, {
@@ -363,11 +375,35 @@ describe("guest installation role", () => {
     const guestProjects = z.object({projects: z.array(z.object({id: z.string()}))})
       .parse(await (await fetch(projectListPath, {headers: {Cookie: cookie}})).json()).projects;
     expect(guestProjects).toEqual([]);
-    const keyProjects = z.object({projects: z.array(z.object({id: z.string()}))})
-      .parse(await (await fetch(projectListPath, {
-        headers: {Authorization: `Bearer ${issuedViewerKey}`},
-      })).json()).projects;
-    expect(keyProjects).toEqual([]);
+    expect((await fetch(projectListPath, {
+      headers: {Authorization: `Bearer ${issuedViewerKey}`},
+    })).status).toBe(401);
+  });
+
+  test("GUEST-006-B: directory sync recomputes a member role from the new group membership", async () => {
+    const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
+    const database = new DatabaseSync(databasePath);
+    const repository = new SqliteIdentityRepository(databasePath);
+    try {
+      const installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_groups WHERE id = 'group-Guests'").get()).installationId;
+      const now = new Date().toISOString();
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'viewer', 'active', ?, ?)`).run(
+        "member_directory_sync_guest", installationId, "directory-sync@example.test", "Sync Guest", now, now,
+      );
+      await repository.applyDirectoryGroups(installationId, {
+        groups: [{id: "group-Guests", members: [{email: "directory-sync@example.test", subject: "directory-sync-subject"}], name: "Guests", path: "/Guests"}],
+        provider: "guest-role-sync-test",
+        syncedAt: now,
+      });
+      expect(database.prepare("SELECT role FROM installation_members WHERE id = ?")
+        .get("member_directory_sync_guest")).toEqual({role: "guest"});
+    } finally {
+      repository.close();
+      database.close();
+    }
   });
 
   async function expectAllowed(
@@ -393,6 +429,10 @@ describe("guest installation role", () => {
 
   async function ownerFetch(path: string, init: RequestInit = {}): Promise<Response> {
     return authenticatedFetch(path, "owner-conformance", init);
+  }
+
+  async function serviceFetch(path: string, init: RequestInit = {}): Promise<Response> {
+    return authenticatedFetch(path, "service-conformance", init);
   }
 
   async function authenticatedFetch(path: string, token: string, init: RequestInit): Promise<Response> {
@@ -454,6 +494,19 @@ const conformanceBearerVerifier: BearerCredentialVerifier = {
     }
     if (value === "owner-conformance") {
       return Effect.succeed({...humanPrincipal("member_owner_conformance", membershipRoles.owner), displayName: "owner@example.test", installationId: "local"});
+    }
+    if (value === "service-conformance") {
+      return Effect.succeed({
+        authorizedByPrincipalId: null,
+        capabilities: [principalCapabilities.readArtifacts, principalCapabilities.readArtifactResponses],
+        directoryGroupIds: ["group-Guests"],
+        displayName: "Conformance service",
+        id: "service:guest-role-conformance",
+        installationId: "local",
+        kind: "service",
+        membershipRole: membershipRoles.member,
+        serviceAccountSource: "oidc",
+      });
     }
     return Effect.fail(new AuthenticationRequired({message: "Unknown conformance token."}));
   },

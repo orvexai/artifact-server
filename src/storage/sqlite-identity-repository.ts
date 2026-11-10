@@ -195,6 +195,11 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
   ): Promise<DirectoryGroupApplyResult> {
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
+      const beforePrivileged = z.object({owners: z.number().nullable(), administrators: z.number().nullable()}).parse(this.#database.prepare(`
+        SELECT SUM(role = 'owner' AND status = 'active') AS owners,
+          SUM(role IN ('administrator','owner') AND status = 'active') AS administrators
+        FROM installation_members WHERE installation_id = ?
+      `).get(installationId));
       const rows = this.#database.prepare(
         "SELECT id, name, path FROM directory_groups WHERE installation_id = ?",
       ).all(installationId);
@@ -256,6 +261,61 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           );
         }
       }
+      this.#database.prepare(`
+        WITH resolved AS (
+          SELECT member.id, member.role AS old_role,
+            (SELECT CASE WHEN MAX(assigned.role = 'owner') = 1 THEN 'owner'
+              WHEN MAX(assigned.role = 'administrator') = 1 THEN 'administrator'
+              WHEN MAX(assigned.role = 'guest') = 1 THEN 'guest'
+              WHEN MAX(assigned.role = 'member') = 1 THEN 'member'
+              WHEN MAX(assigned.role = 'viewer') = 1 THEN 'viewer' ELSE NULL END
+             FROM directory_group_members gm JOIN directory_group_roles assigned
+              ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
+             WHERE gm.installation_id = member.installation_id AND (
+               EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id
+                 AND identity.provider = gm.provider AND identity.subject = gm.subject)
+               OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
+                 WHERE identity.member_id = member.id AND identity.provider = gm.provider))
+             )) AS desired_role
+          FROM installation_members member WHERE member.installation_id = ?
+        ), policy AS (
+          SELECT resolved.id, resolved.desired_role,
+            CASE WHEN resolved.old_role = 'owner' AND (resolved.desired_role IS NULL OR resolved.desired_role <> 'owner')
+              AND NOT EXISTS (SELECT 1 FROM installation_members other WHERE other.installation_id = ?
+                AND other.status = 'active' AND other.role = 'owner' AND other.id <> resolved.id) THEN 'owner'
+            WHEN resolved.old_role IN ('administrator','owner')
+              AND (resolved.desired_role IS NULL OR resolved.desired_role NOT IN ('administrator','owner'))
+              AND NOT EXISTS (SELECT 1 FROM installation_members other WHERE other.installation_id = ?
+                AND other.status = 'active' AND other.role IN ('administrator','owner') AND other.id <> resolved.id)
+              THEN resolved.old_role ELSE resolved.desired_role END AS next_role
+          FROM resolved
+        )
+        UPDATE installation_members SET
+          role = (SELECT next_role FROM policy WHERE policy.id = installation_members.id),
+          status = CASE WHEN (SELECT next_role FROM policy WHERE policy.id = installation_members.id) IS NULL THEN 'inactive' ELSE status END,
+          updated_at = ?
+        WHERE installation_id = ? AND id IN (SELECT id FROM policy)
+      `).run(installationId, installationId, installationId, snapshot.syncedAt, installationId);
+      this.#database.prepare(`
+        UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, ?)
+        WHERE installation_id = ? AND member_id IN (SELECT id FROM installation_members
+          WHERE installation_id = ? AND status = 'inactive')
+      `).run(snapshot.syncedAt, installationId, installationId);
+      this.#database.prepare(`
+        UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ?)
+        WHERE installation_id = ? AND principal_kind = 'human' AND principal_id IN (
+          SELECT id FROM installation_members WHERE installation_id = ? AND role = 'guest' AND status = 'active'
+        )
+      `).run(snapshot.syncedAt, installationId, installationId);
+      const afterPrivileged = z.object({owners: z.number().nullable(), administrators: z.number().nullable()}).parse(this.#database.prepare(`
+        SELECT SUM(role = 'owner' AND status = 'active') AS owners,
+          SUM(role IN ('administrator','owner') AND status = 'active') AS administrators
+        FROM installation_members WHERE installation_id = ?
+      `).get(installationId));
+      if ((beforePrivileged.owners ?? 0) > 0 && (afterPrivileged.owners ?? 0) === 0 ||
+          (beforePrivileged.administrators ?? 0) > 0 && (afterPrivileged.administrators ?? 0) === 0) {
+        throw new IdentityConflict({message: "Directory sync cannot remove the last active owner or administrator."});
+      }
       this.#database.exec("COMMIT;");
       return plan.result;
     } catch (cause) {
@@ -304,6 +364,30 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       `).get(installationId, groupId);
       const currentRole = z.object({role: membershipRoleSchema}).nullable()
         .parse(currentRoleRow ?? null)?.role ?? null;
+      const beforePrivileged = z.object({owners: z.number().nullable(), administrators: z.number().nullable()}).parse(this.#database.prepare(`
+        SELECT SUM(role = 'owner' AND status = 'active') AS owners,
+          SUM(role IN ('administrator','owner') AND status = 'active') AS administrators
+        FROM installation_members WHERE installation_id = ?
+      `).get(installationId));
+      if (currentRole === membershipRoles.owner && role !== membershipRoles.owner) {
+        const soleOwnerMembers = z.object({count: z.number().int().nonnegative()}).parse(this.#database.prepare(`
+          SELECT COUNT(*) AS count FROM installation_members member
+          WHERE member.installation_id = ? AND member.status = 'active' AND member.role = 'owner'
+            AND EXISTS (SELECT 1 FROM directory_group_members gm WHERE gm.installation_id = member.installation_id
+              AND gm.group_id = ? AND (EXISTS (SELECT 1 FROM external_identities identity
+                WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
+                  WHERE identity.member_id = member.id AND identity.provider = gm.provider))))
+            AND NOT EXISTS (SELECT 1 FROM directory_group_members gm JOIN directory_group_roles other_role
+              ON other_role.installation_id = gm.installation_id AND other_role.group_id = gm.group_id
+              WHERE gm.installation_id = member.installation_id AND gm.group_id <> ? AND other_role.role = 'owner'
+                AND (EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id
+                  AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                  OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
+                    WHERE identity.member_id = member.id AND identity.provider = gm.provider))))
+        `).get(installationId, groupId, groupId));
+        if (soleOwnerMembers.count > 0) throw new IdentityConflict({message: "The last active owner cannot be removed."});
+      }
       if (role === null) {
         this.#database.prepare(
           "DELETE FROM directory_group_roles WHERE installation_id = ? AND group_id = ?",
@@ -319,71 +403,81 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         `).run(installationId, groupId, role, assignedAt, assignedByPrincipalId);
       }
 
-      const affected = z.array(z.object({email: z.string(), id: z.string()})).parse(
-        this.#database.prepare(`
-          SELECT DISTINCT member.id, member.email
+      const affected = this.#database.prepare(`
+        WITH resolved AS (
+          SELECT member.id, member.role AS old_role,
+            (SELECT CASE WHEN SUM(assigned.role = 'owner') > 0 THEN 'owner'
+              WHEN SUM(assigned.role = 'administrator') > 0 THEN 'administrator'
+              WHEN SUM(assigned.role = 'guest') > 0 THEN 'guest'
+              WHEN SUM(assigned.role = 'member') > 0 THEN 'member'
+              WHEN SUM(assigned.role = 'viewer') > 0 THEN 'viewer' ELSE NULL END
+             FROM directory_group_members gm
+             JOIN directory_group_roles assigned
+               ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
+             WHERE gm.installation_id = member.installation_id AND (
+               EXISTS (SELECT 1 FROM external_identities identity
+                 WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+               OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
+                 WHERE identity.member_id = member.id AND identity.provider = gm.provider))
+             )) AS desired_role
           FROM installation_members member
-          JOIN directory_group_members group_member
-            ON group_member.installation_id = member.installation_id
-          WHERE member.installation_id = ? AND group_member.group_id = ?
-            AND (
-              EXISTS (
-                SELECT 1 FROM external_identities identity
-                WHERE identity.member_id = member.id
-                  AND identity.provider = group_member.provider
-                  AND identity.subject = group_member.subject
-              ) OR (
-                group_member.email = member.email AND NOT EXISTS (
-                  SELECT 1 FROM external_identities identity
-                  WHERE identity.member_id = member.id
-                    AND identity.provider = group_member.provider
-                )
+          WHERE member.installation_id = ? AND EXISTS (
+            SELECT 1 FROM directory_group_members gm WHERE gm.installation_id = member.installation_id
+              AND gm.group_id = ? AND (
+                EXISTS (SELECT 1 FROM external_identities identity
+                  WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
+                  WHERE identity.member_id = member.id AND identity.provider = gm.provider))
               )
-            )
-        `).all(installationId, groupId),
-      );
-      for (const member of affected) {
-        const rows = this.#database.prepare(`
-          SELECT DISTINCT assigned.role
-          FROM directory_group_members group_member
-          JOIN directory_group_roles assigned
-            ON assigned.installation_id = group_member.installation_id
-            AND assigned.group_id = group_member.group_id
-          WHERE group_member.installation_id = ? AND (
-            EXISTS (
-              SELECT 1 FROM external_identities identity
-              WHERE identity.member_id = ?
-                AND identity.provider = group_member.provider
-                AND identity.subject = group_member.subject
-            ) OR (
-              group_member.email = ? AND NOT EXISTS (
-                SELECT 1 FROM external_identities identity
-                WHERE identity.member_id = ?
-                  AND identity.provider = group_member.provider
-              )
-            )
           )
-        `).all(installationId, member.id, member.email, member.id);
-        const roles = z.array(z.object({role: membershipRoleSchema})).parse(rows).map(({role: assigned}) => assigned);
-        const resolved = roles.includes(membershipRoles.owner) ? membershipRoles.owner
-          : roles.includes(membershipRoles.administrator) ? membershipRoles.administrator
-          : roles.includes(membershipRoles.guest) ? membershipRoles.guest
-          : roles.reduce<MembershipRole | null>((best, assigned) =>
-            best === null || !membershipRoleAtLeast(best, assigned) ? assigned : best, null) ?? membershipRoles.guest;
-        this.#database.prepare(`
-          UPDATE installation_members SET role = ?, updated_at = ?
-          WHERE installation_id = ? AND id = ?
-        `).run(resolved, assignedAt, installationId, member.id);
-      }
-      if (currentRole === membershipRoles.owner && role !== membershipRoles.owner) {
-        const ownerRow = this.#database.prepare(`
-          SELECT COUNT(*) AS count FROM installation_members
-          WHERE installation_id = ? AND status = 'active' AND role = 'owner'
-        `).get(installationId);
-        const owners = z.object({count: z.number()}).parse(ownerRow).count;
-        if (owners === 0) {
-          throw new IdentityConflict({message: "The last active owner cannot be removed."});
-        }
+        ), policy AS (
+          SELECT resolved.id, resolved.desired_role,
+            CASE
+              WHEN resolved.old_role = 'owner' AND (resolved.desired_role IS NULL OR resolved.desired_role NOT IN ('owner')) AND NOT EXISTS (
+                SELECT 1 FROM installation_members other WHERE other.installation_id = ? AND other.status = 'active'
+                  AND other.role = 'owner' AND other.id <> resolved.id
+              ) THEN 'owner'
+              WHEN resolved.old_role IN ('administrator', 'owner')
+                AND (resolved.desired_role IS NULL OR resolved.desired_role NOT IN ('administrator', 'owner'))
+                AND NOT EXISTS (SELECT 1 FROM installation_members other WHERE other.installation_id = ?
+                  AND other.status = 'active' AND other.role IN ('administrator', 'owner') AND other.id <> resolved.id)
+                THEN resolved.old_role
+              ELSE resolved.desired_role
+            END AS next_role
+          FROM resolved
+        )
+        UPDATE installation_members
+        SET role = (SELECT next_role FROM policy WHERE policy.id = installation_members.id),
+            status = CASE WHEN (SELECT next_role FROM policy WHERE policy.id = installation_members.id) IS NULL THEN 'inactive' ELSE status END,
+            updated_at = ?
+        WHERE installation_id = ? AND id IN (SELECT id FROM policy)
+      `).run(installationId, groupId, installationId, installationId, assignedAt, installationId);
+      void affected;
+      this.#database.prepare(`
+        UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, ?)
+        WHERE installation_id = ? AND member_id IN (SELECT id FROM installation_members
+          WHERE installation_id = ? AND status = 'inactive')
+      `).run(assignedAt, installationId, installationId);
+      this.#database.prepare(`
+        UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ?)
+        WHERE installation_id = ? AND principal_kind = 'human' AND principal_id IN (
+          SELECT member.id FROM installation_members member JOIN directory_group_members gm
+            ON gm.installation_id = member.installation_id
+          WHERE member.installation_id = ? AND member.status = 'active' AND member.role = 'guest'
+            AND gm.group_id = ? AND (EXISTS (SELECT 1 FROM external_identities identity
+              WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+              OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
+                WHERE identity.member_id = member.id AND identity.provider = gm.provider)))
+        )
+      `).run(assignedAt, installationId, installationId, groupId);
+      const privilegedCounts = z.object({owners: z.number().nullable(), administrators: z.number().nullable()}).parse(this.#database.prepare(`
+        SELECT SUM(role = 'owner' AND status = 'active') AS owners,
+          SUM(role IN ('administrator','owner') AND status = 'active') AS administrators
+        FROM installation_members WHERE installation_id = ?
+      `).get(installationId));
+      if ((beforePrivileged.owners ?? 0) > 0 && (privilegedCounts.owners ?? 0) === 0 ||
+          (beforePrivileged.administrators ?? 0) > 0 && (privilegedCounts.administrators ?? 0) === 0) {
+        throw new IdentityConflict({message: "The last active owner or administrator cannot be removed."});
       }
       this.#database.exec("COMMIT;");
     } catch (cause) {
@@ -803,7 +897,45 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     memberId: string,
     role: InstallationMember["role"],
     updatedAt: string,
+    recomputeFromCurrentGroups = false,
   ): Promise<InstallationMember> {
+    if (recomputeFromCurrentGroups) {
+      this.#database.exec("BEGIN IMMEDIATE;");
+      try {
+        const member = this.#findMember(installationId, memberId);
+        if (member === null) throw new IdentityNotFound({message: "The member does not exist."});
+        const rows = this.#database.prepare(`
+          SELECT DISTINCT assigned.role
+          FROM directory_group_members gm JOIN directory_group_roles assigned
+            ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
+          WHERE gm.installation_id = ? AND (
+            EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = ?
+              AND identity.provider = gm.provider AND identity.subject = gm.subject)
+            OR (gm.email = ? AND NOT EXISTS (SELECT 1 FROM external_identities identity
+              WHERE identity.member_id = ? AND identity.provider = gm.provider))
+          )
+        `).all(installationId, memberId, member.email, memberId);
+        const assigned = z.array(z.object({role: membershipRoleSchema})).parse(rows).map(({role: value}) => value);
+        const seeded = presenceRowSchema.parse(this.#database.prepare(`
+          SELECT EXISTS(SELECT 1 FROM directory_group_role_seeds WHERE installation_id = ?) AS present
+        `).get(installationId)).present === 1;
+        if (seeded && assigned.length === 0) throw new IdentityNotFound({message: "The member no longer belongs to an admitted group."});
+        const currentRole = assigned.includes(membershipRoles.owner) ? membershipRoles.owner
+          : assigned.includes(membershipRoles.administrator) ? membershipRoles.administrator
+          : assigned.includes(membershipRoles.guest) ? membershipRoles.guest
+          : assigned.reduce<MembershipRole | null>((best, value) =>
+            best === null || !membershipRoleAtLeast(best, value) ? value : best, null) ?? role;
+        this.#database.prepare(`UPDATE installation_members SET role = ?, status = ?, updated_at = ? WHERE installation_id = ? AND id = ?`)
+          .run(currentRole, memberStatuses.active, updatedAt, installationId, memberId);
+        const updated = this.#findMember(installationId, memberId);
+        if (updated === null) throw new IdentityNotFound({message: "The member does not exist."});
+        this.#database.exec("COMMIT;");
+        return updated;
+      } catch (cause) {
+        this.#database.exec("ROLLBACK;");
+        throw cause;
+      }
+    }
     const result = this.#database.prepare(`
       UPDATE installation_members
       SET role = ?, status = ?, updated_at = ?

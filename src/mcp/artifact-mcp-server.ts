@@ -68,7 +68,7 @@ import {
   type SourceBindingRecord,
   type StagedUpload,
 } from "../core/model.js";
-import {principalKinds, type Principal} from "../core/identity.js";
+import {isAdministratorRole, membershipRoles, principalKinds, type Principal} from "../core/identity.js";
 import {
   gitHistoryProviders,
   gitHistoryProviderStates,
@@ -85,6 +85,7 @@ import {
   maximumUploadPlanRequestBytes,
 } from "../core/publishing-limits.js";
 import {
+  AuthorizationDenied,
   AuthenticationRequired,
   AgentNotFound,
   InvalidComment,
@@ -152,7 +153,7 @@ const versionRecordSchema = z.object({
   id: z.string(),
   manifestDigest: z.string(),
   number: z.number().int().positive(),
-  publisherPrincipalId: z.string(),
+  publisherPrincipalId: z.string().optional(),
   projectId: z.string(),
   routingMode: z.enum(["static", "spa"]),
 }).strict();
@@ -253,7 +254,7 @@ const artifactStateEntrySchema = z.object({
   key: artifactStateKeySchema,
   projectId: z.string(),
   updatedAt: z.string(),
-  updatedBy: z.object({displayName: z.string(), principalId: z.string()}).strict(),
+  updatedBy: z.object({displayName: z.string(), principalId: z.string().optional()}).strict(),
   value: z.unknown(),
 }).strict();
 const commentPathSchema = z.string().min(1).max(1_024);
@@ -747,12 +748,12 @@ export function createArtifactMcpServer(
       inputSchema: z.object({}).strict(),
       outputSchema: z.object({
         groups: z.array(z.object({
-          hasHigherRoleOverlap: z.boolean(),
+          hasHigherRoleOverlap: z.boolean().optional(),
           id: z.string(),
           memberCount: z.number().int().nonnegative(),
           name: z.string(),
           path: z.string(),
-          role: z.enum(["guest", "viewer", "member", "administrator", "owner"]).nullable(),
+          role: z.enum(["guest", "viewer", "member", "administrator", "owner"]).nullable().optional(),
           syncedAt: z.string(),
         }).strict()),
       }).strict(),
@@ -765,8 +766,11 @@ export function createArtifactMcpServer(
       );
       const roles = groups.length === 0 ? [] : await runMcpApplicationEffect(dependencies,
         InstallationAccessService.use((access) => access.listGroupRoles()));
+      const privilegedHuman = identity.principal.kind === "human" && isAdministratorRole(identity.principal.membershipRole);
       const roleByGroup = new Map(roles.map(({groupId, role}) => [groupId, role]));
-      return {groups: groups.map((group) => Object.assign({}, group, {role: roleByGroup.get(group.id) ?? null}))};
+      return {groups: groups.map((group) => privilegedHuman
+        ? Object.assign({}, group, {role: roleByGroup.get(group.id) ?? null})
+        : (({hasHigherRoleOverlap: _overlap, ...visible}) => visible)(group))};
     }),
   );
 
@@ -845,7 +849,7 @@ export function createArtifactMcpServer(
       annotations: readOnlyAnnotations,
     },
     ({projectId}) => toolResult(async () => ({
-      sharing: identity.principal.membershipRole === "guest"
+      sharing: identity.principal.kind === "human" && identity.principal.membershipRole === "guest"
         ? {accessMode: "restricted" as const, groups: [], projectId, yourRole: null}
         : await runMcpApplicationEffect(
         dependencies,
@@ -1208,6 +1212,7 @@ export function createArtifactMcpServer(
           dependencies.contentDomain,
           details.artifact.id,
           details.current,
+          identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest,
         ),
         links: {
           artifact: artifactBrowserUrl(applicationUrl, details.artifact.id),
@@ -1302,7 +1307,7 @@ export function createArtifactMcpServer(
           id: z.string(),
           manifestDigest: z.string(),
           number: z.number().int().positive(),
-          publisherPrincipalId: z.string(),
+          publisherPrincipalId: z.string().optional(),
         }).strict()),
       }).strict(),
       annotations: readOnlyAnnotations,
@@ -1320,7 +1325,7 @@ export function createArtifactMcpServer(
       );
       return {
         artifactId,
-        versions: versions.map((version) => ({
+        versions: versions.map((version) => Object.assign({
           contentUrl: versionBrowserUrl(
             applicationUrl,
             dependencies.contentDomain,
@@ -1331,8 +1336,8 @@ export function createArtifactMcpServer(
           id: version.id,
           manifestDigest: version.manifestDigest,
           number: version.number,
-          publisherPrincipalId: version.publisherPrincipalId,
-        })),
+        }, identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest
+          ? {} : {publisherPrincipalId: version.publisherPrincipalId})),
       };
     }),
   );
@@ -1472,7 +1477,7 @@ export function createArtifactMcpServer(
             ),
           },
         })),
-        from: comparison.from,
+        from: guestVersionRecord(comparison.from, identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest),
         links: {
           from: versionBrowserUrl(
             applicationUrl,
@@ -1487,7 +1492,7 @@ export function createArtifactMcpServer(
         },
         removed: comparison.removed,
         renamed: comparison.renamed,
-        to: comparison.to,
+        to: guestVersionRecord(comparison.to, identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest),
         unchangedCount: comparison.unchangedCount,
       };
     }),
@@ -2069,7 +2074,8 @@ export function createArtifactMcpServer(
         return {
           items: page.items.map((response) => artifactResponseProjection(
             response,
-            identity.principal.kind === "human" && identity.principal.membershipRole === "guest",
+            identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest,
+            identity.principal.kind === "human" && identity.principal.membershipRole !== membershipRoles.guest,
           )),
           nextCursor: page.nextCursor,
         };
@@ -2119,7 +2125,7 @@ export function createArtifactMcpServer(
           ),
         );
         return {
-          items: page.items.map((thread) => commentThreadProjection(thread, identity.principal.membershipRole === "guest")),
+          items: page.items.map((thread) => commentThreadProjection(thread, identity.principal.kind === "human" && identity.principal.membershipRole === "guest")),
           nextCursor: encodePageCursor(page.nextCursor),
         };
       }),
@@ -2155,8 +2161,8 @@ export function createArtifactMcpServer(
         ),
       );
       return {
-        replies: details.replies.map((reply) => commentReplyProjection(reply, identity.principal.membershipRole === "guest")),
-        thread: commentThreadProjection(details.thread, identity.principal.membershipRole === "guest"),
+        replies: details.replies.map((reply) => commentReplyProjection(reply, identity.principal.kind === "human" && identity.principal.membershipRole === "guest")),
+        thread: commentThreadProjection(details.thread, identity.principal.kind === "human" && identity.principal.membershipRole === "guest"),
       };
     }),
   );
@@ -2210,7 +2216,7 @@ export function createArtifactMcpServer(
       );
       return {
         replayed: creation.replayed,
-        thread: commentThreadProjection(creation.thread, identity.principal.membershipRole === "guest"),
+        thread: commentThreadProjection(creation.thread, identity.principal.kind === "human" && identity.principal.membershipRole === "guest"),
       };
     }),
   );
@@ -2250,7 +2256,7 @@ export function createArtifactMcpServer(
             })
           ),
         );
-        return {replayed: creation.replayed, reply: commentReplyProjection(creation.reply, identity.principal.membershipRole === "guest")};
+        return {replayed: creation.replayed, reply: commentReplyProjection(creation.reply, identity.principal.kind === "human" && identity.principal.membershipRole === "guest")};
       }),
   );
 
@@ -2284,7 +2290,7 @@ export function createArtifactMcpServer(
             threadId,
           })
         ),
-      ), identity.principal.membershipRole === "guest"),
+      ), identity.principal.kind === "human" && identity.principal.membershipRole === "guest"),
     })),
   );
 
@@ -2334,7 +2340,7 @@ export function createArtifactMcpServer(
               comments.updateReply({...target, body, replyId})
             ),
           );
-          return {reply: commentReplyProjection(reply, identity.principal.membershipRole === "guest"), thread: null};
+          return {reply: commentReplyProjection(reply, identity.principal.kind === "human" && identity.principal.membershipRole === "guest"), thread: null};
         }
         const thread = await runMcpApplicationEffect(
           dependencies,
@@ -2346,7 +2352,7 @@ export function createArtifactMcpServer(
             ))
           ),
         );
-        return {reply: null, thread: commentThreadProjection(thread, identity.principal.membershipRole === "guest")};
+        return {reply: null, thread: commentThreadProjection(thread, identity.principal.kind === "human" && identity.principal.membershipRole === "guest")};
       }),
   );
 
@@ -2402,8 +2408,11 @@ export function createArtifactMcpServer(
       }).strict(),
       annotations: destructiveWriteAnnotations,
     },
-    async ({artifactId, projectId, state, versionId}) => toolResult(() =>
-      runMcpApplicationEffect(
+    async ({artifactId, projectId, state, versionId}) => toolResult(() => {
+      if (identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest) {
+        throw new AuthorizationDenied({message: "Guests cannot clear comment threads."});
+      }
+      return runMcpApplicationEffect(
         dependencies,
         ArtifactCommentService.use((comments) =>
           comments.clearThreads({
@@ -2414,8 +2423,8 @@ export function createArtifactMcpServer(
             versionId,
           })
         ),
-      )
-    ),
+      );
+    }),
   );
 
   const registerMailboxAgent = (_agentName: string | null) => {
@@ -3111,6 +3120,7 @@ function versionProjection(
   contentDomain: string,
   artifactId: string,
   saved: ArtifactVersion,
+  isGuest = false,
 ) {
   return {
     links: {
@@ -3132,8 +3142,14 @@ function versionProjection(
       entryPath: saved.manifest.entryPath,
       routingMode: saved.manifest.routingMode,
     },
-    version: saved.version,
+    version: guestVersionRecord(saved.version, isGuest),
   };
+}
+
+function guestVersionRecord(version: ArtifactVersion["version"], isGuest: boolean) {
+  if (!isGuest) return version;
+  const {publisherPrincipalId: _publisherPrincipalId, ...visibleVersion} = version;
+  return visibleVersion;
 }
 
 function commentThreadProjection(thread: CommentThreadRecord, isGuest = false) {
@@ -3155,17 +3171,19 @@ function commentThreadProjection(thread: CommentThreadRecord, isGuest = false) {
   };
 }
 
-function artifactResponseProjection(response: ArtifactResponseRecord, isGuest: boolean) {
+function artifactResponseProjection(response: ArtifactResponseRecord, isGuest: boolean, canSeeEmails: boolean) {
   const {authorSubject, ...visibleResponse} = response;
-  return isGuest
-    ? {...visibleResponse, authorEmail: null}
-    : {...visibleResponse, authorSubject};
+  const projected = Object.assign({}, visibleResponse, {authorEmail: canSeeEmails ? response.authorEmail : null});
+  if (isGuest) projected.authorDisplayName = response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName;
+  else Object.assign(projected, {authorSubject});
+  return projected;
 }
 
-function guestStateEntryProjection(entry: ArtifactStateEntry): ArtifactStateEntry {
+function guestStateEntryProjection(entry: ArtifactStateEntry) {
+  const {principalId: _principalId, ...updatedBy} = entry.updatedBy;
   return {...entry, updatedBy: {
-    ...entry.updatedBy,
-    displayName: entry.updatedBy.displayName.includes("@") ? "Team member" : entry.updatedBy.displayName,
+    ...updatedBy,
+    displayName: updatedBy.displayName.includes("@") ? "Team member" : updatedBy.displayName,
   }};
 }
 

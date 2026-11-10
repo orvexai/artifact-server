@@ -220,6 +220,7 @@ export interface InstallationIdentityRepository {
     memberId: string,
     role: MembershipRole,
     updatedAt: string,
+    recomputeFromCurrentGroups?: boolean,
   ) => Effect.Effect<
     InstallationMember,
     IdentityNotFound | IdentityRepositoryFailure
@@ -745,6 +746,8 @@ function makeInstallationAccessService(
         dependencies.clock.now().toISOString(),
         principal.id,
       );
+      // Local authentication caches clear immediately; other replicas observe
+      // the changed role after their cache entries expire (30 seconds).
       clearAuthenticationCaches();
       return undefined;
     },
@@ -957,12 +960,12 @@ function makeInstallationAccessService(
       }));
     }
     if (member !== null) {
-      if (member.role === role) return member;
       const changed = yield* dependencies.repository.setMemberRole(
         dependencies.installationId,
         member.id,
         role,
         now,
+        true,
       );
       clearAuthenticationCaches();
       return changed;
@@ -1215,11 +1218,10 @@ function makeInstallationAccessService(
       kind: key.principalKind,
       membershipRole: boundMember?.role ?? membershipRoles.member,
     };
-    apiKeyCache?.set(
-      cacheKey(presentedDigest),
-      principal,
-      requestTime.getTime(),
-      new Date(key.expiresAt).getTime(),
+    // Human API keys are reloaded on every request so role changes take effect
+    // immediately. Service key entries still use the short local cache.
+    if (key.principalKind !== principalKinds.human) apiKeyCache?.set(
+      cacheKey(presentedDigest), principal, requestTime.getTime(), new Date(key.expiresAt).getTime(),
     );
     return principal;
   });
@@ -1362,6 +1364,12 @@ function makeInstallationAccessService(
       return yield* Effect.fail(new IdentityNotFound({
         message: "The API key does not exist.",
       }));
+    }
+    if (previous.principalKind === principalKinds.human) {
+      const member = yield* dependencies.repository.findMember(dependencies.installationId, previous.principalId);
+      if (member?.role === membershipRoles.guest) {
+        return yield* Effect.fail(new AuthorizationDenied({message: "Guest member API keys cannot be rotated."}));
+      }
     }
     if (previous.revokedAt !== null || previous.expiresAt <= now.toISOString()) {
       return yield* Effect.fail(new IdentityConflict({
