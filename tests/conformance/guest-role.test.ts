@@ -1,4 +1,9 @@
 import {Effect, Layer, ManagedRuntime, Redacted, Result} from "effect";
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
+  PROTOCOL_VERSION_META_KEY,
+} from "@modelcontextprotocol/server";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {DatabaseSync} from "node:sqlite";
 import nodePath from "node:path";
@@ -16,6 +21,14 @@ import {resolveProjectAccess, type ProjectAccessRecord} from "../../src/core/pro
 import {createTestInstallation, removeTestInstallation, startTestServer, storeTestGroupRoles, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
 import {publishNew} from "../support/publishing.js";
 
+const guestMcpResultSchema = z.union([
+  z.object({groups: z.array(z.never())}).strict(),
+  z.object({sharing: z.object({
+    accessMode: z.literal("restricted"), groups: z.array(z.never()),
+    projectId: z.string(), yourRole: z.null(),
+  }).strict()}).strict(),
+]);
+
 describe("guest installation role", () => {
   let runtime: ManagedRuntime.ManagedRuntime<AuthorizationService, never>;
   let installation: TestInstallation;
@@ -27,7 +40,10 @@ describe("guest installation role", () => {
     ));
     await runtime.context();
     installation = await createTestInstallation();
-    server = await startTestServer(installation, {externalApiBearerVerifier: conformanceBearerVerifier});
+    server = await startTestServer(installation, {
+      externalApiBearerVerifier: conformanceBearerVerifier,
+      externalMcpBearerVerifier: conformanceBearerVerifier,
+    });
     await storeTestGroupRoles(server, installation, [
       {name: "Guests", role: membershipRoles.guest},
       {name: "Owners", role: membershipRoles.owner},
@@ -109,6 +125,12 @@ describe("guest installation role", () => {
     const groups = await guestFetch("/api/v1/groups");
     expect(groups.status).toBe(200);
     expect(await groups.json()).toEqual({groups: []});
+    const mcpGroups = await guestMcpTool("group_list", {});
+    expect(mcpGroups).toEqual({groups: []});
+    const mcpSharing = await guestMcpTool("project_sharing", {projectId: "unshared"});
+    expect(mcpSharing).toEqual({sharing: {
+      accessMode: "restricted", groups: [], projectId: "unshared", yourRole: null,
+    }});
     const sharing = await guestFetch("/api/v1/projects/unshared/sharing");
     expect(sharing.status).toBe(200);
     expect(await sharing.json()).toEqual({sharing: {
@@ -182,6 +204,40 @@ describe("guest installation role", () => {
     headers.set("Authorization", `Bearer ${token}`);
     if (init.body !== undefined) headers.set("Content-Type", "application/json");
     return fetch(`${server.baseUrl}${path}`, {...init, headers});
+  }
+
+  async function guestMcpTool(
+    name: "group_list" | "project_sharing",
+    args: {readonly projectId?: string},
+  ): Promise<z.infer<typeof guestMcpResultSchema>> {
+    const response = await fetch(`${server.baseUrl}/mcp`, {
+      body: JSON.stringify({
+        id: crypto.randomUUID(),
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          _meta: {
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+            [CLIENT_INFO_META_KEY]: {name: "guest-role-conformance", version: "1"},
+            [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+          },
+          arguments: args,
+          name,
+        },
+      }),
+      headers: {
+        Accept: "application/json, text/event-stream",
+        Authorization: "Bearer guest-conformance",
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": name,
+      },
+      method: "POST",
+    });
+    expect(response.status).toBe(200);
+    const result = z.object({result: z.object({structuredContent: z.unknown()}).loose()}).parse(await response.json());
+    return guestMcpResultSchema.parse(result.result.structuredContent);
   }
 });
 
