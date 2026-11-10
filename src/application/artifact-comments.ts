@@ -505,6 +505,9 @@ function makeArtifactCommentService(
 
   const setState = Effect.fn("ArtifactCommentService.setState")(
     function*(command: WriteArtifactStateCommand) {
+      if (command.principal.kind === "human" && command.principal.membershipRole === "guest") {
+        return yield* new AuthorizationDenied({message: "Guests cannot change artifact state."});
+      }
       const project = yield* resolveProjectForWrite(
         command.principal,
         command.projectId,
@@ -565,6 +568,9 @@ function makeArtifactCommentService(
 
   const deleteState = Effect.fn("ArtifactCommentService.deleteState")(
     function*(command: ReadArtifactStateCommand) {
+      if (command.principal.kind === "human" && command.principal.membershipRole === "guest") {
+        return yield* new AuthorizationDenied({message: "Guests cannot change artifact state."});
+      }
       const project = yield* resolveProjectForWrite(
         command.principal,
         command.projectId,

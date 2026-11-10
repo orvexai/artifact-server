@@ -4,7 +4,7 @@ import {
   ArtifactNotFound,
   type ArtifactRepositoryFailure,
   CapabilityUnavailable,
-  type AuthorizationDenied,
+  AuthorizationDenied,
 } from "../core/errors.js";
 import type {Principal} from "../core/identity.js";
 import type {ArtifactRecord} from "../core/model.js";
@@ -101,6 +101,9 @@ function makeGitHistoryAccessService(
   const issueCloneCredential = Effect.fn(
     "GitHistoryAccessService.issueCloneCredential",
   )(function*(command: IssueGitHistoryCloneCommand) {
+    if (command.principal.kind === "human" && command.principal.membershipRole === "guest") {
+      return yield* new AuthorizationDenied({message: "Guests cannot clone Git history."});
+    }
     yield* authorization.requireArtifactRead(command.principal);
     yield* projects.getProject(command);
     const artifact = yield* dependencies.repository.findArtifact(

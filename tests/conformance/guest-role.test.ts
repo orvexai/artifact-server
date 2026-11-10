@@ -211,6 +211,28 @@ describe("guest installation role", () => {
     expect(guestThreadBody).not.toContain("owner@example.test");
     expect(guestThreadBody).not.toContain("principalId");
     expect(guestThreadBody).toContain("Team member");
+    expect((await guestFetch(`/api/v1/artifacts/${sharedArtifact.body.artifact.id}/state/guest-key?projectId=${projectId}`, {
+      body: JSON.stringify({value: "guest write"}), method: "PUT",
+    })).status).toBe(403);
+    expect((await guestFetch(`/api/v1/artifacts/${sharedArtifact.body.artifact.id}/state/guest-key?projectId=${projectId}`, {
+      method: "DELETE",
+    })).status).toBe(403);
+    expect((await guestFetch(`/api/v1/projects/${projectId}/git-history`)).status).toBe(403);
+    expect((await guestFetch(`/api/v1/projects/${projectId}/git-history/estimate`, {
+      method: "POST",
+    })).status).toBe(403);
+    expect((await guestFetch(`/api/v1/projects/${projectId}/artifacts/${sharedArtifact.body.artifact.id}/history/clone-token`, {
+      body: "{}", method: "POST",
+    })).status).toBe(403);
+    for (const [name, args] of [
+      ["artifact_state_set", {artifactId: sharedArtifact.body.artifact.id, key: "guest-key", projectId, value: "guest write"}],
+      ["artifact_state_delete", {artifactId: sharedArtifact.body.artifact.id, key: "guest-key", projectId}],
+      ["project_git_history_status", {projectId}],
+      ["project_git_history_estimate", {projectId}],
+      ["artifact_history_clone_token", {artifactId: sharedArtifact.body.artifact.id, projectId}],
+    ] as const) {
+      expect(z.object({isError: z.literal(true)}).parse(await guestMcpCall(name, args)).isError).toBe(true);
+    }
     expect((await guestFetch(`/api/v1/artifacts/${artifact.body.artifact.id}`)).status).toBe(404);
     expect((await guestFetch(`/api/v1/embed/artifacts/${artifact.body.artifact.id}/bootstrap?path=index.html`)).status).toBe(404);
     expect([403, 404]).toContain((await guestFetch(`/api/v1/artifacts/${artifact.body.artifact.id}/guest-invitation`, {
@@ -348,6 +370,11 @@ describe("guest installation role", () => {
     name: "group_list" | "project_sharing",
     args: {readonly projectId?: string},
   ): Promise<z.infer<typeof guestMcpResultSchema>> {
+    const result = await guestMcpCall(name, args);
+    return guestMcpResultSchema.parse(z.object({structuredContent: z.unknown()}).loose().parse(result).structuredContent);
+  }
+
+  async function guestMcpCall(name: string, args: Record<string, unknown>): Promise<unknown> {
     const response = await fetch(`${server.baseUrl}/mcp`, {
       body: JSON.stringify({
         id: crypto.randomUUID(),
@@ -374,8 +401,7 @@ describe("guest installation role", () => {
       method: "POST",
     });
     expect(response.status).toBe(200);
-    const result = z.object({result: z.object({structuredContent: z.unknown()}).loose()}).parse(await response.json());
-    return guestMcpResultSchema.parse(result.result.structuredContent);
+    return z.object({result: z.unknown()}).parse(await response.json()).result;
   }
 });
 
