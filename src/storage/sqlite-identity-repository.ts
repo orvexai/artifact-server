@@ -299,9 +299,11 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       if (presenceRowSchema.parse(exists).present !== 1) {
         throw new IdentityNotFound({message: "The group does not exist."});
       }
-      const currentRole = this.#database.prepare(`
+      const currentRoleRow = this.#database.prepare(`
         SELECT role FROM directory_group_roles WHERE installation_id = ? AND group_id = ?
-      `).get(installationId, groupId) as {role?: MembershipRole} | undefined;
+      `).get(installationId, groupId);
+      const currentRole = z.object({role: membershipRoleSchema}).nullable()
+        .parse(currentRoleRow ?? null)?.role ?? null;
       if (role === null) {
         this.#database.prepare(
           "DELETE FROM directory_group_roles WHERE installation_id = ? AND group_id = ?",
@@ -373,12 +375,13 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           WHERE installation_id = ? AND id = ?
         `).run(resolved, assignedAt, installationId, member.id);
       }
-      if (currentRole?.role === membershipRoles.owner && role !== membershipRoles.owner) {
-        const owners = this.#database.prepare(`
+      if (currentRole === membershipRoles.owner && role !== membershipRoles.owner) {
+        const ownerRow = this.#database.prepare(`
           SELECT COUNT(*) AS count FROM installation_members
           WHERE installation_id = ? AND status = 'active' AND role = 'owner'
-        `).get(installationId) as {count: number};
-        if (owners.count === 0) {
+        `).get(installationId);
+        const owners = z.object({count: z.number()}).parse(ownerRow).count;
+        if (owners === 0) {
           throw new IdentityConflict({message: "The last active owner cannot be removed."});
         }
       }
