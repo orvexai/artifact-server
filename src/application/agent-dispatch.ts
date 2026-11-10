@@ -681,6 +681,9 @@ function makeAgentDispatchService(
 
   const listDispatches = Effect.fn("AgentDispatchService.listDispatches")(
     function*(command: ListDispatchesCommand) {
+      if (command.principal.kind === "human" && command.principal.membershipRole === "guest") {
+        return yield* new AuthorizationDenied({message: "Guests cannot read agent dispatches."});
+      }
       const project = yield* resolveProjectForRead(
         command.principal,
         command.projectId,
@@ -701,6 +704,9 @@ function makeAgentDispatchService(
 
   const getDispatch = Effect.fn("AgentDispatchService.getDispatch")(
     function*(command: ReadDispatchCommand) {
+      if (command.principal.kind === "human" && command.principal.membershipRole === "guest") {
+        return yield* new AuthorizationDenied({message: "Guests cannot read agent dispatches."});
+      }
       const project = yield* resolveProjectForRead(
         command.principal,
         command.projectId,
