@@ -222,7 +222,7 @@ export interface InstallationIdentityRepository {
     updatedAt: string,
     recomputeFromCurrentGroups?: boolean,
   ) => Effect.Effect<
-    InstallationMember,
+    InstallationMember | null,
     IdentityNotFound | IdentityRepositoryFailure
   >;
 }
@@ -976,6 +976,11 @@ function makeInstallationAccessService(
         now,
         true,
       );
+      if (changed === null) {
+        return yield* Effect.fail(new IdentityAdmissionDenied({
+          message: "This person's current group memberships are not in the stored directory mirror.",
+        }));
+      }
       clearAuthenticationCaches();
       if (changed.status !== memberStatuses.active) {
         return yield* Effect.fail(new IdentityAdmissionDenied({
@@ -998,6 +1003,11 @@ function makeInstallationAccessService(
         now,
         true,
       );
+      if (restored === null) {
+        return yield* Effect.fail(new IdentityAdmissionDenied({
+          message: "This person's current group memberships are not in the stored directory mirror.",
+        }));
+      }
       if (restored.status !== memberStatuses.active) {
         return yield* Effect.fail(new IdentityAdmissionDenied({
           message: "This person is no longer in an admitted group.",

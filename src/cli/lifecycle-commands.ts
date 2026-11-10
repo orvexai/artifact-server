@@ -205,15 +205,22 @@ function configureMaintenance(program: Command): void {
             `ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED names groups that match no single directory group: ${groupRoleSeed.unresolved.join(", ")}. No starting role was stored.`,
           );
         }
-        if (groupRoleSeed.seeded) {
+        let roleChangedDuringRecompute = 0;
+        if (await runtime.isGroupRoleSeedApplied()) {
           const roleRecompute = await runtime.syncDirectoryGroups(
             directory,
             new Date().toISOString(),
             oidcIdentityProviderName(oidc.issuer),
           );
+          roleChangedDuringRecompute = roleRecompute.roleChanged ?? 0;
           console.log(JSON.stringify({roleRecompute}));
         }
-        console.log(JSON.stringify(await runtime.syncDirectory(directory)));
+        const memberSync = await runtime.syncDirectory(directory);
+        console.log(JSON.stringify(roleChangedDuringRecompute === 0
+          ? memberSync
+          : {...memberSync,
+            roleChanged: memberSync.roleChanged + roleChangedDuringRecompute,
+          }));
       } finally {
         await runtime.close();
       }

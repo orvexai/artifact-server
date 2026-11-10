@@ -49,6 +49,8 @@ export interface DirectoryGroupApplyResult {
   readonly deleted: number;
   readonly membershipsKept: number;
   readonly membershipsReplaced: number;
+  /** Present only when recomputing stored member roles changed at least one role. */
+  readonly roleChanged?: number;
   readonly renamed: number;
 }
 

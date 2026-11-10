@@ -986,7 +986,7 @@ export function createApplicationLayer(
             revokedAt,
           ),
         ),
-      setMemberRole: (installationId, memberId, role, updatedAt) =>
+      setMemberRole: (installationId, memberId, role, updatedAt, recomputeFromCurrentGroups) =>
         identityEffectWithNotFound(
           "setMemberRole",
           () => identityRepository.setMemberRole(
@@ -994,6 +994,7 @@ export function createApplicationLayer(
             memberId,
             role,
             updatedAt,
+            recomputeFromCurrentGroups,
           ),
         ),
     },

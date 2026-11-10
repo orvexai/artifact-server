@@ -209,6 +209,12 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
              COUNT(*) FILTER (WHERE status = 'active' AND role IN ('administrator','owner'))::integer AS administrators
            FROM installation_members WHERE installation_id = $1`, [installationId]);
         const beforeRoles = z.object({active: z.number(), owners: z.number(), administrators: z.number()}).parse(beforeRoleRows[0]);
+        const beforeMemberRoleRows = yield* sql.unsafe<object>(
+          `SELECT id, role FROM installation_members WHERE installation_id = $1`,
+          [installationId],
+        );
+        const beforeMemberRoles = z.array(z.object({id: z.string(), role: membershipRoleSchema}))
+          .parse(beforeMemberRoleRows);
         const rows = yield* sql.unsafe<object>(
           "SELECT id, name, path FROM directory_groups WHERE installation_id = $1",
           [installationId],
@@ -326,7 +332,17 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         if (deactivated > threshold) {
           return yield* Effect.fail(new IdentityConflict({message: `Directory sync would deactivate ${deactivated} members, exceeding the configured safety threshold of ${threshold}.`}));
         }
-        return plan.result;
+        const afterMemberRoleRows = yield* sql.unsafe<object>(
+          `SELECT id, role FROM installation_members WHERE installation_id = $1`,
+          [installationId],
+        );
+        const afterMemberRoles = z.array(z.object({id: z.string(), role: membershipRoleSchema}))
+          .parse(afterMemberRoleRows);
+        const previousRoles = new Map(beforeMemberRoles.map((member) => [member.id, member.role]));
+        const roleChanged = afterMemberRoles.filter((member) =>
+          previousRoles.has(member.id) && previousRoles.get(member.id) !== member.role
+        ).length;
+        return roleChanged === 0 ? plan.result : {...plan.result, roleChanged};
       }));
     }));
   }
@@ -894,7 +910,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     role: InstallationMember["role"],
     updatedAt: string,
     recomputeFromCurrentGroups = false,
-  ): Promise<InstallationMember> {
+  ): Promise<InstallationMember | null> {
     this.#assertInstallationScope(installationId);
     const member = await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
@@ -914,7 +930,9 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
             `SELECT id, installation_id AS "installationId", email, display_name AS "displayName",
                role, status, created_at AS "createdAt", updated_at AS "updatedAt"
              FROM installation_members WHERE installation_id = $1 AND id = $2`, [installationId, memberId]);
-          if (members[0] === undefined) return null;
+          if (members[0] === undefined) {
+            return yield* new IdentityNotFound({message: "The member does not exist."});
+          }
           const current = memberRowSchema.parse(members[0]);
           originalMember = current;
           if (current.status === memberStatuses.active && isAdministratorRole(current.role)) {
@@ -936,7 +954,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
           const assigned = z.array(z.object({role: membershipRoleSchema})).parse(roleRows).map(({role: value}) => value);
           const seedRows = yield* sql.unsafe<object>(`SELECT installation_id FROM directory_group_role_seeds WHERE installation_id = $1`, [installationId]);
           if (seedRows.length > 0 && assigned.length === 0) {
-            return current;
+            return null;
           }
           effectiveRole = assigned.includes(membershipRoles.owner) ? membershipRoles.owner
             : assigned.includes(membershipRoles.administrator) ? membershipRoles.administrator
@@ -981,7 +999,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         return memberRowSchema.nullable().parse(rows[0] ?? null);
       }));
     }));
-    if (member === null) {
+    if (member === null && !recomputeFromCurrentGroups) {
       throw new IdentityNotFound({message: "The member does not exist."});
     }
     return member;

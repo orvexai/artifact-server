@@ -206,6 +206,10 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           SUM(role IN ('administrator','owner') AND status = 'active') AS administrators
         FROM installation_members WHERE installation_id = ?
       `).get(installationId));
+      const beforeMemberRoles = z.array(z.object({id: z.string(), role: membershipRoleSchema}))
+        .parse(this.#database.prepare(
+          "SELECT id, role FROM installation_members WHERE installation_id = ?",
+        ).all(installationId));
       const rows = this.#database.prepare(
         "SELECT id, name, path FROM directory_groups WHERE installation_id = ?",
       ).all(installationId);
@@ -351,8 +355,16 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       if (deactivated > threshold) {
         throw new IdentityConflict({message: `Directory sync would deactivate ${deactivated} members, exceeding the configured safety threshold of ${threshold}.`});
       }
+      const afterMemberRoles = z.array(z.object({id: z.string(), role: membershipRoleSchema}))
+        .parse(this.#database.prepare(
+          "SELECT id, role FROM installation_members WHERE installation_id = ?",
+        ).all(installationId));
+      const previousRoles = new Map(beforeMemberRoles.map((member) => [member.id, member.role]));
+      const roleChanged = afterMemberRoles.filter((member) =>
+        previousRoles.has(member.id) && previousRoles.get(member.id) !== member.role
+      ).length;
       this.#database.exec("COMMIT;");
-      return plan.result;
+      return roleChanged === 0 ? plan.result : {...plan.result, roleChanged};
     } catch (cause) {
       this.#database.exec("ROLLBACK;");
       throw cause;
@@ -941,7 +953,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     role: InstallationMember["role"],
     updatedAt: string,
     recomputeFromCurrentGroups = false,
-  ): Promise<InstallationMember> {
+  ): Promise<InstallationMember | null> {
     if (recomputeFromCurrentGroups) {
       this.#database.exec("BEGIN IMMEDIATE;");
       try {
@@ -964,7 +976,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         `).get(installationId)).present === 1;
         if (seeded && assigned.length === 0) {
           this.#database.exec("COMMIT;");
-          return member;
+          return null;
         }
         const currentRole = assigned.includes(membershipRoles.owner) ? membershipRoles.owner
           : assigned.includes(membershipRoles.administrator) ? membershipRoles.administrator

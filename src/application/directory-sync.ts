@@ -170,6 +170,7 @@ export interface DirectoryGroupSyncReport {
   readonly renamed: number;
   readonly deleted: number;
   readonly membershipsReplaced: number;
+  readonly roleChanged?: number;
   /** Groups whose members could not be read; they keep their stored members. */
   readonly groupsFailed: number;
 }
@@ -217,7 +218,7 @@ export const syncDirectoryGroups = Effect.fn("syncDirectoryGroups")(function*(
     })
   );
   // Field order is the order operators read the one-line summary in.
-  const report: DirectoryGroupSyncReport = {
+  const reportBase = {
     groups: groups.length,
     created: applied.created,
     renamed: applied.renamed,
@@ -225,5 +226,8 @@ export const syncDirectoryGroups = Effect.fn("syncDirectoryGroups")(function*(
     membershipsReplaced: applied.membershipsReplaced,
     groupsFailed: 0,
   };
+  const report: DirectoryGroupSyncReport = applied.roleChanged === undefined
+    ? reportBase
+    : {...reportBase, roleChanged: applied.roleChanged};
   return report;
 });

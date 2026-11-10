@@ -10,9 +10,12 @@ import nodePath from "node:path";
 import {z} from "zod";
 
 import {AuthorizationService} from "../../src/application/authorization.js";
+import type {InteractiveIdentityProvider} from "../../src/application/interactive-login.js";
 import type {BearerCredentialVerifier} from "../../src/application/authentication.js";
-import {AuthenticationRequired, type AuthorizationDenied} from "../../src/core/errors.js";
+import {AuthenticationRequired, IdentityProviderFailure, type AuthorizationDenied} from "../../src/core/errors.js";
+import {browserLoginKinds, privateTeamBrowserAccess} from "../../src/core/browser-access.js";
 import {groupMembershipRole} from "../../src/core/group-role-policy.js";
+import type {ExternalIdentity} from "../../src/core/installation-identity.js";
 import {
   membershipRoles,
   principalCapabilities,
@@ -20,7 +23,7 @@ import {
 } from "../../src/core/identity.js";
 import {resolveProjectAccess, type ProjectAccessRecord} from "../../src/core/project-access.js";
 import {SqliteIdentityRepository} from "../../src/storage/sqlite-identity-repository.js";
-import {createTestInstallation, issueLocalBrowserLogin, removeTestInstallation, startTestServer, storeTestGroupRoles, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
+import {createTestInstallation, issueLocalBrowserLogin, loginHandshakeCookie, removeTestInstallation, startTestServer, storeTestGroupRoles, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
 import {publishNew} from "../support/publishing.js";
 
 const guestMcpResultSchema = z.union([
@@ -30,6 +33,19 @@ const guestMcpResultSchema = z.union([
     projectId: z.string(), yourRole: z.null(),
   }).strict()}).strict(),
 ]);
+
+function snapshotGroupsForGuestSync(guestMembership: boolean) {
+  return [
+    {id: "group-Guests", members: guestMembership
+      ? [{email: "directory-sync@example.test", subject: "directory-sync-subject"}]
+      : [], name: "Guests", path: "/Guests"},
+    {id: "group-Viewers", members: guestMembership
+      ? []
+      : [{email: "directory-sync@example.test", subject: "directory-sync-subject"}],
+      name: "Viewers", path: "/Viewers"},
+    {id: "group-Owners", members: [], name: "Owners", path: "/Owners"},
+  ];
+}
 
 describe("guest installation role", () => {
   let runtime: ManagedRuntime.ManagedRuntime<AuthorizationService, never>;
@@ -382,7 +398,7 @@ describe("guest installation role", () => {
     })).status).toBe(401);
   });
 
-  test("GUEST-006-B: directory sync recomputes a member role from the new group membership", async () => {
+  test("GUEST-006-B: a second seeded directory sync demotes a moved member to guest", async () => {
     const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
     const database = new DatabaseSync(databasePath);
     const repository = new SqliteIdentityRepository(databasePath);
@@ -395,16 +411,97 @@ describe("guest installation role", () => {
       ) VALUES (?, ?, ?, ?, 'viewer', 'active', ?, ?)`).run(
         "member_directory_sync_guest", installationId, "directory-sync@example.test", "Sync Guest", now, now,
       );
+      const provider = "guest-role-sync-test";
+      expect(database.prepare("SELECT 1 FROM directory_group_role_seeds WHERE installation_id = ?")
+        .get(installationId)).toBeDefined();
       await repository.applyDirectoryGroups(installationId, {
-        groups: [{id: "group-Guests", members: [{email: "directory-sync@example.test", subject: "directory-sync-subject"}], name: "Guests", path: "/Guests"}],
-        provider: "guest-role-sync-test",
-        syncedAt: now,
+        groups: snapshotGroupsForGuestSync(false), provider, syncedAt: now,
+      });
+      expect(database.prepare("SELECT role FROM installation_members WHERE id = ?")
+        .get("member_directory_sync_guest")).toEqual({role: "viewer"});
+      await repository.applyDirectoryGroups(installationId, {
+        groups: snapshotGroupsForGuestSync(true), provider, syncedAt: new Date(Date.now() + 1).toISOString(),
       });
       expect(database.prepare("SELECT role FROM installation_members WHERE id = ?")
         .get("member_directory_sync_guest")).toEqual({role: "guest"});
     } finally {
       repository.close();
       database.close();
+    }
+  });
+
+  test("GUEST-006-F: sign-in denies a member whose group role is missing from the stored mirror", async () => {
+    await server.stop();
+    const identity: ExternalIdentity = {
+      displayName: "Stale role member",
+      email: "stale-role-signin@example.test",
+      emailVerified: true,
+      groups: ["/Viewers"],
+      provider: "guest-role-signin-test",
+      subject: "stale-role-signin-subject",
+    };
+    const provider: InteractiveIdentityProvider = {
+      name: identity.provider,
+      start: () => Effect.succeed({
+        authorizationUrl: "https://identity.example/authorize",
+        codeVerifier: "test-code-verifier-with-sufficient-entropy",
+        nonce: null,
+        state: "guest-role-signin-state-with-sufficient-entropy",
+      }),
+      complete: (code) => code === "guest-role-signin-code"
+        ? Effect.succeed(identity)
+        : Effect.fail(new IdentityProviderFailure({message: "Invalid code."})),
+    };
+    server = await startTestServer(installation, {
+      browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
+      externalApiBearerVerifier: conformanceBearerVerifier,
+      externalMcpBearerVerifier: conformanceBearerVerifier,
+      groupRolePolicy: {seed: [
+        {role: membershipRoles.guest, selector: "/Guests"},
+        {role: membershipRoles.viewer, selector: "/Viewers"},
+        {role: membershipRoles.owner, selector: "/Owners"},
+      ]},
+      interactiveIdentityProvider: provider,
+    });
+
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    try {
+      const installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_groups WHERE id = 'group-Viewers'").get()).installationId;
+      const now = new Date().toISOString();
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'administrator', 'active', ?, ?)`).run(
+        "member_stale_role_signin", installationId, identity.email, identity.displayName, now, now,
+      );
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'administrator', 'active', ?, ?)`).run(
+        "member_stale_role_keeper", installationId, "stale-role-keeper@example.test", "Role keeper", now, now,
+      );
+    } finally {
+      database.close();
+    }
+
+    const login = await fetch(`${server.baseUrl}/auth/login`, {redirect: "manual"});
+    expect(login.status).toBe(302);
+    const callback = new URL("/auth/callback", server.baseUrl);
+    callback.searchParams.set("code", "guest-role-signin-code");
+    callback.searchParams.set("state", "guest-role-signin-state-with-sufficient-entropy");
+    const response = await fetch(callback, {
+      headers: {Cookie: loginHandshakeCookie(login)},
+      redirect: "manual",
+    });
+    expect(response.status).toBe(403);
+
+    const verifyDatabase = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    try {
+      expect(verifyDatabase.prepare("SELECT role, status FROM installation_members WHERE id = ?")
+        .get("member_stale_role_signin")).toEqual({role: "administrator", status: "active"});
+      expect(verifyDatabase.prepare("SELECT COUNT(*) AS count FROM application_sessions WHERE member_id = ?")
+        .get("member_stale_role_signin")).toEqual({count: 0});
+    } finally {
+      verifyDatabase.close();
     }
   });
 

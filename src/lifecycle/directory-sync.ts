@@ -59,3 +59,14 @@ export function runGroupRoleSeed(
     ),
   );
 }
+
+/** Check whether a starting group-role seed exists after a seed attempt. */
+export function runIsGroupRoleSeedApplied(
+  runtime: ApplicationRuntime,
+): Promise<boolean> {
+  return runtime.runPromise(
+    InstallationAccessService.use((access) => access.isGroupRoleSeedApplied()).pipe(
+      Effect.mapError((error) => new Error(`${error._tag}: ${error.message}`)),
+    ),
+  );
+}

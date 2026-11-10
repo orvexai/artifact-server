@@ -23,6 +23,7 @@ import type {
 import {
   runDirectoryGroupSyncPass,
   runDirectorySyncPass,
+  runIsGroupRoleSeedApplied,
   runGroupRoleSeed,
 } from "../lifecycle/directory-sync.js";
 import { SystemClock, SystemIdGenerator } from "../core/system.js";
@@ -147,6 +148,8 @@ export interface LocalRuntime {
   syncDirectory(directory: GroupDirectory): Promise<DirectorySyncReport>;
   /** Store the configured starting group roles, the first time only. */
   seedGroupRoles(seed: readonly GroupRoleSeedEntry[]): Promise<GroupRoleSeedResult>;
+  /** Check whether starting group roles have been seeded for this installation. */
+  isGroupRoleSeedApplied(): Promise<boolean>;
   /** Copy every directory group and its members. */
   syncDirectoryGroups(
     directory: GroupDirectory,
@@ -386,6 +389,7 @@ export async function createLocalRuntime(
       app,
       cleanupStaging: (limit) => runStagingCleanupPass(applicationRuntime, limit),
       seedGroupRoles: (seed) => runGroupRoleSeed(applicationRuntime, seed),
+      isGroupRoleSeedApplied: () => runIsGroupRoleSeedApplied(applicationRuntime),
       syncDirectory: (directory) => runDirectorySyncPass(applicationRuntime, directory),
       syncDirectoryGroups: (directory, syncedAt, provider, recomputeRoles) =>
         runDirectoryGroupSyncPass(applicationRuntime, directory, syncedAt, provider, recomputeRoles),
