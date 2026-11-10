@@ -1256,12 +1256,12 @@ function makeArtifactCommentService(
         after: command.after, artifactId: command.artifactId, limit,
         projectId: project.id, questionId: command.questionId, versionId: command.versionId,
       });
-      return command.principal.kind === "human" && command.principal.membershipRole !== "guest"
-        ? page
-        : {...page, items: page.items.map((response) => Object.assign({}, response, {
-          authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName,
-          authorEmail: null,
-        }))};
+      if (command.principal.kind !== "human" || command.principal.membershipRole !== "guest") return page;
+      return {...page, items: page.items.map(({authorSubject: _authorSubject, ...response}) => ({
+        ...response,
+        authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName,
+        authorEmail: null,
+      }))};
     },
   );
   const guestListResponses = Effect.fn("ArtifactCommentService.guestListResponses")(
@@ -1284,9 +1284,9 @@ function makeArtifactCommentService(
       yield* authorization.requireArtifactResponseRead(command.principal);
       yield* requireArtifact(project.id, command.artifactId);
       const response = yield* dependencies.repository.findResponse(project.id, command.artifactId, command.responseId);
-      return response === null || (command.principal.kind === "human" && command.principal.membershipRole !== "guest")
-        ? response
-        : {...response, authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName, authorEmail: null};
+      if (response === null || command.principal.kind !== "human" || command.principal.membershipRole !== "guest") return response;
+      const {authorSubject: _authorSubject, ...visibleResponse} = response;
+      return {...visibleResponse, authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName, authorEmail: null};
     },
   );
   const guestGetResponse = Effect.fn("ArtifactCommentService.guestGetResponse")(

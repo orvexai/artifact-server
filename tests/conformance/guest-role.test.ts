@@ -121,6 +121,11 @@ describe("guest installation role", () => {
       const now = new Date().toISOString();
       database.prepare(`INSERT INTO installation_members (
         id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'owner', 'active', ?, ?)`).run(
+        "member_owner_conformance", installationId, "owner@example.test", "owner@example.test", now, now,
+      );
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
       ) VALUES (?, ?, ?, ?, 'guest', 'active', ?, ?)`).run(
         "member_guest_conformance", installationId, "guest@example.test", "Guest", now, now,
       );
@@ -181,6 +186,31 @@ describe("guest installation role", () => {
       name: "Private artifact",
       projectId: defaultProjectId,
     });
+    const sharedArtifact = await publishNew(server, installation, {
+      accessSetting: "account_required",
+      content: "shared content for guest comment privacy",
+      idempotencyKey: "guest-comment-privacy",
+      projectId,
+    });
+    const createdComment = await ownerFetch(
+      `/api/v1/artifacts/${sharedArtifact.body.artifact.id}/versions/${sharedArtifact.body.version.id}/comments?projectId=${projectId}`,
+      {body: JSON.stringify({body: "Staff note"}), headers: {"Idempotency-Key": "guest-comment-privacy"}, method: "POST"},
+    );
+    expect(createdComment.status, await createdComment.clone().text()).toBe(201);
+    const threadId = z.object({thread: z.object({id: z.string()})})
+      .parse(await createdComment.json()).thread.id;
+    const staffThread = await ownerFetch(
+      `/api/v1/artifacts/${sharedArtifact.body.artifact.id}/comments/${threadId}?projectId=${projectId}`,
+    );
+    expect(JSON.stringify(await staffThread.json())).toContain("owner@example.test");
+    const guestThreadResponse = await guestFetch(
+      `/api/v1/artifacts/${sharedArtifact.body.artifact.id}/comments/${threadId}?projectId=${projectId}`,
+    );
+    expect(guestThreadResponse.status).toBe(200);
+    const guestThreadBody = await guestThreadResponse.text();
+    expect(guestThreadBody).not.toContain("owner@example.test");
+    expect(guestThreadBody).not.toContain("principalId");
+    expect(guestThreadBody).toContain("Team member");
     expect((await guestFetch(`/api/v1/artifacts/${artifact.body.artifact.id}`)).status).toBe(404);
     expect((await guestFetch(`/api/v1/embed/artifacts/${artifact.body.artifact.id}/bootstrap?path=index.html`)).status).toBe(404);
     expect([403, 404]).toContain((await guestFetch(`/api/v1/artifacts/${artifact.body.artifact.id}/guest-invitation`, {
@@ -356,7 +386,7 @@ const conformanceBearerVerifier: BearerCredentialVerifier = {
       return Effect.succeed({...humanPrincipal("member_guest_conformance", membershipRoles.guest), installationId: "local"});
     }
     if (value === "owner-conformance") {
-      return Effect.succeed({...humanPrincipal("member_owner_conformance", membershipRoles.owner), installationId: "local"});
+      return Effect.succeed({...humanPrincipal("member_owner_conformance", membershipRoles.owner), displayName: "owner@example.test", installationId: "local"});
     }
     return Effect.fail(new AuthenticationRequired({message: "Unknown conformance token."}));
   },

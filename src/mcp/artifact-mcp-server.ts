@@ -275,7 +275,7 @@ const commentAuthorSchema = z.object({
   }).strict().nullable(),
   authorizedByPrincipalId: z.string().nullable(),
   displayName: z.string(),
-  principalId: z.string(),
+  principalId: z.string().optional(),
   principalKind: z.enum([principalKinds.human, principalKinds.service]),
 }).strict();
 const commentThreadSchema = z.object({
@@ -296,7 +296,7 @@ const commentThreadSchema = z.object({
 }).strict();
 const artifactResponseSchema = z.object({
   artifactId: z.string(), authorDisplayName: z.string(), authorEmail: z.string().nullable(),
-  authorKind: z.enum(["member", "guest"]), authorSubject: z.string(), choice: z.string().nullable(),
+  authorKind: z.enum(["member", "guest"]), authorSubject: z.string().optional(), choice: z.string().nullable(),
   createdAt: z.string(), data: z.unknown().nullable(), externalQuestion: z.boolean(),
   guestSessionId: z.string().nullable(), id: z.string(), questionId: z.string(), versionId: z.string(),
 }).strict();
@@ -2066,7 +2066,8 @@ export function createArtifactMcpServer(
             authorDisplayName: response.authorDisplayName,
             authorEmail: identity.principal.kind === "human" && identity.principal.membershipRole !== "guest" ? response.authorEmail : null,
             authorKind: response.authorKind,
-            authorSubject: response.authorSubject,
+            ...(identity.principal.kind === "human" && identity.principal.membershipRole === "guest"
+              ? {} : {authorSubject: response.authorSubject}),
             choice: response.choice,
             createdAt: response.createdAt,
             data: response.data,
@@ -2124,7 +2125,7 @@ export function createArtifactMcpServer(
           ),
         );
         return {
-          items: page.items.map(commentThreadProjection),
+          items: page.items.map((thread) => commentThreadProjection(thread, identity.principal.membershipRole === "guest")),
           nextCursor: encodePageCursor(page.nextCursor),
         };
       }),
@@ -2160,8 +2161,8 @@ export function createArtifactMcpServer(
         ),
       );
       return {
-        replies: details.replies.map((reply) => Object.assign({}, reply, {author: hideEmailDisplayName(reply.author)})),
-        thread: commentThreadProjection(details.thread),
+        replies: details.replies.map((reply) => commentReplyProjection(reply, identity.principal.membershipRole === "guest")),
+        thread: commentThreadProjection(details.thread, identity.principal.membershipRole === "guest"),
       };
     }),
   );
@@ -2215,7 +2216,7 @@ export function createArtifactMcpServer(
       );
       return {
         replayed: creation.replayed,
-        thread: commentThreadProjection(creation.thread),
+        thread: commentThreadProjection(creation.thread, identity.principal.membershipRole === "guest"),
       };
     }),
   );
@@ -2255,7 +2256,7 @@ export function createArtifactMcpServer(
             })
           ),
         );
-        return {replayed: creation.replayed, reply: Object.assign({}, creation.reply, {author: hideEmailDisplayName(creation.reply.author)})};
+        return {replayed: creation.replayed, reply: commentReplyProjection(creation.reply, identity.principal.membershipRole === "guest")};
       }),
   );
 
@@ -2289,7 +2290,7 @@ export function createArtifactMcpServer(
             threadId,
           })
         ),
-      )),
+      ), identity.principal.membershipRole === "guest"),
     })),
   );
 
@@ -2339,7 +2340,7 @@ export function createArtifactMcpServer(
               comments.updateReply({...target, body, replyId})
             ),
           );
-          return {reply, thread: null};
+          return {reply: commentReplyProjection(reply, identity.principal.membershipRole === "guest"), thread: null};
         }
         const thread = await runMcpApplicationEffect(
           dependencies,
@@ -2351,7 +2352,7 @@ export function createArtifactMcpServer(
             ))
           ),
         );
-        return {reply: null, thread: commentThreadProjection(thread)};
+        return {reply: null, thread: commentThreadProjection(thread, identity.principal.membershipRole === "guest")};
       }),
   );
 
@@ -3141,11 +3142,11 @@ function versionProjection(
   };
 }
 
-function commentThreadProjection(thread: CommentThreadRecord) {
+function commentThreadProjection(thread: CommentThreadRecord, isGuest = false) {
   return {
     anchor: thread.anchor ?? null,
     artifactId: thread.artifactId,
-    author: hideEmailDisplayName(thread.author),
+    author: commentAuthorProjection(thread.author, isGuest),
     body: thread.body,
     createdAt: thread.createdAt,
     id: thread.id,
@@ -3153,15 +3154,21 @@ function commentThreadProjection(thread: CommentThreadRecord) {
     projectId: thread.projectId,
     replyCount: thread.replyCount,
     resolvedAt: thread.resolvedAt,
-    resolvedBy: thread.resolvedBy === null ? null : hideEmailDisplayName(thread.resolvedBy),
+    resolvedBy: thread.resolvedBy === null ? null : commentAuthorProjection(thread.resolvedBy, isGuest),
     state: thread.state,
     updatedAt: thread.updatedAt,
     versionId: thread.versionId,
   };
 }
 
-function hideEmailDisplayName(author: CommentAuthor): CommentAuthor {
-  return author.displayName.includes("@") ? {...author, displayName: "Team member"} : author;
+function commentAuthorProjection(author: CommentAuthor, isGuest: boolean): Omit<CommentAuthor, "principalId"> | CommentAuthor {
+  if (!isGuest) return author;
+  const {principalId: _principalId, ...visibleAuthor} = author;
+  return {...visibleAuthor, displayName: author.displayName.includes("@") ? "Team member" : author.displayName};
+}
+
+function commentReplyProjection(reply: CommentReplyRecord, isGuest: boolean) {
+  return {...reply, author: commentAuthorProjection(reply.author, isGuest)};
 }
 
 function commentThreadEdit(

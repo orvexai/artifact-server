@@ -2470,6 +2470,7 @@ export function createHttpApp(
     return context.json(commentThreadPageResponse(
       responseApplicationUrl(context, dependencies),
       page,
+      context.get("principal").membershipRole === "guest",
     ));
   });
 
@@ -2611,6 +2612,7 @@ export function createHttpApp(
         thread: commentThreadResponse(
           responseApplicationUrl(context, dependencies),
           created.thread,
+          context.get("principal").membershipRole === "guest",
         ),
       }, 201);
     },
@@ -2634,6 +2636,7 @@ export function createHttpApp(
       return context.json(commentThreadDetailsResponse(
         responseApplicationUrl(context, dependencies),
         details,
+        context.get("principal").membershipRole === "guest",
       ));
     },
   );
@@ -2662,6 +2665,7 @@ export function createHttpApp(
         thread: commentThreadResponse(
           responseApplicationUrl(context, dependencies),
           thread,
+          context.get("principal").membershipRole === "guest",
         ),
       });
     },
@@ -2708,7 +2712,7 @@ export function createHttpApp(
         ),
       );
       return context.json(
-        {replayed: created.replayed, reply: created.reply},
+        {replayed: created.replayed, reply: commentReplyResponse(created.reply, context.get("principal").membershipRole === "guest")},
         201,
       );
     },
@@ -2733,7 +2737,7 @@ export function createHttpApp(
           })
         ),
       );
-      return context.json({reply});
+      return context.json({reply: commentReplyResponse(reply, context.get("principal").membershipRole === "guest")});
     },
   );
 
@@ -4149,10 +4153,10 @@ function delayMilliseconds(milliseconds: number): Promise<void> {
   });
 }
 
-function commentThreadPageResponse(requestUrl: URL, page: CommentThreadPage) {
+function commentThreadPageResponse(requestUrl: URL, page: CommentThreadPage, isGuest = false) {
   return {
     items: page.items.map((thread) =>
-      commentThreadResponse(requestUrl, thread)
+      commentThreadResponse(requestUrl, thread, isGuest)
     ),
     nextCursor: encodePageCursor(page.nextCursor),
   };
@@ -4168,18 +4172,19 @@ function guestThreadPageResponse(requestUrl: URL, page: CommentThreadPage, guest
 function commentThreadDetailsResponse(
   requestUrl: URL,
   details: CommentThreadDetails,
+  isGuest = false,
 ) {
   return {
-    replies: details.replies.map((reply) => Object.assign({}, reply, {author: hideEmailDisplayName(reply.author)})),
-    thread: commentThreadResponse(requestUrl, details.thread),
+    replies: details.replies.map((reply) => commentReplyResponse(reply, isGuest)),
+    thread: commentThreadResponse(requestUrl, details.thread, isGuest),
   };
 }
 
-function commentThreadResponse(requestUrl: URL, thread: CommentThreadRecord) {
+function commentThreadResponse(requestUrl: URL, thread: CommentThreadRecord, isGuest = false) {
   return {
     anchor: thread.anchor,
     artifactId: thread.artifactId,
-    author: hideEmailDisplayName(thread.author),
+    author: commentAuthorResponse(thread.author, isGuest),
     body: thread.body,
     createdAt: thread.createdAt,
     id: thread.id,
@@ -4197,15 +4202,21 @@ function commentThreadResponse(requestUrl: URL, thread: CommentThreadRecord) {
     projectId: thread.projectId,
     replyCount: thread.replyCount,
     resolvedAt: thread.resolvedAt,
-    resolvedBy: thread.resolvedBy === null ? null : hideEmailDisplayName(thread.resolvedBy),
+    resolvedBy: thread.resolvedBy === null ? null : commentAuthorResponse(thread.resolvedBy, isGuest),
     state: thread.state,
     updatedAt: thread.updatedAt,
     versionId: thread.versionId,
   };
 }
 
-function hideEmailDisplayName(author: CommentAuthor): CommentAuthor {
-  return author.displayName.includes("@") ? {...author, displayName: "Team member"} : author;
+function commentAuthorResponse(author: CommentAuthor, isGuest: boolean): Omit<CommentAuthor, "principalId"> | CommentAuthor {
+  if (!isGuest) return author;
+  const {principalId: _principalId, ...visibleAuthor} = author;
+  return {...visibleAuthor, displayName: author.displayName.includes("@") ? "Team member" : author.displayName};
+}
+
+function commentReplyResponse(reply: CommentReplyRecord, isGuest: boolean) {
+  return {...reply, author: commentAuthorResponse(reply.author, isGuest)};
 }
 
 function guestAuthorResponse(author: CommentAuthor, guest: GuestReviewer) {
