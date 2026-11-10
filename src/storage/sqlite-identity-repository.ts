@@ -16,6 +16,7 @@ import {
   type StoredManagedApiKey,
 } from "../core/installation-identity.js";
 import {
+  membershipRoleAtLeast,
   isAdministratorRole,
   type MembershipRole,
   membershipRoles,
@@ -288,28 +289,92 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     assignedAt: string,
     assignedByPrincipalId: string,
   ): Promise<void> {
-    const exists = this.#database.prepare(`
-      SELECT EXISTS(
-        SELECT 1 FROM directory_groups WHERE installation_id = ? AND id = ?
-      ) AS present
-    `).get(installationId, groupId);
-    if (presenceRowSchema.parse(exists).present !== 1) {
-      throw new IdentityNotFound({message: "The group does not exist."});
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      const exists = this.#database.prepare(`
+        SELECT EXISTS(
+          SELECT 1 FROM directory_groups WHERE installation_id = ? AND id = ?
+        ) AS present
+      `).get(installationId, groupId);
+      if (presenceRowSchema.parse(exists).present !== 1) {
+        throw new IdentityNotFound({message: "The group does not exist."});
+      }
+      if (role === null) {
+        this.#database.prepare(
+          "DELETE FROM directory_group_roles WHERE installation_id = ? AND group_id = ?",
+        ).run(installationId, groupId);
+      } else {
+        this.#database.prepare(`
+          INSERT INTO directory_group_roles (
+            installation_id, group_id, role, assigned_at, assigned_by_principal_id
+          ) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (installation_id, group_id) DO UPDATE SET
+            role = excluded.role, assigned_at = excluded.assigned_at,
+            assigned_by_principal_id = excluded.assigned_by_principal_id
+        `).run(installationId, groupId, role, assignedAt, assignedByPrincipalId);
+      }
+
+      const affected = z.array(z.object({email: z.string(), id: z.string()})).parse(
+        this.#database.prepare(`
+          SELECT DISTINCT member.id, member.email
+          FROM installation_members member
+          JOIN directory_group_members group_member
+            ON group_member.installation_id = member.installation_id
+          WHERE member.installation_id = ? AND group_member.group_id = ?
+            AND (
+              EXISTS (
+                SELECT 1 FROM external_identities identity
+                WHERE identity.member_id = member.id
+                  AND identity.provider = group_member.provider
+                  AND identity.subject = group_member.subject
+              ) OR (
+                group_member.email = member.email AND NOT EXISTS (
+                  SELECT 1 FROM external_identities identity
+                  WHERE identity.member_id = member.id
+                    AND identity.provider = group_member.provider
+                )
+              )
+            )
+        `).all(installationId, groupId),
+      );
+      for (const member of affected) {
+        const rows = this.#database.prepare(`
+          SELECT DISTINCT assigned.role
+          FROM directory_group_members group_member
+          JOIN directory_group_roles assigned
+            ON assigned.installation_id = group_member.installation_id
+            AND assigned.group_id = group_member.group_id
+          WHERE group_member.installation_id = ? AND (
+            EXISTS (
+              SELECT 1 FROM external_identities identity
+              WHERE identity.member_id = ?
+                AND identity.provider = group_member.provider
+                AND identity.subject = group_member.subject
+            ) OR (
+              group_member.email = ? AND NOT EXISTS (
+                SELECT 1 FROM external_identities identity
+                WHERE identity.member_id = ?
+                  AND identity.provider = group_member.provider
+              )
+            )
+          )
+        `).all(installationId, member.id, member.email, member.id);
+        const roles = z.array(z.object({role: membershipRoleSchema})).parse(rows).map(({role: assigned}) => assigned);
+        const resolved = roles.includes(membershipRoles.owner) ? membershipRoles.owner
+          : roles.includes(membershipRoles.administrator) ? membershipRoles.administrator
+          : roles.includes(membershipRoles.guest) ? membershipRoles.guest
+          : roles.reduce<MembershipRole | null>((best, assigned) =>
+            best === null || !membershipRoleAtLeast(best, assigned) ? assigned : best, null) ?? membershipRoles.guest;
+        this.#database.prepare(`
+          UPDATE installation_members SET role = ?, updated_at = ?
+          WHERE installation_id = ? AND id = ?
+        `).run(resolved, assignedAt, installationId, member.id);
+      }
+      this.#database.exec("COMMIT;");
+    } catch (cause) {
+      this.#database.exec("ROLLBACK;");
+      throw cause;
     }
-    if (role === null) {
-      this.#database.prepare(
-        "DELETE FROM directory_group_roles WHERE installation_id = ? AND group_id = ?",
-      ).run(installationId, groupId);
-      return;
-    }
-    this.#database.prepare(`
-      INSERT INTO directory_group_roles (
-        installation_id, group_id, role, assigned_at, assigned_by_principal_id
-      ) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT (installation_id, group_id) DO UPDATE SET
-        role = excluded.role, assigned_at = excluded.assigned_at,
-        assigned_by_principal_id = excluded.assigned_by_principal_id
-    `).run(installationId, groupId, role, assignedAt, assignedByPrincipalId);
   }
 
   async isGroupRoleSeedApplied(installationId: string): Promise<boolean> {

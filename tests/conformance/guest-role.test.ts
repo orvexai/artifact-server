@@ -18,7 +18,7 @@ import {
   type Principal,
 } from "../../src/core/identity.js";
 import {resolveProjectAccess, type ProjectAccessRecord} from "../../src/core/project-access.js";
-import {createTestInstallation, removeTestInstallation, startTestServer, storeTestGroupRoles, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
+import {createTestInstallation, issueLocalBrowserLogin, removeTestInstallation, startTestServer, storeTestGroupRoles, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
 import {publishNew} from "../support/publishing.js";
 
 const guestMcpResultSchema = z.union([
@@ -192,6 +192,51 @@ describe("guest installation role", () => {
     const groups = z.object({groups: z.array(z.object({id: z.string(), role: z.string().nullable()}))})
       .parse(await (await ownerFetch("/api/v1/groups")).json());
     expect(groups.groups.find((group) => group.id === "group-Guests")?.role).toBe("viewer");
+  });
+
+  test("GUEST-005-B: changing a viewer group to guest updates an existing browser session", async () => {
+    expect.hasAssertions();
+    const loginToken = await issueLocalBrowserLogin(server, installation);
+    const login = await fetch(`${server.baseUrl}/auth/local?token=${loginToken}`, {redirect: "manual"});
+    const cookie = login.headers.getSetCookie()
+      .filter((item) => /^artifact_(session|csrf)=/u.test(item))
+      .map((item) => item.split(";", 1)[0]).join("; ");
+    expect(cookie).not.toBe("");
+    const currentSession = await fetch(`${server.baseUrl}/api/v1/session`, {headers: {Cookie: cookie}});
+    const session = z.object({principal: z.object({email: z.string(), id: z.string()})})
+      .parse(await currentSession.json()).principal;
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    try {
+      const installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM installation_members WHERE id = ?").get(session.id)).installationId;
+      const now = new Date().toISOString();
+      database.prepare("UPDATE installation_members SET role = 'viewer' WHERE installation_id = ? AND id = ?")
+        .run(installationId, session.id);
+      database.prepare(`INSERT INTO directory_group_members (
+        installation_id, group_id, subject, email, provider
+      ) VALUES (?, ?, ?, ?, ?)`).run(
+        installationId, "group-Viewers", "existing-session-subject", session.email, "guest-role-session-test",
+      );
+      database.prepare("UPDATE installation_members SET updated_at = ? WHERE id = ?").run(now, session.id);
+    } finally {
+      database.close();
+    }
+    expect((await ownerFetch("/api/v1/groups/group-Viewers/role", {
+      body: JSON.stringify({role: "viewer"}), method: "PUT",
+    })).status).toBe(204);
+    const projectListPath = `${server.baseUrl}/api/v1/projects`;
+    const viewerProjects = z.object({projects: z.array(z.object({id: z.string()}))})
+      .parse(await (await fetch(projectListPath, {headers: {Cookie: cookie}})).json()).projects;
+    expect(viewerProjects.length).toBeGreaterThan(0);
+    expect((await ownerFetch("/api/v1/groups/group-Viewers/role", {
+      body: JSON.stringify({role: "guest"}), method: "PUT",
+    })).status).toBe(204);
+    const updatedSession = z.object({principal: z.object({membershipRole: z.string()})})
+      .parse(await (await fetch(`${server.baseUrl}/api/v1/session`, {headers: {Cookie: cookie}})).json());
+    expect(updatedSession.principal.membershipRole).toBe("guest");
+    const guestProjects = z.object({projects: z.array(z.object({id: z.string()}))})
+      .parse(await (await fetch(projectListPath, {headers: {Cookie: cookie}})).json()).projects;
+    expect(guestProjects).toEqual([]);
   });
 
   async function expectAllowed(

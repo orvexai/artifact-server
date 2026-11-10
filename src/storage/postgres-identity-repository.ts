@@ -35,6 +35,7 @@ import {
   type StoredManagedApiKey,
 } from "../core/installation-identity.js";
 import {
+  membershipRoleAtLeast,
   isAdministratorRole,
   type MembershipRole,
   membershipRoles,
@@ -455,17 +456,76 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
              WHERE installation_id = $1 AND group_id = $2`,
             [installationId, groupId],
           );
-          return true;
+        } else {
+          yield* sql.unsafe(
+            `INSERT INTO directory_group_roles (
+               installation_id, group_id, role, assigned_at, assigned_by_principal_id
+             ) VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (installation_id, group_id) DO UPDATE SET
+               role = EXCLUDED.role, assigned_at = EXCLUDED.assigned_at,
+               assigned_by_principal_id = EXCLUDED.assigned_by_principal_id`,
+            [installationId, groupId, role, assignedAt, assignedByPrincipalId],
+          );
         }
-        yield* sql.unsafe(
-          `INSERT INTO directory_group_roles (
-             installation_id, group_id, role, assigned_at, assigned_by_principal_id
-           ) VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (installation_id, group_id) DO UPDATE SET
-             role = EXCLUDED.role, assigned_at = EXCLUDED.assigned_at,
-             assigned_by_principal_id = EXCLUDED.assigned_by_principal_id`,
-          [installationId, groupId, role, assignedAt, assignedByPrincipalId],
+        const affectedRows = yield* sql.unsafe<object>(
+          `SELECT DISTINCT member.id, member.email
+           FROM installation_members member
+           JOIN directory_group_members group_member
+             ON group_member.installation_id = member.installation_id
+           WHERE member.installation_id = $1 AND group_member.group_id = $2
+             AND (
+               EXISTS (
+                 SELECT 1 FROM external_identities identity
+                 WHERE identity.member_id = member.id
+                   AND identity.provider = group_member.provider
+                   AND identity.subject = group_member.subject
+               ) OR (
+                 group_member.email = member.email AND NOT EXISTS (
+                   SELECT 1 FROM external_identities identity
+                   WHERE identity.member_id = member.id
+                     AND identity.provider = group_member.provider
+                 )
+               )
+             )`,
+          [installationId, groupId],
         );
+        const affected = z.array(z.object({email: z.string(), id: z.string()})).parse(affectedRows);
+        for (const member of affected) {
+          const roleRows = yield* sql.unsafe<object>(
+            `SELECT DISTINCT assigned.role
+             FROM directory_group_members group_member
+             JOIN directory_group_roles assigned
+               ON assigned.installation_id = group_member.installation_id
+               AND assigned.group_id = group_member.group_id
+             WHERE group_member.installation_id = $1 AND (
+               EXISTS (
+                 SELECT 1 FROM external_identities identity
+                 WHERE identity.member_id = $2
+                   AND identity.provider = group_member.provider
+                   AND identity.subject = group_member.subject
+               ) OR (
+                 group_member.email = $3 AND NOT EXISTS (
+                   SELECT 1 FROM external_identities identity
+                   WHERE identity.member_id = $2
+                     AND identity.provider = group_member.provider
+                 )
+               )
+             )`,
+            [installationId, member.id, member.email],
+          );
+          const roles = z.array(z.object({role: membershipRoleSchema})).parse(roleRows)
+            .map(({role: assigned}) => assigned);
+          const resolved = roles.includes(membershipRoles.owner) ? membershipRoles.owner
+            : roles.includes(membershipRoles.administrator) ? membershipRoles.administrator
+            : roles.includes(membershipRoles.guest) ? membershipRoles.guest
+            : roles.reduce<MembershipRole | null>((best, assigned) =>
+              best === null || !membershipRoleAtLeast(best, assigned) ? assigned : best, null) ?? membershipRoles.guest;
+          yield* sql.unsafe(
+            `UPDATE installation_members SET role = $1, updated_at = $2
+             WHERE installation_id = $3 AND id = $4`,
+            [resolved, assignedAt, installationId, member.id],
+          );
+        }
         return true;
       }));
     }));
