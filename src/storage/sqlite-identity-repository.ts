@@ -277,7 +277,13 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
                OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
                  WHERE identity.member_id = member.id AND identity.provider = gm.provider))
              )) AS desired_role
-          FROM installation_members member WHERE member.installation_id = ?
+          FROM installation_members member WHERE member.installation_id = ? AND (
+            EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id)
+            OR EXISTS (SELECT 1 FROM directory_group_members gm WHERE gm.installation_id = member.installation_id AND (
+              EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+              OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider))
+            ))
+          )
         ), policy AS (
           SELECT resolved.id, resolved.desired_role,
             CASE WHEN resolved.old_role = 'owner' AND (resolved.desired_role IS NULL OR resolved.desired_role <> 'owner')
@@ -300,6 +306,12 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, ?)
         WHERE installation_id = ? AND member_id IN (SELECT id FROM installation_members
           WHERE installation_id = ? AND status = 'inactive')
+      `).run(snapshot.syncedAt, installationId, installationId);
+      this.#database.prepare(`
+        UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ?)
+        WHERE installation_id = ? AND principal_kind = 'human' AND principal_id IN (
+          SELECT id FROM installation_members WHERE installation_id = ? AND status = 'inactive'
+        )
       `).run(snapshot.syncedAt, installationId, installationId);
       this.#database.prepare(`
         UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ?)
@@ -457,6 +469,12 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, ?)
         WHERE installation_id = ? AND member_id IN (SELECT id FROM installation_members
           WHERE installation_id = ? AND status = 'inactive')
+      `).run(assignedAt, installationId, installationId);
+      this.#database.prepare(`
+        UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ?)
+        WHERE installation_id = ? AND principal_kind = 'human' AND principal_id IN (
+          SELECT id FROM installation_members WHERE installation_id = ? AND status = 'inactive'
+        )
       `).run(assignedAt, installationId, installationId);
       this.#database.prepare(`
         UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ?)

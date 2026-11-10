@@ -252,7 +252,13 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
                   EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
                   OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider))
                 ) ORDER BY CASE assigned.role WHEN 'owner' THEN 5 WHEN 'administrator' THEN 4 WHEN 'guest' THEN 3 WHEN 'member' THEN 2 ELSE 1 END DESC LIMIT 1) AS desired_role
-             FROM installation_members member WHERE member.installation_id = $1
+             FROM installation_members member WHERE member.installation_id = $1 AND (
+               EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id)
+               OR EXISTS (SELECT 1 FROM directory_group_members gm WHERE gm.installation_id = member.installation_id AND (
+                 EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                 OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider))
+               ))
+             )
            ), policy AS (
              SELECT resolved.id,
                CASE WHEN resolved.old_role = 'owner' AND (resolved.desired_role IS NULL OR resolved.desired_role <> 'owner')
@@ -269,6 +275,12 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         yield* sql.unsafe(
           `UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, $1)
            WHERE installation_id = $2 AND member_id IN (SELECT id FROM installation_members WHERE installation_id = $2 AND status = 'inactive')`,
+          [snapshot.syncedAt, installationId],
+        );
+        yield* sql.unsafe(
+          `UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, $1)
+           WHERE installation_id = $2 AND principal_kind = 'human' AND principal_id IN
+             (SELECT id FROM installation_members WHERE installation_id = $2 AND status = 'inactive')`,
           [snapshot.syncedAt, installationId],
         );
         yield* sql.unsafe(
@@ -583,6 +595,10 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         yield* sql.unsafe(
           `UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, $1)
            WHERE installation_id = $2 AND member_id IN (SELECT id FROM installation_members WHERE installation_id = $2 AND status = 'inactive')`, [assignedAt, installationId]);
+        yield* sql.unsafe(
+          `UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, $1)
+           WHERE installation_id = $2 AND principal_kind = 'human' AND principal_id IN
+             (SELECT id FROM installation_members WHERE installation_id = $2 AND status = 'inactive')`, [assignedAt, installationId]);
         yield* sql.unsafe(
           `UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, $1)
            WHERE installation_id = $2 AND principal_kind = 'human' AND principal_id IN (
