@@ -4,13 +4,14 @@ const artifactResponseDataSchema = z.json();
 type ArtifactResponseData = z.infer<typeof artifactResponseDataSchema>;
 
 const accessSettingSchema = z.enum(["account_required", "public_link"]);
-const membershipRoleSchema = z.enum(["viewer", "member", "administrator", "owner"]);
+const membershipRoleSchema = z.enum(["guest", "viewer", "member", "administrator", "owner"]);
 
 /** One installation role; the application shows them as Viewer, Operator, Admin and Owner. */
 export type MembershipRole = z.infer<typeof membershipRoleSchema>;
 
 /** How each installation role is named in the application. */
 export const membershipRoleLabels = {
+  guest: "Guest",
   viewer: "Viewer",
   member: "Operator",
   administrator: "Admin",
@@ -771,10 +772,12 @@ const apiKeySchema = z.object({
 export type InstallationMember = z.infer<typeof memberSchema>;
 
 const directoryGroupSchema = z.object({
+  hasHigherRoleOverlap: z.boolean(),
   id: z.string(),
   memberCount: z.number().int().nonnegative(),
   name: z.string(),
   path: z.string(),
+  role: membershipRoleSchema.nullable(),
   syncedAt: z.string(),
 });
 
@@ -1569,6 +1572,11 @@ export const api = {
     z.object({ groups: z.array(directoryGroupSchema) }),
     "/api/v1/groups",
   ).then(({ groups }) => groups),
+  setGroupRole: (groupId: string, role: MembershipRole | "admin" | "operator" | null) => request(
+    z.object({}),
+    `/api/v1/groups/${encodeURIComponent(groupId)}/role`,
+    {body: JSON.stringify({role}), headers: mutationHeaders(), method: "PUT"},
+  ),
   admitMember: (
     displayName: string,
     email: string,

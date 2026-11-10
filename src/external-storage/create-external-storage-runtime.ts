@@ -21,6 +21,7 @@ import type {
 import {
   runDirectoryGroupSyncPass,
   runDirectorySyncPass,
+  runIsGroupRoleSeedApplied,
   runGroupRoleSeed,
 } from "../lifecycle/directory-sync.js";
 import {SystemClock, SystemIdGenerator} from "../core/system.js";
@@ -128,11 +129,14 @@ export interface ExternalStorageRuntime {
   syncDirectory(directory: GroupDirectory): Promise<DirectorySyncReport>;
   /** Store the configured starting group roles, the first time only. */
   seedGroupRoles(seed: readonly GroupRoleSeedEntry[]): Promise<GroupRoleSeedResult>;
+  /** Check whether starting group roles have been seeded for this installation. */
+  isGroupRoleSeedApplied(): Promise<boolean>;
   /** Copy every directory group and its members. */
   syncDirectoryGroups(
     directory: GroupDirectory,
     syncedAt: string,
     provider: string,
+    recomputeRoles?: boolean,
   ): Promise<DirectoryGroupSyncReport>;
 }
 
@@ -313,9 +317,10 @@ export async function createExternalStorageRuntime(
         : {...appDependencies, runtimeLifecycle: config.runtimeLifecycle}),
       cleanupStaging: (limit) => runStagingCleanupPass(readyRuntime, limit),
       seedGroupRoles: (seed) => runGroupRoleSeed(readyRuntime, seed),
+      isGroupRoleSeedApplied: () => runIsGroupRoleSeedApplied(readyRuntime),
       syncDirectory: (directory) => runDirectorySyncPass(readyRuntime, directory),
-      syncDirectoryGroups: (directory, syncedAt, provider) =>
-        runDirectoryGroupSyncPass(readyRuntime, directory, syncedAt, provider),
+      syncDirectoryGroups: (directory, syncedAt, provider, recomputeRoles) =>
+        runDirectoryGroupSyncPass(readyRuntime, directory, syncedAt, provider, recomputeRoles),
       close: async () => {
         if (closeCleanupSchedule !== null) await closeCleanupSchedule();
         if (gitHistoryWorker !== null) await gitHistoryWorker.close();

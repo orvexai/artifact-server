@@ -92,6 +92,7 @@ import {
   type BrowserAccess,
 } from "../core/browser-access.js";
 import {
+  isAdministratorRole,
   membershipRoles,
   principalCapabilities,
   type Principal,
@@ -109,7 +110,9 @@ import {
   type ArtifactDeletion,
   type ArtifactPage,
   type ArtifactState,
+  type ArtifactStateEntry,
   type ArtifactResponseData,
+  type ArtifactResponseRecord,
   type ArtifactVersion,
   commentThreadStates,
   type CommentThreadPage,
@@ -194,6 +197,7 @@ const setProjectAccessSchema = z.object({
   accessMode: z.enum(["installation", "restricted"]),
 }).strict();
 const shareProjectSchema = z.object({role: projectGrantRoleBodySchema}).strict();
+const setGroupRoleSchema = z.object({role: z.enum(["guest", "viewer", "operator", "admin", "owner"]).nullable()}).strict();
 const setProjectGitHistorySchema = z.discriminatedUnion("enabled", [
   z.object({enabled: z.literal(false)}).strict(),
   z.object({
@@ -1533,12 +1537,31 @@ export function createHttpApp(
   });
 
   app.get("/api/v1/groups", async (context) => {
+    const principal = context.get("principal");
+    if (principal.kind === "human" && principal.membershipRole === membershipRoles.guest) return context.json({groups: []});
     const groups = await runHttpApplicationEffect(
       context,
       dependencies,
-      listDirectoryGroups(context.get("principal")),
+      listDirectoryGroups(principal),
     );
-    return context.json({groups});
+    const privilegedHuman = principal.kind === "human" && isAdministratorRole(principal.membershipRole);
+    if (!privilegedHuman) return context.json({groups: groups.map(({hasHigherRoleOverlap: _overlap, ...visible}) => visible)});
+    const roles = await runHttpApplicationEffect(context, dependencies,
+      InstallationAccessService.use((access) => access.listGroupRoles()));
+    const roleByGroup = new Map(roles.map(({groupId, role}) => [groupId, role]));
+    return context.json({groups: groups.map((group) => Object.assign({}, group, {role: roleByGroup.get(group.id) ?? null}))});
+  });
+
+  app.put("/api/v1/groups/:groupId/role", boundedJsonBody, async (context) => {
+    const body = setGroupRoleSchema.parse(await context.req.json());
+    const role = body.role === "admin" ? membershipRoles.administrator
+      : body.role === "operator" ? membershipRoles.member
+      : body.role;
+    await runHttpApplicationEffect(context, dependencies,
+      InstallationAccessService.use((access) => access.setGroupRole(
+        context.get("principal"), context.req.param("groupId"), role,
+      )));
+    return context.body(null, 204);
   });
 
   app.get("/api/v1/members", async (context) => {
@@ -1941,6 +1964,11 @@ export function createHttpApp(
   });
 
   app.get("/api/v1/projects/:projectId/sharing", async (context) => {
+    if (context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest) {
+      return context.json({sharing: {
+        accessMode: "restricted", groups: [], projectId: context.req.param("projectId"), yourRole: null,
+      }});
+    }
     const sharing = await runHttpApplicationEffect(
       context,
       dependencies,
@@ -2206,6 +2234,7 @@ export function createHttpApp(
       requestUrl,
       dependencies.contentDomain,
       read.details,
+      context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest,
     );
     if (read.binding === null) return context.json(response);
     const live = liveLink(requestUrl, dependencies, read.details.artifact.id);
@@ -2235,6 +2264,7 @@ export function createHttpApp(
         requestUrl,
         dependencies.contentDomain,
         version,
+        context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest,
       )),
     });
   });
@@ -2276,6 +2306,7 @@ export function createHttpApp(
         responseApplicationUrl(context, dependencies),
         dependencies.contentDomain,
         saved,
+        context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest,
       ));
     },
   );
@@ -2447,6 +2478,7 @@ export function createHttpApp(
     return context.json(commentThreadPageResponse(
       responseApplicationUrl(context, dependencies),
       page,
+      context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest",
     ));
   });
 
@@ -2457,7 +2489,9 @@ export function createHttpApp(
       limit: query.limit, principal: context.get("principal"), projectId: requestedProjectId(context),
       questionId: query.questionId ?? null, versionId: query.versionId ?? null,
     })));
-    return context.json(page);
+    return context.json(context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest
+      ? {...page, items: page.items.map(guestResponseProjection)}
+      : page);
   });
 
   app.get("/api/v1/artifacts/:artifactId/responses/:responseId", async (context) => {
@@ -2465,7 +2499,9 @@ export function createHttpApp(
       artifactId: context.req.param("artifactId"), principal: context.get("principal"),
       projectId: requestedProjectId(context), responseId: context.req.param("responseId"),
     })));
-    return response === null ? context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404) : context.json(response);
+    return response === null ? context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404) : context.json(
+      context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest ? guestResponseProjection(response) : response,
+    );
   });
 
   app.post("/api/v1/artifacts/:artifactId/responses", boundedJsonBody, async (context) => {
@@ -2505,7 +2541,8 @@ export function createHttpApp(
         projectId: requestedProjectId(context),
       })),
     );
-    return context.json({entries});
+    const isGuest = context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest;
+    return context.json({entries: isGuest ? entries.map(guestStateEntryProjection) : entries});
   });
 
   app.get("/api/v1/artifacts/:artifactId/state/:key", async (context) => {
@@ -2519,7 +2556,8 @@ export function createHttpApp(
         projectId: requestedProjectId(context),
       })),
     );
-    return context.json({entry});
+    const isGuest = context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest;
+    return context.json({entry: entry === null || !isGuest ? entry : guestStateEntryProjection(entry)});
   });
 
   app.put(
@@ -2584,6 +2622,7 @@ export function createHttpApp(
         thread: commentThreadResponse(
           responseApplicationUrl(context, dependencies),
           created.thread,
+          context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest",
         ),
       }, 201);
     },
@@ -2607,6 +2646,7 @@ export function createHttpApp(
       return context.json(commentThreadDetailsResponse(
         responseApplicationUrl(context, dependencies),
         details,
+        context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest",
       ));
     },
   );
@@ -2635,6 +2675,7 @@ export function createHttpApp(
         thread: commentThreadResponse(
           responseApplicationUrl(context, dependencies),
           thread,
+          context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest",
         ),
       });
     },
@@ -2681,7 +2722,7 @@ export function createHttpApp(
         ),
       );
       return context.json(
-        {replayed: created.replayed, reply: created.reply},
+        {replayed: created.replayed, reply: commentReplyResponse(created.reply, context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest")},
         201,
       );
     },
@@ -2706,7 +2747,7 @@ export function createHttpApp(
           })
         ),
       );
-      return context.json({reply});
+      return context.json({reply: commentReplyResponse(reply, context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest")});
     },
   );
 
@@ -3902,10 +3943,11 @@ function artifactDetailsResponse(
   requestUrl: URL,
   contentDomain: string,
   details: ArtifactDetails,
+  isGuest = false,
 ) {
   return {
     artifact: details.artifact,
-    current: artifactVersionResponse(requestUrl, contentDomain, details.current),
+    current: artifactVersionResponse(requestUrl, contentDomain, details.current, isGuest),
     links: {
       artifact: artifactBrowserUrl(requestUrl, details.artifact.id),
       management: new URL(
@@ -4122,10 +4164,10 @@ function delayMilliseconds(milliseconds: number): Promise<void> {
   });
 }
 
-function commentThreadPageResponse(requestUrl: URL, page: CommentThreadPage) {
+function commentThreadPageResponse(requestUrl: URL, page: CommentThreadPage, isGuest = false) {
   return {
     items: page.items.map((thread) =>
-      commentThreadResponse(requestUrl, thread)
+      commentThreadResponse(requestUrl, thread, isGuest)
     ),
     nextCursor: encodePageCursor(page.nextCursor),
   };
@@ -4141,18 +4183,19 @@ function guestThreadPageResponse(requestUrl: URL, page: CommentThreadPage, guest
 function commentThreadDetailsResponse(
   requestUrl: URL,
   details: CommentThreadDetails,
+  isGuest = false,
 ) {
   return {
-    replies: details.replies,
-    thread: commentThreadResponse(requestUrl, details.thread),
+    replies: details.replies.map((reply) => commentReplyResponse(reply, isGuest)),
+    thread: commentThreadResponse(requestUrl, details.thread, isGuest),
   };
 }
 
-function commentThreadResponse(requestUrl: URL, thread: CommentThreadRecord) {
+function commentThreadResponse(requestUrl: URL, thread: CommentThreadRecord, isGuest = false) {
   return {
     anchor: thread.anchor,
     artifactId: thread.artifactId,
-    author: thread.author,
+    author: commentAuthorResponse(thread.author, isGuest),
     body: thread.body,
     createdAt: thread.createdAt,
     id: thread.id,
@@ -4170,11 +4213,35 @@ function commentThreadResponse(requestUrl: URL, thread: CommentThreadRecord) {
     projectId: thread.projectId,
     replyCount: thread.replyCount,
     resolvedAt: thread.resolvedAt,
-    resolvedBy: thread.resolvedBy,
+    resolvedBy: thread.resolvedBy === null ? null : commentAuthorResponse(thread.resolvedBy, isGuest),
     state: thread.state,
     updatedAt: thread.updatedAt,
     versionId: thread.versionId,
   };
+}
+
+function commentAuthorResponse(author: CommentAuthor, isGuest: boolean): Omit<CommentAuthor, "principalId"> | CommentAuthor {
+  if (!isGuest) return author;
+  const {principalId: _principalId, ...visibleAuthor} = author;
+  return {...visibleAuthor, displayName: author.displayName.includes("@") ? "Team member" : author.displayName};
+}
+
+function commentReplyResponse(reply: CommentReplyRecord, isGuest: boolean) {
+  return {...reply, author: commentAuthorResponse(reply.author, isGuest)};
+}
+
+function guestResponseProjection(response: ArtifactResponseRecord): Omit<ArtifactResponseRecord, "authorSubject"> {
+  const {authorSubject, ...visibleResponse} = response;
+  void authorSubject;
+  return {...visibleResponse, authorEmail: null};
+}
+
+function guestStateEntryProjection(entry: ArtifactStateEntry) {
+  const {principalId: _principalId, ...updatedBy} = entry.updatedBy;
+  return {...entry, updatedBy: {
+    ...updatedBy,
+    displayName: updatedBy.displayName.includes("@") ? "Team member" : updatedBy.displayName,
+  }};
 }
 
 function guestAuthorResponse(author: CommentAuthor, guest: GuestReviewer) {
@@ -4283,6 +4350,7 @@ function artifactVersionResponse(
   requestUrl: URL,
   contentDomain: string,
   saved: ArtifactVersion,
+  isGuest = false,
 ) {
   return {
     manifest: {
@@ -4291,7 +4359,7 @@ function artifactVersionResponse(
       entryPath: saved.manifest.entryPath,
       routingMode: saved.manifest.routingMode,
     },
-    ...versionResponse(requestUrl, contentDomain, saved.version),
+    ...versionResponse(requestUrl, contentDomain, saved.version, isGuest),
   };
 }
 
@@ -4299,7 +4367,9 @@ function versionResponse(
   requestUrl: URL,
   contentDomain: string,
   version: VersionRecord,
+  isGuest = false,
 ) {
+  const {publisherPrincipalId: _publisherPrincipalId, ...guestVersion} = version;
   return {
     links: {
       review: artifactReviewUrl(
@@ -4314,7 +4384,7 @@ function versionResponse(
         version.contentToken,
       ),
     },
-    version,
+    version: isGuest ? guestVersion : version,
   };
 }
 

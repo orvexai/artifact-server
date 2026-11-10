@@ -282,6 +282,7 @@ function oidcDirectory(
 
 /** The words a seed entry may use for a role, and the role each stores. */
 const seedRoles = new Map<string, MembershipRole>([
+  ["guest", membershipRoles.guest],
   ["admin", membershipRoles.administrator],
   ["administrator", membershipRoles.administrator],
   ["member", membershipRoles.member],
@@ -291,7 +292,7 @@ const seedRoles = new Map<string, MembershipRole>([
 ] as const);
 
 /**
- * Parse `Group=role,/Full/Path=role`. Roles are viewer, operator, admin and
+ * Parse `Group=role,/Full/Path=role`. Roles are guest, viewer, operator, admin and
  * owner; a selector starting with "/" is a full path, otherwise a group name.
  */
 function groupRoleSeed(value: string | undefined): readonly GroupRoleSeedEntry[] {
@@ -306,7 +307,7 @@ function groupRoleSeed(value: string | undefined): readonly GroupRoleSeedEntry[]
       : seedRoles.get(item.slice(separator + 1).trim());
     if (selector === "" || role === undefined) {
       throw new Error(
-        "ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED entries must look like Group=role, with role viewer, operator, admin or owner.",
+        "ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED entries must look like Group=role, with role guest, viewer, operator, admin or owner.",
       );
     }
     if (entries.some((entry) => entry.selector === selector)) {
