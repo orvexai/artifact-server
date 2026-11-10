@@ -299,6 +299,9 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       if (presenceRowSchema.parse(exists).present !== 1) {
         throw new IdentityNotFound({message: "The group does not exist."});
       }
+      const currentRole = this.#database.prepare(`
+        SELECT role FROM directory_group_roles WHERE installation_id = ? AND group_id = ?
+      `).get(installationId, groupId) as {role?: MembershipRole} | undefined;
       if (role === null) {
         this.#database.prepare(
           "DELETE FROM directory_group_roles WHERE installation_id = ? AND group_id = ?",
@@ -369,6 +372,15 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           UPDATE installation_members SET role = ?, updated_at = ?
           WHERE installation_id = ? AND id = ?
         `).run(resolved, assignedAt, installationId, member.id);
+      }
+      if (currentRole?.role === membershipRoles.owner && role !== membershipRoles.owner) {
+        const owners = this.#database.prepare(`
+          SELECT COUNT(*) AS count FROM installation_members
+          WHERE installation_id = ? AND status = 'active' AND role = 'owner'
+        `).get(installationId) as {count: number};
+        if (owners.count === 0) {
+          throw new IdentityConflict({message: "The last active owner cannot be removed."});
+        }
       }
       this.#database.exec("COMMIT;");
     } catch (cause) {

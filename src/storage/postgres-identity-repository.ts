@@ -444,12 +444,24 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     const found = await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql.withTransaction(Effect.gen(function*() {
+        yield* sql.unsafe(
+          `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+          [installationId],
+        );
         const groups = yield* sql.unsafe<object>(
           `SELECT id FROM directory_groups
            WHERE installation_id = $1 AND id = $2 FOR SHARE`,
           [installationId, groupId],
         );
         if (groups.length === 0) return false;
+        const currentRows = yield* sql.unsafe<object>(
+          `SELECT role FROM directory_group_roles
+           WHERE installation_id = $1 AND group_id = $2 FOR UPDATE`,
+          [installationId, groupId],
+        );
+        const currentRole = currentRows[0] === undefined
+          ? null
+          : z.object({role: membershipRoleSchema}).parse(currentRows[0]).role;
         if (role === null) {
           yield* sql.unsafe(
             `DELETE FROM directory_group_roles
@@ -525,6 +537,19 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
              WHERE installation_id = $3 AND id = $4`,
             [resolved, assignedAt, installationId, member.id],
           );
+        }
+        if (currentRole === membershipRoles.owner && role !== membershipRoles.owner) {
+          const ownerRows = yield* sql.unsafe<object>(
+            `SELECT COUNT(*)::integer AS count FROM installation_members
+             WHERE installation_id = $1 AND status = 'active' AND role = 'owner'`,
+            [installationId],
+          );
+          const owners = z.object({count: z.number()}).parse(ownerRows[0]);
+          if (owners.count === 0) {
+            return yield* Effect.fail(new IdentityConflict({
+              message: "The last active owner cannot be removed.",
+            }));
+          }
         }
         return true;
       }));

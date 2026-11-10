@@ -193,6 +193,27 @@ describe("guest installation role", () => {
     expect((await guestFetch("/api/v1/groups/group-Guests/role", {
       body: JSON.stringify({role: "viewer"}), method: "PUT",
     })).status).toBe(403);
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    try {
+      const installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_groups WHERE id = 'group-Owners'").get()).installationId;
+      const now = new Date().toISOString();
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'owner', 'active', ?, ?)`).run(
+        "member_final_owner", installationId, "owner@example.test", "Owner", now, now,
+      );
+      database.prepare(`INSERT INTO directory_group_members (
+        installation_id, group_id, subject, email, provider
+      ) VALUES (?, ?, ?, ?, ?)`).run(
+        installationId, "group-Owners", "final-owner-subject", "owner@example.test", "guest-role-owner-test",
+      );
+      database.prepare(`UPDATE directory_group_roles SET role = 'owner', assigned_at = ?,
+        assigned_by_principal_id = 'test' WHERE installation_id = ? AND group_id = ?`)
+        .run(now, installationId, "group-Viewers");
+    } finally {
+      database.close();
+    }
     expect((await ownerFetch("/api/v1/groups/group-Owners/role", {
       body: JSON.stringify({role: null}), method: "PUT",
     })).status).toBe(409);

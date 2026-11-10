@@ -81,7 +81,7 @@ export interface InstallationIdentityRepository {
     role: MembershipRole | null,
     assignedAt: string,
     assignedByPrincipalId: string,
-  ) => Effect.Effect<void, IdentityNotFound | IdentityRepositoryFailure>;
+  ) => Effect.Effect<void, IdentityConflict | IdentityNotFound | IdentityRepositoryFailure>;
   readonly isGroupRoleSeedApplied: (
     installationId: string,
   ) => Effect.Effect<boolean, IdentityRepositoryFailure>;
@@ -738,14 +738,6 @@ function makeInstallationAccessService(
         principal.kind !== "human" || principal.authorizedByPrincipalId !== null ||
         principal.membershipRole !== membershipRoles.owner
       ) return yield* new AuthorizationDenied({message: "Only installation owners may edit group roles."});
-      const assignments = yield* dependencies.repository.listGroupRoles(dependencies.installationId);
-      const current = assignments.find((assignment) => assignment.groupId === groupId);
-      if (current?.role === membershipRoles.owner && role !== membershipRoles.owner) {
-        const ownerGroups = assignments.filter((assignment) => assignment.role === membershipRoles.owner);
-        if (ownerGroups.length <= 1) {
-          return yield* new IdentityConflict({message: "The last owner group cannot be removed."});
-        }
-      }
       yield* dependencies.repository.setGroupRole(
         dependencies.installationId,
         groupId,
