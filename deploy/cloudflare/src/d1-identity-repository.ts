@@ -26,8 +26,11 @@ import {
 } from "../../../src/core/identity.js";
 
 const membershipRoleSchema = z.enum([
+  membershipRoles.guest,
+  membershipRoles.viewer,
   membershipRoles.administrator,
   membershipRoles.member,
+  membershipRoles.owner,
 ]);
 const memberStatusSchema = z.enum([
   memberStatuses.active,

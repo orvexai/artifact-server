@@ -1051,7 +1051,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         email TEXT NOT NULL,
         display_name TEXT NOT NULL,
         role TEXT NOT NULL
-          CHECK (role IN ('viewer', 'member', 'administrator', 'owner')),
+          CHECK (role IN ('guest', 'viewer', 'member', 'administrator', 'owner')),
         status TEXT NOT NULL CHECK (status IN ('active', 'inactive')),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -1158,7 +1158,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         installation_id TEXT NOT NULL,
         group_id TEXT NOT NULL,
         role TEXT NOT NULL
-          CHECK (role IN ('viewer', 'member', 'administrator', 'owner')),
+          CHECK (role IN ('guest', 'viewer', 'member', 'administrator', 'owner')),
         assigned_at TEXT NOT NULL,
         assigned_by_principal_id TEXT NOT NULL,
         PRIMARY KEY (installation_id, group_id),
@@ -1208,7 +1208,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     const row = z.object({sql: z.string()}).parse(this.#database.prepare(
       "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'installation_members'",
     ).get());
-    if (row.sql.includes("'owner'")) return;
+    if (row.sql.includes("'guest'")) return;
     this.#database.exec("PRAGMA foreign_keys = OFF;");
     try {
       this.#database.exec("BEGIN IMMEDIATE;");
@@ -1220,7 +1220,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
             email TEXT NOT NULL,
             display_name TEXT NOT NULL,
             role TEXT NOT NULL
-              CHECK (role IN ('viewer', 'member', 'administrator', 'owner')),
+              CHECK (role IN ('guest', 'viewer', 'member', 'administrator', 'owner')),
             status TEXT NOT NULL CHECK (status IN ('active', 'inactive')),
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,

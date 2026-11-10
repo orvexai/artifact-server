@@ -4,13 +4,14 @@ const artifactResponseDataSchema = z.json();
 type ArtifactResponseData = z.infer<typeof artifactResponseDataSchema>;
 
 const accessSettingSchema = z.enum(["account_required", "public_link"]);
-const membershipRoleSchema = z.enum(["viewer", "member", "administrator", "owner"]);
+const membershipRoleSchema = z.enum(["guest", "viewer", "member", "administrator", "owner"]);
 
 /** One installation role; the application shows them as Viewer, Operator, Admin and Owner. */
 export type MembershipRole = z.infer<typeof membershipRoleSchema>;
 
 /** How each installation role is named in the application. */
 export const membershipRoleLabels = {
+  guest: "Guest",
   viewer: "Viewer",
   member: "Operator",
   administrator: "Admin",

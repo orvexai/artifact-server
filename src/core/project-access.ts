@@ -88,6 +88,19 @@ export function resolveProjectAccess(
   ) {
     return {mode: "restricted", role: null};
   }
+  if (
+    principal.kind === principalKinds.human &&
+    record.member?.status === "active" &&
+    record.member.role === "guest"
+  ) {
+    if (record.accessMode === projectAccessModes.installation) {
+      return {mode: "restricted", role: null};
+    }
+    return {
+      mode: "restricted",
+      role: record.grantRoles.length > 0 ? "viewer" : null,
+    };
+  }
   if (record.accessMode === projectAccessModes.installation) {
     return {
       isCreator: principal.kind === principalKinds.human && record.isCreator &&
