@@ -776,6 +776,7 @@ const directoryGroupSchema = z.object({
   memberCount: z.number().int().nonnegative(),
   name: z.string(),
   path: z.string(),
+  role: membershipRoleSchema.nullable(),
   syncedAt: z.string(),
 });
 
@@ -1570,6 +1571,11 @@ export const api = {
     z.object({ groups: z.array(directoryGroupSchema) }),
     "/api/v1/groups",
   ).then(({ groups }) => groups),
+  setGroupRole: (groupId: string, role: MembershipRole | "admin" | "operator" | null) => request(
+    z.object({}),
+    `/api/v1/groups/${encodeURIComponent(groupId)}/role`,
+    {body: JSON.stringify({role}), headers: mutationHeaders(), method: "PUT"},
+  ),
   admitMember: (
     displayName: string,
     email: string,

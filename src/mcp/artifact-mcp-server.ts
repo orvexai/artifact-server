@@ -27,6 +27,7 @@ import {
 } from "../application/artifact-comments.js";
 import {ArtifactManagementService} from "../application/artifact-management.js";
 import {GuestReviewService} from "../application/guest-review.js";
+import {InstallationAccessService} from "../application/installation-access.js";
 import {CompareArtifactService} from "../application/compare-artifact.js";
 import {ContentAccessService} from "../application/content-access.js";
 import {
@@ -55,6 +56,7 @@ import {
   type AgentDispatchRecord,
   type AgentDispatchState,
   type ArtifactVersion,
+  type CommentAuthor,
   type CommentThreadRecord,
   type PageCursor,
   type PublishedVersion,
@@ -746,17 +748,44 @@ export function createArtifactMcpServer(
           memberCount: z.number().int().nonnegative(),
           name: z.string(),
           path: z.string(),
+          role: z.enum(["guest", "viewer", "member", "administrator", "owner"]).nullable(),
           syncedAt: z.string(),
         }).strict()),
       }).strict(),
       annotations: readOnlyAnnotations,
     },
-    () => toolResult(async () => ({
-      groups: [...await runMcpApplicationEffect(
+    () => toolResult(async () => {
+      const groups = await runMcpApplicationEffect(
         dependencies,
         listDirectoryGroups(identity.principal),
-      )],
-    })),
+      );
+      const roles = groups.length === 0 ? [] : await runMcpApplicationEffect(dependencies,
+        InstallationAccessService.use((access) => access.listGroupRoles()));
+      const roleByGroup = new Map(roles.map(({groupId, role}) => [groupId, role]));
+      return {groups: groups.map((group) => Object.assign({}, group, {role: roleByGroup.get(group.id) ?? null}))};
+    }),
+  );
+
+  registerNudgedTool(
+    "group_set_role",
+    {
+      title: "Set a group's installation role",
+      description: "Assign or remove an installation role for a directory group. Only installation owners may use this tool.",
+      inputSchema: z.object({
+        groupId: z.string().min(1),
+        role: z.enum(["guest", "viewer", "operator", "admin", "owner"]).nullable(),
+      }).strict(),
+      outputSchema: z.object({ok: z.literal(true)}).strict(),
+      annotations: idempotentWriteAnnotations,
+    },
+    ({groupId, role}) => toolResult(async () => {
+      const storedRole = role === "admin" ? "administrator"
+        : role === "operator" ? "member"
+        : role;
+      await runMcpApplicationEffect(dependencies,
+        InstallationAccessService.use((access) => access.setGroupRole(identity.principal, groupId, storedRole)));
+      return {ok: true as const};
+    }),
   );
 
   registerNudgedTool(
@@ -812,7 +841,9 @@ export function createArtifactMcpServer(
       annotations: readOnlyAnnotations,
     },
     ({projectId}) => toolResult(async () => ({
-      sharing: await runMcpApplicationEffect(
+      sharing: identity.principal.membershipRole === "guest"
+        ? {accessMode: "restricted" as const, groups: [], projectId, yourRole: null}
+        : await runMcpApplicationEffect(
         dependencies,
         ProjectManagementService.use((projects) =>
           projects.getSharing({principal: identity.principal, projectId})
@@ -2032,7 +2063,7 @@ export function createArtifactMcpServer(
           items: page.items.map((response) => ({
             artifactId: response.artifactId,
             authorDisplayName: response.authorDisplayName,
-            authorEmail: identity.principal.kind === "human" ? response.authorEmail : null,
+            authorEmail: identity.principal.kind === "human" && identity.principal.membershipRole !== "guest" ? response.authorEmail : null,
             authorKind: response.authorKind,
             authorSubject: response.authorSubject,
             choice: response.choice,
@@ -2128,7 +2159,7 @@ export function createArtifactMcpServer(
         ),
       );
       return {
-        replies: [...details.replies],
+        replies: details.replies.map((reply) => Object.assign({}, reply, {author: hideEmailDisplayName(reply.author)})),
         thread: commentThreadProjection(details.thread),
       };
     }),
@@ -2223,7 +2254,7 @@ export function createArtifactMcpServer(
             })
           ),
         );
-        return {replayed: creation.replayed, reply: creation.reply};
+        return {replayed: creation.replayed, reply: Object.assign({}, creation.reply, {author: hideEmailDisplayName(creation.reply.author)})};
       }),
   );
 
@@ -3113,7 +3144,7 @@ function commentThreadProjection(thread: CommentThreadRecord) {
   return {
     anchor: thread.anchor ?? null,
     artifactId: thread.artifactId,
-    author: thread.author,
+    author: hideEmailDisplayName(thread.author),
     body: thread.body,
     createdAt: thread.createdAt,
     id: thread.id,
@@ -3121,11 +3152,15 @@ function commentThreadProjection(thread: CommentThreadRecord) {
     projectId: thread.projectId,
     replyCount: thread.replyCount,
     resolvedAt: thread.resolvedAt,
-    resolvedBy: thread.resolvedBy,
+    resolvedBy: thread.resolvedBy === null ? null : hideEmailDisplayName(thread.resolvedBy),
     state: thread.state,
     updatedAt: thread.updatedAt,
     versionId: thread.versionId,
   };
+}
+
+function hideEmailDisplayName(author: CommentAuthor): CommentAuthor {
+  return author.displayName.includes("@") ? {...author, displayName: "Team member"} : author;
 }
 
 function commentThreadEdit(

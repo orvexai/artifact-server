@@ -475,7 +475,7 @@ function makeProjectManagementService(
     function*(principal: Principal) {
       yield* authorization.requireProjectAccess(principal);
       if (
-        isDirectHumanPrincipal(principal) ||
+        (isDirectHumanPrincipal(principal) && principal.membershipRole !== "guest") ||
         hasCapability(principal, principalCapabilities.manageProjects)
       ) {
         return;

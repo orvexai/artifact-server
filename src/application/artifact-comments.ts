@@ -1256,9 +1256,12 @@ function makeArtifactCommentService(
         after: command.after, artifactId: command.artifactId, limit,
         projectId: project.id, questionId: command.questionId, versionId: command.versionId,
       });
-      return command.principal.kind === "human"
+      return command.principal.kind === "human" && command.principal.membershipRole !== "guest"
         ? page
-        : {...page, items: page.items.map((response) => Object.assign({}, response, {authorEmail: null}))};
+        : {...page, items: page.items.map((response) => Object.assign({}, response, {
+          authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName,
+          authorEmail: null,
+        }))};
     },
   );
   const guestListResponses = Effect.fn("ArtifactCommentService.guestListResponses")(
@@ -1281,9 +1284,9 @@ function makeArtifactCommentService(
       yield* authorization.requireArtifactResponseRead(command.principal);
       yield* requireArtifact(project.id, command.artifactId);
       const response = yield* dependencies.repository.findResponse(project.id, command.artifactId, command.responseId);
-      return response === null || command.principal.kind === "human"
+      return response === null || (command.principal.kind === "human" && command.principal.membershipRole !== "guest")
         ? response
-        : {...response, authorEmail: null};
+        : {...response, authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName, authorEmail: null};
     },
   );
   const guestGetResponse = Effect.fn("ArtifactCommentService.guestGetResponse")(

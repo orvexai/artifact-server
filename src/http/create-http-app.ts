@@ -194,6 +194,7 @@ const setProjectAccessSchema = z.object({
   accessMode: z.enum(["installation", "restricted"]),
 }).strict();
 const shareProjectSchema = z.object({role: projectGrantRoleBodySchema}).strict();
+const setGroupRoleSchema = z.object({role: z.enum(["guest", "viewer", "operator", "admin", "owner"]).nullable()}).strict();
 const setProjectGitHistorySchema = z.discriminatedUnion("enabled", [
   z.object({enabled: z.literal(false)}).strict(),
   z.object({
@@ -1533,12 +1534,29 @@ export function createHttpApp(
   });
 
   app.get("/api/v1/groups", async (context) => {
+    const principal = context.get("principal");
+    if (principal.membershipRole === membershipRoles.guest) return context.json({groups: []});
     const groups = await runHttpApplicationEffect(
       context,
       dependencies,
-      listDirectoryGroups(context.get("principal")),
+      listDirectoryGroups(principal),
     );
-    return context.json({groups});
+    const roles = await runHttpApplicationEffect(context, dependencies,
+      InstallationAccessService.use((access) => access.listGroupRoles()));
+    const roleByGroup = new Map(roles.map(({groupId, role}) => [groupId, role]));
+    return context.json({groups: groups.map((group) => Object.assign({}, group, {role: roleByGroup.get(group.id) ?? null}))});
+  });
+
+  app.put("/api/v1/groups/:groupId/role", boundedJsonBody, async (context) => {
+    const body = setGroupRoleSchema.parse(await context.req.json());
+    const role = body.role === "admin" ? membershipRoles.administrator
+      : body.role === "operator" ? membershipRoles.member
+      : body.role;
+    await runHttpApplicationEffect(context, dependencies,
+      InstallationAccessService.use((access) => access.setGroupRole(
+        context.get("principal"), context.req.param("groupId"), role,
+      )));
+    return context.body(null, 204);
   });
 
   app.get("/api/v1/members", async (context) => {
@@ -1941,6 +1959,11 @@ export function createHttpApp(
   });
 
   app.get("/api/v1/projects/:projectId/sharing", async (context) => {
+    if (context.get("principal").membershipRole === membershipRoles.guest) {
+      return context.json({sharing: {
+        accessMode: "restricted", groups: [], projectId: context.req.param("projectId"), yourRole: null,
+      }});
+    }
     const sharing = await runHttpApplicationEffect(
       context,
       dependencies,
@@ -2457,7 +2480,9 @@ export function createHttpApp(
       limit: query.limit, principal: context.get("principal"), projectId: requestedProjectId(context),
       questionId: query.questionId ?? null, versionId: query.versionId ?? null,
     })));
-    return context.json(page);
+    return context.json(context.get("principal").membershipRole === membershipRoles.guest
+      ? {...page, items: page.items.map((response) => ({...response, authorEmail: null}))}
+      : page);
   });
 
   app.get("/api/v1/artifacts/:artifactId/responses/:responseId", async (context) => {
@@ -2465,7 +2490,9 @@ export function createHttpApp(
       artifactId: context.req.param("artifactId"), principal: context.get("principal"),
       projectId: requestedProjectId(context), responseId: context.req.param("responseId"),
     })));
-    return response === null ? context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404) : context.json(response);
+    return response === null ? context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404) : context.json(
+      context.get("principal").membershipRole === membershipRoles.guest ? {...response, authorEmail: null} : response,
+    );
   });
 
   app.post("/api/v1/artifacts/:artifactId/responses", boundedJsonBody, async (context) => {
@@ -4143,7 +4170,7 @@ function commentThreadDetailsResponse(
   details: CommentThreadDetails,
 ) {
   return {
-    replies: details.replies,
+    replies: details.replies.map((reply) => Object.assign({}, reply, {author: hideEmailDisplayName(reply.author)})),
     thread: commentThreadResponse(requestUrl, details.thread),
   };
 }
@@ -4152,7 +4179,7 @@ function commentThreadResponse(requestUrl: URL, thread: CommentThreadRecord) {
   return {
     anchor: thread.anchor,
     artifactId: thread.artifactId,
-    author: thread.author,
+    author: hideEmailDisplayName(thread.author),
     body: thread.body,
     createdAt: thread.createdAt,
     id: thread.id,
@@ -4170,11 +4197,15 @@ function commentThreadResponse(requestUrl: URL, thread: CommentThreadRecord) {
     projectId: thread.projectId,
     replyCount: thread.replyCount,
     resolvedAt: thread.resolvedAt,
-    resolvedBy: thread.resolvedBy,
+    resolvedBy: thread.resolvedBy === null ? null : hideEmailDisplayName(thread.resolvedBy),
     state: thread.state,
     updatedAt: thread.updatedAt,
     versionId: thread.versionId,
   };
+}
+
+function hideEmailDisplayName(author: CommentAuthor): CommentAuthor {
+  return author.displayName.includes("@") ? {...author, displayName: "Team member"} : author;
 }
 
 function guestAuthorResponse(author: CommentAuthor, guest: GuestReviewer) {

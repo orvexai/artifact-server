@@ -424,6 +424,11 @@ export interface InstallationAccessOperations {
     readonly GroupRoleAssignment[],
     IdentityRepositoryFailure
   >;
+  readonly setGroupRole: (
+    principal: Principal,
+    groupId: string,
+    role: MembershipRole | null,
+  ) => Effect.Effect<void, AuthorizationDenied | IdentityConflict | IdentityNotFound | IdentityRepositoryFailure>;
   /**
    * Store the configured starting roles once. Every seed entry must name
    * exactly one stored directory group; otherwise nothing is stored and the
@@ -726,6 +731,32 @@ function makeInstallationAccessService(
     const result: GroupRoleSeedResult = {seeded, unresolved: []};
     return result;
   });
+
+  const setGroupRole = Effect.fn("InstallationAccessService.setGroupRole")(
+    function*(principal: Principal, groupId: string, role: MembershipRole | null) {
+      if (
+        principal.kind !== "human" || principal.authorizedByPrincipalId !== null ||
+        principal.membershipRole !== membershipRoles.owner
+      ) return yield* new AuthorizationDenied({message: "Only installation owners may edit group roles."});
+      const assignments = yield* dependencies.repository.listGroupRoles(dependencies.installationId);
+      const current = assignments.find((assignment) => assignment.groupId === groupId);
+      if (current?.role === membershipRoles.owner && role !== membershipRoles.owner) {
+        const ownerGroups = assignments.filter((assignment) => assignment.role === membershipRoles.owner);
+        if (ownerGroups.length <= 1) {
+          return yield* new IdentityConflict({message: "The last owner group cannot be removed."});
+        }
+      }
+      yield* dependencies.repository.setGroupRole(
+        dependencies.installationId,
+        groupId,
+        role,
+        dependencies.clock.now().toISOString(),
+        principal.id,
+      );
+      clearAuthenticationCaches();
+      return undefined;
+    },
+  );
 
   const projectAccess = Effect.fn(
     "InstallationAccessService.projectAccess",
@@ -1381,6 +1412,7 @@ function makeInstallationAccessService(
     applyDirectoryGroups,
     listDirectoryGroups,
     listGroupRoles,
+    setGroupRole,
     seedGroupRoles,
     projectAccess,
     ownerProjectAccess,

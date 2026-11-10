@@ -1185,6 +1185,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     this.#addLoginAttemptNonceIfMissing();
     this.#addDirectoryGroupMemberProviderIfMissing();
     this.#widenMemberRolesIfNeeded();
+    this.#widenGroupRolesIfNeeded();
     this.#database.exec(`PRAGMA user_version = ${requiredSqliteSchemaVersion};`);
   }
 
@@ -1199,8 +1200,8 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
   }
 
   /**
-   * Older files allow only the Admin and Operator roles. SQLite cannot change
-   * a CHECK constraint, so copy the members into a table that allows all four,
+   * Older files omit one or more installation roles. SQLite cannot change
+   * a CHECK constraint, so copy the members into a table that allows all five,
    * with foreign keys paused so the sessions and identities that point at
    * members keep pointing at the same rows.
    */
@@ -1238,6 +1239,45 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         `);
         if (this.#database.prepare("PRAGMA foreign_key_check").all().length > 0) {
           throw new Error("Widening member roles broke a member reference.");
+        }
+        this.#database.exec("COMMIT;");
+      } catch (cause) {
+        this.#database.exec("ROLLBACK;");
+        throw cause;
+      }
+    } finally {
+      this.#database.exec("PRAGMA foreign_keys = ON;");
+    }
+  }
+
+  #widenGroupRolesIfNeeded(): void {
+    const row = z.object({sql: z.string()}).parse(this.#database.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'directory_group_roles'",
+    ).get());
+    if (row.sql.includes("'guest'")) return;
+    this.#database.exec("PRAGMA foreign_keys = OFF;");
+    try {
+      this.#database.exec("BEGIN IMMEDIATE;");
+      try {
+        this.#database.exec(`
+          CREATE TABLE directory_group_roles_widened (
+            installation_id TEXT NOT NULL,
+            group_id TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('guest', 'viewer', 'member', 'administrator', 'owner')),
+            assigned_at TEXT NOT NULL,
+            assigned_by_principal_id TEXT NOT NULL,
+            PRIMARY KEY (installation_id, group_id),
+            FOREIGN KEY (installation_id, group_id)
+              REFERENCES directory_groups(installation_id, id) ON DELETE CASCADE
+          ) STRICT;
+          INSERT INTO directory_group_roles_widened
+            SELECT installation_id, group_id, role, assigned_at, assigned_by_principal_id
+            FROM directory_group_roles;
+          DROP TABLE directory_group_roles;
+          ALTER TABLE directory_group_roles_widened RENAME TO directory_group_roles;
+        `);
+        if (this.#database.prepare("PRAGMA foreign_key_check").all().length > 0) {
+          throw new Error("Widening directory group roles broke a group reference.");
         }
         this.#database.exec("COMMIT;");
       } catch (cause) {

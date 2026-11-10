@@ -90,9 +90,9 @@ export function resolveProjectAccess(
   }
   if (
     principal.kind === principalKinds.human &&
-    record.member?.status === "active" &&
-    record.member.role === "guest"
+    (principal.membershipRole === "guest" || record.member?.role === "guest")
   ) {
+    if (record.member?.status !== "active") return {mode: "restricted", role: null};
     if (record.accessMode === projectAccessModes.installation) {
       return {mode: "restricted", role: null};
     }
