@@ -33,6 +33,8 @@ export interface DirectoryGroupSnapshot {
 
 /** A stored directory group with its current member count. */
 export interface StoredDirectoryGroup extends DirectoryGroupRecord {
+  /** True when members of this guest group also have a higher assigned role. */
+  readonly hasHigherRoleOverlap: boolean;
   readonly memberCount: number;
   readonly syncedAt: string;
 }

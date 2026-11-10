@@ -79,6 +79,9 @@ export function GroupsScreen({canEdit}: {readonly canEdit: boolean}) {
                     <td className="px-4 py-4">
                       <p className="font-heading font-semibold">{group.name}</p>
                       <p className="mt-1 text-xs text-muted-foreground">{group.path}</p>
+                      {group.role === "guest" && group.hasHigherRoleOverlap
+                        ? <p className="mt-2 text-xs text-amber-700">Some members also belong to a group with a higher installation role. Admin and Owner roles take precedence over Guest.</p>
+                        : null}
                     </td>
                     <td className="px-4 py-4">{group.memberCount}</td>
                     <td className="px-4 py-4">

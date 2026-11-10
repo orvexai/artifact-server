@@ -70,6 +70,7 @@ const accessMemberRowSchema = z.object({
   status: z.enum(["active", "inactive"]),
 });
 const storedDirectoryGroupRowSchema = z.object({
+  hasHigherRoleOverlap: z.coerce.boolean(),
   id: z.string(),
   memberCount: z.number().int().nonnegative(),
   name: z.string(),
@@ -357,7 +358,24 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
   ): Promise<readonly StoredDirectoryGroup[]> {
     const rows = this.#database.prepare(`
       SELECT g.id, g.name, g.path, g.synced_at AS syncedAt,
-        COUNT(m.subject) AS memberCount
+        COUNT(m.subject) AS memberCount,
+        EXISTS (
+          SELECT 1 FROM directory_group_roles guest_role
+          JOIN directory_group_members guest_member
+            ON guest_member.installation_id = guest_role.installation_id
+            AND guest_member.group_id = guest_role.group_id
+          JOIN directory_group_members other_member
+            ON other_member.installation_id = guest_member.installation_id
+            AND other_member.provider = guest_member.provider
+            AND other_member.subject = guest_member.subject
+            AND other_member.group_id <> guest_member.group_id
+          JOIN directory_group_roles other_role
+            ON other_role.installation_id = other_member.installation_id
+            AND other_role.group_id = other_member.group_id
+          WHERE guest_role.installation_id = g.installation_id
+            AND guest_role.group_id = g.id AND guest_role.role = 'guest'
+            AND other_role.role IN ('viewer', 'member', 'administrator', 'owner')
+        ) AS hasHigherRoleOverlap
       FROM directory_groups g
       LEFT JOIN directory_group_members m
         ON m.installation_id = g.installation_id AND m.group_id = g.id

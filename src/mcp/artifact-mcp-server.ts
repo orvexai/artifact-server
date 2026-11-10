@@ -744,6 +744,7 @@ export function createArtifactMcpServer(
       inputSchema: z.object({}).strict(),
       outputSchema: z.object({
         groups: z.array(z.object({
+          hasHigherRoleOverlap: z.boolean(),
           id: z.string(),
           memberCount: z.number().int().nonnegative(),
           name: z.string(),

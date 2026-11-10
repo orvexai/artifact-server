@@ -772,6 +772,7 @@ const apiKeySchema = z.object({
 export type InstallationMember = z.infer<typeof memberSchema>;
 
 const directoryGroupSchema = z.object({
+  hasHigherRoleOverlap: z.boolean(),
   id: z.string(),
   memberCount: z.number().int().nonnegative(),
   name: z.string(),

@@ -46,6 +46,7 @@ describe("guest installation role", () => {
     });
     await storeTestGroupRoles(server, installation, [
       {name: "Guests", role: membershipRoles.guest},
+      {name: "Viewers", role: membershipRoles.viewer},
       {name: "Owners", role: membershipRoles.owner},
     ]);
   });
@@ -82,7 +83,16 @@ describe("guest installation role", () => {
     expect(groupMembershipRole([
       assignment("group-guests", "guest"),
       assignment("group-viewers", "viewer"),
-    ], ["/Guests", "/Viewers"])).toBe("viewer");
+      assignment("group-operators", "member"),
+    ], ["/Guests", "/Viewers", "/Operators"])).toBe("guest");
+    expect(groupMembershipRole([
+      assignment("group-guests", "guest"),
+      assignment("group-admins", "administrator"),
+    ], ["/Guests", "/Admins"])).toBe("administrator");
+    expect(groupMembershipRole([
+      assignment("group-guests", "guest"),
+      assignment("group-owners", "owner"),
+    ], ["/Guests", "/Owners"])).toBe("owner");
     expect(groupMembershipRole([assignment("group-guests", "guest")], ["/Guests"]))
       .toBe("guest");
   });
@@ -119,6 +129,11 @@ describe("guest installation role", () => {
       ) VALUES (?, ?, ?, ?, ?)`).run(
         installationId, "group-Guests", "guest-subject", "guest@example.test", "guest-role-conformance",
       );
+      database.prepare(`INSERT INTO directory_group_members (
+        installation_id, group_id, subject, email, provider
+      ) VALUES (?, ?, ?, ?, ?)`).run(
+        installationId, "group-Viewers", "guest-subject", "guest@example.test", "guest-role-conformance",
+      );
     } finally {
       database.close();
     }
@@ -131,6 +146,10 @@ describe("guest installation role", () => {
     expect(mcpSharing).toEqual({sharing: {
       accessMode: "restricted", groups: [], projectId: "unshared", yourRole: null,
     }});
+    const ownerGroups = z.object({groups: z.array(z.object({
+      hasHigherRoleOverlap: z.boolean(), id: z.string(),
+    }).passthrough())}).parse(await (await ownerFetch("/api/v1/groups")).json()).groups;
+    expect(ownerGroups.find((group) => group.id === "group-Guests")?.hasHigherRoleOverlap).toBe(true);
     const sharing = await guestFetch("/api/v1/projects/unshared/sharing");
     expect(sharing.status).toBe(200);
     expect(await sharing.json()).toEqual({sharing: {
@@ -285,7 +304,10 @@ function assignment(groupId: string, role: Principal["membershipRole"]) {
     groupId,
     name: groupId,
     nameUnique: true,
-    path: groupId === "group-guests" ? "/Guests" : "/Viewers",
+    path: groupId === "group-guests" ? "/Guests"
+      : groupId === "group-owners" ? "/Owners"
+      : groupId === "group-admins" ? "/Admins"
+      : "/Viewers",
     role,
   };
 }
