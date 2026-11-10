@@ -81,7 +81,7 @@ export interface InstallationIdentityRepository {
     role: MembershipRole | null,
     assignedAt: string,
     assignedByPrincipalId: string,
-  ) => Effect.Effect<void, IdentityNotFound | IdentityRepositoryFailure>;
+  ) => Effect.Effect<void, IdentityConflict | IdentityNotFound | IdentityRepositoryFailure>;
   readonly isGroupRoleSeedApplied: (
     installationId: string,
   ) => Effect.Effect<boolean, IdentityRepositoryFailure>;
@@ -220,8 +220,9 @@ export interface InstallationIdentityRepository {
     memberId: string,
     role: MembershipRole,
     updatedAt: string,
+    recomputeFromCurrentGroups?: boolean,
   ) => Effect.Effect<
-    InstallationMember,
+    InstallationMember | null,
     IdentityNotFound | IdentityRepositoryFailure
   >;
 }
@@ -424,6 +425,12 @@ export interface InstallationAccessOperations {
     readonly GroupRoleAssignment[],
     IdentityRepositoryFailure
   >;
+  readonly isGroupRoleSeedApplied: () => Effect.Effect<boolean, IdentityRepositoryFailure>;
+  readonly setGroupRole: (
+    principal: Principal,
+    groupId: string,
+    role: MembershipRole | null,
+  ) => Effect.Effect<void, AuthorizationDenied | IdentityConflict | IdentityNotFound | IdentityRepositoryFailure>;
   /**
    * Store the configured starting roles once. Every seed entry must name
    * exactly one stored directory group; otherwise nothing is stored and the
@@ -691,6 +698,12 @@ function makeInstallationAccessService(
     );
   });
 
+  const isGroupRoleSeedApplied = Effect.fn(
+    "InstallationAccessService.isGroupRoleSeedApplied",
+  )(function*() {
+    return yield* dependencies.repository.isGroupRoleSeedApplied(dependencies.installationId);
+  });
+
   const seedGroupRoles = Effect.fn(
     "InstallationAccessService.seedGroupRoles",
   )(function*(seed: readonly GroupRoleSeedEntry[]) {
@@ -726,6 +739,26 @@ function makeInstallationAccessService(
     const result: GroupRoleSeedResult = {seeded, unresolved: []};
     return result;
   });
+
+  const setGroupRole = Effect.fn("InstallationAccessService.setGroupRole")(
+    function*(principal: Principal, groupId: string, role: MembershipRole | null) {
+      if (
+        principal.kind !== "human" || principal.authorizedByPrincipalId !== null ||
+        principal.membershipRole !== membershipRoles.owner
+      ) return yield* new AuthorizationDenied({message: "Only installation owners may edit group roles."});
+      yield* dependencies.repository.setGroupRole(
+        dependencies.installationId,
+        groupId,
+        role,
+        dependencies.clock.now().toISOString(),
+        principal.id,
+      );
+      // Local authentication caches clear immediately; other replicas observe
+      // the changed role after their cache entries expire (30 seconds).
+      clearAuthenticationCaches();
+      return undefined;
+    },
+  );
 
   const projectAccess = Effect.fn(
     "InstallationAccessService.projectAccess",
@@ -820,8 +853,11 @@ function makeInstallationAccessService(
     let reactivated = 0;
     let roleChanged = 0;
     let unchanged = 0;
-    // Admissions and promotions first, so removals never run ahead of them.
+    // Apply promotions before demotions so the repository's last-admin guard
+    // evaluates against the complete directory snapshot, not an intermediate
+    // state where the incoming administrator has not yet been promoted.
     for (const entry of [...desired.values()].toSorted((left, right) =>
+      Number(isAdministratorRole(right.role)) - Number(isAdministratorRole(left.role)) ||
       left.email.localeCompare(right.email)
     )) {
       const member = byEmail.get(entry.email);
@@ -884,6 +920,24 @@ function makeInstallationAccessService(
    * Make the member's state match the role its issuer groups grant: admit or
    * restore it, change its role, or deactivate it and refuse admission.
    */
+  const isSoleActiveAdministrator = Effect.fn(
+    "InstallationAccessService.isSoleActiveAdministrator",
+  )(function*(member: InstallationMember, tokenRole: MembershipRole) {
+    if (
+      member.status !== memberStatuses.active ||
+      !isAdministratorRole(member.role) ||
+      !isAdministratorRole(tokenRole)
+    ) return false;
+    const members = yield* dependencies.repository.listMembers(
+      dependencies.installationId,
+    );
+    return !members.some((candidate) =>
+      candidate.id !== member.id &&
+      candidate.status === memberStatuses.active &&
+      isAdministratorRole(candidate.role)
+    );
+  });
+
   const applyGroupRole = Effect.fn(
     "InstallationAccessService.applyGroupRole",
   )(function*(
@@ -894,11 +948,11 @@ function makeInstallationAccessService(
   ) {
     // The configured roles decide until the directory sync has stored them,
     // and always without a directory sync; after that the stored roles do.
-    const assignments = (yield* dependencies.repository.isGroupRoleSeedApplied(
-        dependencies.installationId,
-      ))
+    const seeded = yield* dependencies.repository.isGroupRoleSeedApplied(dependencies.installationId);
+    const assignments = seeded
       ? yield* dependencies.repository.listGroupRoles(dependencies.installationId)
       : configuredGroupRoleAssignments(policy.seed);
+    const now = dependencies.clock.now().toISOString();
     // With every stored role removed nobody is turned away for good: the
     // roles are simply not set up.
     if (assignments.length === 0) {
@@ -907,7 +961,6 @@ function makeInstallationAccessService(
       }));
     }
     const role = groupMembershipRole(assignments, identity.groups);
-    const now = dependencies.clock.now().toISOString();
     // The last active Admin or Owner keeps their role, so someone can always
     // give the roles out again after a group that held them is lost.
     if (
@@ -934,14 +987,25 @@ function makeInstallationAccessService(
       }));
     }
     if (member !== null) {
-      if (member.role === role) return member;
       const changed = yield* dependencies.repository.setMemberRole(
         dependencies.installationId,
         member.id,
         role,
         now,
+        true,
       );
+      if (changed === null) {
+        if (yield* isSoleActiveAdministrator(member, role)) return member;
+        return yield* Effect.fail(new IdentityAdmissionDenied({
+          message: "This person's current group memberships are not in the stored directory mirror.",
+        }));
+      }
       clearAuthenticationCaches();
+      if (changed.status !== memberStatuses.active) {
+        return yield* Effect.fail(new IdentityAdmissionDenied({
+          message: "This person is no longer in an admitted group.",
+        }));
+      }
       return changed;
     }
     // A member deactivated earlier keeps its email, so restore that member
@@ -951,14 +1015,27 @@ function makeInstallationAccessService(
     );
     const previous = members.find((candidate) => candidate.email === email);
     if (previous !== undefined) {
-      return yield* dependencies.repository.setMemberRole(
+      const restored = yield* dependencies.repository.setMemberRole(
         dependencies.installationId,
         previous.id,
         role,
         now,
+        true,
       );
+      if (restored === null) {
+        if (yield* isSoleActiveAdministrator(previous, role)) return previous;
+        return yield* Effect.fail(new IdentityAdmissionDenied({
+          message: "This person's current group memberships are not in the stored directory mirror.",
+        }));
+      }
+      if (restored.status !== memberStatuses.active) {
+        return yield* Effect.fail(new IdentityAdmissionDenied({
+          message: "This person is no longer in an admitted group.",
+        }));
+      }
+      return restored;
     }
-    return yield* dependencies.repository.admitMember({
+    const admitted = yield* dependencies.repository.admitMember({
       createdAt: now,
       displayName: identity.displayName,
       email,
@@ -966,6 +1043,10 @@ function makeInstallationAccessService(
       installationId: dependencies.installationId,
       role,
     });
+    // `role` was resolved from the complete group assignment set above, before
+    // admitting the row. Do not create an active member and then discover a
+    // missing role during a second lookup.
+    return admitted;
   }, Effect.catchTag("IdentityNotFound", () =>
     Effect.fail(new IdentityConflict({
       message: "The member changed while its groups were applied.",
@@ -1159,7 +1240,7 @@ function makeInstallationAccessService(
       cacheKey(presentedDigest),
       requestTime.getTime(),
     );
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && cached.kind !== principalKinds.human) return cached;
     const key = yield* dependencies.repository.findApiKey(
       dependencies.installationId,
       parsed[1],
@@ -1171,6 +1252,18 @@ function makeInstallationAccessService(
     ) {
       return yield* invalidApiKey();
     }
+    const boundMember = key.principalKind === principalKinds.human
+      ? yield* dependencies.repository.findMember(
+        dependencies.installationId,
+        key.principalId,
+      )
+      : null;
+    if (
+      key.principalKind === principalKinds.human &&
+      (boundMember === null || boundMember.status !== memberStatuses.active)
+    ) {
+      return yield* invalidApiKey();
+    }
     const principal: Principal = {
       authorizedByPrincipalId: key.authorizedByPrincipalId,
       capabilities: key.capabilities,
@@ -1178,13 +1271,12 @@ function makeInstallationAccessService(
       id: key.principalId,
       installationId: key.installationId,
       kind: key.principalKind,
-      membershipRole: membershipRoles.member,
+      membershipRole: boundMember?.role ?? membershipRoles.member,
     };
-    apiKeyCache?.set(
-      cacheKey(presentedDigest),
-      principal,
-      requestTime.getTime(),
-      new Date(key.expiresAt).getTime(),
+    // Human API keys are reloaded on every request so role changes take effect
+    // immediately. Service key entries still use the short local cache.
+    if (key.principalKind !== principalKinds.human) apiKeyCache?.set(
+      cacheKey(presentedDigest), principal, requestTime.getTime(), new Date(key.expiresAt).getTime(),
     );
     return principal;
   });
@@ -1268,6 +1360,11 @@ function makeInstallationAccessService(
         message: "The active member for this API key does not exist.",
       }));
     }
+    if (member?.role === membershipRoles.guest) {
+      return yield* Effect.fail(new AuthorizationDenied({
+        message: "API keys cannot be issued for guest members.",
+      }));
+    }
     const key: StoredManagedApiKey = {
       authorizedByPrincipalId: command.principal.id,
       capabilities,
@@ -1322,6 +1419,12 @@ function makeInstallationAccessService(
       return yield* Effect.fail(new IdentityNotFound({
         message: "The API key does not exist.",
       }));
+    }
+    if (previous.principalKind === principalKinds.human) {
+      const member = yield* dependencies.repository.findMember(dependencies.installationId, previous.principalId);
+      if (member?.role === membershipRoles.guest) {
+        return yield* Effect.fail(new AuthorizationDenied({message: "Guest member API keys cannot be rotated."}));
+      }
     }
     if (previous.revokedAt !== null || previous.expiresAt <= now.toISOString()) {
       return yield* Effect.fail(new IdentityConflict({
@@ -1381,6 +1484,8 @@ function makeInstallationAccessService(
     applyDirectoryGroups,
     listDirectoryGroups,
     listGroupRoles,
+    isGroupRoleSeedApplied,
+    setGroupRole,
     seedGroupRoles,
     projectAccess,
     ownerProjectAccess,

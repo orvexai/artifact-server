@@ -925,7 +925,7 @@ export function createApplicationLayer(
         () => identityRepository.listGroupRoles(installationId),
       ),
       setGroupRole: (installationId, groupId, role, assignedAt, assignedBy) =>
-        identityEffectWithNotFound(
+        identityEffectWithConflictOrNotFound(
           "setGroupRole",
           () => identityRepository.setGroupRole(
             installationId,
@@ -986,7 +986,7 @@ export function createApplicationLayer(
             revokedAt,
           ),
         ),
-      setMemberRole: (installationId, memberId, role, updatedAt) =>
+      setMemberRole: (installationId, memberId, role, updatedAt, recomputeFromCurrentGroups) =>
         identityEffectWithNotFound(
           "setMemberRole",
           () => identityRepository.setMemberRole(
@@ -994,6 +994,7 @@ export function createApplicationLayer(
             memberId,
             role,
             updatedAt,
+            recomputeFromCurrentGroups,
           ),
         ),
     },

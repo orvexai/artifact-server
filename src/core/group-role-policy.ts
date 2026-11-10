@@ -65,14 +65,22 @@ export function groupMembershipRole(
 ): MembershipRole | null {
   if (groups === null) return null;
   const reported = new Set(groups);
-  let best: MembershipRole | null = null;
+  let bestPrivileged: MembershipRole | null = null;
+  let bestNonGuest: MembershipRole | null = null;
+  let hasGuestRole = false;
   for (const assignment of assignments) {
     const matches = reported.has(assignment.path) ||
       (assignment.nameUnique && reported.has(assignment.name));
     if (!matches) continue;
-    if (best === null || !membershipRoleAtLeast(best, assignment.role)) {
-      best = assignment.role;
+    if (assignment.role === "owner" || assignment.role === "administrator") {
+      if (bestPrivileged === null || !membershipRoleAtLeast(bestPrivileged, assignment.role)) {
+        bestPrivileged = assignment.role;
+      }
+    } else if (assignment.role === "guest") {
+      hasGuestRole = true;
+    } else if (bestNonGuest === null || !membershipRoleAtLeast(bestNonGuest, assignment.role)) {
+      bestNonGuest = assignment.role;
     }
   }
-  return best;
+  return bestPrivileged ?? (hasGuestRole ? "guest" : bestNonGuest);
 }

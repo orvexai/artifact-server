@@ -88,10 +88,12 @@ export function ReviewSettings({
           <SettingsLink active={route.kind === "webmcp"} href="/review/settings/webmcp">
             WebMCP
           </SettingsLink>
+          {principal.membershipRole === "guest" ? null : (
+            <SettingsLink active={route.kind === "groups"} href="/review/settings/groups">Groups</SettingsLink>
+          )}
           {administrator ? (
             <>
               <SettingsLink active={route.kind === "members"} href="/review/settings/members">Members</SettingsLink>
-              <SettingsLink active={route.kind === "groups"} href="/review/settings/groups">Groups</SettingsLink>
               <SettingsLink active={route.kind === "apiKeys"} href="/review/settings/api-keys">API keys</SettingsLink>
               <SettingsLink active={route.kind === "publicLinks"} href="/review/settings/public-links">Public links</SettingsLink>
             </>
@@ -127,6 +129,8 @@ function SettingsContent({
   readonly route: SettingsRoute;
   readonly session: Session;
 }) {
+  const principal = session.principal;
+  const directHuman = principal.kind === "human" && principal.authorizedByPrincipalId === null;
   if (route.kind === "notFound") {
     return (
       <StatePanel
@@ -163,14 +167,14 @@ function SettingsContent({
       />
     );
   }
+  if (principal.membershipRole === "guest") return <AdministratorPermissionRequired />;
   if (route.kind === "mcp") return <McpScreen administrator={administrator} />;
   if (route.kind === "webmcp") return <WebmcpScreen />;
+  if (route.kind === "groups") return <GroupsScreen canEdit={directHuman && principal.membershipRole === "owner"} />;
   if (!administrator) return <AdministratorPermissionRequired />;
   switch (route.kind) {
     case "members":
       return <MembersScreen />;
-    case "groups":
-      return <GroupsScreen />;
     case "apiKeys":
       return <ApiKeysScreen />;
     case "publicLinks":

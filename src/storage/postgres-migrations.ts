@@ -912,6 +912,14 @@ const addGroupRoles = Effect.gen(function*() {
   )`);
 });
 
+const addGuestMembershipRole = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE installation_members DROP CONSTRAINT installation_members_role_check`);
+  yield* sql.unsafe(`ALTER TABLE installation_members ADD CONSTRAINT installation_members_role_check CHECK (role IN ('guest', 'viewer', 'member', 'administrator', 'owner'))`);
+  yield* sql.unsafe(`ALTER TABLE directory_group_roles DROP CONSTRAINT directory_group_roles_role_check`);
+  yield* sql.unsafe(`ALTER TABLE directory_group_roles ADD CONSTRAINT directory_group_roles_role_check CHECK (role IN ('guest', 'viewer', 'member', 'administrator', 'owner'))`);
+});
+
 const postgresMigrations = {
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -938,6 +946,7 @@ const postgresMigrations = {
   "0023_guest_invitation_budgets": addGuestInvitationBudgets,
   "0024_artifact_responses": addArtifactResponses,
   "0025_embed_response_binding_replay": addEmbedResponseBindingReplay,
+  "0026_guest_membership_role": addGuestMembershipRole,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

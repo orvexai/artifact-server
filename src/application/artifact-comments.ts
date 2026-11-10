@@ -505,6 +505,9 @@ function makeArtifactCommentService(
 
   const setState = Effect.fn("ArtifactCommentService.setState")(
     function*(command: WriteArtifactStateCommand) {
+      if (command.principal.kind === "human" && command.principal.membershipRole === "guest") {
+        return yield* new AuthorizationDenied({message: "Guests cannot change artifact state."});
+      }
       const project = yield* resolveProjectForWrite(
         command.principal,
         command.projectId,
@@ -565,6 +568,9 @@ function makeArtifactCommentService(
 
   const deleteState = Effect.fn("ArtifactCommentService.deleteState")(
     function*(command: ReadArtifactStateCommand) {
+      if (command.principal.kind === "human" && command.principal.membershipRole === "guest") {
+        yield* Effect.fail(new AuthorizationDenied({message: "Guests cannot change artifact state."}));
+      }
       const project = yield* resolveProjectForWrite(
         command.principal,
         command.projectId,
@@ -1256,9 +1262,13 @@ function makeArtifactCommentService(
         after: command.after, artifactId: command.artifactId, limit,
         projectId: project.id, questionId: command.questionId, versionId: command.versionId,
       });
-      return command.principal.kind === "human"
-        ? page
-        : {...page, items: page.items.map((response) => Object.assign({}, response, {authorEmail: null}))};
+      const isGuest = command.principal.kind === "human" && command.principal.membershipRole === "guest";
+      const canSeeEmails = command.principal.kind === "human" && !isGuest;
+      return {...page, items: page.items.map((response) => {
+        const projected = Object.assign({}, response, {authorEmail: canSeeEmails ? response.authorEmail : null});
+        if (isGuest) Object.assign(projected, {authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName});
+        return projected;
+      })};
     },
   );
   const guestListResponses = Effect.fn("ArtifactCommentService.guestListResponses")(
@@ -1281,9 +1291,13 @@ function makeArtifactCommentService(
       yield* authorization.requireArtifactResponseRead(command.principal);
       yield* requireArtifact(project.id, command.artifactId);
       const response = yield* dependencies.repository.findResponse(project.id, command.artifactId, command.responseId);
-      return response === null || command.principal.kind === "human"
-        ? response
-        : {...response, authorEmail: null};
+      if (response === null) return response;
+      const isGuest = command.principal.kind === "human" && command.principal.membershipRole === "guest";
+      const projected = Object.assign({}, response, {
+        authorEmail: command.principal.kind === "human" && !isGuest ? response.authorEmail : null,
+      });
+      if (isGuest) Object.assign(projected, {authorDisplayName: response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName});
+      return projected;
     },
   );
   const guestGetResponse = Effect.fn("ArtifactCommentService.guestGetResponse")(

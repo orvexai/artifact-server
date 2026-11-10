@@ -145,7 +145,7 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "pattern": "^[^,=]*[^,=\\s][^,=]*=(viewer|operator|admin|owner)$"
+            "pattern": "^[^,=]*[^,=\\s][^,=]*=(guest|viewer|operator|admin|owner)$"
           }
         },
         "oidcMemberGroups": {
