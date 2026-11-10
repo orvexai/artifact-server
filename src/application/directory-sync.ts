@@ -184,6 +184,7 @@ export const syncDirectoryGroups = Effect.fn("syncDirectoryGroups")(function*(
   syncedAt: string,
   provider: string,
   maxDeactivations = 5,
+  recomputeRoles = true,
 ) {
   const listed = yield* directory.listAllGroups();
   if (listed.length === 0) {
@@ -212,7 +213,7 @@ export const syncDirectoryGroups = Effect.fn("syncDirectoryGroups")(function*(
   const applied = yield* InstallationAccessService.use((access) =>
     access.applyDirectoryGroups({
       groups, provider, syncedAt, maxDeactivations,
-      recomputeRoles: rolesSeeded || roleGroupIds.size > 0,
+      recomputeRoles: recomputeRoles && (rolesSeeded || roleGroupIds.size > 0),
     })
   );
   // Field order is the order operators read the one-line summary in.

@@ -294,12 +294,19 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         ), policy AS (
           SELECT resolved.id, resolved.desired_role,
             CASE WHEN resolved.old_role = 'owner' AND (resolved.desired_role IS NULL OR resolved.desired_role <> 'owner')
-              AND NOT EXISTS (SELECT 1 FROM installation_members other WHERE other.installation_id = ?
-                AND other.status = 'active' AND other.role = 'owner' AND other.id <> resolved.id) THEN 'owner'
+              AND NOT EXISTS (SELECT 1 FROM installation_members other
+                LEFT JOIN resolved projected ON projected.id = other.id
+                WHERE other.installation_id = ? AND other.status = 'active'
+                  AND other.id <> resolved.id
+                  AND ((projected.id IS NULL AND other.role = 'owner') OR projected.desired_role = 'owner')) THEN 'owner'
             WHEN resolved.old_role IN ('administrator','owner')
               AND (resolved.desired_role IS NULL OR resolved.desired_role NOT IN ('administrator','owner'))
-              AND NOT EXISTS (SELECT 1 FROM installation_members other WHERE other.installation_id = ?
-                AND other.status = 'active' AND other.role IN ('administrator','owner') AND other.id <> resolved.id)
+              AND NOT EXISTS (SELECT 1 FROM installation_members other
+                LEFT JOIN resolved projected ON projected.id = other.id
+                WHERE other.installation_id = ? AND other.status = 'active'
+                  AND other.id <> resolved.id
+                  AND ((projected.id IS NULL AND other.role IN ('administrator','owner'))
+                    OR projected.desired_role IN ('administrator','owner')))
               THEN resolved.old_role ELSE resolved.desired_role END AS next_role
           FROM resolved
         )
@@ -956,26 +963,8 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           SELECT EXISTS(SELECT 1 FROM directory_group_role_seeds WHERE installation_id = ?) AS present
         `).get(installationId)).present === 1;
         if (seeded && assigned.length === 0) {
-          if (member.status === memberStatuses.active && isAdministratorRole(member.role)) {
-            const adminCount = z.object({count: z.number()}).parse(this.#database.prepare(`
-              SELECT COUNT(*) AS count FROM installation_members
-              WHERE installation_id = ? AND status = 'active' AND role IN ('administrator','owner')
-            `).get(installationId)).count;
-            if (adminCount <= 1) {
-              this.#database.exec("COMMIT;");
-              return member;
-            }
-          }
-          this.#database.prepare(`UPDATE installation_members SET status = ?, updated_at = ? WHERE installation_id = ? AND id = ?`)
-            .run(memberStatuses.inactive, updatedAt, installationId, memberId);
-          this.#database.prepare(`UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE installation_id = ? AND member_id = ?`)
-            .run(updatedAt, installationId, memberId);
-          this.#database.prepare(`UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ?) WHERE installation_id = ? AND principal_kind = 'human' AND principal_id = ?`)
-            .run(updatedAt, installationId, memberId);
-          const inactive = this.#findMember(installationId, memberId);
-          if (inactive === null) throw new IdentityNotFound({message: "The member does not exist."});
           this.#database.exec("COMMIT;");
-          return inactive;
+          return member;
         }
         const currentRole = assigned.includes(membershipRoles.owner) ? membershipRoles.owner
           : assigned.includes(membershipRoles.administrator) ? membershipRoles.administrator

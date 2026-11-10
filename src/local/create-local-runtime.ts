@@ -152,6 +152,7 @@ export interface LocalRuntime {
     directory: GroupDirectory,
     syncedAt: string,
     provider: string,
+    recomputeRoles?: boolean,
   ): Promise<DirectoryGroupSyncReport>;
 }
 
@@ -386,8 +387,8 @@ export async function createLocalRuntime(
       cleanupStaging: (limit) => runStagingCleanupPass(applicationRuntime, limit),
       seedGroupRoles: (seed) => runGroupRoleSeed(applicationRuntime, seed),
       syncDirectory: (directory) => runDirectorySyncPass(applicationRuntime, directory),
-      syncDirectoryGroups: (directory, syncedAt, provider) =>
-        runDirectoryGroupSyncPass(applicationRuntime, directory, syncedAt, provider),
+      syncDirectoryGroups: (directory, syncedAt, provider, recomputeRoles) =>
+        runDirectoryGroupSyncPass(applicationRuntime, directory, syncedAt, provider, recomputeRoles),
       close: async () => {
         if (closeCleanupSchedule !== null) await closeCleanupSchedule();
         if (gitHistoryWorker !== null) await gitHistoryWorker.close();

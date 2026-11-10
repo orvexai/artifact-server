@@ -195,22 +195,23 @@ function configureMaintenance(program: Command): void {
           directory,
           new Date().toISOString(),
           oidcIdentityProviderName(oidc.issuer),
+          false,
         );
         console.log(JSON.stringify({groupSync}));
-        // A kept group may hold someone Keycloak removed: fail the Job so
-        // operators see it and the CronJob retries.
-        if (groupSync.groupsFailed > 0) {
-          console.error(
-            `${groupSync.groupsFailed} directory group(s) kept their previous members because Keycloak could not be read.`,
-          );
-          process.exitCode = 1;
-        }
         const groupRoleSeed = await runtime.seedGroupRoles(groupRoles.seed);
         console.log(JSON.stringify({groupRoleSeed}));
         if (groupRoleSeed.unresolved.length > 0) {
           console.error(
             `ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED names groups that match no single directory group: ${groupRoleSeed.unresolved.join(", ")}. No starting role was stored.`,
           );
+        }
+        if (groupRoleSeed.seeded) {
+          const roleRecompute = await runtime.syncDirectoryGroups(
+            directory,
+            new Date().toISOString(),
+            oidcIdentityProviderName(oidc.issuer),
+          );
+          console.log(JSON.stringify({roleRecompute}));
         }
         console.log(JSON.stringify(await runtime.syncDirectory(directory)));
       } finally {

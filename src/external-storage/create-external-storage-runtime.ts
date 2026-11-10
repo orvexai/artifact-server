@@ -133,6 +133,7 @@ export interface ExternalStorageRuntime {
     directory: GroupDirectory,
     syncedAt: string,
     provider: string,
+    recomputeRoles?: boolean,
   ): Promise<DirectoryGroupSyncReport>;
 }
 
@@ -314,8 +315,8 @@ export async function createExternalStorageRuntime(
       cleanupStaging: (limit) => runStagingCleanupPass(readyRuntime, limit),
       seedGroupRoles: (seed) => runGroupRoleSeed(readyRuntime, seed),
       syncDirectory: (directory) => runDirectorySyncPass(readyRuntime, directory),
-      syncDirectoryGroups: (directory, syncedAt, provider) =>
-        runDirectoryGroupSyncPass(readyRuntime, directory, syncedAt, provider),
+      syncDirectoryGroups: (directory, syncedAt, provider, recomputeRoles) =>
+        runDirectoryGroupSyncPass(readyRuntime, directory, syncedAt, provider, recomputeRoles),
       close: async () => {
         if (closeCleanupSchedule !== null) await closeCleanupSchedule();
         if (gitHistoryWorker !== null) await gitHistoryWorker.close();

@@ -853,8 +853,11 @@ function makeInstallationAccessService(
     let reactivated = 0;
     let roleChanged = 0;
     let unchanged = 0;
-    // Admissions and promotions first, so removals never run ahead of them.
+    // Apply promotions before demotions so the repository's last-admin guard
+    // evaluates against the complete directory snapshot, not an intermediate
+    // state where the incoming administrator has not yet been promoted.
     for (const entry of [...desired.values()].toSorted((left, right) =>
+      Number(isAdministratorRole(right.role)) - Number(isAdministratorRole(left.role)) ||
       left.email.localeCompare(right.email)
     )) {
       const member = byEmail.get(entry.email);
@@ -935,13 +938,6 @@ function makeInstallationAccessService(
     // With every stored role removed nobody is turned away for good: the
     // roles are simply not set up.
     if (assignments.length === 0) {
-      if (member !== null && seeded) {
-        const refreshed = yield* dependencies.repository.setMemberRole(
-          dependencies.installationId, member.id, member.role, now, true,
-        );
-        clearAuthenticationCaches();
-        if (refreshed.status === memberStatuses.active) return refreshed;
-      }
       return yield* Effect.fail(new IdentityAdmissionDenied({
         message: "No group has been given a role in the Artifact Server yet.",
       }));

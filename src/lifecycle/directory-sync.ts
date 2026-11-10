@@ -31,13 +31,19 @@ export function runDirectoryGroupSyncPass(
   directory: GroupDirectory,
   syncedAt: string,
   provider: string,
+  recomputeRoles = true,
 ): Promise<DirectoryGroupSyncReport> {
   const configured = process.env["ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS"];
+  if (configured !== undefined && !/^[0-9]+$/u.test(configured)) {
+    return Promise.reject(new Error("ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS must contain only decimal digits."));
+  }
   const maxDeactivations = configured === undefined ? 5 : Number(configured);
   if (!Number.isSafeInteger(maxDeactivations) || maxDeactivations < 0) {
     return Promise.reject(new Error("ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS must be a non-negative integer."));
   }
-  return runtime.runPromise(syncDirectoryGroups(directory, syncedAt, provider, maxDeactivations).pipe(
+  return runtime.runPromise(syncDirectoryGroups(
+    directory, syncedAt, provider, maxDeactivations, recomputeRoles,
+  ).pipe(
     Effect.mapError((error) => new Error(`${error._tag}: ${error.message}`)),
   ));
 }
