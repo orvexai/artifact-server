@@ -90,7 +90,7 @@ export function GroupsScreen({canEdit}: {readonly canEdit: boolean}) {
                       {canEdit
                         ? <select aria-label={`Role for ${group.name}`} disabled={pending === group.id} onChange={(event) => void setRole(group, event.target.value)} value={group.role === "member" ? "operator" : group.role === "administrator" ? "admin" : group.role ?? "none"}>
                             <option value="none">None</option>
-                            {(["guest", "viewer", "operator", "admin", "owner"] as const).map((role) => <option key={role} value={role}>{role === "admin" ? membershipRoleLabels.administrator : role === "operator" ? membershipRoleLabels.member : membershipRoleLabels[role]}</option>)}
+                            {(["guest", "viewer", "operator", "admin", "owner"] as const).map((role) => <option key={role} value={role}>{role === "admin" ? membershipRoleLabels.administrator : role === "operator" ? membershipRoleLabels.member : membershipRoleLabels[role]}{group.source === "rule" && role === "guest" ? " (rule)" : ""}</option>)}
                           </select>
                         : group.role === null ? "None" : `${membershipRoleLabels[group.role]}${group.source === "rule" ? " (rule)" : ""}`}
                     </td>

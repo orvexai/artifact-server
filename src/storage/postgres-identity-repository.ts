@@ -220,7 +220,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         const beforeMemberRoles = z.array(z.object({id: z.string(), role: membershipRoleSchema}))
           .parse(beforeMemberRoleRows);
         const rows = yield* sql.unsafe<object>(
-          "SELECT id, name, path, first_path AS \"firstPath\" FROM directory_groups WHERE installation_id = $1",
+          "SELECT id, name, path, COALESCE(NULLIF(first_path, ''), path) AS \"firstPath\" FROM directory_groups WHERE installation_id = $1",
           [installationId],
         );
         const stored = new Map(
@@ -248,7 +248,6 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
           yield* sql`UPDATE directory_groups SET path = ${parkedDirectoryGroupPath(id)}
             WHERE installation_id = ${installationId} AND id = ${id}`;
         }
-        let guestRoleInserted = false;
         for (const group of snapshot.groups) {
           // synced_at records when the members were last read, so a group
           // whose members could not be read keeps its old time.
@@ -275,21 +274,19 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         }
         for (const group of snapshot.groups) {
           if (
-            guestGroupPathMatches(stored.get(group.id)?.firstPath ?? group.path, snapshot.guestGroupPrefixes ?? []) &&
+            guestGroupPathMatches(stored.get(group.id)?.firstPath || group.path, snapshot.guestGroupPrefixes ?? []) &&
             (backfillGuestRoles || !stored.has(group.id))
           ) {
-            const inserted = yield* sql.unsafe<object>(
+            yield* sql.unsafe(
               `INSERT INTO directory_group_roles (
                  installation_id, group_id, role, assigned_at, assigned_by_principal_id
                ) VALUES ($1, $2, 'guest', $3, $4)
-               ON CONFLICT (installation_id, group_id) DO NOTHING
-               RETURNING group_id`,
+               ON CONFLICT (installation_id, group_id) DO NOTHING`,
               [installationId, group.id, snapshot.syncedAt, guestGroupRulePrincipalId],
             );
-            guestRoleInserted = inserted.length > 0 || guestRoleInserted;
           }
         }
-        if (snapshot.recomputeRoles !== false || guestRoleInserted) {
+        if (snapshot.recomputeRoles !== false) {
         yield* sql.unsafe(
           `WITH resolved AS (
              SELECT member.id, member.role AS old_role,

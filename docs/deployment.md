@@ -223,13 +223,21 @@ once, skipping any group that already has a role row. An owner's explicit role
 row takes precedence. If an owner removes a rule-assigned role, that choice
 sticks through later syncs and the backfill. Settings > Groups and `group_list`
 show the role as `Guest (rule)`; the `None` action warns that members of the
-group will lose access.
+group will lose access. Backfill runs once per installation and records its
+completion, including when no group needs a new row.
 
 The rule applies only at first mirroring. A group first mirrored outside the
 prefix and moved into `/Guests/` later gets no Guest role automatically and
 fails closed until an owner assigns one. A group moved out of `/Guests/` keeps
 its stored Guest role. The bare `/Guests` group and groups outside the prefix
 are unaffected.
+
+The database migration adds `first_path` and the backfill marker table and is
+not automatically reversed. Before rolling back to a release that predates this
+schema, restore a database backup from before the upgrade. Disabling the prefix
+setting or rolling back the application also does not remove materialized Guest
+role rows; remove those rows in Settings > Groups first if they should not
+persist.
 
 ### Sync members from a Keycloak directory
 

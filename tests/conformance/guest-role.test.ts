@@ -550,6 +550,45 @@ describe("guest installation role", () => {
     }
   });
 
+  test("GUEST-006-G: the first guest-rule pass preserves member status when recompute is disabled", async () => {
+    const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
+    const database = new DatabaseSync(databasePath);
+    const repository = new SqliteIdentityRepository(databasePath);
+    try {
+      const installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_groups WHERE id = 'group-Guests'").get()).installationId;
+      const now = new Date().toISOString();
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'viewer', 'active', ?, ?)`).run(
+        "member_preseed_pass", installationId, "preseed@example.test", "Preseed Member", now, now,
+      );
+      await repository.applyDirectoryGroups(installationId, {
+        groups: [...snapshotGroupsForGuestSync(false), {
+          id: "group-NoRole", name: "no-role", path: "/NoRole", members: [
+            {email: "preseed@example.test", subject: "preseed-subject"},
+          ],
+        }, {
+          id: "group-Acme", name: "acme", path: "/Guests/acme", members: [
+            {email: "tenant@example.test", subject: "tenant-subject"},
+          ],
+        }],
+        guestGroupPrefixes: ["/Guests/"],
+        provider: "guest-rule-first-pass-test",
+        recomputeRoles: false,
+        syncedAt: now,
+      });
+      expect(await repository.listGroupRoles(installationId)).toContainEqual(expect.objectContaining({
+        groupId: "group-Acme", role: "guest", source: "rule",
+      }));
+      expect(database.prepare("SELECT role, status FROM installation_members WHERE id = ?")
+        .get("member_preseed_pass")).toEqual({role: "viewer", status: "active"});
+    } finally {
+      repository.close();
+      database.close();
+    }
+  });
+
   test("GUEST-006-F: sign-in denies a member whose group role is missing from the stored mirror", async () => {
     await server.stop();
     const identity: ExternalIdentity = {

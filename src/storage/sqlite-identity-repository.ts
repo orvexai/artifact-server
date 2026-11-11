@@ -215,7 +215,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           "SELECT id, role FROM installation_members WHERE installation_id = ?",
         ).all(installationId));
       const rows = this.#database.prepare(
-        "SELECT id, name, path, first_path AS firstPath FROM directory_groups WHERE installation_id = ?",
+        "SELECT id, name, path, COALESCE(NULLIF(first_path, ''), path) AS firstPath FROM directory_groups WHERE installation_id = ?",
       ).all(installationId);
       const stored = new Map(
         z.array(directoryGroupRowSchema).parse(rows).map((row) => [row.id, row]),
@@ -289,18 +289,17 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         ) VALUES (?, ?, 'guest', ?, ?)
         ON CONFLICT (installation_id, group_id) DO NOTHING
       `);
-      let guestRoleInserted = false;
       for (const group of snapshot.groups) {
         if (
-          guestGroupPathMatches(stored.get(group.id)?.firstPath ?? group.path, snapshot.guestGroupPrefixes ?? []) &&
+          guestGroupPathMatches(stored.get(group.id)?.firstPath || group.path, snapshot.guestGroupPrefixes ?? []) &&
           (backfillGuestRoles || !stored.has(group.id))
         ) {
-          guestRoleInserted = insertRuleRole.run(
+          insertRuleRole.run(
             installationId, group.id, snapshot.syncedAt, guestGroupRulePrincipalId,
-          ).changes > 0 || guestRoleInserted;
+          );
         }
       }
-      if (snapshot.recomputeRoles !== false || guestRoleInserted) {
+      if (snapshot.recomputeRoles !== false) {
       this.#database.prepare(`
         WITH resolved AS (
           SELECT member.id, member.role AS old_role,
