@@ -115,7 +115,7 @@ import {
   type ToolResultNudgeFacts,
 } from "./tool-result-nudges.js";
 
-const serverVersion = "0.1.3";
+const serverVersion = "0.1.17";
 const maximumListedArtifacts = 100;
 const maximumTextDiffBytes = 256 * 1_024;
 const accessSettingSchema = z.enum([
@@ -754,6 +754,7 @@ export function createArtifactMcpServer(
           name: z.string(),
           path: z.string(),
           role: z.enum(["guest", "viewer", "member", "administrator", "owner"]).nullable().optional(),
+          source: z.literal("rule").optional(),
           syncedAt: z.string(),
         }).strict()),
       }).strict(),
@@ -764,13 +765,23 @@ export function createArtifactMcpServer(
         dependencies,
         listDirectoryGroups(identity.principal),
       );
+      if (identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest) {
+        return {groups: []};
+      }
       const roles = groups.length === 0 ? [] : await runMcpApplicationEffect(dependencies,
         InstallationAccessService.use((access) => access.listGroupRoles()));
       const privilegedHuman = identity.principal.kind === "human" && isAdministratorRole(identity.principal.membershipRole);
       const roleByGroup = new Map(roles.map(({groupId, role}) => [groupId, role]));
-      return {groups: groups.map((group) => privilegedHuman
-        ? Object.assign({}, group, {role: roleByGroup.get(group.id) ?? null})
-        : (({hasHigherRoleOverlap: _overlap, ...visible}) => visible)(group))};
+      const sourceByGroup = new Set(roles.filter(({source}) => source === "rule").map(({groupId}) => groupId));
+      return {groups: groups.map((group) => {
+        if (!privilegedHuman) {
+          const {hasHigherRoleOverlap: _overlap, ...visible} = group;
+          return visible;
+        }
+        const visible = Object.assign({}, group, {role: roleByGroup.get(group.id) ?? null});
+        if (sourceByGroup.has(group.id)) Object.assign(visible, {source: "rule" as const});
+        return visible;
+      })};
     }),
   );
 

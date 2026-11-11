@@ -374,10 +374,10 @@ export async function storeTestGroupRoles(
     `).run(installationId, now);
     for (const {name, role} of roles) {
       database.prepare(`
-        INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO directory_groups (installation_id, id, name, path, first_path, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT (installation_id, id) DO NOTHING
-      `).run(installationId, `group-${name}`, name, `/${name}`, now);
+      `).run(installationId, `group-${name}`, name, `/${name}`, `/${name}`, now);
       database.prepare(`
         INSERT INTO directory_group_roles (
           installation_id, group_id, role, assigned_at, assigned_by_principal_id

@@ -44,6 +44,8 @@ import {
 } from "../core/identity.js";
 import {
   type GroupRoleAssignment,
+  guestGroupPathMatches,
+  guestGroupRulePrincipalId,
   groupRoleSeedPrincipalId,
 } from "../core/group-role-policy.js";
 import type {PostgresDatabase} from "./postgres-database.js";
@@ -56,6 +58,7 @@ const groupRoleRowSchema = z.object({
   nameUnique: z.coerce.boolean(),
   path: z.string(),
   role: membershipRoleSchema,
+  source: z.literal("rule").nullable().optional(),
 });
 const memberStatusSchema = z.enum([
   memberStatuses.active,
@@ -129,6 +132,7 @@ const loginAttemptRowSchema = z.object({
 });
 const countRowSchema = z.object({count: z.coerce.number().int().nonnegative()});
 const directoryGroupRowSchema = z.object({
+  firstPath: z.string(),
   id: z.string(),
   name: z.string(),
   path: z.string(),
@@ -216,13 +220,23 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         const beforeMemberRoles = z.array(z.object({id: z.string(), role: membershipRoleSchema}))
           .parse(beforeMemberRoleRows);
         const rows = yield* sql.unsafe<object>(
-          "SELECT id, name, path FROM directory_groups WHERE installation_id = $1",
+          "SELECT id, name, path, COALESCE(NULLIF(first_path, ''), path) AS \"firstPath\" FROM directory_groups WHERE installation_id = $1",
           [installationId],
         );
         const stored = new Map(
           z.array(directoryGroupRowSchema).parse(rows).map((row) => [row.id, row]),
         );
         const plan = planDirectoryGroupChanges(stored, snapshot);
+        let backfillGuestRoles = false;
+        if ((snapshot.guestGroupPrefixes ?? []).length > 0) {
+          const backfillRows = yield* sql.unsafe<object>(
+            `INSERT INTO directory_group_role_rule_backfills (installation_id, backfilled_at)
+             VALUES ($1, $2) ON CONFLICT (installation_id) DO NOTHING
+             RETURNING installation_id`,
+            [installationId, snapshot.syncedAt],
+          );
+          backfillGuestRoles = backfillRows.length > 0;
+        }
         for (const id of plan.deletedIds) {
           yield* sql`DELETE FROM directory_group_members
             WHERE installation_id = ${installationId} AND group_id = ${id}`;
@@ -238,9 +252,9 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
           // synced_at records when the members were last read, so a group
           // whose members could not be read keeps its old time.
           yield* sql`INSERT INTO directory_groups (
-            installation_id, id, name, path, synced_at
+            installation_id, id, name, path, first_path, synced_at
           ) VALUES (
-            ${installationId}, ${group.id}, ${group.name}, ${group.path},
+            ${installationId}, ${group.id}, ${group.name}, ${group.path}, ${group.path},
             ${snapshot.syncedAt}
           ) ON CONFLICT (installation_id, id) DO UPDATE SET
             name = EXCLUDED.name, path = EXCLUDED.path,
@@ -258,13 +272,28 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
             ) ON CONFLICT DO NOTHING`;
           }
         }
+        for (const group of snapshot.groups) {
+          if (
+            guestGroupPathMatches(stored.get(group.id)?.firstPath || group.path, snapshot.guestGroupPrefixes ?? []) &&
+            (backfillGuestRoles || !stored.has(group.id))
+          ) {
+            yield* sql.unsafe(
+              `INSERT INTO directory_group_roles (
+                 installation_id, group_id, role, assigned_at, assigned_by_principal_id
+               ) VALUES ($1, $2, 'guest', $3, $4)
+               ON CONFLICT (installation_id, group_id) DO NOTHING`,
+              [installationId, group.id, snapshot.syncedAt, guestGroupRulePrincipalId],
+            );
+          }
+        }
         if (snapshot.recomputeRoles !== false) {
         yield* sql.unsafe(
           `WITH resolved AS (
              SELECT member.id, member.role AS old_role,
-               (SELECT assigned.role FROM directory_group_members gm
-                JOIN directory_group_roles assigned ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
-                WHERE gm.installation_id = member.installation_id AND (
+               (SELECT assigned.role
+                FROM directory_group_members gm
+                LEFT JOIN directory_group_roles assigned ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
+                WHERE gm.installation_id = member.installation_id AND assigned.group_id IS NOT NULL AND (
                   EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
                   OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider))
                 ) ORDER BY CASE assigned.role WHEN 'owner' THEN 5 WHEN 'administrator' THEN 4 WHEN 'guest' THEN 3 WHEN 'member' THEN 2 ELSE 1 END DESC LIMIT 1) AS desired_role
@@ -523,6 +552,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
       const rows = yield* sql.unsafe<object>(
         `SELECT r.group_id AS "groupId", g.name, g.path, r.role,
           r.assigned_at AS "assignedAt",
+          CASE WHEN r.assigned_by_principal_id = $2 THEN 'rule' ELSE NULL END AS source,
           (SELECT COUNT(*) FROM directory_groups same
             WHERE same.installation_id = g.installation_id AND same.name = g.name
           ) = 1 AS "nameUnique"
@@ -531,9 +561,12 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
            ON g.installation_id = r.installation_id AND g.id = r.group_id
          WHERE r.installation_id = $1
          ORDER BY g.path ASC`,
-        [installationId],
+        [installationId, guestGroupRulePrincipalId],
       );
-      return z.array(groupRoleRowSchema).parse(rows);
+      return z.array(groupRoleRowSchema).parse(rows).map(({source, ...assignment}) => {
+        if (source === "rule") Object.assign(assignment, {source});
+        return assignment;
+      });
     }));
   }
 
@@ -707,8 +740,11 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
             `INSERT INTO directory_group_roles (
                installation_id, group_id, role, assigned_at, assigned_by_principal_id
              ) VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (installation_id, group_id) DO NOTHING`,
-            [installationId, groupId, role, seededAt, groupRoleSeedPrincipalId],
+             ON CONFLICT (installation_id, group_id) DO UPDATE SET
+               role = EXCLUDED.role, assigned_at = EXCLUDED.assigned_at,
+               assigned_by_principal_id = EXCLUDED.assigned_by_principal_id
+             WHERE directory_group_roles.assigned_by_principal_id = $6`,
+            [installationId, groupId, role, seededAt, groupRoleSeedPrincipalId, guestGroupRulePrincipalId],
           );
         }
         return true;

@@ -4,7 +4,7 @@ fullnameOverride: ""
 
 image:
   repository: ghcr.io/plannotator/artifact-server
-  tag: "0.1.3"
+  tag: "0.1.17"
   digest: ""
   allowMutableTag: false
   pullPolicy: IfNotPresent
@@ -47,6 +47,10 @@ identity:
   oidcClientId: ""
   oidcIssuer: ""
   oidcScopes: ""
+  # Full-path prefixes that assign a stored guest role when a group is first mirrored.
+  # Requires a group-role seed or member/admin group configuration. Entries match
+  # ^(/[^/\s]+)+/$, for example ["/Guests/"].
+  oidcGuestGroupPrefixes: []
   # OAuth clients explicitly allowed to use group-bound service bearer access.
   # Empty by default; entries are sent as ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS.
   oidcServiceClients: []

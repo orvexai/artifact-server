@@ -33,6 +33,8 @@ export interface DirectoryGroupSnapshot {
   readonly maxDeactivations?: number;
   /** False only during the initial sync before any group roles are stored. */
   readonly recomputeRoles?: boolean;
+  /** Full-path prefixes used to materialize guest role rows in this transaction. */
+  readonly guestGroupPrefixes?: readonly string[];
 }
 
 /** A stored directory group with its current member count. */

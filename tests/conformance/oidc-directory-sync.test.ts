@@ -119,6 +119,23 @@ describe("Keycloak directory sync", () => {
     expect(await sync()).toEqual(report({directoryUsers: 207, unchanged: 207}));
   });
 
+  test("guest wins over viewer when member sync collects overlapping groups", async () => {
+    const overlapPolicy: OidcGroupRoles = {
+      claim: "groups",
+      seed: [
+        {role: "administrator", selector: administrators},
+        {role: "viewer", selector: users},
+        {role: "guest", selector: "artifact-guests"},
+      ],
+    };
+    const ada = keycloakUser("ada");
+    keycloak.groups.set(administrators, []);
+    keycloak.groups.set(users, [ada]);
+    keycloak.groups.set("artifact-guests", [ada]);
+    await sync({rolePolicy: overlapPolicy});
+    expect(byEmail(members(installation), "ada@example.test").role).toBe("guest");
+  });
+
   test("roles change both ways, leavers are deactivated, and returners restored", async () => {
     keycloak.groups.set(administrators, [keycloakUser("ada")]);
     keycloak.groups.set(users, [keycloakUser("bob"), keycloakUser("carol")]);
@@ -399,8 +416,9 @@ describe("Keycloak directory sync", () => {
    * step alone, to count the requests it makes.
    */
   async function sync(
-    {membersOnly = false, secret = keycloak.clientSecret}: {
+    {membersOnly = false, secret = keycloak.clientSecret, rolePolicy = groupRoles}: {
       readonly membersOnly?: boolean;
+      readonly rolePolicy?: OidcGroupRoles;
       readonly secret?: string;
     } = {},
   ): Promise<DirectorySyncReport> {
@@ -409,7 +427,7 @@ describe("Keycloak directory sync", () => {
       browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
       contentDomain: "localhost",
       dataDirectory: installation.dataDirectory,
-      groupRolePolicy: groupRoles,
+      groupRolePolicy: rolePolicy,
     });
     try {
       const adminBaseUrl = keycloakAdminBaseUrl(keycloak.issuer);
@@ -421,15 +439,22 @@ describe("Keycloak directory sync", () => {
         issuer: keycloak.issuer,
         retryBaseDelayMilliseconds: 0,
       });
+      let roleChangedDuringGroupSync = 0;
       if (!membersOnly) {
-        await runtime.syncDirectoryGroups(
+        const groupSync = await runtime.syncDirectoryGroups(
           directory,
           new Date().toISOString(),
           `oidc:${keycloak.issuer}`,
         );
-        await runtime.seedGroupRoles(groupRoles.seed);
+        roleChangedDuringGroupSync = groupSync.roleChanged ?? 0;
+        await runtime.seedGroupRoles(rolePolicy.seed);
       }
-      return await runtime.syncDirectory(directory);
+      const memberSync = await runtime.syncDirectory(directory);
+      return roleChangedDuringGroupSync === 0 ? memberSync : {
+        ...memberSync,
+        unchanged: Math.max(0, memberSync.unchanged - roleChangedDuringGroupSync),
+        roleChanged: memberSync.roleChanged + roleChangedDuringGroupSync,
+      };
     } finally {
       await runtime.close();
     }

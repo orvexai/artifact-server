@@ -1327,8 +1327,17 @@ function identityEffect<A>(
 ): Effect.Effect<A, IdentityRepositoryFailure> {
   return Effect.tryPromise({
     try: run,
-    catch: (cause) => new IdentityRepositoryFailure({cause, operation}),
+    catch: (cause) => new IdentityRepositoryFailure({cause, message: identityCauseMessage(cause), operation}),
   });
+}
+
+function identityCauseMessage(cause: unknown): string {
+  if (!(cause instanceof Error)) return String(cause);
+  const nestedCause = cause.cause;
+  if (nestedCause instanceof Error && nestedCause.message.trim() !== "") {
+    return `${cause.message || cause.name}: ${identityCauseMessage(nestedCause)}`;
+  }
+  return cause.message.trim() === "" ? cause.name : cause.message;
 }
 
 function identityEffectWithConflict<A>(
@@ -1339,7 +1348,7 @@ function identityEffectWithConflict<A>(
     try: run,
     catch: (cause) => cause instanceof IdentityConflict
       ? cause
-      : new IdentityRepositoryFailure({cause, operation}),
+      : new IdentityRepositoryFailure({cause, message: identityCauseMessage(cause), operation}),
   });
 }
 
@@ -1351,7 +1360,7 @@ function identityEffectWithNotFound<A>(
     try: run,
     catch: (cause) => cause instanceof IdentityNotFound
       ? cause
-      : new IdentityRepositoryFailure({cause, operation}),
+      : new IdentityRepositoryFailure({cause, message: identityCauseMessage(cause), operation}),
   });
 }
 
@@ -1367,7 +1376,7 @@ function identityEffectWithConflictOrNotFound<A>(
     catch: (cause) =>
       cause instanceof IdentityConflict || cause instanceof IdentityNotFound
         ? cause
-        : new IdentityRepositoryFailure({cause, operation}),
+        : new IdentityRepositoryFailure({cause, message: identityCauseMessage(cause), operation}),
   });
 }
 
@@ -1379,7 +1388,7 @@ function loginAttemptEffect<A>(
     try: run,
     catch: (cause) => cause instanceof LoginAttemptRejected
       ? cause
-      : new IdentityRepositoryFailure({cause, operation}),
+      : new IdentityRepositoryFailure({cause, message: identityCauseMessage(cause), operation}),
   });
 }
 

@@ -209,6 +209,36 @@ loses it, so someone can always give the roles out again.
 `artifactserver config check` reports the active policy under
 `configuration.oidcGroupRoles`.
 
+To make customer tenant groups guests automatically, set
+`ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES` to comma-separated absolute path
+prefixes matching `^(/[^/\s]+)+/$`, for example `/Guests/`; Helm uses
+`identity.oidcGuestGroupPrefixes: ["/Guests/"]`. This setting requires a group
+role seed or member/admin group configuration. A group matches only when its
+full path starts with the prefix and is longer than it, so `/Guests` and
+`/GuestsX/acme` do not match.
+
+When a matching group is first mirrored, the server stores an ordinary Guest
+role row marked as a rule assignment. Existing matching groups are backfilled
+once, skipping any group that already has a role row. An owner's explicit role
+row takes precedence. If an owner removes a rule-assigned role, that choice
+sticks through later syncs and the backfill. Settings > Groups and `group_list`
+show the role as `Guest (rule)`; the `None` action warns that members of the
+group will lose access. Backfill runs once per installation and records its
+completion, including when no group needs a new row.
+
+The rule applies only at first mirroring. A group first mirrored outside the
+prefix and moved into `/Guests/` later gets no Guest role automatically and
+fails closed until an owner assigns one. A group moved out of `/Guests/` keeps
+its stored Guest role. The bare `/Guests` group and groups outside the prefix
+are unaffected.
+
+The database migration adds `first_path` and the backfill marker table and is
+not automatically reversed. Before rolling back to a release that predates this
+schema, restore a database backup from before the upgrade. Disabling the prefix
+setting or rolling back the application also does not remove materialized Guest
+role rows; remove those rows in Settings > Groups first if they should not
+persist.
+
 ### Sync members from a Keycloak directory
 
 Group roles act when someone signs in. To have members exist before their first

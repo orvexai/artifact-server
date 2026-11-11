@@ -26,6 +26,8 @@ import {
 import {requiredSqliteSchemaVersion} from "./sqlite-schema.js";
 import {
   type GroupRoleAssignment,
+  guestGroupPathMatches,
+  guestGroupRulePrincipalId,
   groupRoleSeedPrincipalId,
 } from "../core/group-role-policy.js";
 import {
@@ -48,6 +50,7 @@ import type {
 } from "../core/identity-ports.js";
 
 const directoryGroupRowSchema = z.object({
+  firstPath: z.string(),
   id: z.string(),
   name: z.string(),
   path: z.string(),
@@ -86,6 +89,7 @@ const groupRoleRowSchema = z.object({
   nameUnique: z.coerce.boolean(),
   path: z.string(),
   role: membershipRoleSchema,
+  source: z.literal("rule").nullable().optional(),
 });
 const memberStatusSchema = z.enum([
   memberStatuses.active,
@@ -211,12 +215,19 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           "SELECT id, role FROM installation_members WHERE installation_id = ?",
         ).all(installationId));
       const rows = this.#database.prepare(
-        "SELECT id, name, path FROM directory_groups WHERE installation_id = ?",
+        "SELECT id, name, path, COALESCE(NULLIF(first_path, ''), path) AS firstPath FROM directory_groups WHERE installation_id = ?",
       ).all(installationId);
       const stored = new Map(
         z.array(directoryGroupRowSchema).parse(rows).map((row) => [row.id, row]),
       );
       const plan = planDirectoryGroupChanges(stored, snapshot);
+      let backfillGuestRoles = false;
+      if ((snapshot.guestGroupPrefixes ?? []).length > 0) {
+        backfillGuestRoles = this.#database.prepare(`
+          INSERT INTO directory_group_role_rule_backfills (installation_id, backfilled_at)
+          VALUES (?, ?) ON CONFLICT (installation_id) DO NOTHING
+        `).run(installationId, snapshot.syncedAt).changes > 0;
+      }
       const deleteMembers = this.#database.prepare(
         "DELETE FROM directory_group_members WHERE installation_id = ? AND group_id = ?",
       );
@@ -237,8 +248,8 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       // synced_at records when the members were last read, so a group whose
       // members could not be read keeps its old time.
       const upsertGroup = this.#database.prepare(`
-        INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO directory_groups (installation_id, id, name, path, first_path, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT (installation_id, id) DO UPDATE SET
           name = excluded.name, path = excluded.path,
           synced_at = CASE WHEN ? THEN directory_groups.synced_at
@@ -256,6 +267,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           group.id,
           group.name,
           group.path,
+          group.path,
           snapshot.syncedAt,
           group.members === null ? 1 : 0,
         );
@@ -271,6 +283,22 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           );
         }
       }
+      const insertRuleRole = this.#database.prepare(`
+        INSERT INTO directory_group_roles (
+          installation_id, group_id, role, assigned_at, assigned_by_principal_id
+        ) VALUES (?, ?, 'guest', ?, ?)
+        ON CONFLICT (installation_id, group_id) DO NOTHING
+      `);
+      for (const group of snapshot.groups) {
+        if (
+          guestGroupPathMatches(stored.get(group.id)?.firstPath || group.path, snapshot.guestGroupPrefixes ?? []) &&
+          (backfillGuestRoles || !stored.has(group.id))
+        ) {
+          insertRuleRole.run(
+            installationId, group.id, snapshot.syncedAt, guestGroupRulePrincipalId,
+          );
+        }
+      }
       if (snapshot.recomputeRoles !== false) {
       this.#database.prepare(`
         WITH resolved AS (
@@ -280,9 +308,9 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
               WHEN MAX(assigned.role = 'guest') = 1 THEN 'guest'
               WHEN MAX(assigned.role = 'member') = 1 THEN 'member'
               WHEN MAX(assigned.role = 'viewer') = 1 THEN 'viewer' ELSE NULL END
-             FROM directory_group_members gm JOIN directory_group_roles assigned
+             FROM directory_group_members gm LEFT JOIN directory_group_roles assigned
               ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
-             WHERE gm.installation_id = member.installation_id AND (
+             WHERE gm.installation_id = member.installation_id AND assigned.group_id IS NOT NULL AND (
                EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id
                  AND identity.provider = gm.provider AND identity.subject = gm.subject)
                OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
@@ -377,6 +405,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     const rows = this.#database.prepare(`
       SELECT r.group_id AS groupId, g.name, g.path, r.role,
         r.assigned_at AS assignedAt,
+        CASE WHEN r.assigned_by_principal_id = ? THEN 'rule' ELSE NULL END AS source,
         (SELECT COUNT(*) FROM directory_groups same
           WHERE same.installation_id = g.installation_id AND same.name = g.name
         ) = 1 AS nameUnique
@@ -385,8 +414,11 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         ON g.installation_id = r.installation_id AND g.id = r.group_id
       WHERE r.installation_id = ?
       ORDER BY g.path ASC
-    `).all(installationId);
-    return z.array(groupRoleRowSchema).parse(rows);
+    `).all(guestGroupRulePrincipalId, installationId);
+    return z.array(groupRoleRowSchema).parse(rows).map(({source, ...assignment}) => {
+      if (source === "rule") Object.assign(assignment, {source});
+      return assignment;
+    });
   }
 
   async setGroupRole(
@@ -569,7 +601,10 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         INSERT INTO directory_group_roles (
           installation_id, group_id, role, assigned_at, assigned_by_principal_id
         ) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT (installation_id, group_id) DO NOTHING
+        ON CONFLICT (installation_id, group_id) DO UPDATE SET
+          role = excluded.role, assigned_at = excluded.assigned_at,
+          assigned_by_principal_id = excluded.assigned_by_principal_id
+        WHERE directory_group_roles.assigned_by_principal_id = '${guestGroupRulePrincipalId}'
       `);
       for (const {groupId, role} of roles) {
         insert.run(installationId, groupId, role, seededAt, groupRoleSeedPrincipalId);
@@ -1435,6 +1470,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         id TEXT NOT NULL,
         name TEXT NOT NULL,
         path TEXT NOT NULL,
+        first_path TEXT NOT NULL DEFAULT '',
         synced_at TEXT NOT NULL,
         PRIMARY KEY (installation_id, id),
         UNIQUE (installation_id, path)
@@ -1483,6 +1519,11 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         seeded_at TEXT NOT NULL
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS directory_group_role_rule_backfills (
+        installation_id TEXT PRIMARY KEY,
+        backfilled_at TEXT NOT NULL
+      ) STRICT;
+
       CREATE INDEX IF NOT EXISTS project_group_grants_by_group
         ON project_group_grants (installation_id, group_id);
 
@@ -1494,6 +1535,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         updated_at TEXT NOT NULL
       ) STRICT;
     `);
+    this.#addDirectoryGroupFirstPathIfMissing();
     this.#addLoginAttemptNonceIfMissing();
     this.#addDirectoryGroupMemberProviderIfMissing();
     this.#widenMemberRolesIfNeeded();
@@ -1509,6 +1551,13 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
   #addDirectoryGroupMemberProviderIfMissing(): void {
     if (this.#tableColumns("directory_group_members").includes("provider")) return;
     this.#database.exec("ALTER TABLE directory_group_members ADD COLUMN provider TEXT");
+  }
+
+  #addDirectoryGroupFirstPathIfMissing(): void {
+    if (!this.#tableColumns("directory_groups").includes("first_path")) {
+      this.#database.exec("ALTER TABLE directory_groups ADD COLUMN first_path TEXT NOT NULL DEFAULT ''");
+    }
+    this.#database.exec("UPDATE directory_groups SET first_path = path WHERE first_path = ''");
   }
 
   /**
@@ -1601,7 +1650,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     }
   }
 
-  #tableColumns(table: "directory_group_members" | "login_attempts"): readonly string[] {
+  #tableColumns(table: "directory_group_members" | "directory_groups" | "login_attempts"): readonly string[] {
     const rows = this.#database.prepare(`PRAGMA table_info(${table})`).all();
     const columns = z.array(z.object({name: z.string()})).parse(rows);
     return columns.map((column) => column.name);
