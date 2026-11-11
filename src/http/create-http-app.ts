@@ -1549,7 +1549,12 @@ export function createHttpApp(
     const roles = await runHttpApplicationEffect(context, dependencies,
       InstallationAccessService.use((access) => access.listGroupRoles()));
     const roleByGroup = new Map(roles.map(({groupId, role}) => [groupId, role]));
-    return context.json({groups: groups.map((group) => Object.assign({}, group, {role: roleByGroup.get(group.id) ?? null}))});
+    const sourceByGroup = new Map(roles.filter(({source}) => source === "rule").map(({groupId}) => [groupId, "rule" as const]));
+    return context.json({groups: groups.map((group) => {
+      const visible = Object.assign({}, group, {role: roleByGroup.get(group.id) ?? null});
+      if (sourceByGroup.has(group.id)) Object.assign(visible, {source: "rule" as const});
+      return visible;
+    })});
   });
 
   app.put("/api/v1/groups/:groupId/role", boundedJsonBody, async (context) => {
