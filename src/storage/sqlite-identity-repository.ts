@@ -275,14 +275,20 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       this.#database.prepare(`
         WITH resolved AS (
           SELECT member.id, member.role AS old_role,
-            (SELECT CASE WHEN MAX(assigned.role = 'owner') = 1 THEN 'owner'
-              WHEN MAX(assigned.role = 'administrator') = 1 THEN 'administrator'
-              WHEN MAX(assigned.role = 'guest') = 1 THEN 'guest'
-              WHEN MAX(assigned.role = 'member') = 1 THEN 'member'
-              WHEN MAX(assigned.role = 'viewer') = 1 THEN 'viewer' ELSE NULL END
-             FROM directory_group_members gm JOIN directory_group_roles assigned
+            (SELECT CASE WHEN MAX(COALESCE(assigned.role, CASE WHEN gm.group_id IN
+                (SELECT value FROM json_each(?)) THEN 'guest' END) = 'owner') = 1 THEN 'owner'
+              WHEN MAX(COALESCE(assigned.role, CASE WHEN gm.group_id IN
+                (SELECT value FROM json_each(?)) THEN 'guest' END) = 'administrator') = 1 THEN 'administrator'
+              WHEN MAX(COALESCE(assigned.role, CASE WHEN gm.group_id IN
+                (SELECT value FROM json_each(?)) THEN 'guest' END) = 'guest') = 1 THEN 'guest'
+              WHEN MAX(COALESCE(assigned.role, CASE WHEN gm.group_id IN
+                (SELECT value FROM json_each(?)) THEN 'guest' END) = 'member') = 1 THEN 'member'
+              WHEN MAX(COALESCE(assigned.role, CASE WHEN gm.group_id IN
+                (SELECT value FROM json_each(?)) THEN 'guest' END) = 'viewer') = 1 THEN 'viewer' ELSE NULL END
+             FROM directory_group_members gm LEFT JOIN directory_group_roles assigned
               ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
-             WHERE gm.installation_id = member.installation_id AND (
+             WHERE gm.installation_id = member.installation_id AND (assigned.group_id IS NOT NULL
+              OR gm.group_id IN (SELECT value FROM json_each(?))) AND (
                EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id
                  AND identity.provider = gm.provider AND identity.subject = gm.subject)
                OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
@@ -319,7 +325,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           status = CASE WHEN (SELECT next_role FROM policy WHERE policy.id = installation_members.id) IS NULL THEN 'inactive' ELSE status END,
           updated_at = ?
         WHERE installation_id = ? AND id IN (SELECT id FROM policy)
-      `).run(installationId, installationId, installationId, snapshot.syncedAt, installationId);
+      `).run(...Array.from({length: 6}, () => JSON.stringify(snapshot.guestGroupIds ?? [])), installationId, installationId, installationId, snapshot.syncedAt, installationId);
       this.#database.prepare(`
         UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, ?)
         WHERE installation_id = ? AND member_id IN (SELECT id FROM installation_members

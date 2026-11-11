@@ -208,6 +208,12 @@ export const syncDirectoryGroups = Effect.fn("syncDirectoryGroups")(function*(
   const roleGroups = yield* InstallationAccessService.use((access) => access.listGroupRoles());
   const rolesSeeded = yield* InstallationAccessService.use((access) => access.isGroupRoleSeedApplied());
   const roleGroupIds = new Set(roleGroups.map(({groupId}) => groupId));
+  for (const group of listed) {
+    const matchesGuestRule = yield* InstallationAccessService.use((access) =>
+      Effect.succeed(access.isGuestGroupPath(group.path))
+    );
+    if (matchesGuestRule) roleGroupIds.add(group.id);
+  }
   if (roleGroupIds.size > 0 && !groups.some((group) => roleGroupIds.has(group.id) && (group.members?.length ?? 0) > 0)) {
     return yield* Effect.fail(new DirectoryUnavailable({message: "Refusing a directory snapshot with no members in any role-bearing group."}));
   }

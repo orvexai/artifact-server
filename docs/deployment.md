@@ -209,6 +209,17 @@ loses it, so someone can always give the roles out again.
 `artifactserver config check` reports the active policy under
 `configuration.oidcGroupRoles`.
 
+To make customer tenant groups guests automatically, set
+`ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES` to comma-separated absolute path
+prefixes ending in `/`, for example `/Guests/`; Helm uses
+`identity.oidcGuestGroupPrefixes: ["/Guests/"]`. A group matches only when its
+full path starts with the prefix and is longer than it, so `/Guests` and
+`/GuestsX/acme` do not match. Only matching groups receive the Guest role from
+this rule. A role explicitly set by an owner takes precedence; when no explicit
+role row exists, the rule supplies Guest. Owners can see rule-derived Guest
+roles marked `rule` in Settings > Groups and `group_list`. The rule does not
+affect groups outside its configured paths.
+
 ### Sync members from a Keycloak directory
 
 Group roles act when someone signs in. To have members exist before their first

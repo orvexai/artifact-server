@@ -778,6 +778,7 @@ const directoryGroupSchema = z.object({
   name: z.string(),
   path: z.string(),
   role: membershipRoleSchema.nullable(),
+  source: z.literal("rule").optional(),
   syncedAt: z.string(),
 });
 

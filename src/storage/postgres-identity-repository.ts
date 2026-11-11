@@ -262,12 +262,14 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         yield* sql.unsafe(
           `WITH resolved AS (
              SELECT member.id, member.role AS old_role,
-               (SELECT assigned.role FROM directory_group_members gm
-                JOIN directory_group_roles assigned ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
-                WHERE gm.installation_id = member.installation_id AND (
+               (SELECT COALESCE(assigned.role, CASE WHEN gm.group_id = ANY($3::text[]) THEN 'guest' END)
+                FROM directory_group_members gm
+                LEFT JOIN directory_group_roles assigned ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
+                WHERE gm.installation_id = member.installation_id AND
+                  (assigned.group_id IS NOT NULL OR gm.group_id = ANY($3::text[])) AND (
                   EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
                   OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider))
-                ) ORDER BY CASE assigned.role WHEN 'owner' THEN 5 WHEN 'administrator' THEN 4 WHEN 'guest' THEN 3 WHEN 'member' THEN 2 ELSE 1 END DESC LIMIT 1) AS desired_role
+                ) ORDER BY CASE COALESCE(assigned.role, CASE WHEN gm.group_id = ANY($3::text[]) THEN 'guest' END) WHEN 'owner' THEN 5 WHEN 'administrator' THEN 4 WHEN 'guest' THEN 3 WHEN 'member' THEN 2 ELSE 1 END DESC LIMIT 1) AS desired_role
              FROM installation_members member WHERE member.installation_id = $1 AND (
                EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id)
                OR EXISTS (SELECT 1 FROM directory_group_members gm WHERE gm.installation_id = member.installation_id AND (
@@ -295,7 +297,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
            UPDATE installation_members member SET role = COALESCE(policy.next_role, member.role),
              status = CASE WHEN policy.next_role IS NULL THEN 'inactive' ELSE member.status END,
              updated_at = $2 FROM policy WHERE member.installation_id = $1 AND member.id = policy.id`,
-          [installationId, snapshot.syncedAt],
+          [installationId, snapshot.syncedAt, snapshot.guestGroupIds ?? []],
         );
         yield* sql.unsafe(
           `UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, $1)

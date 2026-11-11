@@ -14,6 +14,8 @@ export interface GroupRoleSeedEntry {
  */
 export interface GroupRolePolicy {
   readonly seed: readonly GroupRoleSeedEntry[];
+  /** Full-path prefixes whose matching directory groups receive guest. */
+  readonly guestGroupPrefixes?: readonly string[];
 }
 
 /** Who stored a role that came from the configured seed rather than a person. */
@@ -32,6 +34,35 @@ export interface GroupRoleAssignment {
   readonly nameUnique: boolean;
   readonly path: string;
   readonly role: MembershipRole;
+  /** Present for a role supplied by configuration rather than a stored row. */
+  readonly source?: "rule";
+}
+
+/** A configured prefix matches only descendant full paths, never a group name. */
+export function guestGroupPathMatches(path: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((prefix) => path.startsWith(prefix) && path.length > prefix.length);
+}
+
+/** Add rule assignments for matching groups that have no explicit role row. */
+export function withGuestGroupRuleAssignments(
+  assignments: readonly GroupRoleAssignment[],
+  groups: readonly {readonly id: string; readonly name: string; readonly path: string}[],
+  prefixes: readonly string[],
+): readonly GroupRoleAssignment[] {
+  const explicit = new Set(assignments.map(({groupId}) => groupId));
+  const counts = new Map<string, number>();
+  for (const group of groups) counts.set(group.name, (counts.get(group.name) ?? 0) + 1);
+  return [...assignments, ...groups.filter((group) =>
+    !explicit.has(group.id) && guestGroupPathMatches(group.path, prefixes)
+  ).map((group) => ({
+    assignedAt: "",
+    groupId: group.id,
+    name: group.name,
+    nameUnique: counts.get(group.name) === 1,
+    path: group.path,
+    role: "guest" as const,
+    source: "rule" as const,
+  }))];
 }
 
 /**

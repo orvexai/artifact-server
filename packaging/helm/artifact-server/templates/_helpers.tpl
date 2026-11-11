@@ -258,6 +258,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 - name: ARTIFACT_SERVER_OIDC_SCOPES
   value: {{ .Values.identity.oidcScopes | quote }}
 {{- end }}
+{{- if .Values.identity.oidcGuestGroupPrefixes }}
+- name: ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES
+  value: {{ join "," .Values.identity.oidcGuestGroupPrefixes | quote }}
+{{- end }}
 {{- if .Values.identity.oidcGroupsClaim }}
 - name: ARTIFACT_SERVER_OIDC_GROUPS_CLAIM
   value: {{ .Values.identity.oidcGroupsClaim | quote }}

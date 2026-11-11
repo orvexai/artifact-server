@@ -30,6 +30,7 @@ const oidcEnvironmentSchema = z.object({
   ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL: z.url().optional(),
   ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: z.string().min(1).optional(),
+  ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES: z.string().optional(),
   ARTIFACT_SERVER_OIDC_GROUPS_CLAIM: z.string().trim().min(1).optional(),
   ARTIFACT_SERVER_OIDC_ISSUER: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: z.string().min(1).optional(),
@@ -64,6 +65,7 @@ export interface OidcConfiguration {
   readonly embedBindingClients: readonly string[];
   /** Issuer groups that admit people and set their role; null keeps it manual. */
   readonly groupRoles: OidcGroupRoles | null;
+  readonly guestGroupPrefixes: readonly string[];
   readonly issuer: string;
   readonly scopes: string;
   /** Explicit OAuth clients allowed to use service-account bearer access. */
@@ -75,6 +77,7 @@ export async function loadOidcConfiguration(
   environment: NodeJS.ProcessEnv,
 ): Promise<OidcConfiguration | null> {
   const parsed = oidcEnvironmentSchema.parse(environment);
+  const guestGroupPrefixes = guestGroupPrefixesFrom(parsed.ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES);
   const clientSecret = await runCliEffect(loadOptionalCredential(
     environment,
     "ARTIFACT_SERVER_OIDC_CLIENT_SECRET",
@@ -95,6 +98,7 @@ export async function loadOidcConfiguration(
     parsed.ARTIFACT_SERVER_OIDC_SCOPES === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_GROUPS_CLAIM === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED === undefined &&
+    (parsed.ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES ?? "").trim() === "" &&
     parsed.ARTIFACT_SERVER_OIDC_MEMBER_GROUPS === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_API_RESOURCE === undefined &&
@@ -128,7 +132,13 @@ export async function loadOidcConfiguration(
       "ARTIFACT_SERVER_OIDC_API_JWKS_URI must be an HTTPS URL. Plain http is allowed only when the OIDC issuer is local (localhost, 127.0.0.1, or ::1).",
     );
   }
-  const groupRoles = oidcGroupRoles(parsed);
+  const configuredGroupRoles = oidcGroupRoles(parsed);
+  const groupRolesBase = configuredGroupRoles ?? (guestGroupPrefixes.length > 0
+    ? {claim: defaultOidcGroupsClaim, seed: []}
+    : null);
+  const groupRoles = groupRolesBase === null ? null : guestGroupPrefixes.length === 0
+    ? groupRolesBase
+    : {...groupRolesBase, guestGroupPrefixes};
   const serviceClients = (parsed.ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS ?? "")
     .split(",").map((client) => client.trim()).filter(Boolean);
   const embedBindingClients = (parsed.ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS ?? "")
@@ -155,10 +165,22 @@ export async function loadOidcConfiguration(
     ),
     embedBindingClients,
     groupRoles,
+    guestGroupPrefixes,
     issuer,
     scopes: parsed.ARTIFACT_SERVER_OIDC_SCOPES ?? defaultOidcScopes,
     serviceClients,
   };
+}
+
+function guestGroupPrefixesFrom(value: string | undefined): readonly string[] {
+  if (value === undefined || value.trim() === "") return [];
+  const prefixes = value.split(",").map((prefix) => prefix.trim());
+  if (prefixes.some((prefix) => !prefix.startsWith("/") || !prefix.endsWith("/"))) {
+    throw new Error(
+      "Every ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES entry must be an absolute path ending in '/', such as '/Guests/'.",
+    );
+  }
+  return [...new Set(prefixes)];
 }
 
 /**

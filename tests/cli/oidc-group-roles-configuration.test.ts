@@ -61,6 +61,20 @@ describe("generic OIDC group-role configuration", () => {
     expect(configuration?.apiResource).toBeNull();
   });
 
+  test("guest group prefixes require absolute paths ending in slash", async () => {
+    await expect(loadOidcConfiguration({
+      ...completeOidc,
+      ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES: "/Guests/acme",
+    })).rejects.toThrow("Every ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES entry must be an absolute path ending in '/'");
+    const configuration = await loadOidcConfiguration({
+      ...completeOidc,
+      ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES: "/Guests/, /PartnerGuests/",
+    });
+    expect(configuration?.groupRoles).toEqual({
+      claim: "groups", seed: [], guestGroupPrefixes: ["/Guests/", "/PartnerGuests/"],
+    });
+  });
+
   test("API OAuth resource can be overridden independently of the MCP resource", async () => {
     const configuration = await loadOidcConfiguration({
       ...completeOidc,
