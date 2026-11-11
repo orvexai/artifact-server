@@ -1035,7 +1035,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
     const database = await PostgresDatabase.open({
       maxConnections: 2,
       url: Redacted.make(environment.databaseUrl),
-    }, "validate");
+    }, "apply");
     const keycloak = await startStubKeycloak();
     const roleInstallation = `member-role-${randomUUID()}`;
     const syncInstallation = `directory-sync-${randomUUID()}`;
@@ -1098,6 +1098,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID: keycloak.clientId,
         ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET: keycloak.clientSecret,
         ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: "keycloak",
+        ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES: "/Guests/",
         ARTIFACT_SERVER_OIDC_ISSUER: keycloak.issuer,
         ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: "artifact-users",
         ARTIFACT_SERVER_ORIGIN: "https://artifacts.example.com",
@@ -1168,6 +1169,14 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         {email: "ada@example.test", role: "member", status: "inactive"},
         {email: "bob@example.test", role: "administrator", status: "active"},
       ]);
+
+      keycloak.groups.set("Guests", []);
+      keycloak.groups.set("acme", [keycloakUser("dave")]);
+      keycloak.nestGroup("acme", "Guests");
+      expect(await sync()).toMatchObject({report: {groups: 2, admitted: 1}});
+      expect(await members()).toContainEqual({
+        email: "dave@example.test", role: "guest", status: "active",
+      });
     } finally {
       await keycloak.stop();
       await database.close();

@@ -14,7 +14,7 @@ import type {InteractiveIdentityProvider} from "../../src/application/interactiv
 import type {BearerCredentialVerifier} from "../../src/application/authentication.js";
 import {AuthenticationRequired, IdentityProviderFailure, type AuthorizationDenied} from "../../src/core/errors.js";
 import {browserLoginKinds, privateTeamBrowserAccess} from "../../src/core/browser-access.js";
-import {groupMembershipRole, withGuestGroupRuleAssignments} from "../../src/core/group-role-policy.js";
+import {groupMembershipRole, guestGroupPathMatches} from "../../src/core/group-role-policy.js";
 import type {ExternalIdentity} from "../../src/core/installation-identity.js";
 import {
   membershipRoles,
@@ -45,6 +45,10 @@ function snapshotGroupsForGuestSync(guestMembership: boolean) {
       name: "Viewers", path: "/Viewers"},
     {id: "group-Owners", members: [], name: "Owners", path: "/Owners"},
   ];
+}
+
+function groupRoleAssignment(groupId: string, name: string, path: string, role: "guest" | "viewer" | "member" | "owner") {
+  return {assignedAt: "now", groupId, name, nameUnique: true, path, role};
 }
 
 describe("guest installation role", () => {
@@ -82,38 +86,25 @@ describe("guest installation role", () => {
       {id: "bare", name: "Guests", path: "/Guests"},
       {id: "lookalike", name: "a", path: "/GuestsX/a"},
     ];
-    const assignments = withGuestGroupRuleAssignments([], groups, ["/Guests/"]);
-    expect(assignments.map(({groupId, role, source}) => [groupId, role, source])).toEqual([
-      ["acme", "guest", "rule"], ["leads", "guest", "rule"],
+    expect(groups.map(({path}) => guestGroupPathMatches(path, ["/Guests/"]))).toEqual([
+      true, true, false, false,
     ]);
-    expect(groupMembershipRole(assignments, ["/Guests/acme"])).toBe("guest");
-    const operatorRule = withGuestGroupRuleAssignments([], [
-      {id: "operator", name: "operator", path: "/Guests/operator"},
-    ], ["/Guests/"]);
+    expect(groupMembershipRole([groupRoleAssignment("acme", "acme", "/Guests/acme", "guest")], ["/Guests/acme"])).toBe("guest");
     expect(groupMembershipRole([
-      ...operatorRule,
-      {assignedAt: "", groupId: "operators", name: "operators", nameUnique: true, path: "/Operators", role: "member"},
-    ], ["/Guests/operator", "/Operators"])).toBe("guest");
-    const ownerRule = withGuestGroupRuleAssignments([], [
-      {id: "owner", name: "owner", path: "/Guests/owner"},
-    ], ["/Guests/"]);
+      groupRoleAssignment("acme", "acme", "/Guests/acme", "guest"),
+      groupRoleAssignment("operators", "operators", "/Operators", "member"),
+    ], ["/Guests/acme", "/Operators"])).toBe("guest");
     expect(groupMembershipRole([
-      ...ownerRule,
-      {assignedAt: "", groupId: "owners", name: "owners", nameUnique: true, path: "/Owners", role: "owner"},
-    ], ["/Guests/owner", "/Owners"])).toBe("owner");
-    const overridden = withGuestGroupRuleAssignments([
-      {assignedAt: "now", groupId: "acme", name: "acme", nameUnique: true, path: "/Guests/acme", role: "viewer"},
-    ], groups, ["/Guests/"]);
-    expect(groupMembershipRole(overridden, ["/Guests/acme"])).toBe("viewer");
-    const staffRules = withGuestGroupRuleAssignments([], [
-      {id: "staff", name: "x-staff", path: "/TenantWorkspaces/x/x-staff"},
-    ], ["/Guests/"]);
-    expect(staffRules).toEqual([]);
+      groupRoleAssignment("acme", "acme", "/Guests/acme", "guest"),
+      groupRoleAssignment("owners", "owners", "/Owners", "owner"),
+    ], ["/Guests/acme", "/Owners"])).toBe("owner");
     expect(groupMembershipRole([
-      ...withGuestGroupRuleAssignments([], [
-        {id: "staff", name: "x-staff", path: "/TenantWorkspaces/x/x-staff"},
-      ], ["/Guests/"]),
-    ], ["/TenantWorkspaces/x/x-staff"])).toBeNull();
+      groupRoleAssignment("acme", "acme", "/Guests/acme", "viewer"),
+    ], ["/Guests/acme"])).toBe("viewer");
+    expect(groupMembershipRole([
+      groupRoleAssignment("staff", "x-staff", "/TenantWorkspaces/x/x-staff", "member"),
+    ], ["/TenantWorkspaces/x/x-staff"])).toBe("member");
+    expect(guestGroupPathMatches("/TenantWorkspaces/x/x-staff", ["/Guests/"])).toBe(false);
     const sharedStaff = {
       authorizedByPrincipalId: null,
       capabilities: [principalCapabilities.readArtifacts],
@@ -469,17 +460,39 @@ describe("guest installation role", () => {
       expect(database.prepare("SELECT 1 FROM directory_group_role_seeds WHERE installation_id = ?")
         .get(installationId)).toBeDefined();
       await repository.applyDirectoryGroups(installationId, {
-        groups: snapshotGroupsForGuestSync(false), provider, syncedAt: now,
+        groups: [...snapshotGroupsForGuestSync(false), {
+          id: "group-Acme", name: "acme", path: "/Guests/acme", members: [],
+        }, {
+          id: "group-MovedIn", name: "movedin", path: "/Outside/movedin", members: [],
+        }, {
+          id: "group-OwnerAcme", name: "owner-acme", path: "/Guests/owner-acme", members: [],
+        }], provider, syncedAt: now,
       });
+      await repository.setGroupRole(
+        installationId, "group-OwnerAcme", "owner", now, "owner",
+      );
       expect(database.prepare("SELECT role FROM installation_members WHERE id = ?")
         .get("member_directory_sync_guest")).toEqual({role: "viewer"});
       await repository.applyDirectoryGroups(installationId, {
         groups: [...snapshotGroupsForGuestSync(true), {
           id: "group-Acme", name: "acme", path: "/Guests/acme",
           members: [{email: "tenant@example.test", subject: "tenant-subject"}],
+        }, {
+          id: "group-MovedIn", name: "movedin", path: "/Guests/movedin", members: [],
+        }, {
+          id: "group-OwnerAcme", name: "owner-acme", path: "/Guests/owner-acme", members: [],
         }],
-        guestGroupIds: ["group-Acme"], provider, syncedAt: new Date(Date.now() + 1).toISOString(),
+        guestGroupPrefixes: ["/Guests/"], provider, syncedAt: new Date(Date.now() + 1).toISOString(),
       });
+      expect(await repository.listGroupRoles(installationId)).toContainEqual(expect.objectContaining({
+        groupId: "group-Acme", role: "guest", source: "rule",
+      }));
+      expect(await repository.listGroupRoles(installationId)).toContainEqual(expect.objectContaining({
+        groupId: "group-OwnerAcme", role: "owner",
+      }));
+      expect(await repository.listGroupRoles(installationId)).not.toContainEqual(
+        expect.objectContaining({groupId: "group-MovedIn"}),
+      );
       expect(database.prepare("SELECT role FROM installation_members WHERE id = ?")
         .get("member_directory_sync_guest")).toEqual({role: "guest"});
       database.prepare(`INSERT INTO installation_members (
@@ -491,11 +504,46 @@ describe("guest installation role", () => {
         groups: [...snapshotGroupsForGuestSync(true), {
           id: "group-Acme", name: "acme", path: "/Guests/acme",
           members: [{email: "tenant@example.test", subject: "tenant-subject"}],
+        }, {
+          id: "group-MovedIn", name: "movedin", path: "/Guests/movedin", members: [],
+        }, {
+          id: "group-OwnerAcme", name: "owner-acme", path: "/Guests/owner-acme", members: [],
         }],
-        guestGroupIds: ["group-Acme"], provider, syncedAt: new Date(Date.now() + 2).toISOString(),
+        guestGroupPrefixes: ["/Guests/"], provider, syncedAt: new Date(Date.now() + 2).toISOString(),
       });
       expect(database.prepare("SELECT role FROM installation_members WHERE id = ?")
         .get("member_prefix_guest")).toEqual({role: "guest"});
+      await repository.applyDirectoryGroups(installationId, {
+        groups: [...snapshotGroupsForGuestSync(true), {
+          id: "group-Acme", name: "acme", path: "/Outside/acme",
+          members: [{email: "tenant@example.test", subject: "tenant-subject"}],
+        }, {
+          id: "group-MovedIn", name: "movedin", path: "/Guests/movedin", members: [],
+        }, {
+          id: "group-OwnerAcme", name: "owner-acme", path: "/Guests/owner-acme", members: [],
+        }],
+        guestGroupPrefixes: ["/Guests/"], provider, syncedAt: new Date(Date.now() + 3).toISOString(),
+      });
+      expect(await repository.listGroupRoles(installationId)).toContainEqual(expect.objectContaining({
+        groupId: "group-Acme", role: "guest", source: "rule",
+      }));
+      await repository.setGroupRole(
+        installationId, "group-Acme", null, new Date(Date.now() + 4).toISOString(), "owner",
+      );
+      await repository.applyDirectoryGroups(installationId, {
+        groups: [...snapshotGroupsForGuestSync(true), {
+          id: "group-Acme", name: "acme", path: "/Outside/acme",
+          members: [{email: "tenant@example.test", subject: "tenant-subject"}],
+        }, {
+          id: "group-MovedIn", name: "movedin", path: "/Guests/movedin", members: [],
+        }, {
+          id: "group-OwnerAcme", name: "owner-acme", path: "/Guests/owner-acme", members: [],
+        }],
+        guestGroupPrefixes: ["/Guests/"], provider, syncedAt: new Date(Date.now() + 5).toISOString(),
+      });
+      expect(await repository.listGroupRoles(installationId)).not.toContainEqual(expect.objectContaining({groupId: "group-Acme"}));
+      expect(database.prepare("SELECT status FROM installation_members WHERE id = ?")
+        .get("member_prefix_guest")).toEqual({status: "inactive"});
     } finally {
       repository.close();
       database.close();

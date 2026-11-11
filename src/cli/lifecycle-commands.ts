@@ -222,6 +222,7 @@ function configureMaintenance(program: Command): void {
         console.log(JSON.stringify(roleChangedDuringRecompute === 0
           ? memberSync
           : {...memberSync,
+            unchanged: Math.max(0, memberSync.unchanged - roleChangedDuringRecompute),
             roleChanged: memberSync.roleChanged + roleChangedDuringRecompute,
           }));
       } finally {

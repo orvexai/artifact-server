@@ -77,6 +77,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- $oidcGroupsClaim := default "" .Values.identity.oidcGroupsClaim -}}
 {{- $hasOidcGroupLists := or (gt (len (default (list) .Values.identity.oidcMemberGroups)) 0) (gt (len (default (list) .Values.identity.oidcAdministratorGroups)) 0) -}}
 {{- $hasOidcGroupRoleSeed := gt (len (default (list) .Values.identity.oidcGroupRoleSeed)) 0 -}}
+{{- $hasGuestGroupPrefixes := gt (len (default (list) .Values.identity.oidcGuestGroupPrefixes)) 0 -}}
+{{- if and $hasGuestGroupPrefixes (not (or $hasOidcGroupLists $hasOidcGroupRoleSeed)) -}}
+{{- fail "identity.oidcGuestGroupPrefixes requires identity.oidcGroupRoleSeed or identity.oidcMemberGroups / identity.oidcAdministratorGroups" -}}
+{{- end -}}
 {{- $hasOidcGroups := or $hasOidcGroupLists $hasOidcGroupRoleSeed -}}
 {{- if and $hasOidcGroupLists $hasOidcGroupRoleSeed -}}
 {{- fail "set identity.oidcGroupRoleSeed or the older identity.oidcMemberGroups and identity.oidcAdministratorGroups, not both" -}}

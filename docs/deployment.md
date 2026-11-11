@@ -211,14 +211,25 @@ loses it, so someone can always give the roles out again.
 
 To make customer tenant groups guests automatically, set
 `ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES` to comma-separated absolute path
-prefixes ending in `/`, for example `/Guests/`; Helm uses
-`identity.oidcGuestGroupPrefixes: ["/Guests/"]`. A group matches only when its
+prefixes matching `^(/[^/\s]+)+/$`, for example `/Guests/`; Helm uses
+`identity.oidcGuestGroupPrefixes: ["/Guests/"]`. This setting requires a group
+role seed or member/admin group configuration. A group matches only when its
 full path starts with the prefix and is longer than it, so `/Guests` and
-`/GuestsX/acme` do not match. Only matching groups receive the Guest role from
-this rule. A role explicitly set by an owner takes precedence; when no explicit
-role row exists, the rule supplies Guest. Owners can see rule-derived Guest
-roles marked `rule` in Settings > Groups and `group_list`. The rule does not
-affect groups outside its configured paths.
+`/GuestsX/acme` do not match.
+
+When a matching group is first mirrored, the server stores an ordinary Guest
+role row marked as a rule assignment. Existing matching groups are backfilled
+once, skipping any group that already has a role row. An owner's explicit role
+row takes precedence. If an owner removes a rule-assigned role, that choice
+sticks through later syncs and the backfill. Settings > Groups and `group_list`
+show the role as `Guest (rule)`; the `None` action warns that members of the
+group will lose access.
+
+The rule applies only at first mirroring. A group first mirrored outside the
+prefix and moved into `/Guests/` later gets no Guest role automatically and
+fails closed until an owner assigns one. A group moved out of `/Guests/` keeps
+its stored Guest role. The bare `/Guests` group and groups outside the prefix
+are unaffected.
 
 ### Sync members from a Keycloak directory
 

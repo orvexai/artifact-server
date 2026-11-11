@@ -1,4 +1,4 @@
-import {membershipRoleAtLeast, type MembershipRole} from "./identity.js";
+import type {MembershipRole} from "./identity.js";
 
 /** One configured starting role: a directory group name or full path, and its role. */
 export interface GroupRoleSeedEntry {
@@ -14,12 +14,16 @@ export interface GroupRoleSeedEntry {
  */
 export interface GroupRolePolicy {
   readonly seed: readonly GroupRoleSeedEntry[];
-  /** Full-path prefixes whose matching directory groups receive guest. */
+  /** Full-path prefixes whose newly mirrored directory groups receive guest. */
   readonly guestGroupPrefixes?: readonly string[];
 }
 
 /** Who stored a role that came from the configured seed rather than a person. */
 export const groupRoleSeedPrincipalId = "configuration:group-role-seed";
+/** Marker stored on a role row created from the guest path rule. */
+export const guestGroupRulePrincipalId = "configuration:guest-group-rule";
+/** Strict absolute path prefix syntax shared with the Helm values schema. */
+export const guestGroupPrefixPattern = new RegExp("^(/[^/\\s]+)+/$");
 
 /** One directory group's stored installation role. */
 export interface GroupRoleAssignment {
@@ -34,35 +38,13 @@ export interface GroupRoleAssignment {
   readonly nameUnique: boolean;
   readonly path: string;
   readonly role: MembershipRole;
-  /** Present for a role supplied by configuration rather than a stored row. */
+  /** Present for a guest role row created from the configured path rule. */
   readonly source?: "rule";
 }
 
 /** A configured prefix matches only descendant full paths, never a group name. */
 export function guestGroupPathMatches(path: string, prefixes: readonly string[]): boolean {
   return prefixes.some((prefix) => path.startsWith(prefix) && path.length > prefix.length);
-}
-
-/** Add rule assignments for matching groups that have no explicit role row. */
-export function withGuestGroupRuleAssignments(
-  assignments: readonly GroupRoleAssignment[],
-  groups: readonly {readonly id: string; readonly name: string; readonly path: string}[],
-  prefixes: readonly string[],
-): readonly GroupRoleAssignment[] {
-  const explicit = new Set(assignments.map(({groupId}) => groupId));
-  const counts = new Map<string, number>();
-  for (const group of groups) counts.set(group.name, (counts.get(group.name) ?? 0) + 1);
-  return [...assignments, ...groups.filter((group) =>
-    !explicit.has(group.id) && guestGroupPathMatches(group.path, prefixes)
-  ).map((group) => ({
-    assignedAt: "",
-    groupId: group.id,
-    name: group.name,
-    nameUnique: counts.get(group.name) === 1,
-    path: group.path,
-    role: "guest" as const,
-    source: "rule" as const,
-  }))];
 }
 
 /**
@@ -104,14 +86,26 @@ export function groupMembershipRole(
       (assignment.nameUnique && reported.has(assignment.name));
     if (!matches) continue;
     if (assignment.role === "owner" || assignment.role === "administrator") {
-      if (bestPrivileged === null || !membershipRoleAtLeast(bestPrivileged, assignment.role)) {
+      if (bestPrivileged === null || membershipRolePrecedence(assignment.role) > membershipRolePrecedence(bestPrivileged)) {
         bestPrivileged = assignment.role;
       }
     } else if (assignment.role === "guest") {
       hasGuestRole = true;
-    } else if (bestNonGuest === null || !membershipRoleAtLeast(bestNonGuest, assignment.role)) {
+    } else if (bestNonGuest === null || membershipRolePrecedence(assignment.role) > membershipRolePrecedence(bestNonGuest)) {
       bestNonGuest = assignment.role;
     }
   }
   return bestPrivileged ?? (hasGuestRole ? "guest" : bestNonGuest);
+}
+
+/** The precedence used by groupMembershipRole and directory member sync. */
+export function membershipRolePrecedence(role: MembershipRole): number {
+  switch (role) {
+    case "owner": return 5;
+    case "administrator": return 4;
+    case "guest": return 3;
+    case "member": return 2;
+    case "viewer": return 1;
+    default: return 0;
+  }
 }

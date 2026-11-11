@@ -2,6 +2,7 @@ import {type Redacted, Schema} from "effect";
 import {z} from "zod";
 
 import type {GroupRoleSeedEntry} from "../core/group-role-policy.js";
+import {guestGroupPrefixPattern} from "../core/group-role-policy.js";
 import {membershipRoles, type MembershipRole} from "../core/identity.js";
 import {
   defaultOidcGroupsClaim,
@@ -78,6 +79,12 @@ export async function loadOidcConfiguration(
 ): Promise<OidcConfiguration | null> {
   const parsed = oidcEnvironmentSchema.parse(environment);
   const guestGroupPrefixes = guestGroupPrefixesFrom(parsed.ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES);
+  const configuredGroupRoles = oidcGroupRoles(parsed);
+  if (guestGroupPrefixes.length > 0 && configuredGroupRoles === null) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES requires ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED or ARTIFACT_SERVER_OIDC_MEMBER_GROUPS / ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS.",
+    );
+  }
   const clientSecret = await runCliEffect(loadOptionalCredential(
     environment,
     "ARTIFACT_SERVER_OIDC_CLIENT_SECRET",
@@ -132,13 +139,9 @@ export async function loadOidcConfiguration(
       "ARTIFACT_SERVER_OIDC_API_JWKS_URI must be an HTTPS URL. Plain http is allowed only when the OIDC issuer is local (localhost, 127.0.0.1, or ::1).",
     );
   }
-  const configuredGroupRoles = oidcGroupRoles(parsed);
-  const groupRolesBase = configuredGroupRoles ?? (guestGroupPrefixes.length > 0
-    ? {claim: defaultOidcGroupsClaim, seed: []}
-    : null);
-  const groupRoles = groupRolesBase === null ? null : guestGroupPrefixes.length === 0
-    ? groupRolesBase
-    : {...groupRolesBase, guestGroupPrefixes};
+  const groupRoles = configuredGroupRoles === null ? null : guestGroupPrefixes.length === 0
+    ? configuredGroupRoles
+    : {...configuredGroupRoles, guestGroupPrefixes};
   const serviceClients = (parsed.ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS ?? "")
     .split(",").map((client) => client.trim()).filter(Boolean);
   const embedBindingClients = (parsed.ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS ?? "")
@@ -175,9 +178,9 @@ export async function loadOidcConfiguration(
 function guestGroupPrefixesFrom(value: string | undefined): readonly string[] {
   if (value === undefined || value.trim() === "") return [];
   const prefixes = value.split(",").map((prefix) => prefix.trim());
-  if (prefixes.some((prefix) => !prefix.startsWith("/") || !prefix.endsWith("/"))) {
+  if (prefixes.some((prefix) => !guestGroupPrefixPattern.test(prefix))) {
     throw new Error(
-      "Every ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES entry must be an absolute path ending in '/', such as '/Guests/'.",
+      "Every ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES entry must match ^(/[^/\\s]+)+/$, such as '/Guests/'.",
     );
   }
   return [...new Set(prefixes)];

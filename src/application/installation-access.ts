@@ -45,12 +45,10 @@ import {
 } from "../core/installation-identity.js";
 import {
   configuredGroupRoleAssignments,
-  guestGroupPathMatches,
   type GroupRoleAssignment,
   type GroupRolePolicy,
   type GroupRoleSeedEntry,
   groupMembershipRole,
-  withGuestGroupRuleAssignments,
 } from "../core/group-role-policy.js";
 import {
   isAdministratorRole,
@@ -427,7 +425,6 @@ export interface InstallationAccessOperations {
     readonly GroupRoleAssignment[],
     IdentityRepositoryFailure
   >;
-  readonly isGuestGroupPath: (path: string) => boolean;
   readonly isGroupRoleSeedApplied: () => Effect.Effect<boolean, IdentityRepositoryFailure>;
   readonly setGroupRole: (
     principal: Principal,
@@ -674,9 +671,7 @@ function makeInstallationAccessService(
   )(function*(snapshot: DirectoryGroupSnapshot) {
     const result = yield* dependencies.repository.applyDirectoryGroups(
       dependencies.installationId,
-      {...snapshot, guestGroupIds: snapshot.groups.filter((group) =>
-        guestGroupPathMatches(group.path, dependencies.groupRolePolicy?.guestGroupPrefixes ?? [])
-      ).map(({id}) => id)},
+      {...snapshot, guestGroupPrefixes: dependencies.groupRolePolicy?.guestGroupPrefixes ?? []},
     );
     // Group membership will decide project access; never serve a stale grant.
     if (
@@ -698,17 +693,8 @@ function makeInstallationAccessService(
   const listGroupRoles = Effect.fn(
     "InstallationAccessService.listGroupRoles",
   )(function*() {
-    const [assignments, groups] = yield* Effect.all([
-      dependencies.repository.listGroupRoles(dependencies.installationId),
-      dependencies.repository.listDirectoryGroups(dependencies.installationId),
-    ]);
-    return withGuestGroupRuleAssignments(assignments, groups,
-      dependencies.groupRolePolicy?.guestGroupPrefixes ?? []);
+    return yield* dependencies.repository.listGroupRoles(dependencies.installationId);
   });
-
-  const isGuestGroupPath = (path: string): boolean => guestGroupPathMatches(
-    path, dependencies.groupRolePolicy?.guestGroupPrefixes ?? [],
-  );
 
   const isGroupRoleSeedApplied = Effect.fn(
     "InstallationAccessService.isGroupRoleSeedApplied",
@@ -961,14 +947,10 @@ function makeInstallationAccessService(
     // The configured roles decide until the directory sync has stored them,
     // and always without a directory sync; after that the stored roles do.
     const seeded = yield* dependencies.repository.isGroupRoleSeedApplied(dependencies.installationId);
-    const storedGroups = yield* dependencies.repository.listDirectoryGroups(dependencies.installationId);
     const baseAssignments = seeded
       ? yield* dependencies.repository.listGroupRoles(dependencies.installationId)
       : configuredGroupRoleAssignments(policy.seed);
-    const reportedPathGroups = (identity.groups ?? []).filter((path) => path.startsWith("/")).map((path) => ({id: path, name: path, path}));
-    const assignments = withGuestGroupRuleAssignments(
-      baseAssignments, [...storedGroups, ...reportedPathGroups], policy.guestGroupPrefixes ?? [],
-    );
+    const assignments = baseAssignments;
     const now = dependencies.clock.now().toISOString();
     // With every stored role removed nobody is turned away for good: the
     // roles are simply not set up.
@@ -1154,11 +1136,7 @@ function makeInstallationAccessService(
         ))
         ? yield* dependencies.repository.listGroupRoles(dependencies.installationId)
         : configuredGroupRoleAssignments(groupRolePolicy.seed);
-      const groups = yield* dependencies.repository.listDirectoryGroups(dependencies.installationId);
-      const ruleGroups = [...groups, ...(identity.groups ?? []).filter((path) => path.startsWith("/")).map((path) => ({id: path, name: path, path}))];
-      const assignments = withGuestGroupRuleAssignments(
-        baseAssignments, ruleGroups, groupRolePolicy.guestGroupPrefixes ?? [],
-      );
+      const assignments = baseAssignments;
       const role = groupMembershipRole(assignments, identity.groups);
       if (role === null) {
         return yield* new IdentityAdmissionDenied({
@@ -1506,7 +1484,6 @@ function makeInstallationAccessService(
     applyDirectoryGroups,
     listDirectoryGroups,
     listGroupRoles,
-    isGuestGroupPath,
     isGroupRoleSeedApplied,
     setGroupRole,
     seedGroupRoles,

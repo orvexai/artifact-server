@@ -47,8 +47,9 @@ identity:
   oidcClientId: ""
   oidcIssuer: ""
   oidcScopes: ""
-  # Full-path prefixes that automatically assign the guest role to descendants.
-  # Each entry must end in a slash, for example ["/Guests/"].
+  # Full-path prefixes that assign a stored guest role when a group is first mirrored.
+  # Requires a group-role seed or member/admin group configuration. Entries match
+  # ^(/[^/\s]+)+/$, for example ["/Guests/"].
   oidcGuestGroupPrefixes: []
   # OAuth clients explicitly allowed to use group-bound service bearer access.
   # Empty by default; entries are sent as ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS.

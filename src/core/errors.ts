@@ -483,6 +483,7 @@ export class IdentityRepositoryFailure extends Schema.TaggedError<IdentityReposi
   "IdentityRepositoryFailure",
   {
     cause: Schema.Defect(),
+    message: Schema.String,
     operation: Schema.Literals([
       "admitMember",
       "applyDirectoryGroups",

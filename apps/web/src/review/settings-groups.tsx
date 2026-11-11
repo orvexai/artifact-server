@@ -24,6 +24,8 @@ export function GroupsScreen({canEdit}: {readonly canEdit: boolean}) {
   };
 
   const setRole = async (group: DirectoryGroup, value: string) => {
+    if (group.source === "rule" && value === "none" &&
+      !window.confirm("Removing this rule role means members of this group will lose access. Continue?")) return;
     setPending(group.id);
     try {
       const role = value === "none" ? null
@@ -91,7 +93,6 @@ export function GroupsScreen({canEdit}: {readonly canEdit: boolean}) {
                             {(["guest", "viewer", "operator", "admin", "owner"] as const).map((role) => <option key={role} value={role}>{role === "admin" ? membershipRoleLabels.administrator : role === "operator" ? membershipRoleLabels.member : membershipRoleLabels[role]}</option>)}
                           </select>
                         : group.role === null ? "None" : `${membershipRoleLabels[group.role]}${group.source === "rule" ? " (rule)" : ""}`}
-                      {canEdit && group.source === "rule" ? <span className="ml-2 text-xs text-muted-foreground">(rule)</span> : null}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-muted-foreground">
                       {formatTimestamp(group.syncedAt)}
