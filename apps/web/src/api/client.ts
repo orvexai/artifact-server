@@ -1573,8 +1573,7 @@ export const api = {
     z.object({ groups: z.array(directoryGroupSchema) }),
     "/api/v1/groups",
   ).then(({ groups }) => groups),
-  setGroupRole: (groupId: string, role: MembershipRole | "admin" | "operator" | null) => request(
-    z.object({}),
+  setGroupRole: (groupId: string, role: MembershipRole | "admin" | "operator" | null) => requestNoContent(
     `/api/v1/groups/${encodeURIComponent(groupId)}/role`,
     {body: JSON.stringify({role}), headers: mutationHeaders(), method: "PUT"},
   ),
