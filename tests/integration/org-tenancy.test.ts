@@ -1584,7 +1584,9 @@ function runtimeAdmissionPolicy(
   if (policy === null) return null;
   const groupRolePolicy = {
     groupRoots: policy.groupRoots,
-    seed: policy.seed,
+    seed: policy.seed.map(({role, selector, staff}) =>
+      staff === undefined ? {role, selector} : {role, selector, staff}
+    ),
   };
   if (policy.guestGroupPrefixes === undefined) return groupRolePolicy;
   return {...groupRolePolicy, guestGroupPrefixes: policy.guestGroupPrefixes};

@@ -81,7 +81,7 @@ export async function createOrganizationRouter(
         : {
           groupRoots: organization.admissionPolicy.groupRoots,
           seed: organization.admissionPolicy.seed.map(({role, selector, staff}) =>
-          staff === undefined ? {role, selector} : {role, selector, staff}
+            staff === undefined ? {role, selector} : {role, selector, staff}
           ),
         };
       if (admissionPolicy !== null && organization.admissionPolicy?.guestGroupPrefixes !== undefined) {
