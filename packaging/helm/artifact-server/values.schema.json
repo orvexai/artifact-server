@@ -138,6 +138,7 @@
         "oidcScopes": {"type": "string"},
         "oidcGuestGroupPrefixes": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^(/[^/\\s]+)+/$"}},
         "oidcServiceClients": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "oidcProvisionerClients": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
         "oidcEmbedBindClients": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
         "embedOrigins": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^https://[A-Za-z0-9.-]+(:[0-9]+)?$"}},
         "oidcGroupsClaim": {"type": "string"},

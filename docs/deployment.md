@@ -133,6 +133,28 @@ HTTPS. The server logs `discovery_misconfigured`, keeps MCP and API OAuth off,
 stays ready with `components.identity.oauth` set to `misconfigured`, and does
 not retry. Correct the issuer configuration and restart.
 
+### Allow a project provisioner service client
+
+Client-credentials service accounts are refused on MCP by default. To opt one
+in, list its exact client ID in both `ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS`
+(`identity.oidcServiceClients` in Helm) and
+`ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS`
+(`identity.oidcProvisionerClients`). Startup fails if a provisioner is missing
+from the service-client list. Both settings default to empty. The Helm values
+schema checks their shape; configure the same IDs in the identity provider.
+
+An opted-in client must still be admitted by the configured directory group
+roles. Its verified service-account token must use the API resource audience
+(`<ARTIFACT_SERVER_ORIGIN>/api`). In MCP, the client can list projects and use
+only `project_create`, `project_sharing`, `project_share`, and
+`project_set_access`; all other tools are denied. Project ownership, manager
+permissions, restricted visibility and group grants use the normal project
+authorization rules. Pass existing directory groups by their full paths, such
+as `/Tenants/Acme/Operators`, in `shareWith` and `project_share`.
+
+This setting grants no API-key capability. The existing `/api` service-bearer
+restriction remains in force.
+
 ### Manage access with issuer groups
 
 By default an administrator admits each person by hand, and only the bootstrap

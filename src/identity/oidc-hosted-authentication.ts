@@ -43,6 +43,7 @@ export interface OidcHostedAuthenticationConfig {
   readonly clientId: string;
   readonly clientSecret: Redacted.Redacted | null;
   readonly embedBindingClients?: readonly string[];
+  readonly provisionerClients?: readonly string[];
   readonly fetch?: typeof globalThis.fetch;
   readonly groupRoles?: OidcGroupRoles | null;
   readonly issuer: string;
@@ -78,11 +79,13 @@ export async function createOidcHostedAuthentication(
   );
   let verifierConfig: OidcMcpBearerVerifierConfig = {
     audience: resource,
+    provisionerAudience: apiResource,
     groupsClaim: groupRoles?.claim ?? null,
     issuer,
     jwksUri: authorizationServer.jwksUri,
     serviceClients: config.serviceClients ?? [],
     embedBindingClients: config.embedBindingClients ?? [],
+    provisionerClients: config.provisionerClients ?? [],
     userInfoEndpoint: authorizationServer.userInfoEndpoint,
   };
   if (config.fetch !== undefined) {
@@ -91,6 +94,7 @@ export async function createOidcHostedAuthentication(
   const apiVerifierConfig = {
     ...verifierConfig,
     audience: apiResource,
+    provisionerAudience: apiResource,
     jwksUri: config.apiJwksUri ?? authorizationServer.jwksUri,
   };
   return {

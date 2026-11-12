@@ -59,6 +59,7 @@ const principalSchema = Schema.Struct({
     principalCapabilities.readArtifacts,
     principalCapabilities.readArtifactResponses,
     principalCapabilities.bindArtifactEmbed,
+    principalCapabilities.provisionProjects,
     principalCapabilities.writeComments,
   ])),
   displayName: Schema.String.pipe(

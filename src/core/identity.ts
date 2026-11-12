@@ -57,6 +57,7 @@ export const principalCapabilities = {
   readArtifactResponses: "artifact:responses:read",
   bindArtifactEmbed: "artifact:embed:bind",
   manageProjects: "project:manage",
+  provisionProjects: "project:provision",
   writeComments: "comment:write",
 } as const;
 

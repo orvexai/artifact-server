@@ -61,7 +61,11 @@ import {
   type PrincipalCapability,
 } from "../core/identity.js";
 
-const allCapabilities = Object.values(principalCapabilities);
+const allCapabilities = new Set<PrincipalCapability>(
+  Object.values(principalCapabilities).filter((capability) =>
+    capability !== principalCapabilities.provisionProjects
+  ),
+);
 const localBrowserLoginProvider = "artifact-server-local";
 
 export interface InstallationIdentityRepository {
@@ -1157,9 +1161,15 @@ function makeInstallationAccessService(
       ).map((group) => group.id);
       return {
         authorizedByPrincipalId: null,
-        capabilities: identity.embedBindingServiceAccount === true
-          ? [principalCapabilities.readArtifactResponses, principalCapabilities.bindArtifactEmbed]
-          : [principalCapabilities.readArtifactResponses],
+        capabilities: [
+          principalCapabilities.readArtifactResponses,
+          ...(identity.embedBindingServiceAccount === true
+            ? [principalCapabilities.bindArtifactEmbed]
+            : []),
+          ...(identity.provisionProjectsServiceAccount === true
+            ? [principalCapabilities.provisionProjects]
+            : []),
+        ],
         directoryGroupIds,
         displayName: identity.displayName,
         email: null,
@@ -1597,7 +1607,7 @@ const normalizeCapabilities = Effect.fn(
   const unique = [...new Set(capabilities)];
   if (
     unique.length === 0 ||
-    unique.some((capability) => !allCapabilities.includes(capability))
+    unique.some((capability) => !allCapabilities.has(capability))
   ) {
     return yield* new IdentityConflict({
       message: "At least one recognized API key capability is required.",

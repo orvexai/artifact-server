@@ -5,7 +5,6 @@ import {
   McpServer,
   ResourceTemplate,
   type McpRequestContext,
-  type RegisteredTool,
   type StandardSchemaWithJSON,
   type ToolAnnotations,
   type ToolCallback,
@@ -68,7 +67,14 @@ import {
   type SourceBindingRecord,
   type StagedUpload,
 } from "../core/model.js";
-import {isAdministratorRole, membershipRoles, principalKinds, type Principal} from "../core/identity.js";
+import {
+  isAdministratorRole,
+  membershipRoles,
+  principalCapabilities,
+  principalKinds,
+  type Principal,
+} from "../core/identity.js";
+import {provisionerToolAllowList} from "./provisioner-tools.js";
 import {
   gitHistoryProviders,
   gitHistoryProviderStates,
@@ -115,7 +121,7 @@ import {
   type ToolResultNudgeFacts,
 } from "./tool-result-nudges.js";
 
-const serverVersion = "0.1.17";
+const serverVersion = "0.1.18";
 const maximumListedArtifacts = 100;
 const maximumTextDiffBytes = 256 * 1_024;
 const accessSettingSchema = z.enum([
@@ -170,9 +176,10 @@ const listedProjectSchema = projectProjectionSchema.extend({
   accessMode: projectAccessModeSchema,
   yourRole: projectRoleSchema.nullable(),
 }).strict();
-const projectGroupReferenceSchema = z.string().trim().min(1).max(500).describe(
-  "A group's id, full path such as /Engineering/Platform, or a name only one group has. group_list shows them.",
-);
+const projectGroupReferenceSchema = z.string().trim().min(1).max(500)
+  .regex(/^\/[^/]+(?:\/[^/]+)*$/u).describe(
+    "A directory group's full path such as /Engineering/Platform. group_list shows the paths.",
+  );
 const projectSharingSchema = z.object({
   accessMode: projectAccessModeSchema,
   groups: z.array(z.object({
@@ -526,13 +533,18 @@ export function createArtifactMcpServer(
       annotations?: ToolAnnotations;
     },
     callback: ToolCallback<InputArgs>,
-  ): RegisteredTool {
+  ): void {
+    if (
+      identity.principal.serviceAccountSource === "oidc" &&
+      identity.principal.capabilities.includes(principalCapabilities.provisionProjects) &&
+      !provisionerToolAllowList.has(name)
+    ) return;
     const registered = server.registerTool(name, config, callback);
     // A schemaless tool keeps its original callback on purpose: the SDK
     // invokes such a tool with a single context argument, which the
     // two-argument nudge wrapper below cannot forward. None exist today.
     if (nudgeFreeTools.has(name) || config.inputSchema === undefined) {
-      return registered;
+      return;
     }
     const execute = registered.executor;
     registered.update({
@@ -548,7 +560,7 @@ export function createArtifactMcpServer(
         return nudge === null ? result : appendToolResultNudge(result, nudge);
       },
     });
-    return registered;
+    return;
   }
 
   /**

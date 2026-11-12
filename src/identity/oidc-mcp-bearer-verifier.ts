@@ -76,6 +76,8 @@ export interface OidcMcpBearerVerifierConfig {
   readonly algorithms?: readonly string[];
   /** The exact protected-resource URL the issuer must bind into `aud`. */
   readonly audience: string;
+  /** Exact API resource audience used only by configured provisioner clients. */
+  readonly provisionerAudience?: string;
   readonly fetch?: typeof globalThis.fetch;
   /** Claim that lists the person's groups; null reads none. */
   readonly groupsClaim?: string | null;
@@ -85,6 +87,8 @@ export interface OidcMcpBearerVerifierConfig {
   readonly serviceClients?: readonly string[];
   /** Subset of service clients allowed to bind embed questions. */
   readonly embedBindingClients?: readonly string[];
+  /** Subset of service clients permitted to provision restricted projects. */
+  readonly provisionerClients?: readonly string[];
   readonly userInfoEndpoint?: string | null;
 }
 
@@ -92,6 +96,7 @@ export interface OidcMcpBearerVerifierConfig {
 export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
   readonly #algorithms: string[];
   readonly #audience: string;
+  readonly #provisionerAudience: string | null;
   readonly #fetch: typeof globalThis.fetch;
   readonly #groupsClaim: string | null;
   readonly #issuer: string;
@@ -99,11 +104,13 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
   readonly #provider: string;
   readonly #serviceClients: ReadonlySet<string>;
   readonly #embedBindingClients: ReadonlySet<string>;
+  readonly #provisionerClients: ReadonlySet<string>;
   readonly #userInfoEndpoint: string | null;
 
   constructor(config: OidcMcpBearerVerifierConfig) {
     this.#algorithms = [...(config.algorithms ?? defaultAlgorithms)];
     this.#audience = config.audience;
+    this.#provisionerAudience = config.provisionerAudience ?? null;
     const providerFetch = config.fetch ?? globalThis.fetch;
     this.#fetch = (input, init) => providerFetch(input, init);
     this.#groupsClaim = config.groupsClaim ?? null;
@@ -113,6 +120,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
     this.#provider = oidcIdentityProviderName(this.#issuer);
     this.#serviceClients = new Set(config.serviceClients ?? []);
     this.#embedBindingClients = new Set(config.embedBindingClients ?? []);
+    this.#provisionerClients = new Set(config.provisionerClients ?? []);
     this.#userInfoEndpoint = config.userInfoEndpoint ?? null;
     this.#jwks = createRemoteJWKSet(new URL(config.jwksUri), {
       cacheMaxAge: jwksCacheMilliseconds,
@@ -176,6 +184,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
           email: null,
           emailVerified: false,
           embedBindingServiceAccount: this.#embedBindingClients.has(clientId),
+          provisionProjectsServiceAccount: this.#provisionerClients.has(clientId),
           groups,
           provider: this.#provider,
           serviceAccount: true,
@@ -197,7 +206,9 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
       try: async () => {
         const result = await jwtVerify(Redacted.value(credential), this.#jwks, {
           algorithms: this.#algorithms,
-          audience: this.#audience,
+          audience: this.#provisionerAudience === null
+            ? this.#audience
+            : [this.#audience, this.#provisionerAudience],
           clockTolerance,
           issuer: this.#issuer,
         });
@@ -207,7 +218,25 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
     }).pipe(
       Effect.flatMap(({payload, protectedHeader}) =>
         decodeClaims(payload, protectedHeader).pipe(
-          Effect.map((claims): VerifiedAccessToken => ({claims, payload})),
+          Effect.flatMap((claims) => {
+            const clientId = claims.azp ?? claims.client_id;
+            const provisioner = clientId !== undefined &&
+              this.#provisionerClients.has(clientId);
+            const expectedAudience = provisioner
+              ? this.#provisionerAudience
+              : this.#audience;
+            const audiences = payload.aud === undefined
+              ? []
+              : Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+            if (expectedAudience === null || !audiences.includes(expectedAudience)) {
+              return Effect.fail(invalidToken(
+                provisioner
+                  ? "The OIDC provisioner token must be issued for the configured API resource."
+                  : "The OIDC access token was issued for a different protected resource.",
+              ));
+            }
+            return Effect.succeed({claims, payload} satisfies VerifiedAccessToken);
+          }),
         )
       ),
     );

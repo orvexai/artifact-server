@@ -250,6 +250,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 - name: ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS
   value: {{ join "," .Values.identity.oidcServiceClients | quote }}
 {{- end }}
+{{- if .Values.identity.oidcProvisionerClients }}
+- name: ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS
+  value: {{ join "," .Values.identity.oidcProvisionerClients | quote }}
+{{- end }}
 {{- if .Values.identity.oidcEmbedBindClients }}
 - name: ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS
   value: {{ join "," .Values.identity.oidcEmbedBindClients | quote }}

@@ -332,7 +332,8 @@ function makeProjectManagementService(
       if (
         found.access.mode === "installation" && found.access.isCreator &&
         (isDirectHumanPrincipal(principal) ||
-          hasCapability(principal, principalCapabilities.manageProjects))
+          hasCapability(principal, principalCapabilities.manageProjects) ||
+          hasCapability(principal, principalCapabilities.provisionProjects))
       ) {
         return found.project;
       }
@@ -341,7 +342,8 @@ function makeProjectManagementService(
     if (
       found.access.role === "manager" &&
       (isDirectHumanPrincipal(principal) ||
-        hasCapability(principal, principalCapabilities.manageProjects))
+        hasCapability(principal, principalCapabilities.manageProjects) ||
+        hasCapability(principal, principalCapabilities.provisionProjects))
     ) {
       return found.project;
     }
@@ -476,7 +478,8 @@ function makeProjectManagementService(
       yield* authorization.requireProjectAccess(principal);
       if (
         (isDirectHumanPrincipal(principal) && principal.membershipRole !== "guest") ||
-        hasCapability(principal, principalCapabilities.manageProjects)
+        hasCapability(principal, principalCapabilities.manageProjects) ||
+        hasCapability(principal, principalCapabilities.provisionProjects)
       ) {
         return;
       }

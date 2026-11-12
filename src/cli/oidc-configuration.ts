@@ -38,6 +38,7 @@ const oidcEnvironmentSchema = z.object({
   ARTIFACT_SERVER_OIDC_SCOPES: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS: z.string().optional(),
   ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS: z.string().optional(),
+  ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS: z.string().optional(),
   ARTIFACT_SERVER_ORIGIN: z.url().optional(),
 });
 
@@ -64,6 +65,8 @@ export interface OidcConfiguration {
   readonly directory: OidcDirectoryConfiguration | null;
   /** Service clients explicitly allowed to bind external embed questions. */
   readonly embedBindingClients: readonly string[];
+  /** Subset of service clients allowed to provision restricted projects. */
+  readonly provisionerClients: readonly string[];
   /** Issuer groups that admit people and set their role; null keeps it manual. */
   readonly groupRoles: OidcGroupRoles | null;
   readonly guestGroupPrefixes: readonly string[];
@@ -112,6 +115,7 @@ export async function loadOidcConfiguration(
     parsed.ARTIFACT_SERVER_OIDC_API_JWKS_URI === undefined
     && (parsed.ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS ?? "").trim() === ""
     && (parsed.ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS ?? "").trim() === ""
+    && (parsed.ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS ?? "").trim() === ""
   ) {
     return null;
   }
@@ -146,9 +150,16 @@ export async function loadOidcConfiguration(
     .split(",").map((client) => client.trim()).filter(Boolean);
   const embedBindingClients = (parsed.ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS ?? "")
     .split(",").map((client) => client.trim()).filter(Boolean);
+  const provisionerClients = (parsed.ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS ?? "")
+    .split(",").map((client) => client.trim()).filter(Boolean);
   if (embedBindingClients.some((client) => !serviceClients.includes(client))) {
     throw new Error(
       "Every ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS entry must also appear in ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS.",
+    );
+  }
+  if (provisionerClients.some((client) => !serviceClients.includes(client))) {
+    throw new Error(
+      "Every ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS entry must also appear in ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS.",
     );
   }
   return {
@@ -167,6 +178,7 @@ export async function loadOidcConfiguration(
       groupRoles,
     ),
     embedBindingClients,
+    provisionerClients,
     groupRoles,
     guestGroupPrefixes,
     issuer,

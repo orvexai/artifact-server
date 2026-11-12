@@ -130,6 +130,44 @@ describe("generic OIDC MCP authorization", () => {
     })).rejects.toThrow("registration endpoint");
   });
 
+  test("configured project provisioners require the API audience", async () => {
+    const apiResource = "https://artifacts.example.test/api";
+    const verifier = new OidcMcpBearerVerifier({
+      audience: resource,
+      provisionerAudience: apiResource,
+      issuer,
+      jwksUri: `${issuer}/protocol/openid-connect/certs`,
+      serviceClients: ["tenant-cli"],
+      provisionerClients: ["tenant-cli"],
+    });
+    const apiToken = await issueToken({
+      audience: apiResource,
+      extraClaims: {
+        azp: "tenant-cli",
+        preferred_username: "service-account-tenant-cli",
+      },
+      profile: false,
+    });
+    const verified = await Effect.runPromise(
+      verifier.verify(Redacted.make(apiToken)),
+    );
+    const identity = await Effect.runPromise(
+      verifier.resolveIdentity(verified, Redacted.make(apiToken)),
+    );
+    expect(identity).toMatchObject({
+      provisionProjectsServiceAccount: true,
+      serviceAccount: true,
+    });
+
+    await expect(verifiedSubject(verifier, await issueToken({
+      extraClaims: {
+        azp: "tenant-cli",
+        preferred_username: "service-account-tenant-cli",
+      },
+      profile: false,
+    }))).rejects.toThrow("configured API resource");
+  });
+
   test("MCP-013-B: an end-user token authenticates once and keeps its own membership", async () => {
     expect.hasAssertions();
     const protectedMetadata = await fetch(
