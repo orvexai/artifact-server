@@ -5,6 +5,7 @@ import {z} from "zod";
 import {loadOidcConfiguration} from "../../src/cli/oidc-configuration.js";
 import {AuthenticationRequired} from "../../src/core/errors.js";
 import {SqliteIdentityRepository} from "../../src/storage/sqlite-identity-repository.js";
+import {SqliteArtifactRepository} from "../../src/storage/sqlite-artifact-repository.js";
 import {membershipRoles, principalCapabilities, principalKinds} from "../../src/core/identity.js";
 import {provisionerToolNames} from "../../src/mcp/provisioner-tools.js";
 import {
@@ -37,6 +38,8 @@ const provisioner = {
   kind: principalKinds.service,
   membershipRole: membershipRoles.member,
   serviceAccountSource: "oidc" as const,
+  serviceAccountClientId: "tenant-cli",
+  provisionerGroupPrefixes: ["/Tenant/"],
 };
 
 describe("OIDC project provisioner MCP boundary", () => {
@@ -68,6 +71,8 @@ describe("OIDC project provisioner MCP boundary", () => {
         groups: [
           {id: "g-tenant-cli", members: [{email: "cli@example.test", subject: "kc-cli"}], name: "CLI", path: "/Tenant/CLI"},
           {id: "g-tenant-support", members: [{email: "support@example.test", subject: "kc-support"}], name: "Support", path: "/Tenant/Support"},
+          {id: "g-admins", members: [], name: "Administrators", path: "/Administrators"},
+          {id: "g-devs", members: [], name: "Developers", path: "/Developers"},
         ],
         provider,
         syncedAt: "2026-11-12T00:00:00.000Z",
@@ -87,7 +92,9 @@ describe("OIDC project provisioner MCP boundary", () => {
       ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL: "admin@example.test",
       ARTIFACT_SERVER_ORIGIN: "https://artifacts.example.test",
       ARTIFACT_SERVER_OIDC_CLIENT_ID: "browser",
+      ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: "Tenant=operator",
       ARTIFACT_SERVER_OIDC_ISSUER: "https://auth.example.test",
+      ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES: "/Tenant/",
     };
     const configured = await loadOidcConfiguration({
       ...shared,
@@ -100,6 +107,42 @@ describe("OIDC project provisioner MCP boundary", () => {
       ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS: "tenant-cli",
       ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS: "other-service",
     })).rejects.toThrow("must also appear in ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS");
+    await expect(loadOidcConfiguration({
+      ...shared,
+      ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: "Tenant=operator",
+      ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES: "",
+      ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS: "tenant-cli",
+      ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS: "tenant-cli",
+    })).rejects.toThrow("requires non-empty ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES");
+    await expect(loadOidcConfiguration({
+      ...shared,
+      ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: undefined,
+      ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS: "tenant-cli",
+      ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES: "/Tenant/",
+      ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS: "tenant-cli",
+    })).rejects.toThrow("requires an OIDC group-roles policy");
+    await expect(loadOidcConfiguration({
+      ...shared,
+      ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: "Tenant=operator",
+      ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS: "browser",
+      ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES: "/Tenant/",
+      ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS: "browser",
+    })).rejects.toThrow("must not include the hosted-login or MCP OAuth client id");
+    await expect(loadOidcConfiguration({
+      ...shared,
+      ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: "Tenant=operator",
+      ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS: "tenant-cli",
+      ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES: "/Tenant//",
+      ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS: "tenant-cli",
+    })).rejects.toThrow("Every ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES entry");
+    await expect(loadOidcConfiguration({
+      ...shared,
+      ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: "Tenant=operator",
+      ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS: "tenant-cli",
+      ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES: "/Tenant/",
+      ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS: "tenant-cli",
+      ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS: "tenant-cli",
+    })).rejects.toThrow("must not overlap");
   });
 
   test("allows exactly five provisioner tools and creates a restricted two-group project", async () => {
@@ -108,6 +151,12 @@ describe("OIDC project provisioner MCP boundary", () => {
         .parse(result)["tools"].map(({name}) => name).toSorted()
     );
     expect(names).toEqual([...provisionerToolNames].toSorted());
+
+    const managerCreate = await call("oidc-tenant-cli", "tools/call", {
+      name: "project_create",
+      arguments: {name: "Rejected manager project", shareWith: [{group: "/Tenant/CLI", role: "manager"}]},
+    });
+    expect(managerCreate["isError"]).toBe(true);
 
     const listed = await call("oidc-tenant-cli", "tools/call", {
       name: "project_list", arguments: {},
@@ -119,7 +168,7 @@ describe("OIDC project provisioner MCP boundary", () => {
       arguments: {
         name: "Tenant project",
         shareWith: [
-          {group: "/Tenant/CLI", role: "manager"},
+          {group: "/Tenant/CLI", role: "editor"},
           {group: "/Tenant/Support", role: "viewer"},
         ],
       },
@@ -136,7 +185,7 @@ describe("OIDC project provisioner MCP boundary", () => {
     expect(sharing).toMatchObject({
       accessMode: "restricted",
       groups: [
-        {path: "/Tenant/CLI", role: "manager"},
+        {path: "/Tenant/CLI", role: "editor"},
         {path: "/Tenant/Support", role: "viewer"},
       ],
       yourRole: "manager",
@@ -146,7 +195,43 @@ describe("OIDC project provisioner MCP boundary", () => {
       arguments: {group: "Support", projectId: sharing.projectId, role: "editor"},
     });
     expect(bareGroup["isError"]).toBe(true);
-    expect(bareGroup["content"]?.[0]?.text).toContain("Input validation error");
+    expect(bareGroup["content"]?.[0]?.text).toContain("full group path");
+
+    const managerGrant = await call("oidc-tenant-cli", "tools/call", {
+      name: "project_share",
+      arguments: {group: "/Tenant/Support", projectId: sharing.projectId, role: "manager"},
+    });
+    expect(managerGrant["isError"]).toBe(true);
+    const installationAccess = await call("oidc-tenant-cli", "tools/call", {
+      name: "project_set_access",
+      arguments: {accessMode: "installation", projectId: sharing.projectId},
+    });
+    expect(installationAccess["isError"]).toBe(true);
+
+    for (const group of ["/Administrators", "/Developers"]) {
+      // oxlint-disable-next-line eslint/no-await-in-loop
+      const deniedInitialShare = await call("oidc-tenant-cli", "tools/call", {
+        name: "project_create",
+        arguments: {name: `Denied share to ${group}`, shareWith: [{group, role: "viewer"}]},
+      });
+      expect(deniedInitialShare["isError"]).toBe(true);
+      expect(deniedInitialShare["content"]?.[0]?.text).toContain("configured group prefixes");
+      // oxlint-disable-next-line eslint/no-await-in-loop
+      const deniedGroupShare = await call("oidc-tenant-cli", "tools/call", {
+        name: "project_share", arguments: {group, projectId: sharing.projectId, role: "editor"},
+      });
+      expect(deniedGroupShare["isError"]).toBe(true);
+      expect(deniedGroupShare["content"]?.[0]?.text).toContain("configured group prefixes");
+    }
+
+    const otherOpenProjectShare = await call("oidc-tenant-cli", "tools/call", {
+      name: "project_share", arguments: {group: "/Tenant/Support", projectId: "default", role: "editor"},
+    });
+    expect(otherOpenProjectShare["isError"]).toBe(true);
+    const otherOpenProjectRestrict = await call("oidc-tenant-cli", "tools/call", {
+      name: "project_set_access", arguments: {accessMode: "restricted", projectId: "default"},
+    });
+    expect(otherOpenProjectRestrict["isError"]).toBe(true);
 
     const details = await call("oidc-tenant-cli", "tools/call", {
       name: "project_sharing", arguments: {projectId: sharing.projectId},
@@ -174,6 +259,36 @@ describe("OIDC project provisioner MCP boundary", () => {
 
     const otherService = await mcpRequest("oidc-other-service", "tools/list", {});
     expect(otherService.status).toBe(403);
+
+    const resources = await call("oidc-tenant-cli", "tools/call", {
+      name: "resources/list", arguments: {},
+    });
+    expect(resources["content"]?.[0]?.text).toContain("Permission denied");
+    const prompts = await mcpRequest("oidc-tenant-cli", "prompts/list", {});
+    expect((await prompts.text())).toContain("Permission denied");
+
+    const batch = await mcpRequestRaw("oidc-tenant-cli", JSON.stringify([
+      {id: 1, jsonrpc: "2.0", method: "tools/list", params: {}},
+    ]));
+    expect(batch.status).toBe(200);
+    expect(await batch.text()).toContain("Permission denied");
+    const malformed = await mcpRequestRaw("oidc-tenant-cli", "{");
+    expect(malformed.status).toBe(200);
+    expect(await malformed.text()).toContain("Permission denied");
+
+    const repository = new SqliteArtifactRepository(`${installation.dataDirectory}/artifact-server.db`, "local");
+    try {
+      const audit = await repository.listProjectAuditEvents(sharing.projectId);
+      expect(audit.filter(({action}) => action === "create" || action === "share" || action === "set_access")).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({action: "create", clientId: "tenant-cli", principalId: provisioner.id}),
+          expect.objectContaining({action: "share", clientId: "tenant-cli", principalId: provisioner.id}),
+          expect.objectContaining({action: "set_access", clientId: "tenant-cli", principalId: provisioner.id}),
+        ]),
+      );
+    } finally {
+      repository.close();
+    }
   });
 
   async function call(
@@ -182,16 +297,26 @@ describe("OIDC project provisioner MCP boundary", () => {
     params: JsonObject,
   ) {
     const response = await mcpRequest(token, method, params);
-    const payload = await readJsonRpc(response);
+    const raw = await response.clone().text();
+    let payload: z.infer<typeof mcpEnvelopeSchema>;
+    try {
+      payload = await readJsonRpc(response);
+    } catch (cause) {
+      throw new Error(`MCP response ${response.status}: ${raw}`, {cause});
+    }
     if (!response.ok) {
-      throw new Error(`MCP request failed (${response.status}): ${JSON.stringify(payload)}`);
+      throw new Error(`MCP request failed (${response.status}): ${JSON.stringify(payload)} ${raw}`);
     }
     return payload.result;
   }
 
   async function mcpRequest(token: string, method: string, params: JsonObject) {
+    return mcpRequestRaw(token, JSON.stringify({id: 1, jsonrpc: "2.0", method, params}), method);
+  }
+
+  async function mcpRequestRaw(token: string, body: string, method = "tools/call") {
     return fetch(`${server.baseUrl}/mcp`, {
-      body: JSON.stringify({id: 1, jsonrpc: "2.0", method, params}),
+      body,
       headers: {
         Accept: "application/json, text/event-stream",
         Authorization: `Bearer ${token}`,

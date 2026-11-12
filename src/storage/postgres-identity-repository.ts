@@ -142,6 +142,7 @@ const projectGrantRoleSchema = z.enum(["viewer", "editor", "manager"]);
 const projectAccessRowSchema = z.object({
   access_mode: projectAccessModeSchema,
   created_by_member_id: z.string().nullable(),
+  created_by_principal_id: z.string().nullable(),
 });
 const projectGroupGrantRowSchema = z.object({
   grantedAt: z.string(),
@@ -423,13 +424,14 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     return this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const projects = yield* sql.unsafe<object>(
-        "SELECT access_mode, created_by_member_id FROM projects WHERE installation_id = $1 AND id = $2",
+        "SELECT access_mode, created_by_member_id, created_by_principal_id FROM projects WHERE installation_id = $1 AND id = $2",
         [installationId, projectId],
       );
       if (projects.length === 0) return null;
       const project = projectAccessRowSchema.parse(projects[0]);
       const accessMode = project.access_mode;
-      const isCreator = project.created_by_member_id === memberId;
+      const isCreator = project.created_by_member_id === memberId ||
+        project.created_by_principal_id === memberId;
       const members = yield* sql.unsafe<object>(
         `SELECT email, role, status FROM installation_members
          WHERE installation_id = $1 AND id = $2`,

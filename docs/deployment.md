@@ -141,16 +141,25 @@ in, list its exact client ID in both `ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS`
 `ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS`
 (`identity.oidcProvisionerClients`). Startup fails if a provisioner is missing
 from the service-client list. Both settings default to empty. The Helm values
-schema checks their shape; configure the same IDs in the identity provider.
+schema checks their shape. A provisioner cannot also be an embed-binding client
+or the hosted-login/MCP OAuth client. Provisioners also require an OIDC
+group-role policy and `ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES`
+(`identity.oidcProvisionerGroupPrefixes` in Helm). Prefixes use the strict
+full-path form `^(/[^/\\s]+)+/$`; configure the intended production prefixes
+`/Guests/` and `/TenantWorkspaces/`. Both lists default to empty.
 
 An opted-in client must still be admitted by the configured directory group
-roles. Its verified service-account token must use the API resource audience
-(`<ARTIFACT_SERVER_ORIGIN>/api`). In MCP, the client can list projects and use
-only `project_create`, `project_sharing`, `project_share`, and
-`project_set_access`; all other tools are denied. Project ownership, manager
-permissions, restricted visibility and group grants use the normal project
-authorization rules. Pass existing directory groups by their full paths, such
-as `/Tenants/Acme/Operators`, in `shareWith` and `project_share`.
+roles with at least the Operator/member role. Its verified service-account
+token must use the API resource audience (`<ARTIFACT_SERVER_ORIGIN>/api`). In
+MCP, the client can call only `project_list`, `project_create`,
+`project_sharing`, `project_share`, and `project_set_access`; tools/list exposes
+only those five. MCP resources and prompts are unavailable to provisioners.
+Project creation is restricted and records the service principal as creator.
+The creator can manage its own projects, while other projects still require the
+normal project role. A provisioner cannot open projects to the installation or
+grant manager roles. Every shared group must use an existing full path beneath
+one of the configured prefixes. Each provisioner create/share/access change
+records an audit event with its principal and client IDs.
 
 This setting grants no API-key capability. The existing `/api` service-bearer
 restriction remains in force.

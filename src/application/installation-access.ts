@@ -54,6 +54,7 @@ import {
   isAdministratorRole,
   isHumanAdministrator,
   membershipRoles,
+  membershipRoleAtLeast,
   principalCapabilities,
   principalKinds,
   type MembershipRole,
@@ -1166,7 +1167,8 @@ function makeInstallationAccessService(
           ...(identity.embedBindingServiceAccount === true
             ? [principalCapabilities.bindArtifactEmbed]
             : []),
-          ...(identity.provisionProjectsServiceAccount === true
+          ...(identity.provisionProjectsServiceAccount === true &&
+              membershipRoleAtLeast(role, membershipRoles.member)
             ? [principalCapabilities.provisionProjects]
             : []),
         ],
@@ -1177,6 +1179,8 @@ function makeInstallationAccessService(
         installationId: dependencies.installationId,
         kind: principalKinds.service,
         membershipRole: role,
+        provisionerGroupPrefixes: identity.provisionerGroupPrefixes ?? [],
+        serviceAccountClientId: identity.serviceAccountClientId,
         serviceAccountSource: "oidc" as const,
       };
     }

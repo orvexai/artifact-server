@@ -177,8 +177,8 @@ const listedProjectSchema = projectProjectionSchema.extend({
   yourRole: projectRoleSchema.nullable(),
 }).strict();
 const projectGroupReferenceSchema = z.string().trim().min(1).max(500)
-  .regex(/^\/[^/]+(?:\/[^/]+)*$/u).describe(
-    "A directory group's full path such as /Engineering/Platform. group_list shows the paths.",
+  .describe(
+    "A directory group's ID, full path, or unique name. Provisioners must use a full path.",
   );
 const projectSharingSchema = z.object({
   accessMode: projectAccessModeSchema,
@@ -489,6 +489,8 @@ export function createArtifactMcpServer(
       instructions: agentInstructions(dependencies.mode),
     },
   );
+  const isProvisioner = identity.principal.serviceAccountSource === "oidc" &&
+    identity.principal.capabilities.includes(principalCapabilities.provisionProjects);
 
   /**
    * Keep the verified OAuth client as the durable actor and use the MCP
@@ -535,8 +537,7 @@ export function createArtifactMcpServer(
     callback: ToolCallback<InputArgs>,
   ): void {
     if (
-      identity.principal.serviceAccountSource === "oidc" &&
-      identity.principal.capabilities.includes(principalCapabilities.provisionProjects) &&
+      isProvisioner &&
       !provisionerToolAllowList.has(name)
     ) return;
     const registered = server.registerTool(name, config, callback);
@@ -829,7 +830,7 @@ export function createArtifactMcpServer(
         name: z.string().trim().min(1).max(120),
         shareWith: z.array(z.object({
           group: projectGroupReferenceSchema,
-          role: projectGrantRoleSchema.describe(
+          role: (isProvisioner ? z.enum(["viewer", "editor"]) : projectGrantRoleSchema).describe(
             "viewer reads and comments; editor also publishes and manages artifacts; manager also renames, archives and shares the project.",
           ),
         }).strict()).max(50).optional(),
@@ -892,7 +893,7 @@ export function createArtifactMcpServer(
       inputSchema: z.object({
         group: projectGroupReferenceSchema,
         projectId: projectIdSchema,
-        role: projectGrantRoleSchema,
+        role: isProvisioner ? z.enum(["viewer", "editor"]) : projectGrantRoleSchema,
       }).strict(),
       outputSchema: z.object({sharing: projectSharingSchema}).strict(),
       annotations: idempotentWriteAnnotations,
@@ -937,7 +938,7 @@ export function createArtifactMcpServer(
       description:
         "Set a project's access mode: restricted (only administrators and the groups it is shared with) or installation (every member). Needs the manager role on the project.",
       inputSchema: z.object({
-        accessMode: projectAccessModeSchema,
+        accessMode: isProvisioner ? z.literal("restricted") : projectAccessModeSchema,
         projectId: projectIdSchema,
       }).strict(),
       outputSchema: z.object({sharing: projectSharingSchema}).strict(),
@@ -2816,7 +2817,7 @@ export function createArtifactMcpServer(
     }, mailboxSummary),
   );
 
-  server.registerResource(
+  if (!isProvisioner) server.registerResource(
     "artifact-version-manifest",
     manifestResource,
     {

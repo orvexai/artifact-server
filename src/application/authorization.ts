@@ -294,8 +294,7 @@ function makeAuthorizationService(
     yield* requireInstallation(principal);
     if (
       isHumanAdministrator(principal) ||
-      hasCapability(principal, principalCapabilities.manageProjects) ||
-      hasCapability(principal, principalCapabilities.provisionProjects)
+      hasCapability(principal, principalCapabilities.manageProjects)
     ) {
       return;
     }

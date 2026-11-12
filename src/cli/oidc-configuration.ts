@@ -39,6 +39,7 @@ const oidcEnvironmentSchema = z.object({
   ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS: z.string().optional(),
   ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS: z.string().optional(),
   ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS: z.string().optional(),
+  ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES: z.string().optional(),
   ARTIFACT_SERVER_ORIGIN: z.url().optional(),
 });
 
@@ -67,6 +68,7 @@ export interface OidcConfiguration {
   readonly embedBindingClients: readonly string[];
   /** Subset of service clients allowed to provision restricted projects. */
   readonly provisionerClients: readonly string[];
+  readonly provisionerGroupPrefixes: readonly string[];
   /** Issuer groups that admit people and set their role; null keeps it manual. */
   readonly groupRoles: OidcGroupRoles | null;
   readonly guestGroupPrefixes: readonly string[];
@@ -82,6 +84,10 @@ export async function loadOidcConfiguration(
 ): Promise<OidcConfiguration | null> {
   const parsed = oidcEnvironmentSchema.parse(environment);
   const guestGroupPrefixes = guestGroupPrefixesFrom(parsed.ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES);
+  const provisionerGroupPrefixes = groupPrefixesFrom(
+    parsed.ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES,
+    "ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES",
+  );
   const configuredGroupRoles = oidcGroupRoles(parsed);
   if (guestGroupPrefixes.length > 0 && configuredGroupRoles === null) {
     throw new Error(
@@ -116,6 +122,7 @@ export async function loadOidcConfiguration(
     && (parsed.ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS ?? "").trim() === ""
     && (parsed.ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS ?? "").trim() === ""
     && (parsed.ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS ?? "").trim() === ""
+    && (parsed.ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES ?? "").trim() === ""
   ) {
     return null;
   }
@@ -152,6 +159,18 @@ export async function loadOidcConfiguration(
     .split(",").map((client) => client.trim()).filter(Boolean);
   const provisionerClients = (parsed.ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS ?? "")
     .split(",").map((client) => client.trim()).filter(Boolean);
+  if (provisionerClients.length > 0 && provisionerGroupPrefixes.length === 0) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS requires non-empty ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES.",
+    );
+  }
+  if (
+    provisionerClients.some((client) => client === requireString(parsed.ARTIFACT_SERVER_OIDC_CLIENT_ID))
+  ) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS must not include the hosted-login or MCP OAuth client id.",
+    );
+  }
   if (embedBindingClients.some((client) => !serviceClients.includes(client))) {
     throw new Error(
       "Every ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS entry must also appear in ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS.",
@@ -160,6 +179,16 @@ export async function loadOidcConfiguration(
   if (provisionerClients.some((client) => !serviceClients.includes(client))) {
     throw new Error(
       "Every ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS entry must also appear in ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS.",
+    );
+  }
+  if (provisionerClients.some((client) => embedBindingClients.includes(client))) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS and ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS must not overlap.",
+    );
+  }
+  if (provisionerClients.length > 0 && configuredGroupRoles === null) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS requires an OIDC group-roles policy.",
     );
   }
   return {
@@ -179,6 +208,7 @@ export async function loadOidcConfiguration(
     ),
     embedBindingClients,
     provisionerClients,
+    provisionerGroupPrefixes,
     groupRoles,
     guestGroupPrefixes,
     issuer,
@@ -188,11 +218,18 @@ export async function loadOidcConfiguration(
 }
 
 function guestGroupPrefixesFrom(value: string | undefined): readonly string[] {
+  return groupPrefixesFrom(value, "ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES");
+}
+
+function groupPrefixesFrom(
+  value: string | undefined,
+  variableName: string,
+): readonly string[] {
   if (value === undefined || value.trim() === "") return [];
   const prefixes = value.split(",").map((prefix) => prefix.trim());
   if (prefixes.some((prefix) => !guestGroupPrefixPattern.test(prefix))) {
     throw new Error(
-      "Every ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES entry must match ^(/[^/\\s]+)+/$, such as '/Guests/'.",
+      `Every ${variableName} entry must match ^(/[^/\\s]+)+/$, such as '/Guests/'.`,
     );
   }
   return [...new Set(prefixes)];

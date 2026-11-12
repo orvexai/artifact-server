@@ -70,6 +70,8 @@ export interface Principal {
   readonly authorizedByPrincipalId: string | null;
   /** OAuth client ID verified by the MCP bearer boundary, when applicable. */
   readonly actorClientId?: string | null;
+  /** Verified OIDC client-credentials client ID for a service principal. */
+  readonly serviceAccountClientId?: string | undefined;
   readonly capabilities: readonly PrincipalCapability[];
   /** Name captured with every write this principal makes; never re-read later. */
   readonly displayName: string;
@@ -81,6 +83,8 @@ export interface Principal {
   readonly membershipRole: MembershipRole;
   /** Directory group IDs carried by a constrained OIDC service identity. */
   readonly directoryGroupIds?: readonly string[] | undefined;
+  /** Full path prefixes eligible for this configured project provisioner. */
+  readonly provisionerGroupPrefixes?: readonly string[] | undefined;
   /** Marks an OIDC client-credentials principal with group-bound access. */
   readonly serviceAccountSource?: "oidc" | undefined;
 }

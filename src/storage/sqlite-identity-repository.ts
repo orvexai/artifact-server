@@ -60,6 +60,7 @@ const projectGrantRoleSchema = z.enum(["viewer", "editor", "manager"]);
 const projectAccessRowSchema = z.object({
   access_mode: projectAccessModeSchema,
   created_by_member_id: z.string().nullable(),
+  created_by_principal_id: z.string().nullable(),
 });
 const projectGroupGrantRowSchema = z.object({
   grantedAt: z.string(),
@@ -658,12 +659,13 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     // One SQLite file is one installation and project ids are its primary
     // key; the artifact repository owns the row's installation label.
     const project = this.#database.prepare(
-      "SELECT access_mode, created_by_member_id FROM projects WHERE id = ?",
+      "SELECT access_mode, created_by_member_id, created_by_principal_id FROM projects WHERE id = ?",
     ).get(projectId);
     if (project === undefined) return null;
     const projectRow = projectAccessRowSchema.parse(project);
     const accessMode = projectRow.access_mode;
-    const isCreator = projectRow.created_by_member_id === memberId;
+    const isCreator = projectRow.created_by_member_id === memberId ||
+      projectRow.created_by_principal_id === memberId;
     const row = this.#database.prepare(
       "SELECT email, role, status FROM installation_members WHERE installation_id = ? AND id = ?",
     ).get(installationId, memberId);

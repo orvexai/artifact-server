@@ -168,6 +168,131 @@ describe("generic OIDC MCP authorization", () => {
     }))).rejects.toThrow("configured API resource");
   });
 
+  test("a human token using a provisioner azp is refused and never falls back to userinfo", async () => {
+    const apiResource = "https://artifacts.example.test/api";
+    const verifier = new OidcMcpBearerVerifier({
+      audience: resource,
+      provisionerAudience: apiResource,
+      issuer,
+      jwksUri: `${issuer}/protocol/openid-connect/certs`,
+      serviceClients: ["tenant-cli"],
+      provisionerClients: ["tenant-cli"],
+      userInfoEndpoint: `${issuer}/protocol/openid-connect/userinfo`,
+    });
+    const humanToken = await issueToken({
+      audience: apiResource,
+      extraClaims: {
+        azp: "tenant-cli",
+        email: userEmail,
+        preferred_username: "daniel",
+      },
+    });
+    await server.stop();
+    const authorizationServer = await loadOidcAuthorizationServer(issuer);
+    server = await startTestServer(installation, {
+      bootstrapAdministratorEmail: userEmail,
+      externalMcpOAuthVerifier: verifier,
+      mcpOAuthResource: {authorizationServerMetadata: authorizationServer.metadata, resource},
+    });
+    expect((await mcpDiscovery(await issueToken({}))).status).toBe(200);
+    const refusedAtMcp = await fetch(`${server.baseUrl}/mcp`, {
+      body: JSON.stringify({id: 1, jsonrpc: "2.0", method: "tools/list", params: {}}),
+      headers: {
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${humanToken}`,
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": protocolVersion,
+        "Mcp-Method": "tools/list",
+      },
+      method: "POST",
+    });
+    expect(refusedAtMcp.status).toBe(401);
+    const verified = await Effect.runPromise(verifier.verify(Redacted.make(humanToken)));
+    await expect(Effect.runPromise(
+      verifier.resolveIdentity(verified, Redacted.make(humanToken)),
+    )).rejects.toThrow("must not contain an email identity");
+    expect(provider.userInfoRequests()).toBe(0);
+
+    const wrongServiceName = await issueToken({
+      audience: apiResource,
+      extraClaims: {
+        azp: "tenant-cli",
+        preferred_username: "tenant-cli",
+      },
+      profile: false,
+    });
+    const wrongVerified = await Effect.runPromise(verifier.verify(Redacted.make(wrongServiceName)));
+    await expect(Effect.runPromise(
+      verifier.resolveIdentity(wrongVerified, Redacted.make(wrongServiceName)),
+    )).rejects.toThrow("must identify its configured service account");
+    expect(provider.userInfoRequests()).toBe(0);
+  });
+
+  test("provisioning capability requires at least the Operator group role", async () => {
+    await server.stop();
+    const authorizationServer = await loadOidcAuthorizationServer(issuer);
+    const apiResource = "https://artifacts.example.test/api";
+    server = await startTestServer(installation, {
+      bootstrapAdministratorEmail: userEmail,
+      externalMcpOAuthVerifier: new OidcMcpBearerVerifier({
+        audience: resource,
+        provisionerAudience: apiResource,
+        issuer,
+        jwksUri: authorizationServer.jwksUri,
+        groupsClaim: "groups",
+        serviceClients: ["tenant-cli"],
+        provisionerClients: ["tenant-cli"],
+        provisionerGroupPrefixes: ["/Tenant/"],
+      }),
+      groupRolePolicy: {
+        seed: [
+          {role: "member", selector: "/Tenant/Operator"},
+          {role: "viewer", selector: "/Tenant/Viewer"},
+          {role: "guest", selector: "/Tenant/Guest"},
+        ],
+      },
+      mcpOAuthResource: {authorizationServerMetadata: authorizationServer.metadata, resource},
+    });
+
+    const groupNames = ["/Tenant/Operator", "/Tenant/Viewer", "/Tenant/Guest"] as const;
+    const responses = await Promise.all(groupNames.map(async (group) => {
+      const token = await issueToken({
+        audience: apiResource,
+        extraClaims: {azp: "tenant-cli", preferred_username: "service-account-tenant-cli"},
+        groups: [group],
+        profile: false,
+      });
+      return fetch(`${server.baseUrl}/mcp`, {
+        body: JSON.stringify({
+          id: 1,
+          jsonrpc: "2.0",
+          method: "tools/list",
+          params: {_meta: {
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+            [CLIENT_INFO_META_KEY]: {name: "oidc-provisioner-test", version: "1"},
+            [PROTOCOL_VERSION_META_KEY]: protocolVersion,
+          }},
+        }),
+        headers: {
+          Accept: "application/json, text/event-stream",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "MCP-Protocol-Version": protocolVersion,
+          "Mcp-Method": "tools/list",
+        },
+        method: "POST",
+      });
+    }));
+    expect(responses.map(({status}) => status)).toEqual([200, 403, 403]);
+    const operatorResponse = responses[0];
+    if (operatorResponse === undefined) throw new Error("Missing Operator response.");
+    const payload: unknown = await operatorResponse.json();
+    expect(z.object({result: z.object({tools: z.array(z.object({name: z.string()}))})})
+      .parse(payload).result.tools.map(({name}) => name).toSorted()).toEqual([
+        "project_create", "project_list", "project_set_access", "project_share", "project_sharing",
+      ]);
+  });
+
   test("MCP-013-B: an end-user token authenticates once and keeps its own membership", async () => {
     expect.hasAssertions();
     const protectedMetadata = await fetch(

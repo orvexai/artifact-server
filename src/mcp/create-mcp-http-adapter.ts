@@ -50,7 +50,9 @@ const principalSchema = z.object({
   ])),
   email: z.string().nullable().optional(),
   directoryGroupIds: z.array(z.string()).optional(),
+  provisionerGroupPrefixes: z.array(z.string()).optional(),
   serviceAccountSource: z.literal("oidc").optional(),
+  serviceAccountClientId: z.string().min(1).optional(),
   displayName: z.string().min(1),
   id: z.string().min(1),
   installationId: z.string().min(1),
@@ -166,10 +168,10 @@ export function createMcpHttpAdapter(
         provisioner.success &&
         provisioner.data.capabilities.includes(principalCapabilities.provisionProjects)
       ) {
-        const deniedTool = await deniedProvisionerTool(request, provisionerToolAllowList);
-        if (deniedTool !== null) {
+        const deniedRequest = await deniedProvisionerTool(request, provisionerToolAllowList);
+        if (deniedRequest !== null) {
           return Response.json({
-            id: deniedTool.id,
+            id: deniedRequest.id,
             jsonrpc: "2.0",
             result: {
               content: [{
@@ -192,16 +194,22 @@ async function deniedProvisionerTool(
 ): Promise<{id: unknown} | null> {
   try {
     const body: unknown = await request.clone().json();
-    const call = z.object({
-      id: z.unknown(),
-      method: z.literal("tools/call"),
-      params: z.object({name: z.string()}).passthrough(),
+    if (Array.isArray(body)) return {id: null};
+    const envelope = z.object({
+      id: z.unknown().optional(),
+      jsonrpc: z.literal("2.0"),
+      method: z.string(),
+      params: z.unknown().optional(),
     }).passthrough().safeParse(body);
-    return call.success && !allowedTools.has(call.data.params.name)
-      ? {id: call.data.id}
-      : null;
+    if (!envelope.success) return {id: null};
+    if (envelope.data.method === "tools/list") return null;
+    if (envelope.data.method !== "tools/call") return {id: envelope.data.id ?? null};
+    const params = z.object({name: z.string()}).passthrough().safeParse(envelope.data.params);
+    return params.success && allowedTools.has(params.data.name)
+      ? null
+      : {id: envelope.data.id ?? null};
   } catch {
-    return null;
+    return {id: null};
   }
 }
 
@@ -248,7 +256,13 @@ async function authenticateToken(
     );
     if (
       authenticated.principal.serviceAccountSource === "oidc" &&
-      !authenticated.principal.capabilities.includes(principalCapabilities.provisionProjects)
+      (
+        authenticated.principal.kind !== principalKinds.service ||
+        !authenticated.principal.capabilities.includes(principalCapabilities.provisionProjects) ||
+        authenticated.principal.serviceAccountClientId === undefined ||
+        (authenticated.oauthClientId !== undefined && authenticated.oauthClientId !== null &&
+          authenticated.principal.serviceAccountClientId !== authenticated.oauthClientId)
+      )
     ) {
       throw new OAuthError(
         OAuthErrorCode.InsufficientScope,

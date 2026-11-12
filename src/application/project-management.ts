@@ -32,7 +32,7 @@ import {
   projectRoleAtLeast,
 } from "../core/project-access.js";
 import type {StoredDirectoryGroup} from "../core/directory-groups.js";
-import type {ProjectAuditEvent, ProjectRecord} from "../core/model.js";
+import type {ProjectAuditEvent, ProjectProvisionerAuditEvent, ProjectRecord} from "../core/model.js";
 import type {
   CreateProject,
   IdGenerator,
@@ -132,6 +132,9 @@ export interface ProjectManagementRepository {
   readonly listProjectAuditEvents: (
     projectId: string,
   ) => Effect.Effect<readonly ProjectAuditEvent[], ArtifactRepositoryFailure>;
+  readonly recordProjectProvisionerAuditEvent: (
+    event: ProjectProvisionerAuditEvent,
+  ) => Effect.Effect<void, ArtifactRepositoryFailure>;
   readonly renameProject: (
     command: RenameProject,
   ) => Effect.Effect<ProjectRecord, ProjectNotFound | ArtifactRepositoryFailure>;
@@ -333,7 +336,8 @@ function makeProjectManagementService(
         found.access.mode === "installation" && found.access.isCreator &&
         (isDirectHumanPrincipal(principal) ||
           hasCapability(principal, principalCapabilities.manageProjects) ||
-          hasCapability(principal, principalCapabilities.provisionProjects))
+          (hasCapability(principal, principalCapabilities.provisionProjects) &&
+            found.access.isCreator))
       ) {
         return found.project;
       }
@@ -343,7 +347,8 @@ function makeProjectManagementService(
       found.access.role === "manager" &&
       (isDirectHumanPrincipal(principal) ||
         hasCapability(principal, principalCapabilities.manageProjects) ||
-        hasCapability(principal, principalCapabilities.provisionProjects))
+        (hasCapability(principal, principalCapabilities.provisionProjects) &&
+          found.access.isCreator === true))
     ) {
       return found.project;
     }
@@ -489,6 +494,44 @@ function makeProjectManagementService(
     },
   );
 
+  const validateProvisionerGroup = Effect.fn(
+    "ProjectManagementService.validateProvisionerGroup",
+  )(function*(principal: Principal, reference: string, group: StoredDirectoryGroup) {
+    if (!hasCapability(principal, principalCapabilities.provisionProjects)) return;
+    const prefixes = principal.provisionerGroupPrefixes ?? [];
+    if (
+      !reference.startsWith("/") ||
+      !prefixes.some((prefix) => group.path.startsWith(prefix))
+    ) {
+      yield* Effect.fail(new AuthorizationDenied({
+        message: "Provisioners may share only by full group path within their configured group prefixes.",
+      }));
+    }
+  });
+
+  const recordProvisionerAudit = Effect.fn(
+    "ProjectManagementService.recordProvisionerAudit",
+  )(function*(principal: Principal, projectId: string, action: "create" | "share" | "set_access", details: Readonly<Record<string, string>>) {
+    if (!hasCapability(principal, principalCapabilities.provisionProjects)) return;
+    const clientId = principal.serviceAccountClientId;
+    if (clientId === undefined) {
+      yield* Effect.fail(new AuthorizationDenied({
+        message: "Provisioner activity requires a verified service client identity.",
+      }));
+      return;
+    }
+    const event: ProjectProvisionerAuditEvent = {
+      action,
+      actorDisplayName: principal.displayName,
+      clientId,
+      createdAt: DateTime.formatIso(yield* dependencies.clock.now),
+      details: JSON.stringify(details),
+      principalId: principal.id,
+      projectId,
+    };
+    yield* dependencies.repository.recordProjectProvisionerAuditEvent(event);
+  });
+
   const createProject = Effect.fn("ProjectManagementService.createProject")(
     function*(command: CreateProjectCommand) {
       yield* requireProjectCreation(command.principal);
@@ -498,7 +541,11 @@ function makeProjectManagementService(
       const directory = shares.length === 0 ? [] : yield* access.listDirectoryGroups();
       const grants: {readonly groupId: string; readonly role: ProjectGrantRole}[] = [];
       for (const share of shares) {
+        if (hasCapability(command.principal, principalCapabilities.provisionProjects) && share.role === "manager") {
+          return yield* new AuthorizationDenied({message: "Provisioners may grant at most the editor role."});
+        }
         const group = yield* resolveGroup(share.group, directory);
+        yield* validateProvisionerGroup(command.principal, share.group, group);
         grants.push({groupId: group.id, role: share.role});
       }
       const createdAt = DateTime.formatIso(yield* dependencies.clock.now);
@@ -512,10 +559,12 @@ function makeProjectManagementService(
         createdByMemberId: command.principal.kind === principalKinds.human
           ? command.principal.id
           : null,
+        createdByPrincipalId: command.principal.id,
         id: dependencies.ids.projectId(),
         installationId: dependencies.installationId,
         name,
       });
+      yield* recordProvisionerAudit(command.principal, project.id, "create", {name});
       // The project exists now, so a share that fails (its group was just
       // removed by directory sync) must not report the whole create as
       // failed: the caller reads the shares that took effect from sharing.
@@ -531,6 +580,14 @@ function makeProjectManagementService(
             `Project ${project.id} was created but not shared with ${grant.groupId}: ${failure.operation}`,
           )
         ));
+        const group = directory.find((candidate) => candidate.id === grant.groupId);
+        if (group !== undefined) {
+          yield* recordProvisionerAudit(command.principal, project.id, "share", {
+            groupId: group.id,
+            groupPath: group.path,
+            role: grant.role,
+          });
+        }
       }
       yield* Effect.annotateCurrentSpan({"artifact.project.id": project.id});
       return project;
@@ -615,21 +672,42 @@ function makeProjectManagementService(
 
   const setAccessMode = Effect.fn("ProjectManagementService.setAccessMode")(
     function*(command: SetProjectAccessCommand) {
+      if (
+        hasCapability(command.principal, principalCapabilities.provisionProjects) &&
+        command.accessMode !== "restricted"
+      ) {
+        return yield* new AuthorizationDenied({message: "Provisioners may set project access only to restricted."});
+      }
       const project = yield* requireManagedProject(command.principal, command.projectId);
       yield* access.projectSharing.setAccessMode(project.id, command.accessMode);
+      yield* recordProvisionerAudit(command.principal, project.id, "set_access", {
+        accessMode: command.accessMode,
+      });
       return yield* sharingAfterChange(command.principal, project);
     },
   );
 
   const shareWithGroup = Effect.fn("ProjectManagementService.shareWithGroup")(
     function*(command: ShareProjectCommand) {
+      if (
+        hasCapability(command.principal, principalCapabilities.provisionProjects) &&
+        command.role === "manager"
+      ) {
+        return yield* new AuthorizationDenied({message: "Provisioners may grant at most the editor role."});
+      }
       const project = yield* requireManagedProject(command.principal, command.projectId);
       const group = yield* resolveGroup(command.group, yield* access.listDirectoryGroups());
+      yield* validateProvisionerGroup(command.principal, command.group, group);
       yield* access.projectSharing.put({
         grantedAt: DateTime.formatIso(yield* dependencies.clock.now),
         grantedByPrincipalId: command.principal.id,
         groupId: group.id,
         projectId: project.id,
+        role: command.role,
+      });
+      yield* recordProvisionerAudit(command.principal, project.id, "share", {
+        groupId: group.id,
+        groupPath: group.path,
         role: command.role,
       });
       return yield* sharingAfterChange(command.principal, project);

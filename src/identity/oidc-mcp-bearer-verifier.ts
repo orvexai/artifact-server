@@ -89,6 +89,8 @@ export interface OidcMcpBearerVerifierConfig {
   readonly embedBindingClients?: readonly string[];
   /** Subset of service clients permitted to provision restricted projects. */
   readonly provisionerClients?: readonly string[];
+  /** Full directory-group path prefixes the provisioners may share with. */
+  readonly provisionerGroupPrefixes?: readonly string[];
   readonly userInfoEndpoint?: string | null;
 }
 
@@ -105,6 +107,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
   readonly #serviceClients: ReadonlySet<string>;
   readonly #embedBindingClients: ReadonlySet<string>;
   readonly #provisionerClients: ReadonlySet<string>;
+  readonly #provisionerGroupPrefixes: readonly string[];
   readonly #userInfoEndpoint: string | null;
 
   constructor(config: OidcMcpBearerVerifierConfig) {
@@ -121,6 +124,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
     this.#serviceClients = new Set(config.serviceClients ?? []);
     this.#embedBindingClients = new Set(config.embedBindingClients ?? []);
     this.#provisionerClients = new Set(config.provisionerClients ?? []);
+    this.#provisionerGroupPrefixes = [...(config.provisionerGroupPrefixes ?? [])];
     this.#userInfoEndpoint = config.userInfoEndpoint ?? null;
     this.#jwks = createRemoteJWKSet(new URL(config.jwksUri), {
       cacheMaxAge: jwksCacheMilliseconds,
@@ -148,6 +152,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
       const verified: VerifiedExternalMcpBearer = {
         clientId,
         expiresAt: claims.exp,
+        provisionerClient: this.#provisionerClients.has(clientId),
         provider: this.#provider,
         scopes: tokenScopes(claims.scope),
         subject: claims.sub,
@@ -173,8 +178,38 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
       }
       const groups = yield* readOidcGroupsClaim(payload, this.#groupsClaim);
       const email = emailOf(claims);
-      if (email !== null) return this.#identityOf(claims, email, groups);
       const clientId = claims.azp ?? claims.client_id;
+      const provisioner = clientId !== undefined &&
+        this.#provisionerClients.has(clientId);
+      if (provisioner && clientId !== undefined) {
+        if (email !== null) {
+          return yield* invalidToken(
+            "An OIDC project provisioner token must not contain an email identity.",
+          );
+        }
+        if (
+          !this.#serviceClients.has(clientId) ||
+          claims.preferred_username !== `service-account-${clientId}`
+        ) {
+          return yield* invalidToken(
+            "An OIDC project provisioner token must identify its configured service account.",
+          );
+        }
+        return {
+          displayName: clientId,
+          email: null,
+          emailVerified: false,
+          embedBindingServiceAccount: false,
+          provisionProjectsServiceAccount: true,
+          provisionerGroupPrefixes: this.#provisionerGroupPrefixes,
+          serviceAccountClientId: clientId,
+          groups,
+          provider: this.#provider,
+          serviceAccount: true,
+          subject: claims.sub,
+        };
+      }
+      if (email !== null) return this.#identityOf(claims, email, groups);
       if (
         clientId !== undefined && this.#serviceClients.has(clientId) &&
         claims.preferred_username === `service-account-${clientId}`
@@ -185,6 +220,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
           emailVerified: false,
           embedBindingServiceAccount: this.#embedBindingClients.has(clientId),
           provisionProjectsServiceAccount: this.#provisionerClients.has(clientId),
+          serviceAccountClientId: clientId,
           groups,
           provider: this.#provider,
           serviceAccount: true,

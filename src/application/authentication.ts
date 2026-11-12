@@ -31,6 +31,8 @@ export type AuthenticationFailure =
 export interface VerifiedExternalMcpBearer {
   readonly clientId: string;
   readonly expiresAt: number;
+  /** The verified OAuth client is configured for restricted project provisioning. */
+  readonly provisionerClient?: boolean;
   readonly provider: string;
   readonly scopes: readonly string[];
   readonly subject: string;

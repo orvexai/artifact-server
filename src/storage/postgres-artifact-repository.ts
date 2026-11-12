@@ -69,6 +69,7 @@ import {
   defaultProjectName,
   type PublishedVersion,
   type ProjectAuditEvent,
+  type ProjectProvisionerAuditEvent,
   type ProjectRecord,
   type RegisteredAgentPresence,
   type RegisteredAgentRecord,
@@ -608,11 +609,11 @@ export class PostgresArtifactRepository implements
       const sql = yield* SqlClient;
       return yield* sql`INSERT INTO projects (
           installation_id, id, name, created_at, archived_at, created_by_member_id,
-          access_mode
+          created_by_principal_id, access_mode
         ) VALUES (
           ${installationId}, ${command.id}, ${command.name},
           ${command.createdAt}, ${command.archivedAt}, ${command.createdByMemberId},
-          ${command.accessMode}
+          ${command.createdByPrincipalId}, ${command.accessMode}
         ) ON CONFLICT (installation_id, id) DO NOTHING
         RETURNING installation_id AS "installationId", id, name,
           created_at AS "createdAt", archived_at AS "archivedAt"`;
@@ -1290,20 +1291,43 @@ export class PostgresArtifactRepository implements
         SELECT id, project_id AS "projectId", action,
           principal_id AS "principalId",
           authorized_by_principal_id AS "authorizedByPrincipalId",
-          actor_display_name AS "actorDisplayName", created_at AS "createdAt"
+          actor_display_name AS "actorDisplayName", NULL AS "clientId",
+          NULL AS details, created_at AS "createdAt"
         FROM project_archive_events
         WHERE installation_id = $1 AND project_id = $2
-        ORDER BY created_at DESC, id DESC
+        UNION ALL
+        SELECT -id AS id, project_id AS "projectId", action, principal_id AS "principalId",
+          NULL AS "authorizedByPrincipalId", actor_display_name AS "actorDisplayName",
+          client_id AS "clientId", details_json AS details, created_at AS "createdAt"
+        FROM project_provisioner_audit_events
+        WHERE installation_id = $1 AND project_id = $2
+        ORDER BY "createdAt" DESC, id DESC
       `, [installationId, projectId]);
       return z.array(z.object({
-        action: z.enum(["archive", "unarchive"]),
+        action: z.enum(["archive", "unarchive", "create", "share", "set_access"]),
         actorDisplayName: z.string(),
         authorizedByPrincipalId: z.string().nullable(),
+        clientId: z.string().nullable(),
         createdAt: z.string(),
+        details: z.string().nullable(),
         id: z.number().int(),
         principalId: z.string(),
         projectId: z.string(),
       })).parse(rows);
+    }));
+  }
+
+  async recordProjectProvisionerAuditEvent(event: ProjectProvisionerAuditEvent): Promise<void> {
+    const installationId = this.#installationId;
+    await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      yield* sql`INSERT INTO project_provisioner_audit_events (
+        installation_id, project_id, action, principal_id, client_id,
+        actor_display_name, details_json, created_at
+      ) VALUES (
+        ${installationId}, ${event.projectId}, ${event.action}, ${event.principalId},
+        ${event.clientId}, ${event.actorDisplayName}, ${event.details}, ${event.createdAt}
+      )`;
     }));
   }
 

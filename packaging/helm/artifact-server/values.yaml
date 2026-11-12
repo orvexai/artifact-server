@@ -57,6 +57,9 @@ identity:
   # Subset of oidcServiceClients allowed to use the five project provisioner MCP tools.
   # Entries are sent as ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS.
   oidcProvisionerClients: []
+  # Full directory group path prefixes these clients may share projects with.
+  # Required when oidcProvisionerClients is non-empty.
+  oidcProvisionerGroupPrefixes: []
   # Subset of oidcServiceClients allowed to bind embed question responses.
   # Entries are sent as ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS.
   oidcEmbedBindClients: []

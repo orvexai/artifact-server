@@ -444,6 +444,7 @@ export class ArtifactRepositoryFailure extends Schema.TaggedError<ArtifactReposi
       "listCommentThreads",
       "listArtifactVersions",
       "listProjectAuditEvents",
+      "recordProjectProvisionerAuditEvent",
       "listPublicLinks",
       "listExpiredStagedUploads",
       "listRegisteredAgents",

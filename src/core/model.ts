@@ -71,11 +71,24 @@ export interface ProjectRecord {
 
 /** One attributed project lifecycle event. */
 export interface ProjectAuditEvent {
-  readonly action: "archive" | "unarchive";
+  readonly action: "archive" | "unarchive" | "create" | "share" | "set_access";
   readonly actorDisplayName: string;
   readonly authorizedByPrincipalId: string | null;
+  readonly clientId: string | null;
   readonly createdAt: string;
+  readonly details: string | null;
   readonly id: number;
+  readonly principalId: string;
+  readonly projectId: string;
+}
+
+/** Durable activity written for the narrowly scoped OIDC project provisioner. */
+export interface ProjectProvisionerAuditEvent {
+  readonly action: "create" | "share" | "set_access";
+  readonly actorDisplayName: string;
+  readonly clientId: string;
+  readonly createdAt: string;
+  readonly details: string | null;
   readonly principalId: string;
   readonly projectId: string;
 }
