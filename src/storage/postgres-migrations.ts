@@ -1009,6 +1009,19 @@ const addOrgTenancyIdentityFields = Effect.gen(function*() {
     ADD COLUMN identity_provider TEXT`);
 });
 
+const addPlatformSessions = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`CREATE TABLE artifact_platform_sessions (
+    token_digest TEXT PRIMARY KEY,
+    organizations_json JSONB NOT NULL,
+    last_org TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  )`);
+  yield* sql.unsafe(`CREATE INDEX artifact_platform_sessions_expiry
+    ON artifact_platform_sessions (expires_at)`);
+});
+
 const postgresMigrations = {
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -1042,6 +1055,7 @@ const postgresMigrations = {
   "0030_organization_registry": addOrganizationRegistry,
   "0031_organization_admission_policy": addOrganizationAdmissionPolicy,
   "0032_org_tenancy_identity_fields": addOrgTenancyIdentityFields,
+  "0033_platform_sessions": addPlatformSessions,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

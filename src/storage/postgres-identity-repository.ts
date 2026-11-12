@@ -1008,6 +1008,41 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     }));
   }
 
+  async listStaffOnlyMemberIds(
+    installationId: string,
+    staffGroupIds: readonly string[],
+  ): Promise<readonly string[]> {
+    this.#assertInstallationScope(installationId);
+    if (staffGroupIds.length === 0) return [];
+    const first = staffGroupIds.map((_, index) => `$${index + 2}`).join(", ");
+    const second = staffGroupIds.map((_, index) => `$${staffGroupIds.length + index + 2}`).join(", ");
+    const rows = await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.unsafe<object>(`SELECT DISTINCT identity.member_id AS "memberId"
+        FROM directory_group_members staff_member
+        JOIN external_identities identity
+          ON identity.installation_id = staff_member.installation_id
+          AND identity.provider = staff_member.provider
+          AND identity.subject = staff_member.subject
+        JOIN installation_members member
+          ON member.installation_id = identity.installation_id
+          AND member.id = identity.member_id
+        WHERE member.installation_id = $1
+          AND staff_member.group_id IN (${first})
+          AND NOT EXISTS (
+            SELECT 1 FROM directory_group_members other_member
+            JOIN external_identities other_identity
+              ON other_identity.installation_id = other_member.installation_id
+              AND other_identity.provider = other_member.provider
+              AND other_identity.subject = other_member.subject
+            WHERE other_identity.member_id = identity.member_id
+              AND other_member.installation_id = identity.installation_id
+              AND other_member.group_id NOT IN (${second})
+          )`, [installationId, ...staffGroupIds, ...staffGroupIds]);
+    }));
+    return z.array(z.object({memberId: z.string()})).parse(rows).map(({memberId}) => memberId);
+  }
+
   async findMember(
     installationId: string,
     memberId: string,

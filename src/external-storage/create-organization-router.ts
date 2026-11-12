@@ -52,7 +52,6 @@ export async function createOrganizationRouter(
       database,
       config.organizationMemberships ?? emptyOrganizationMembershipResolver,
     );
-    await platformSessions.ensureSchema();
     await registry.ensureOrvex(config.installationId);
     const closeResources = async () => {
       if (closed) return;

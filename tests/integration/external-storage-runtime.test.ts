@@ -1252,6 +1252,10 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       expect(membersAfterFirst).toContainEqual({
         email: "tenant-staff@example.test", role: "member", status: "active",
       });
+      expect(await repository.listStaffOnlyMemberIds(scopedInstallation, ["tenant-staff"]))
+        .toEqual(["tenant-staff-member"]);
+      expect(await repository.listStaffOnlyMemberIds(scopedInstallation, ["smoketest", "tenant-staff"]))
+        .toEqual(["tenant-staff-member"]);
       expect(firstRuleSync.roleChanged).toBe(1);
 
       const markerRows = await database.run(Effect.gen(function*() {

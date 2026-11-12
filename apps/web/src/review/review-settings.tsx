@@ -181,7 +181,7 @@ function SettingsContent({
     const tenantDirectory = organizationBase.startsWith("/o/") && !organizationBase.startsWith("/o/orvex");
     return <GroupsScreen canEdit={directHuman && (principal.membershipRole === "owner" || (tenantDirectory && isAdministratorRole(principal.membershipRole)))} />;
   }
-  if (route.kind === "members" && memberDirectoryVisible) return <MembersScreen canManage={administrator} showEmails={administrator || principal.membershipRole !== "viewer"} showRoles={administrator} />;
+  if (route.kind === "members" && memberDirectoryVisible) return <MembersScreen canManage={administrator} showEmails={principal.membershipRole === "member" || principal.membershipRole === "owner"} showRoles={administrator} />;
   if (!administrator) return <AdministratorPermissionRequired />;
   switch (route.kind) {
     case "members":

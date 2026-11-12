@@ -220,6 +220,10 @@ export interface InstallationIdentityRepository {
   readonly listMembers: (
     installationId: string,
   ) => Effect.Effect<readonly InstallationMember[], IdentityRepositoryFailure>;
+  readonly listStaffOnlyMemberIds?: (
+    installationId: string,
+    staffGroupIds: readonly string[],
+  ) => Effect.Effect<readonly string[], IdentityRepositoryFailure>;
   readonly revokeApiKey: (
     installationId: string,
     keyId: string,
@@ -411,6 +415,7 @@ export interface InstallationAccessOperations {
     readonly InstallationMember[],
     AuthorizationDenied | IdentityRepositoryFailure
   >;
+  readonly listStaffOnlyMemberIds: () => Effect.Effect<readonly string[], IdentityRepositoryFailure>;
   readonly issueLocalBrowserLogin: (
     credential: Redacted.Redacted,
   ) => Effect.Effect<
@@ -1480,13 +1485,37 @@ function makeInstallationAccessService(
     "InstallationAccessService.listMembers",
   )(function*(principal: Principal) {
     if (dependencies.organizationDirectoryVisibility === true) {
-      if (principal.installationId !== dependencies.installationId || principal.kind !== "human" || principal.membershipRole === membershipRoles.guest) {
+      if (principal.installationId !== dependencies.installationId || principal.kind !== "human") {
         return yield* new AuthorizationDenied({message: "This organization directory is not available to this principal."});
       }
+      if (principal.membershipRole === membershipRoles.guest) return [];
     } else {
       yield* requireAdministrator(principal, dependencies.installationId);
     }
-    return yield* dependencies.repository.listMembers(dependencies.installationId);
+    const members = yield* dependencies.repository.listMembers(dependencies.installationId);
+    if (dependencies.organizationDirectoryVisibility !== true || groupRolePolicy === null) return members;
+    const staffSelectors = groupRolePolicy.seed.filter(({staff}) => staff === true).map(({selector}) => selector);
+    if (staffSelectors.length === 0) return members;
+    const groups = yield* dependencies.repository.listDirectoryGroups(dependencies.installationId);
+    const staffGroupIds = groups.filter((group) => staffSelectors.some((selector) =>
+      selector.startsWith("/") ? group.path === selector : group.name === selector
+    )).map(({id}) => id);
+    const staffOnlyIds = dependencies.repository.listStaffOnlyMemberIds === undefined
+      ? []
+      : yield* dependencies.repository.listStaffOnlyMemberIds(dependencies.installationId, staffGroupIds);
+    const hidden = new Set(staffOnlyIds);
+    return members.filter((member) => !hidden.has(member.id));
+  });
+
+  const listStaffOnlyMemberIds = Effect.fn("InstallationAccessService.listStaffOnlyMemberIds")(function*() {
+    if (dependencies.organizationDirectoryVisibility !== true || groupRolePolicy === null || dependencies.repository.listStaffOnlyMemberIds === undefined) return [];
+    const staffSelectors = groupRolePolicy.seed.filter(({staff}) => staff === true).map(({selector}) => selector);
+    if (staffSelectors.length === 0) return [];
+    const groups = yield* dependencies.repository.listDirectoryGroups(dependencies.installationId);
+    const staffGroupIds = groups.filter((group) => staffSelectors.some((selector) =>
+      selector.startsWith("/") ? group.path === selector : group.name === selector
+    )).map(({id}) => id);
+    return yield* dependencies.repository.listStaffOnlyMemberIds(dependencies.installationId, staffGroupIds);
   });
 
   const deactivateMember = Effect.fn(
@@ -1684,6 +1713,7 @@ function makeInstallationAccessService(
     loginAsLocalOwner,
     listApiKeys,
     listMembers,
+    listStaffOnlyMemberIds,
     loginWithLocalBrowserToken,
     reconcileDirectoryMembers,
     applyDirectoryGroups,

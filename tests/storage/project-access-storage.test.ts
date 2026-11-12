@@ -278,6 +278,20 @@ describe("project access storage (SQLite)", () => {
     ]);
   });
 
+  test("staff-only people are identified without hiding members of tenant groups", async () => {
+    await admit("staff-only");
+    await admit("staff-and-tenant");
+    await bind("staff-only", keycloak, "staff-only-subject");
+    await bind("staff-and-tenant", keycloak, "staff-and-tenant-subject");
+    await groups([
+      group("g-staff", [["staff-only-subject", "staff-only"], ["staff-and-tenant-subject", "staff-and-tenant"]]),
+      group("g-tenant", [["staff-and-tenant-subject", "staff-and-tenant"]]),
+    ]);
+
+    expect(await repository.listStaffOnlyMemberIds(installationId, ["g-staff"]))
+      .toEqual(["mem_staff-only"]);
+  });
+
   function openRuntime() {
     return createLocalRuntime({
       apiToken: installation.apiToken,

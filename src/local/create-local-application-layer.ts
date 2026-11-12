@@ -922,6 +922,10 @@ export function createApplicationLayer(
         "listMembers",
         () => identityRepository.listMembers(installationId),
       ),
+      listStaffOnlyMemberIds: (installationId, staffGroupIds) => identityEffect(
+        "listMembers",
+        () => identityRepository.listStaffOnlyMemberIds?.(installationId, staffGroupIds) ?? Promise.resolve([]),
+      ),
       applyDirectoryGroups: (installationId, snapshot) => identityEffect(
         "applyDirectoryGroups",
         () => identityRepository.applyDirectoryGroups(installationId, snapshot),

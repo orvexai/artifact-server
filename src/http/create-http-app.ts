@@ -86,7 +86,7 @@ import {
   isArtifactServerFailure,
   VersionNotFound,
 } from "../core/errors.js";
-import type {ExternalIdentity, IssuedApplicationSession} from "../core/installation-identity.js";
+import type {ExternalIdentity, InstallationMember, IssuedApplicationSession} from "../core/installation-identity.js";
 import {
   browserAccessModes,
   type BrowserAccess,
@@ -176,6 +176,7 @@ import type {
 } from "../lifecycle/runtime-readiness.js";
 
 const maximumJsonRequestBytes = 1_500_000;
+const jsonResponseSchema = z.json();
 const accessSettingSchema = z.enum([
   accessSettings.accountRequired,
   accessSettings.publicLink,
@@ -1328,6 +1329,16 @@ export function createHttpApp(
     return next();
   });
 
+  app.use("/api/*", async (context, next) => {
+    await next();
+    await maskTenantStaffAuthors(context, dependencies);
+  });
+
+  app.use("/mcp", async (context, next) => {
+    await next();
+    await maskTenantStaffAuthors(context, dependencies);
+  });
+
   app.all("/mcp", boundedMcpBody, async (context) => {
     const undiscovered = await oauthDiscoveryGate(
       dependencies,
@@ -1669,15 +1680,7 @@ export function createHttpApp(
       ),
     );
     if (tenantOrganization && principal.kind === "human" && principal.membershipRole !== membershipRoles.guest) {
-      const privileged = isAdministratorRole(principal.membershipRole);
-      const maySeeEmails = privileged || principal.membershipRole !== membershipRoles.viewer;
-      return context.json({members: members.map((member) => {
-        if (maySeeEmails && privileged) return member;
-        const {email, role, ...base} = member;
-        if (maySeeEmails) return {...base, email};
-        if (privileged) return {...base, role};
-        return base;
-      })});
+      return context.json({members: projectTenantMembers(members, principal.membershipRole)});
     }
     return context.json({members});
   });
@@ -3503,6 +3506,31 @@ export function createHttpApp(
   return app;
 }
 
+/** Project tenant-visible directory fields for one membership role. */
+export function projectTenantMembers(
+  members: readonly InstallationMember[],
+  role: Principal["membershipRole"],
+): readonly Partial<InstallationMember>[] {
+  if (role === membershipRoles.guest) return [];
+  const privileged = isAdministratorRole(role);
+  const maySeeEmails = role === membershipRoles.member || role === membershipRoles.owner;
+  return members.map((member) => {
+    if (role === membershipRoles.owner) return member;
+    if (privileged) {
+      const {email, ...visible} = member;
+      void email;
+      return visible;
+    }
+    if (maySeeEmails) {
+      const {role: _role, ...visible} = member;
+      return visible;
+    }
+    const {email, role: _role, ...visible} = member;
+    void email;
+    return visible;
+  });
+}
+
 function apiBearerChallenge(
   context: {readonly req: {readonly path: string}},
   dependencies: HttpAppDependencies,
@@ -3944,6 +3972,55 @@ function runHttpApplicationEffect<A, E>(
       spanName: `${safeHttpMethod(context.req.method)} ${matchedRoute}`,
     },
   );
+}
+
+async function maskTenantStaffAuthors(
+  context: Context<HttpEnvironment>,
+  dependencies: HttpAppDependencies,
+): Promise<void> {
+  if (
+    dependencies.organizationSlug === undefined
+    || dependencies.organizationSlug === "orvex"
+    || context.res.status === 204
+    || !context.res.headers.get("content-type")?.includes("application/json")
+    || !/^\/api\/v1\/(?:public\/)?(?:artifacts|comments)(?:\/|$)/u.test(context.req.path)
+  ) return;
+  const hiddenMemberIds = await runHttpApplicationEffect(
+    context,
+    dependencies,
+    InstallationAccessService.use((access) => access.listStaffOnlyMemberIds()),
+  );
+  if (hiddenMemberIds.length === 0) return;
+  const payload = jsonResponseSchema.parse(await context.res.clone().json());
+  const headers = new Headers(context.res.headers);
+  headers.delete("content-length");
+  headers.delete("etag");
+  context.res = new Response(JSON.stringify(maskTenantStaffAuthorPayload(payload, hiddenMemberIds)), {
+    headers,
+    status: context.res.status,
+    statusText: context.res.statusText,
+  });
+}
+
+/** Replace tenant-visible staff author names while retaining their audit ids. */
+export function maskTenantStaffAuthorPayload(
+  payload: z.infer<typeof jsonResponseSchema>,
+  hiddenMemberIds: readonly string[],
+): z.infer<typeof jsonResponseSchema> {
+  const hidden = new Set(hiddenMemberIds);
+  const mask = (value: z.infer<typeof jsonResponseSchema>): z.infer<typeof jsonResponseSchema> => {
+    if (Array.isArray(value)) return value.map(mask);
+    const parsedRecord = z.record(z.string(), jsonResponseSchema).safeParse(value);
+    if (!parsedRecord.success) return value;
+    const record = parsedRecord.data;
+    const masked = Object.fromEntries(Object.entries(record).map(([key, child]) => [key, mask(child)]));
+    const author = z.object({principalId: z.string(), displayName: z.string()}).safeParse(record);
+    if (author.success && hidden.has(author.data.principalId)) {
+      return {...masked, displayName: "Orvex Support"};
+    }
+    return masked;
+  };
+  return mask(payload);
 }
 
 function requestWithRequestId(context: Context<HttpEnvironment>): Request {

@@ -24,22 +24,6 @@ export class PlatformSessions {
     this.#memberships = memberships;
   }
 
-  async ensureSchema(): Promise<void> {
-    await this.#database.run(Effect.gen(function*() {
-      const sql = yield* SqlClient;
-      yield* sql.unsafe(`CREATE TABLE IF NOT EXISTS artifact_platform_sessions (
-        token_digest TEXT PRIMARY KEY,
-        subject TEXT NOT NULL,
-        organizations_json JSONB NOT NULL,
-        last_org TEXT,
-        created_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL
-      )`);
-      yield* sql.unsafe(`CREATE INDEX IF NOT EXISTS artifact_platform_sessions_expiry
-        ON artifact_platform_sessions (expires_at)`);
-    }));
-  }
-
   async issue(identity: ExternalIdentity): Promise<string> {
     const token = randomBytes(32).toString("base64url");
     const now = new Date();
@@ -48,8 +32,8 @@ export class PlatformSessions {
     await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       yield* sql`INSERT INTO artifact_platform_sessions
-        (token_digest, subject, organizations_json, last_org, created_at, expires_at)
-        VALUES (${digest(token)}, ${identity.subject}, ${JSON.stringify(memberships)}::jsonb,
+        (token_digest, organizations_json, last_org, created_at, expires_at)
+        VALUES (${digest(token)}, ${JSON.stringify(memberships)}::jsonb,
           NULL, ${now.toISOString()}, ${new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString()})
         ON CONFLICT (token_digest) DO NOTHING`;
     }));

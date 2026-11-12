@@ -284,6 +284,8 @@ function assertCrossOrgMatrixComplete(
     ...registeredRoutes.map((route) =>
       `hono:${route.replaceAll(/\/o\/[^/]+/gu, "/o/:organization")}`,
     ),
+    "platform:GET /api/v1/platform/me/orgs",
+    "platform:POST /api/v1/platform/session/last-org",
     ...registeredTools.map((tool) => `mcp:${tool}`),
   ]);
   expect(knownCaseSet.size).toBe(knownCases.length);
@@ -309,6 +311,7 @@ describe.sequential("organization tenancy security boundary", () => {
   let oidc: Awaited<ReturnType<typeof startStubOidcProvider>>;
   let router: Awaited<ReturnType<typeof startExternalStorageServer>>;
   let orgB: Awaited<ReturnType<OrganizationRegistry["create"]>>;
+  let orgC: Awaited<ReturnType<OrganizationRegistry["create"]>>;
   let config: ExternalStorageRuntimeConfig;
 
   beforeAll(async () => {
@@ -381,6 +384,7 @@ describe.sequential("organization tenancy security boundary", () => {
     })
       .parse(JSON.parse(createResult.stdout));
     if (orgB.slug !== orgSlug) throw new Error("org create CLI returned the wrong slug.");
+    orgC = await registry.create(`team-${randomUUID().slice(0, 8)}`, "Org C");
     const listResult = spawnSync(process.execPath, [
       "--import", "tsx", "src/cli/main.ts", "org", "list",
     ], {cwd: process.cwd(), encoding: "utf8", env: cliEnvironment});
@@ -505,17 +509,19 @@ describe.sequential("organization tenancy security boundary", () => {
   });
 
   test("platform membership discovery and single-org landing stay scoped", async () => {
-    const resolver = config.organizationMemberships;
-    if (resolver === undefined) throw new Error("The platform membership test resolver was not configured.");
-    const sessions = new PlatformSessions(database, resolver);
-    const token = await sessions.issue({
+    const identity = {
       displayName: "Platform member",
       email: null,
       emailVerified: false,
       groups: [],
       provider: "test-oidc",
       subject: "platform-member",
-    });
+    };
+    const sessions = new PlatformSessions(database, {forIdentity: async () => [
+      {displayName: "Org B", role: "viewer", slug: orgB.slug},
+      {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
+    ]});
+    const token = await sessions.issue(identity);
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const cookie = `__Host-artifact_platform=${token}`;
     const orgs = await fetch(`${baseUrl}/api/v1/platform/me/orgs`, {headers: {Cookie: cookie}});
@@ -532,6 +538,35 @@ describe.sequential("organization tenancy security boundary", () => {
       method: "POST",
     });
     expect(lastOrg.status).toBe(404);
+
+    const multiOrgSessions = new PlatformSessions(database, {forIdentity: async () => [
+      {displayName: "Org B", role: "viewer", slug: orgB.slug},
+      {displayName: orgC.displayName, role: "editor", slug: orgC.slug},
+    ]});
+    const multiOrgToken = await multiOrgSessions.issue(identity);
+    const chooser = await fetch(`${baseUrl}/`, {
+      headers: {Cookie: `__Host-artifact_platform=${multiOrgToken}`},
+    });
+    expect(chooser.status).toBe(200);
+    expect(await chooser.text()).toContain("Choose an organization");
+
+    const runtime = await createOrgRuntime(orgB.id, {
+      applicationOrigin: new URL(`/o/${orgB.slug}`, applicationOrigin).toString(),
+      bootstrapApiToken: Redacted.make(apiTokenB),
+      cookieRouteId: orgB.routeId,
+      slug: orgB.slug,
+    }, config, database);
+    try {
+      const registeredRoutes = runtime.app.routes.map(({method, path}) => `${method} ${path}`);
+      const toolsResponse = await runtime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
+        id: 1,
+        jsonrpc: "2.0",
+        method: "tools/list",
+      }, {Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+      assertCrossOrgMatrixComplete(registeredRoutes, await mcpToolNames(toolsResponse));
+    } finally {
+      await runtime.close();
+    }
   });
 
   test("isolates resources and runs the explicit route/tool completeness guard", async () => {

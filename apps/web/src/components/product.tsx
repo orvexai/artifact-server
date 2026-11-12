@@ -9,12 +9,22 @@ import { errorMessage } from "@/lib/presentation";
 /** Root-scoped organization navigation for people with multiple memberships. */
 export function OrganizationSwitcher() {
   const [organizations, setOrganizations] = useState<readonly PlatformOrganization[]>([]);
+  const [pathname, setPathname] = useState("");
   useEffect(() => {
     if (document.querySelector('meta[name="as-organization-base"]') === null) return;
+    setPathname(window.location.pathname);
     void api.platformOrganizations().then(setOrganizations).catch(() => setOrganizations([]));
   }, []);
+  return <OrganizationSwitcherView organizations={organizations} pathname={pathname} />;
+}
+
+/** Render the organization switcher for the supplied verified memberships. */
+export function OrganizationSwitcherView({organizations, pathname}: {
+  readonly organizations: readonly PlatformOrganization[];
+  readonly pathname: string;
+}) {
   if (organizations.length < 2) return null;
-  const selected = organizations.find(({slug}) => window.location.pathname.startsWith(`/o/${slug}/`))?.slug ?? "";
+  const selected = organizations.find(({slug}) => pathname.startsWith(`/o/${slug}/`))?.slug ?? "";
   return (
     <label className="as-organization-switcher">
       <span className="sr-only">Organization</span>

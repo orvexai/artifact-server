@@ -172,6 +172,11 @@ export interface IdentityRepository {
     accessMode: ProjectAccessMode,
   ): Promise<void>;
   listMembers(installationId: string): Promise<readonly InstallationMember[]>;
+  /** Member ids whose only mirrored directory memberships are staff groups. */
+  listStaffOnlyMemberIds?(
+    installationId: string,
+    staffGroupIds: readonly string[],
+  ): Promise<readonly string[]>;
   revokeApiKey(
     installationId: string,
     keyId: string,
