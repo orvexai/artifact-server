@@ -151,6 +151,7 @@ import {
 } from "../manifest/create-manifest.js";
 import {createMcpHttpAdapter} from "../mcp/create-mcp-http-adapter.js";
 import {
+  applicationPathUrl,
   artifactBrowserUrl,
   artifactReviewUrl,
   contentBootstrapBrowserUrl,
@@ -553,6 +554,8 @@ export interface HttpAppDependencies {
   readonly browserAccess: BrowserAccess;
   readonly completedRequestLogSampleRate: number;
   readonly contentDomain: string;
+  /** Suffix scoped to one configured organization on the shared app host. */
+  readonly organizationCookieSuffix?: string;
   readonly embedOrigins?: readonly string[];
   readonly embedBindingSecret?: Redacted.Redacted | undefined;
   readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
@@ -600,6 +603,8 @@ export interface McpOAuthResourceConfiguration {
  */
 export interface DiscoveredOAuthResources {
   readonly current: () => DiscoveredOAuthState;
+  /** The `<origin>/api` resource, known before discovery. */
+  readonly apiResource: string;
   /** The `<origin>/mcp` resource, known before discovery, naming its metadata route. */
   readonly mcpResource: string;
   /** Ask for a discovery attempt now; joins or skips one that is running or just ran. */
@@ -722,8 +727,9 @@ export function createHttpApp(
 
   const discoveredOAuth = dependencies.discoveredOAuth;
   if (discoveredOAuth !== undefined) {
+    const discoveredApiPath = protectedResourceMetadataPath(discoveredOAuth.apiResource);
     const discoveringMetadataPaths = new Set([
-      apiProtectedResourceMetadataPath,
+      discoveredApiPath,
       authorizationServerMetadataPath,
       protectedResourceMetadataPath(discoveredOAuth.mcpResource),
     ]);
@@ -1093,8 +1099,9 @@ export function createHttpApp(
     const issued = exchangeResult;
     if (issued === null) return context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404);
     const secure = usesSecureApplicationCookies(dependencies);
-    const sessionName = secure ? secureGuestSessionCookie : guestSessionCookie;
-    const csrfName = secure ? secureGuestCsrfCookie : guestCsrfCookie;
+    const suffix = dependencies.organizationCookieSuffix ?? "";
+    const sessionName = `${secure ? secureGuestSessionCookie : guestSessionCookie}${suffix}`;
+    const csrfName = `${secure ? secureGuestCsrfCookie : guestCsrfCookie}${suffix}`;
     const expires = new Date(issued.expiresAt);
     setCookie(context, sessionName, Redacted.value(issued.sessionToken), {expires, httpOnly: true, maxAge: 7 * 24 * 60 * 60, path: "/", sameSite: "Strict", secure});
     setCookie(context, csrfName, issued.csrfToken, {expires, httpOnly: false, maxAge: 7 * 24 * 60 * 60, path: "/", sameSite: "Strict", secure});
@@ -1330,7 +1337,12 @@ export function createHttpApp(
     context.json({status: "ok" as const}),
   );
 
-  app.get(apiProtectedResourceMetadataPath, (context) => {
+  const apiMetadataPath = dependencies.apiOAuthResource === undefined
+    ? dependencies.discoveredOAuth === undefined
+      ? apiProtectedResourceMetadataPath
+      : protectedResourceMetadataPath(dependencies.discoveredOAuth.apiResource)
+    : protectedResourceMetadataPath(dependencies.apiOAuthResource.resource);
+  app.get(apiMetadataPath, (context) => {
     const apiOAuth = currentApiOAuthResource(dependencies);
     if (apiOAuth === undefined) return context.notFound();
     return context.json({
@@ -1492,23 +1504,74 @@ export function createHttpApp(
   });
 
   app.get("/auth/callback", async (context) => {
-    const query = interactiveCallbackSchema.parse(context.req.query());
-    const handshake = getCookie(
-      context,
-      applicationCookieNames(dependencies).handshake,
-    ) ?? null;
-    const completed = await runHttpApplicationEffect(
-      context,
-      dependencies,
-      InteractiveLoginService.use((login) =>
-        login.complete({...query, handshake})
-      ),
-    );
-    clearLoginHandshakeCookie(context, dependencies);
-    setApplicationSessionCookies(context, dependencies, completed.issued);
-    context.header("Cache-Control", "private, no-store");
-    context.header("Referrer-Policy", "no-referrer");
-    return context.redirect(completed.returnTo, 303);
+    try {
+      const query = interactiveCallbackSchema.parse(context.req.query());
+      const handshake = getCookie(
+        context,
+        applicationCookieNames(dependencies).handshake,
+      ) ?? null;
+      const completed = await runHttpApplicationEffect(
+        context,
+        dependencies,
+        InteractiveLoginService.use((login) =>
+          login.complete({...query, handshake})
+        ),
+      );
+      setApplicationSessionCookies(context, dependencies, completed.issued);
+      context.header("Cache-Control", "private, no-store");
+      context.header("Referrer-Policy", "no-referrer");
+      clearLoginHandshakeCookie(context, dependencies);
+      return context.redirect(completed.returnTo, 303);
+    } catch (error) {
+      clearLoginHandshakeCookie(context, dependencies);
+      if (error instanceof Error && isArtifactServerFailure(error)) {
+        const response = httpFailure(error);
+        if (response.status >= 500) {
+          await logAdapterFailure(
+            dependencies.applicationRuntime,
+            context.get("requestId"),
+            error._tag,
+            "request",
+          );
+        }
+        const headers = new Headers();
+        if (response.status === 401) {
+          headers.set("Cache-Control", "private, no-store");
+        }
+        if (error._tag === "AuthenticationRequired") {
+          headers.set(
+            "WWW-Authenticate",
+            apiBearerChallenge(context, dependencies),
+          );
+        }
+        for (const cookie of context.res.headers.getSetCookie()) {
+          headers.append("Set-Cookie", cookie);
+        }
+        return Response.json(
+          {error: {code: response.code, message: response.message}},
+          {
+            headers,
+            status: response.status,
+          },
+        );
+      }
+      if (error instanceof z.ZodError) {
+        return context.json({error: {
+          code: errorCodes.invalidInput,
+          message: "The request does not match the API contract.",
+        }}, 422);
+      }
+      await logAdapterFailure(
+        dependencies.applicationRuntime,
+        context.get("requestId"),
+        "UnhandledError",
+        error instanceof Error ? error.name : "unknown",
+      );
+      return context.json({error: {
+        code: "INTERNAL_ERROR",
+        message: "The server could not complete the request.",
+      }}, 500);
+    }
   });
 
   app.get("/api/v1/session", (context) =>
@@ -2896,7 +2959,7 @@ export function createHttpApp(
         artifactId: context.req.param("artifactId"),
         principal: context.get("principal"), projectId: requestedProjectId(context),
       })));
-    const url = new URL("/review", responseApplicationUrl(context, dependencies));
+    const url = applicationPathUrl(responseApplicationUrl(context, dependencies), "/review");
     url.searchParams.set("artifact", context.req.param("artifactId"));
     const projectId = requestedProjectId(context);
     if (projectId !== null) url.searchParams.set("project", projectId);
@@ -2994,18 +3057,18 @@ export function createHttpApp(
     const requestUrl = responseApplicationUrl(context, dependencies);
     const projectQuery = `?projectId=${encodeURIComponent(upload.projectId)}`;
     return context.json({
-      commitUrl: new URL(
-        `/api/v1/uploads/${upload.id}/commit${projectQuery}`,
+      commitUrl: applicationPathUrl(
         requestUrl,
+        `/api/v1/uploads/${upload.id}/commit${projectQuery}`,
       ).toString(),
       expiresAt: upload.expiresAt,
       files: upload.files.map((file) => ({
         method: "PUT" as const,
         path: file.entry.path,
         size: file.entry.size,
-        uploadUrl: new URL(
-          `/api/v1/uploads/${upload.id}/files/${file.storageToken}${projectQuery}`,
+        uploadUrl: applicationPathUrl(
           requestUrl,
+          `/api/v1/uploads/${upload.id}/files/${file.storageToken}${projectQuery}`,
         ).toString(),
       })),
       manifestDigest: upload.manifest.digest,
@@ -3398,12 +3461,11 @@ function apiBearerChallenge(
     apiOAuth === undefined
     || !context.req.path.startsWith("/api/")
   ) return "Bearer";
-  const metadata = new URL(apiProtectedResourceMetadataPath, apiOAuth.resource);
+  const metadata = new URL(protectedResourceMetadataPath(apiOAuth.resource), apiOAuth.resource);
   return `Bearer resource_metadata="${metadata.toString()}" scope="artifactserver"`;
 }
 
-const apiProtectedResourceMetadataPath =
-  "/.well-known/oauth-protected-resource/api";
+const apiProtectedResourceMetadataPath = "/.well-known/oauth-protected-resource/api";
 const authorizationServerMetadataPath = "/.well-known/oauth-authorization-server";
 const managedApiKeyPrefix = "as_key_";
 const oauthDiscoveringMessage =
@@ -3585,16 +3647,17 @@ function applicationCookieNames(
   readonly handshake: string;
   readonly session: string;
 } {
+  const suffix = dependencies.organizationCookieSuffix ?? "";
   return usesSecureApplicationCookies(dependencies)
     ? {
-      csrf: secureApplicationCsrfCookie,
-      handshake: secureLoginHandshakeCookie,
-      session: secureApplicationSessionCookie,
+      csrf: `${secureApplicationCsrfCookie}${suffix}`,
+      handshake: `${secureLoginHandshakeCookie}${suffix}`,
+      session: `${secureApplicationSessionCookie}${suffix}`,
     }
     : {
-      csrf: applicationCsrfCookie,
-      handshake: loginHandshakeCookie,
-      session: applicationSessionCookie,
+      csrf: `${applicationCsrfCookie}${suffix}`,
+      handshake: `${loginHandshakeCookie}${suffix}`,
+      session: `${applicationSessionCookie}${suffix}`,
     };
 }
 
@@ -3610,20 +3673,27 @@ function responseApplicationUrl(
   dependencies: HttpAppDependencies,
 ): URL {
   const requestUrl = new URL(context.req.url);
-  if (dependencies.trustedApplicationOrigin === null) return requestUrl;
+  if (dependencies.trustedApplicationOrigin === null) {
+    return new URL(requestUrl.origin);
+  }
   const trustedUrl = new URL(dependencies.trustedApplicationOrigin);
   const forwardedProtocol = context.req.header("x-forwarded-proto")
     ?.split(",")[0]?.trim();
   const forwardedHost = context.req.header("x-forwarded-host")
     ?.split(",")[0]?.trim() ?? context.req.header("host");
+  const effectiveProtocol = forwardedProtocol === undefined
+    ? requestUrl.protocol
+    : `${forwardedProtocol}:`;
   if (
-    `${forwardedProtocol}:` === trustedUrl.protocol &&
+    effectiveProtocol === trustedUrl.protocol &&
     forwardedHost?.toLocaleLowerCase("en-US") ===
       trustedUrl.host.toLocaleLowerCase("en-US")
   ) {
     return trustedUrl;
   }
-  return requestUrl;
+  const requestOriginWithTrustedPath = new URL(requestUrl.origin);
+  requestOriginWithTrustedPath.pathname = trustedUrl.pathname;
+  return requestOriginWithTrustedPath;
 }
 
 function requireBrowserMutationSecurity(
@@ -3631,7 +3701,9 @@ function requireBrowserMutationSecurity(
   dependencies: HttpAppDependencies,
 ): void {
   const requestUrl = new URL(context.req.url);
-  const trustedOrigin = dependencies.trustedApplicationOrigin ?? requestUrl.origin;
+  const trustedOrigin = dependencies.trustedApplicationOrigin === null
+    ? requestUrl.origin
+    : new URL(dependencies.trustedApplicationOrigin).origin;
   const origin = context.req.header("origin");
   const fetchSite = context.req.header("sec-fetch-site");
   const fetchMode = context.req.header("sec-fetch-mode");
@@ -3665,8 +3737,9 @@ async function requireGuestReviewer(
   mutation: boolean,
 ): Promise<GuestReviewer | null> {
   const secure = usesSecureApplicationCookies(dependencies);
-  const sessionName = secure ? secureGuestSessionCookie : guestSessionCookie;
-  const csrfName = secure ? secureGuestCsrfCookie : guestCsrfCookie;
+  const suffix = dependencies.organizationCookieSuffix ?? "";
+  const sessionName = `${secure ? secureGuestSessionCookie : guestSessionCookie}${suffix}`;
+  const csrfName = `${secure ? secureGuestCsrfCookie : guestCsrfCookie}${suffix}`;
   const rawSession = sessionTokenSchema.safeParse(getCookie(context, sessionName));
   if (!rawSession.success) return null;
   const session = await runHttpApplicationEffect(context, dependencies,
@@ -3677,7 +3750,9 @@ async function requireGuestReviewer(
   if (session === null || session.artifactId !== context.req.param("artifactId")) return null;
   if (mutation) {
     const requestUrl = new URL(context.req.url);
-    const trustedOrigin = dependencies.trustedApplicationOrigin ?? requestUrl.origin;
+    const trustedOrigin = dependencies.trustedApplicationOrigin === null
+      ? requestUrl.origin
+      : new URL(dependencies.trustedApplicationOrigin).origin;
     const header = csrfTokenSchema.safeParse(context.req.header("x-csrf-token"));
     const cookie = csrfTokenSchema.safeParse(getCookie(context, csrfName));
     if (
@@ -3703,7 +3778,9 @@ function requireGuestSessionExchangeBoundary(
   dependencies: HttpAppDependencies,
 ): void {
   const requestUrl = new URL(context.req.url);
-  const trustedOrigin = dependencies.trustedApplicationOrigin ?? requestUrl.origin;
+  const trustedOrigin = dependencies.trustedApplicationOrigin === null
+    ? requestUrl.origin
+    : new URL(dependencies.trustedApplicationOrigin).origin;
   const contentType = context.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (
     context.req.header("origin") !== trustedOrigin ||
@@ -5324,7 +5401,20 @@ async function serveWebAsset(
   }
   copyAssetHeader(asset.headers, headers, "Content-Length");
   copyAssetHeader(asset.headers, headers, "Content-Type");
-  return new Response(method === "HEAD" ? null : asset.body, {
+  let body: BodyInit | null = method === "HEAD" ? null : asset.body;
+  if (kind === "application-shell" && body !== null) {
+    const basePath = new URL(dependencies.trustedApplicationOrigin ?? "http://localhost").pathname
+      .replace(/\/$/u, "");
+    const suffix = dependencies.organizationCookieSuffix ?? "";
+    const html = await new Response(body).text();
+    body = html
+      .replaceAll('src="/assets/', `src="${basePath}/assets/`)
+      .replaceAll('href="/assets/', `href="${basePath}/assets/`)
+      .replace("</head>", `<meta name="as-organization-base" content="${escapeHtmlAttribute(basePath)}"><meta name="as-cookie-suffix" content="${escapeHtmlAttribute(suffix)}"></head>`);
+    headers.delete("Content-Length");
+    headers.delete("ETag");
+  }
+  return new Response(body, {
     headers,
     status: 200,
   });

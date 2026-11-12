@@ -806,11 +806,12 @@ export class ApiError extends Error {
 }
 
 function readCsrfToken(): string {
+  const suffix = document.querySelector<HTMLMetaElement>('meta[name="as-cookie-suffix"]')?.content ?? "";
   for (const candidate of document.cookie.split(";")) {
     const [rawName, ...rawValue] = candidate.trim().split("=");
     if (
-      rawName === "artifact_csrf"
-      || rawName === "__Host-artifact_csrf"
+      rawName === `artifact_csrf${suffix}`
+      || rawName === `__Host-artifact_csrf${suffix}`
     ) {
       return decodeURIComponent(rawValue.join("="));
     }
@@ -820,6 +821,13 @@ function readCsrfToken(): string {
     "Your browser session cannot authorize changes. Sign in again.",
     403,
   );
+}
+
+function organizationPath(path: string): string {
+  const basePath = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
+  return basePath.length > 0 && path.startsWith("/") && !path.startsWith(`${basePath}/`)
+    ? `${basePath}${path}`
+    : path;
 }
 
 async function parseFailure(response: Response): Promise<ApiError> {
@@ -861,7 +869,8 @@ function guestMutationHeaders(idempotencyKey?: string): Headers {
   let csrfToken: string | null = null;
   for (const candidate of document.cookie.split(";")) {
     const [rawName, ...rawValue] = candidate.trim().split("=");
-    if (rawName === "artifact_guest_csrf" || rawName === "__Host-artifact_guest_csrf") {
+    const suffix = document.querySelector<HTMLMetaElement>('meta[name="as-cookie-suffix"]')?.content ?? "";
+    if (rawName === `artifact_guest_csrf${suffix}` || rawName === `__Host-artifact_guest_csrf${suffix}`) {
       csrfToken = decodeURIComponent(rawValue.join("="));
       break;
     }
@@ -877,7 +886,7 @@ async function request<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(organizationPath(path), {
     ...init,
     credentials: "same-origin",
   });
@@ -902,14 +911,14 @@ async function request<T>(
 }
 
 async function requestText(path: string): Promise<string> {
-  const response = await fetch(path, { credentials: "same-origin" });
+  const response = await fetch(organizationPath(path), { credentials: "same-origin" });
   notifySessionExpiry(response);
   if (!response.ok) throw await parseFailure(response);
   return await response.text();
 }
 
 async function requestHead(path: string): Promise<void> {
-  const response = await fetch(path, {
+  const response = await fetch(organizationPath(path), {
     credentials: "same-origin",
     method: "HEAD",
   });
@@ -918,7 +927,7 @@ async function requestHead(path: string): Promise<void> {
 }
 
 async function requestNoContent(path: string, init: RequestInit): Promise<void> {
-  const response = await fetch(path, {
+  const response = await fetch(organizationPath(path), {
     ...init,
     credentials: "same-origin",
   });

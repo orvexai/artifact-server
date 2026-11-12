@@ -84,6 +84,8 @@ import {CloudflareArtifactsGitHistoryProvider} from
 /** Configuration for one stateless Artifact Server process. */
 export interface ExternalStorageRuntimeConfig {
   readonly apiToken: Redacted.Redacted;
+  /** Disable only the bootstrap-key write for read-only maintenance runtimes. */
+  readonly bootstrapApiTokenEnabled?: boolean;
   readonly apiOAuthResource?: ApiOAuthResourceConfiguration;
   readonly applicationOrigin?: string;
   readonly bootstrapAdministratorEmail: string;
@@ -140,29 +142,100 @@ export interface ExternalStorageRuntime {
   ): Promise<DirectoryGroupSyncReport>;
 }
 
+/** Per-organization security values that differ on a shared process host. */
+export interface ExternalStorageOrgConfig {
+  readonly admissionPolicy?: GroupRolePolicy | null;
+  readonly applicationOrigin?: string;
+  readonly bootstrapAdministratorEmail?: string | null;
+  readonly bootstrapApiToken?: Redacted.Redacted;
+  readonly cookieRouteId: string;
+  readonly slug?: string;
+}
+
+/** Open the single Postgres pool owned by an external-storage process. */
+export async function openExternalStorageDatabase(
+  config: ExternalStorageRuntimeConfig,
+  applicationName = `artifact-server:${config.installationId}`,
+): Promise<PostgresDatabase> {
+  return PostgresDatabase.open({
+    applicationName,
+    maxConnections: config.postgresMaxConnections ?? 10,
+    url: config.databaseUrl,
+  }, "validate");
+}
+
 /** Connect external providers, validate migrations, verify readiness, and build the app. */
 export async function createExternalStorageRuntime(
   config: ExternalStorageRuntimeConfig,
 ): Promise<ExternalStorageRuntime> {
+  const database = await openExternalStorageDatabase(config);
+  try {
+    const orgConfig: ExternalStorageOrgConfig = {
+      cookieRouteId: "",
+    };
+    if (config.bootstrapApiTokenEnabled !== false) {
+      Object.assign(orgConfig, {bootstrapApiToken: config.apiToken});
+    }
+    const runtime = await createOrgRuntime(config.installationId, orgConfig, config, database);
+    return {
+      ...runtime,
+      close: async () => {
+        await runtime.close();
+        await Promise.all([config.objectStorage.close?.(), database.close()]);
+      },
+    };
+  } catch (cause) {
+    await Promise.all([config.objectStorage.close?.(), database.close()]);
+    throw cause;
+  }
+}
+
+/** Build one installation-scoped Hono app over shared process resources. */
+export async function createOrgRuntime(
+  installationId: string,
+  orgConfig: ExternalStorageOrgConfig,
+  config: ExternalStorageRuntimeConfig,
+  database: PostgresDatabase,
+): Promise<ExternalStorageRuntime> {
   const runtimeClock = config.clock ?? new SystemClock();
+  const isOrvex = orgConfig.slug === undefined || orgConfig.slug === "orvex";
+  const mayUseHostedOAuth = isOrvex || (
+    orgConfig.admissionPolicy !== undefined && orgConfig.admissionPolicy !== null
+  );
+  const applicationOrigin = orgConfig.applicationOrigin ?? config.applicationOrigin ?? null;
+  const groupRolePolicy = isOrvex
+    ? config.groupRolePolicy ?? null
+    : orgConfig.admissionPolicy ?? null;
+  const organizationOAuthResources = orgConfig.slug === undefined || isOrvex || applicationOrigin === null
+    ? null
+    : {
+      apiResource: appendApplicationPath(applicationOrigin, "/api"),
+      mcpResource: appendApplicationPath(applicationOrigin, "/mcp"),
+    };
+  const scopedOAuthVerifier = (verifier: ExternalMcpBearerVerifier | undefined) => {
+    if (verifier === undefined) return null;
+    if (organizationOAuthResources === null) return verifier;
+    if (verifier.forApplicationResources === undefined) {
+      if (mayUseHostedOAuth) {
+        throw new Error("This identity provider cannot scope OAuth resources to an organization.");
+      }
+      return null;
+    }
+    return verifier.forApplicationResources(organizationOAuthResources);
+  };
   const stagingCleanupPolicy = config.stagingCleanupPolicy ??
     defaultStagingCleanupPolicy;
   const gitHistory = config.gitHistory ?? offNodeGitHistoryConfiguration();
   let applicationGitHistory = fixedGitHistoryCapabilityReader(
     gitHistory.capability,
   );
-  const database = await PostgresDatabase.open({
-    applicationName: `artifact-server:${config.installationId}`,
-    maxConnections: config.postgresMaxConnections ?? 10,
-    url: config.databaseUrl,
-  }, "validate");
   let objectStorage: ObjectStorageProvider | null = null;
   let applicationRuntime: ApplicationRuntime | null = null;
   let gitHistoryMonitor: GitHistoryCapabilityMonitor | null = null;
   let gitHistoryWorker: Awaited<ReturnType<typeof startGitHistoryMirrorWorker>> | null = null;
   try {
     const connectedObjectStorage = config.objectStorage.create(
-      config.installationId,
+      installationId,
     );
     objectStorage = connectedObjectStorage;
     await Promise.all([
@@ -171,11 +244,11 @@ export async function createExternalStorageRuntime(
     ]);
     const repository = await PostgresArtifactRepository.open(
       database,
-      config.installationId,
+      installationId,
     );
     const identityRepository = new PostgresIdentityRepository(
       database,
-      config.installationId,
+      installationId,
     );
     const configuredGitHistory = configuredNodeGitHistory(gitHistory);
     const gitHistoryProvider = configuredGitHistory === null
@@ -188,31 +261,45 @@ export async function createExternalStorageRuntime(
       ? null
       : new PostgresGitHistoryProviderIdentityStore(
         database,
-        config.installationId,
+        installationId,
       );
-    await ensureBootstrapManagedApiKey({
-      credential: config.apiToken,
-      installationId: config.installationId,
-      now: runtimeClock.now(),
-      repository: identityRepository,
-    });
+    if (orgConfig.bootstrapApiToken !== undefined) {
+      await ensureBootstrapManagedApiKey({
+        credential: orgConfig.bootstrapApiToken,
+        installationId,
+        now: runtimeClock.now(),
+        repository: identityRepository,
+      });
+    }
     const {blobs, staging} = connectedObjectStorage;
     const applicationAdapters: Parameters<typeof createApplicationLayer>[0] = {
       apiToken: null,
       blobs,
-      bootstrapAdministratorEmail: config.bootstrapAdministratorEmail,
+      bootstrapAdministratorEmail: orgConfig.bootstrapAdministratorEmail === undefined
+        ? config.bootstrapAdministratorEmail
+        : orgConfig.bootstrapAdministratorEmail,
       clock: runtimeClock,
       dispatches: repository,
-      externalApiBearerVerifier: config.externalApiBearerVerifier ?? null,
-      externalApiOAuthVerifier: config.externalApiOAuthVerifier ?? null,
-      externalMcpBearerVerifier: config.externalMcpBearerVerifier ?? null,
-      externalMcpOAuthVerifier: config.externalMcpOAuthVerifier ?? null,
-      groupRolePolicy: config.groupRolePolicy ?? null,
+      externalApiBearerVerifier: isOrvex ? config.externalApiBearerVerifier ?? null : null,
+      externalApiOAuthVerifier: mayUseHostedOAuth
+        ? scopedOAuthVerifier(config.externalApiOAuthVerifier)
+        : null,
+      externalMcpBearerVerifier: isOrvex ? config.externalMcpBearerVerifier ?? null : null,
+      externalMcpOAuthVerifier: mayUseHostedOAuth
+        ? scopedOAuthVerifier(config.externalMcpOAuthVerifier)
+        : null,
+      groupRolePolicy,
       ids: new SystemIdGenerator(),
       identityRepository,
-      installationId: config.installationId,
+      installationId,
       gitHistory: {read: () => applicationGitHistory.read()},
-      interactiveIdentityProvider: config.interactiveIdentityProvider ?? null,
+      interactiveIdentityProvider: config.interactiveIdentityProvider === undefined
+        ? null
+        : orgConfig.slug === undefined || config.interactiveIdentityProvider.forApplicationOrigin === undefined
+        ? config.interactiveIdentityProvider
+        : config.interactiveIdentityProvider.forApplicationOrigin(
+          isOrvex ? config.applicationOrigin ?? applicationOrigin ?? "" : applicationOrigin ?? "",
+        ),
       localBootstrapCredential: config.localBootstrapCredential ?? null,
       protectBootstrapAdministrator: false,
       repository,
@@ -231,12 +318,12 @@ export async function createExternalStorageRuntime(
     const resources = Layer.effectDiscard(Effect.acquireRelease(
       Effect.void,
       () => Effect.promise(async () => {
-        await Promise.all([connectedObjectStorage.close(), database.close()]);
+        await connectedObjectStorage.close();
       }),
     ));
     const telemetry = otlpLayer({
       deploymentMode: "external-storage",
-      installationId: config.installationId,
+      installationId,
       serviceVersion: config.serviceVersion ?? "0.0.0",
     }).pipe(Layer.provideMerge(structuredLoggingLayer));
     applicationRuntime = ManagedRuntime.make(
@@ -264,7 +351,7 @@ export async function createExternalStorageRuntime(
       gitHistoryWorker = await startGitHistoryMirrorWorker({
         blobs,
         capability: applicationGitHistory,
-        installationId: config.installationId,
+        installationId,
         provider: gitHistoryProvider,
         store: repository,
       });
@@ -282,10 +369,16 @@ export async function createExternalStorageRuntime(
       gitHistory: gitHistoryMonitor?.reader ??
         fixedGitHistoryCapabilityReader(gitHistory.capability),
       readiness: () => externalStorageReadiness(database, connectedObjectStorage),
-      trustedApplicationOrigin: config.applicationOrigin ?? null,
+      trustedApplicationOrigin: applicationOrigin,
       webAssets: createNodeWebAssetStore(),
     };
     let configuredAppDependencies: HttpAppDependencies = appDependenciesWithoutOAuth;
+    if (orgConfig.cookieRouteId !== "") {
+      configuredAppDependencies = {
+        ...configuredAppDependencies,
+        organizationCookieSuffix: `-${orgConfig.cookieRouteId}`,
+      };
+    }
     if (config.embedOrigins !== undefined) {
       configuredAppDependencies = {...configuredAppDependencies, embedOrigins: config.embedOrigins};
     }
@@ -293,19 +386,44 @@ export async function createExternalStorageRuntime(
     if (config.apiOAuthResource !== undefined) {
       appDependencies = {
         ...appDependencies,
-        apiOAuthResource: config.apiOAuthResource,
+        apiOAuthResource: {
+          ...config.apiOAuthResource,
+          resource: orgConfig.slug === undefined || isOrvex
+            ? config.apiOAuthResource.resource
+            : appendApplicationPath(applicationOrigin ?? config.apiOAuthResource.resource, "/api"),
+        },
       };
     }
     if (config.mcpOAuthResource !== undefined) {
       appDependencies = {
         ...appDependencies,
-        mcpOAuthResource: config.mcpOAuthResource,
+        mcpOAuthResource: {
+          ...config.mcpOAuthResource,
+          resource: orgConfig.slug === undefined || isOrvex
+            ? config.mcpOAuthResource.resource
+            : appendApplicationPath(applicationOrigin ?? config.mcpOAuthResource.resource, "/mcp"),
+        },
       };
     }
     if (config.discoveredOAuth !== undefined) {
       appDependencies = {
         ...appDependencies,
-        discoveredOAuth: config.discoveredOAuth,
+        discoveredOAuth: orgConfig.slug === undefined || isOrvex
+          ? config.discoveredOAuth
+          : {
+            ...config.discoveredOAuth,
+            apiResource: appendApplicationPath(applicationOrigin ?? config.discoveredOAuth.apiResource, "/api"),
+            mcpResource: appendApplicationPath(applicationOrigin ?? config.discoveredOAuth.mcpResource, "/mcp"),
+            current: () => {
+              const state = config.discoveredOAuth?.current();
+              if (state === undefined || state.status !== "enabled") return state ?? {status: "misconfigured"};
+              return {
+                ...state,
+                api: {...state.api, resource: appendApplicationPath(applicationOrigin ?? state.api.resource, "/api")},
+                mcp: {...state.mcp, resource: appendApplicationPath(applicationOrigin ?? state.mcp.resource, "/mcp")},
+              };
+            },
+          },
       };
     }
     const closeCleanupSchedule = stagingCleanupPolicy.schedule === "background"
@@ -332,15 +450,21 @@ export async function createExternalStorageRuntime(
     if (gitHistoryWorker !== null) await gitHistoryWorker.close();
     if (gitHistoryMonitor !== null) await gitHistoryMonitor.close();
     if (applicationRuntime === null) {
-      await Promise.all([
-        objectStorage?.close() ?? Promise.resolve(),
-        database.close(),
-      ]);
+      await (objectStorage?.close() ?? Promise.resolve());
     } else {
       await applicationRuntime.dispose();
     }
     throw cause;
   }
+}
+
+function appendApplicationPath(base: string, path: string): string {
+  const url = new URL(base);
+  const prefix = url.pathname.replace(/\/$/u, "");
+  url.pathname = `${prefix}${path}`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
 async function externalStorageReadiness(

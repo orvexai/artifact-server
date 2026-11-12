@@ -60,10 +60,14 @@ export interface GcsObjectStorageAdapters {
 export function createGcsObjectStorageProviderFactory(
   config: GcsObjectStorageProviderConfig,
 ): ObjectStorageProviderFactory {
+  const storage = new Storage(config.apiEndpoint === undefined
+    ? {projectId: config.projectId}
+    : {apiEndpoint: config.apiEndpoint, projectId: config.projectId});
   return {
     kind: "gcs",
     create: (installationId) => createGcsObjectStorageProvider(
       config,
+      storage,
       installationId,
     ),
   };
@@ -116,11 +120,9 @@ export function createGcsObjectStorageAdapters(
 
 function createGcsObjectStorageProvider(
   config: GcsObjectStorageProviderConfig,
+  storage: Storage,
   installationId: string,
 ): ObjectStorageProvider {
-  const storage = new Storage(config.apiEndpoint === undefined
-    ? {projectId: config.projectId}
-    : {apiEndpoint: config.apiEndpoint, projectId: config.projectId});
   const bucket = storage.bucket(config.bucket);
   const adapters = createGcsObjectStorageAdapters({bucket, installationId});
   return {

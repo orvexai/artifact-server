@@ -27,6 +27,24 @@ Each remote deployment needs these boundaries:
 
 The application origin serves Artifact Server, its API, and its MCP endpoint. The content domain serves untrusted artifact files.
 
+### Roll out configured organizations
+
+Organization tenancy is configured on one Artifact Server installation and
+routed by `/o/<slug>`. Configure the Keycloak OIDC client's valid redirect URI
+pattern as `https://<application-host>/o/*` so each non-Orvex organization's
+browser callback at `/o/<slug>/auth/callback` is accepted. Keep the exact
+`https://<application-host>/auth/callback` URI registered for Orvex and existing
+clients; Orvex continues using that legacy callback.
+
+Each non-Orvex organization has separate protected-resource URLs and token
+audiences: `https://<application-host>/o/<slug>/api` for the HTTP API and
+`https://<application-host>/o/<slug>/mcp` for MCP. Provisioner service-account
+tokens use that organization's `/api` audience as well. Orvex keeps its
+configured API resource override, or the legacy `<application-origin>/api`
+and `<application-origin>/mcp` defaults. Configure the matching Keycloak
+audience mapper for each organization's resources before enabling its OAuth
+admission policy.
+
 ## Select storage
 
 Compact Compose uses one SQLite database and one file volume. Run only one application process with this data layer.

@@ -954,6 +954,42 @@ const addProjectProvisionerAuditEvents = Effect.gen(function*() {
     ON project_provisioner_audit_events (installation_id, project_id, created_at DESC, id DESC)`);
 });
 
+const addOrganizationRegistry = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN slug TEXT,
+    ADD COLUMN display_name TEXT,
+    ADD COLUMN status TEXT,
+    ADD COLUMN route_id TEXT`);
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD CONSTRAINT artifact_installations_org_slug_check
+      CHECK (slug IS NULL OR slug ~ '^[a-z0-9][a-z0-9-]{1,38}$'),
+    ADD CONSTRAINT artifact_installations_org_status_check
+      CHECK (status IS NULL OR status IN ('active', 'suspended')),
+    ADD CONSTRAINT artifact_installations_org_route_id_check
+      CHECK (route_id IS NULL OR route_id ~ '^[a-z0-9]{8}$')`);
+  yield* sql.unsafe(`CREATE UNIQUE INDEX artifact_installations_slug_unique
+    ON artifact_installations (slug) WHERE slug IS NOT NULL`);
+  yield* sql.unsafe(`CREATE UNIQUE INDEX artifact_installations_route_id_unique
+    ON artifact_installations (route_id) WHERE route_id IS NOT NULL`);
+  yield* sql.unsafe(`DO $$
+    BEGIN
+      IF (SELECT COUNT(*) FROM artifact_installations) = 1 THEN
+        UPDATE artifact_installations SET slug = 'orvex', display_name = 'Orvex',
+          status = 'active', route_id = substr(
+            md5(random()::text || clock_timestamp()::text || id), 1, 8
+          );
+      END IF;
+    END
+    $$`);
+});
+
+const addOrganizationAdmissionPolicy = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN admission_policy JSONB`);
+});
+
 const postgresMigrations = {
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -984,6 +1020,8 @@ const postgresMigrations = {
   "0027_guest_role_rule_backfill": addGuestRoleRuleBackfill,
   "0028_project_principal_creator": addProjectPrincipalCreator,
   "0029_project_provisioner_audit_events": addProjectProvisionerAuditEvents,
+  "0030_organization_registry": addOrganizationRegistry,
+  "0031_organization_admission_policy": addOrganizationAdmissionPolicy,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

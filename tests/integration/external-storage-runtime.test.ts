@@ -1765,6 +1765,26 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
     });
   });
 
+  test("external-storage integrity errors include the object-storage failure detail", async () => {
+    let factoryCloseCount = 0;
+    const configuration = {
+      databaseUrl: Redacted.make(environment.databaseUrl),
+      installationId: `external-integrity-error-${randomUUID()}`,
+      objectStorage: {
+        close: async () => { factoryCloseCount += 1; },
+        create: () => { throw new Error("S3 credentials were rejected"); },
+        kind: "s3" as const,
+      },
+    };
+
+    await expect(checkExternalStorageIntegrity(configuration)).rejects.toMatchObject({
+      detail: "S3 credentials were rejected",
+      message: "Object storage could not be inspected.",
+      provider: "s3",
+    });
+    expect(factoryCloseCount).toBe(1);
+  });
+
   test("external-storage foundation: logical Postgres and object backups restore stable IDs and bytes", async () => {
     expect.hasAssertions();
     const backupIdentity = {

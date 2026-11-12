@@ -109,8 +109,10 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
   readonly #provisionerClients: ReadonlySet<string>;
   readonly #provisionerGroupPrefixes: readonly string[];
   readonly #userInfoEndpoint: string | null;
+  readonly #config: OidcMcpBearerVerifierConfig;
 
   constructor(config: OidcMcpBearerVerifierConfig) {
+    this.#config = config;
     this.#algorithms = [...(config.algorithms ?? defaultAlgorithms)];
     this.#audience = config.audience;
     this.#provisionerAudience = config.provisionerAudience ?? null;
@@ -139,6 +141,17 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
       timeoutDuration: jwksTimeoutMilliseconds,
     });
   }
+
+  readonly forApplicationResources = (resources: {
+    readonly apiResource: string;
+    readonly mcpResource: string;
+  }): OidcMcpBearerVerifier => new OidcMcpBearerVerifier({
+    ...this.#config,
+    audience: this.#config.audience === this.#config.provisionerAudience
+      ? resources.apiResource
+      : resources.mcpResource,
+    provisionerAudience: resources.apiResource,
+  });
 
   readonly verify = Effect.fn("OidcMcpBearerVerifier.verify")(
     function*(this: OidcMcpBearerVerifier, credential: Redacted.Redacted) {

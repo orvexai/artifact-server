@@ -253,7 +253,7 @@ export interface InstallationAccessDependencies {
    * another process may authenticate here for at most the TTL.
    */
   readonly authenticationCache?: AuthenticationCachePolicy | null;
-  readonly bootstrapAdministratorEmail: string;
+  readonly bootstrapAdministratorEmail: string | null;
   readonly clock: {readonly now: () => Date};
   /**
    * Issuer groups that admit external identities and set their role. When
@@ -601,6 +601,11 @@ function makeInstallationAccessService(
   const loginAsLocalOwner = Effect.fn(
     "InstallationAccessService.loginAsLocalOwner",
   )(function*() {
+    if (dependencies.bootstrapAdministratorEmail === null) {
+      return yield* Effect.fail(new IdentityConflict({
+        message: "No bootstrap administrator is configured for this installation.",
+      }));
+    }
     const email = yield* normalizeEmail(dependencies.bootstrapAdministratorEmail);
     let member = yield* dependencies.repository.findActiveMemberByEmail(
       dependencies.installationId,
@@ -964,7 +969,9 @@ function makeInstallationAccessService(
         message: "No group has been given a role in the Artifact Server yet.",
       }));
     }
-    const role = groupMembershipRole(assignments, identity.groups);
+    const role = policy.groupRoots === undefined
+      ? groupMembershipRole(assignments, identity.groups)
+      : groupMembershipRole(assignments, identity.groups, policy.groupRoots);
     // The last active Admin or Owner keeps their role, so someone can always
     // give the roles out again after a group that held them is lost.
     if (
@@ -1097,11 +1104,12 @@ function makeInstallationAccessService(
       const hasMembers = yield* dependencies.repository.hasMembers(
         dependencies.installationId,
       );
-      const bootstrapAdministratorEmail = yield* normalizeEmail(
-        dependencies.bootstrapAdministratorEmail,
-      );
+      const bootstrapAdministratorEmail = dependencies.bootstrapAdministratorEmail === null
+        ? null
+        : yield* normalizeEmail(dependencies.bootstrapAdministratorEmail);
       if (
         hasMembers ||
+        bootstrapAdministratorEmail === null ||
         email !== bootstrapAdministratorEmail
       ) {
         return yield* Effect.fail(new IdentityAdmissionDenied({
@@ -1142,7 +1150,9 @@ function makeInstallationAccessService(
         ? yield* dependencies.repository.listGroupRoles(dependencies.installationId)
         : configuredGroupRoleAssignments(groupRolePolicy.seed);
       const assignments = baseAssignments;
-      const role = groupMembershipRole(assignments, identity.groups);
+      const role = groupRolePolicy.groupRoots === undefined
+        ? groupMembershipRole(assignments, identity.groups)
+        : groupMembershipRole(assignments, identity.groups, groupRolePolicy.groupRoots);
       if (role === null) {
         return yield* new IdentityAdmissionDenied({
           message: "This service account is not in a group admitted to the Artifact Server.",
@@ -1151,7 +1161,12 @@ function makeInstallationAccessService(
       const storedGroups = yield* dependencies.repository.listDirectoryGroups(
         dependencies.installationId,
       );
-      const reported = new Set(identity.groups ?? []);
+      const reported = new Set((identity.groups ?? []).filter((group) =>
+        groupRolePolicy.groupRoots === undefined ||
+        groupRolePolicy.groupRoots.some((root) =>
+          group.startsWith(root) && group.length > root.length
+        )
+      ));
       const nameCounts = new Map<string, number>();
       for (const group of storedGroups) {
         nameCounts.set(group.name, (nameCounts.get(group.name) ?? 0) + 1);
@@ -1331,13 +1346,13 @@ function makeInstallationAccessService(
       }));
     }
     if (dependencies.protectBootstrapAdministrator) {
-      const [member, bootstrapAdministratorEmail] = yield* Effect.all([
-        dependencies.repository.findMember(
-          dependencies.installationId,
-          memberId,
-        ),
-        normalizeEmail(dependencies.bootstrapAdministratorEmail),
-      ]);
+      const member = yield* dependencies.repository.findMember(
+        dependencies.installationId,
+        memberId,
+      );
+      const bootstrapAdministratorEmail = dependencies.bootstrapAdministratorEmail === null
+        ? null
+        : yield* normalizeEmail(dependencies.bootstrapAdministratorEmail);
       if (member?.email === bootstrapAdministratorEmail) {
         return yield* Effect.fail(new IdentityConflict({
           message: "The local-owner administrator cannot be deactivated.",
