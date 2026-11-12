@@ -4,7 +4,7 @@ fullnameOverride: ""
 
 image:
   repository: ghcr.io/plannotator/artifact-server
-  tag: "0.1.17"
+  tag: "0.1.18"
   digest: ""
   allowMutableTag: false
   pullPolicy: IfNotPresent
@@ -54,6 +54,12 @@ identity:
   # OAuth clients explicitly allowed to use group-bound service bearer access.
   # Empty by default; entries are sent as ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS.
   oidcServiceClients: []
+  # Subset of oidcServiceClients allowed to use the five project provisioner MCP tools.
+  # Entries are sent as ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS.
+  oidcProvisionerClients: []
+  # Full directory group path prefixes these clients may share projects with.
+  # Required when oidcProvisionerClients is non-empty.
+  oidcProvisionerGroupPrefixes: []
   # Subset of oidcServiceClients allowed to bind embed question responses.
   # Entries are sent as ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS.
   oidcEmbedBindClients: []

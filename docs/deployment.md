@@ -133,6 +133,38 @@ HTTPS. The server logs `discovery_misconfigured`, keeps MCP and API OAuth off,
 stays ready with `components.identity.oauth` set to `misconfigured`, and does
 not retry. Correct the issuer configuration and restart.
 
+### Allow a project provisioner service client
+
+Client-credentials service accounts are refused on MCP by default. To opt one
+in, list its exact client ID in both `ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS`
+(`identity.oidcServiceClients` in Helm) and
+`ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS`
+(`identity.oidcProvisionerClients`). Startup fails if a provisioner is missing
+from the service-client list. Both settings default to empty. The Helm values
+schema checks their shape. A provisioner cannot also be an embed-binding client
+or the hosted-login/MCP OAuth client. Provisioners also require an OIDC
+group-role policy and `ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES`
+(`identity.oidcProvisionerGroupPrefixes` in Helm). Prefixes use the strict
+full-path form `^(/[^/\\s]+)+/$`; configure the intended production prefixes
+`/Guests/` and `/TenantWorkspaces/`. Both lists default to empty.
+
+An opted-in client must still be admitted by the configured directory group
+roles with at least the Operator/member role. Its verified service-account
+token must use the API resource audience (`<ARTIFACT_SERVER_ORIGIN>/api`). In
+MCP, the client can call only `project_list`, `project_create`,
+`project_sharing`, `project_share`, and `project_set_access`; tools/list exposes
+only those five. MCP resources and prompts are unavailable to provisioners.
+Project creation is restricted and records the service principal as creator.
+A provisioner can manage only projects it created; a manager grant on another
+project does not give it management rights. A provisioner cannot open projects
+to the installation or grant manager roles. Every shared group must use an
+existing full path beneath one of the configured prefixes. Each provisioner
+create/share/access change records an audit event with its principal and client
+IDs.
+
+This setting grants no API-key capability. The existing `/api` service-bearer
+restriction remains in force.
+
 ### Manage access with issuer groups
 
 By default an administrator admits each person by hand, and only the bootstrap

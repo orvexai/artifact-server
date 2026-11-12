@@ -434,6 +434,10 @@ export function createApplicationLayer(
         try: () => adapters.repository.listProjectAuditEvents(projectId),
         catch: (cause) => repositoryFailure("listProjectAuditEvents", cause),
       }),
+      recordProjectProvisionerAuditEvent: (event) => Effect.tryPromise({
+        try: () => adapters.repository.recordProjectProvisionerAuditEvent(event),
+        catch: (cause) => repositoryFailure("recordProjectProvisionerAuditEvent", cause),
+      }),
       renameProject: (command) => Effect.tryPromise({
         try: () => adapters.repository.renameProject(command),
         catch: (cause) => cause instanceof ProjectNotFound
@@ -1085,6 +1089,17 @@ export function createApplicationLayer(
           }));
         }
         const verified = yield* verifier.verify(credential);
+        if (verified.provisionerClient === true) {
+          const identity = yield* verifier.resolveIdentity(verified, credential);
+          const principal = yield* installationAccess.authenticateExternalIdentity(identity);
+          return {
+            clientId: verified.clientId,
+            expiresAt: verified.expiresAt,
+            oauthClientId: verified.clientId,
+            principal,
+            scopes: ["mcp"],
+          };
+        }
         // Under an issuer group policy this answers null, so every token's
         // groups are evaluated again and a removed group takes effect at once.
         let principal = yield* installationAccess.authenticateExternalSubject(

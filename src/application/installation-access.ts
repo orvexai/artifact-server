@@ -54,6 +54,7 @@ import {
   isAdministratorRole,
   isHumanAdministrator,
   membershipRoles,
+  membershipRoleAtLeast,
   principalCapabilities,
   principalKinds,
   type MembershipRole,
@@ -61,7 +62,11 @@ import {
   type PrincipalCapability,
 } from "../core/identity.js";
 
-const allCapabilities = Object.values(principalCapabilities);
+const allCapabilities = new Set<PrincipalCapability>(
+  Object.values(principalCapabilities).filter((capability) =>
+    capability !== principalCapabilities.provisionProjects
+  ),
+);
 const localBrowserLoginProvider = "artifact-server-local";
 
 export interface InstallationIdentityRepository {
@@ -1157,9 +1162,19 @@ function makeInstallationAccessService(
       ).map((group) => group.id);
       return {
         authorizedByPrincipalId: null,
-        capabilities: identity.embedBindingServiceAccount === true
-          ? [principalCapabilities.readArtifactResponses, principalCapabilities.bindArtifactEmbed]
-          : [principalCapabilities.readArtifactResponses],
+        capabilities: [
+          ...(identity.provisionProjectsServiceAccount !== true ||
+              identity.embedBindingServiceAccount === true
+            ? [principalCapabilities.readArtifactResponses]
+            : []),
+          ...(identity.embedBindingServiceAccount === true
+            ? [principalCapabilities.bindArtifactEmbed]
+            : []),
+          ...(identity.provisionProjectsServiceAccount === true &&
+              membershipRoleAtLeast(role, membershipRoles.member)
+            ? [principalCapabilities.provisionProjects]
+            : []),
+        ],
         directoryGroupIds,
         displayName: identity.displayName,
         email: null,
@@ -1167,6 +1182,8 @@ function makeInstallationAccessService(
         installationId: dependencies.installationId,
         kind: principalKinds.service,
         membershipRole: role,
+        provisionerGroupPrefixes: identity.provisionerGroupPrefixes ?? [],
+        serviceAccountClientId: identity.serviceAccountClientId,
         serviceAccountSource: "oidc" as const,
       };
     }
@@ -1597,7 +1614,7 @@ const normalizeCapabilities = Effect.fn(
   const unique = [...new Set(capabilities)];
   if (
     unique.length === 0 ||
-    unique.some((capability) => !allCapabilities.includes(capability))
+    unique.some((capability) => !allCapabilities.has(capability))
   ) {
     return yield* new IdentityConflict({
       message: "At least one recognized API key capability is required.",

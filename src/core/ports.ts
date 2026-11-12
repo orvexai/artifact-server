@@ -36,6 +36,7 @@ import type {
   PageCursor,
   PublishedVersion,
   ProjectAuditEvent,
+  ProjectProvisionerAuditEvent,
   ProjectRecord,
   RegisteredAgentKind,
   RegisteredAgentPresence,
@@ -677,6 +678,8 @@ export interface CreateProject extends ProjectRecord {
   readonly accessMode: "installation" | "restricted";
   /** The member who created it, who manages it once it is restricted. */
   readonly createdByMemberId: string | null;
+  /** The principal who created it; service creators have no member row. */
+  readonly createdByPrincipalId: string;
 }
 
 /** Values used to change one project's label. */
@@ -702,6 +705,7 @@ export interface ProjectRepository {
   findProject(projectId: string): Promise<ProjectRecord | null>;
   listProjects(): Promise<readonly ProjectRecord[]>;
   listProjectAuditEvents(projectId: string): Promise<readonly ProjectAuditEvent[]>;
+  recordProjectProvisionerAuditEvent(event: ProjectProvisionerAuditEvent): Promise<void>;
   renameProject(command: RenameProject): Promise<ProjectRecord>;
   setProjectArchive(command: SetProjectArchive): Promise<ProjectRecord>;
 }

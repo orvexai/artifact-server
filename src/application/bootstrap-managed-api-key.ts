@@ -15,7 +15,9 @@ import {
 import {identitySecretsEqual} from "./installation-access.js";
 
 const bootstrapKeyExpiration = "9999-12-31T23:59:59.999Z";
-const bootstrapCapabilities = Object.values(principalCapabilities).toSorted();
+const bootstrapCapabilities = Object.values(principalCapabilities)
+  .filter((capability) => capability !== principalCapabilities.provisionProjects)
+  .toSorted();
 
 /**
  * Persist the first private-team machine credential as a normal managed key.
