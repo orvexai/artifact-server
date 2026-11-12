@@ -28,6 +28,8 @@ import {
   OrganizationRegistry,
   type OrganizationAdmissionPolicy,
 } from "../../src/external-storage/organization-registry.js";
+import {findDisappearedOrganizations} from
+  "../../src/external-storage/organization-registry.js";
 import {startExternalStorageServer} from
   "../../src/external-storage/start-external-storage-server.js";
 import {
@@ -40,6 +42,11 @@ import {WorkOsMcpBearerVerifier} from
   "../../src/identity/workos-mcp-bearer-verifier.js";
 import type {ExternalMcpBearerVerifier} from
   "../../src/application/authentication.js";
+import type {
+  DirectoryOrganization,
+  DirectoryOrganizationMember,
+  OrganizationDirectory,
+} from "../../src/identity/keycloak-directory.js";
 import {startStubOidcProvider} from "../support/stub-oidc-provider.js";
 import {createS3ObjectStorageProviderFactory} from
   "../../src/storage/s3-object-storage.js";
@@ -357,6 +364,7 @@ describe.sequential("organization tenancy security boundary", () => {
       }).nullable(),
       displayName: z.string(),
       id: z.string(),
+      keycloakId: z.string().nullable(),
       routeId: z.string(),
       slug: z.string(),
       status: z.enum(["active", "suspended"]),
@@ -926,6 +934,102 @@ describe.sequential("organization tenancy security boundary", () => {
     })).rejects.toBeInstanceOf(IntegrityCheckError);
     expect(failedFactoryCloseCount).toBe(1);
   }, 60_000);
+
+  test("an org member removal deactivates only that installation's member", async () => {
+    const registry = new OrganizationRegistry(database);
+    const aliasA = `org-a-${randomUUID().slice(0, 8)}`;
+    const aliasB = `org-b-${randomUUID().slice(0, 8)}`;
+    const idA = randomUUID();
+    const idB = randomUUID();
+    const orgA = await registry.syncKeycloakOrganization(aliasA, "Org A", idA);
+    const orgBRecord = await registry.syncKeycloakOrganization(aliasB, "Org B", idB);
+    const organizationA: DirectoryOrganization = {alias: aliasA, id: idA, name: "Org A"};
+    const organizationB: DirectoryOrganization = {alias: aliasB, id: idB, name: "Org B"};
+    const usersA = [
+      {id: "owner-a", username: "owner-a", email: "owner-a@example.test", emailVerified: true, enabled: true, firstName: null, lastName: null, role: "owner" as const},
+      {id: "editor-a", username: "editor-a", email: "editor-a@example.test", emailVerified: true, enabled: true, firstName: null, lastName: null, role: "editor" as const},
+    ];
+    const usersB = [
+      {id: "owner-b", username: "owner-b", email: "owner-b@example.test", emailVerified: true, enabled: true, firstName: null, lastName: null, role: "owner" as const},
+      {id: "editor-b", username: "editor-b", email: "editor-b@example.test", emailVerified: true, enabled: true, firstName: null, lastName: null, role: "editor" as const},
+    ];
+    let snapshotA: readonly DirectoryOrganizationMember[] = usersA;
+    const directory: OrganizationDirectory = {
+      listOrganizations: () => Effect.succeed([organizationA, organizationB]),
+      listOrganizationMembers: (organization) =>
+        Effect.succeed(organization.id === idA ? snapshotA : usersB),
+    };
+    const openOrgRuntime = (record: typeof orgA) =>
+      createOrgRuntime(record.id, {
+        cookieRouteId: record.routeId,
+        keycloakOrganizationId: record.keycloakId,
+        slug: record.slug,
+      }, config, database);
+    const runtimeA = await openOrgRuntime(orgA);
+    const runtimeB = await openOrgRuntime(orgBRecord);
+    try {
+      await runtimeA.syncOrganizationMembers(directory, organizationA);
+      await runtimeB.syncOrganizationMembers(directory, organizationB);
+      const ownerA = usersA.at(0);
+      if (ownerA === undefined) throw new Error("The Org A owner fixture is missing.");
+      snapshotA = [ownerA];
+      const removed = await runtimeA.syncOrganizationMembers(directory, organizationA);
+      expect(removed.deactivated).toBe(1);
+      const rows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT installation_id, email, status FROM installation_members
+          WHERE email IN ('editor-a@example.test', 'editor-b@example.test')`;
+      }));
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({installation_id: orgA.id, email: "editor-a@example.test", status: "inactive"}),
+        expect.objectContaining({installation_id: orgBRecord.id, email: "editor-b@example.test", status: "active"}),
+      ]));
+      oidc.claims.email = "owner-a@example.test";
+      oidc.claims.emailVerified = true;
+      oidc.claims.identityProvider = "google";
+      oidc.claims.organization = {
+        [aliasA]: {id: idA, groups: ["/owner"]},
+      };
+      const baseUrl = `http://${router.hostname}:${router.port}`;
+      const loginA = await startRoutedOidcLogin(baseUrl, aliasA);
+      expect(new URLSearchParams(loginA.authorizationUrl.search).get("scope"))
+        .toContain("organization:*");
+      const completedA = await fetch(loginA.callbackUrl, {
+        headers: {Cookie: loginA.handshakeCookie},
+        redirect: "manual",
+      });
+      expect(completedA.status).toBe(303);
+      const cookieA = completedA.headers.getSetCookie()
+        .map((value) => value.split(";", 1)[0])
+        .filter((value): value is string => value !== undefined)
+        .join("; ");
+      const sessionA = await fetch(`${baseUrl}/o/${aliasA}/api/v1/session`, {
+        headers: {Cookie: cookieA, Host: "artifacts.example.com"},
+      });
+      expect(sessionA.status).toBe(200);
+      const loginB = await startRoutedOidcLogin(baseUrl, aliasB);
+      const completedB = await fetch(loginB.callbackUrl, {
+        headers: {Cookie: loginB.handshakeCookie},
+        redirect: "manual",
+      });
+      expect(completedB.status).not.toBe(303);
+      const identityRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT identity_provider FROM external_identities
+          WHERE installation_id = ${orgA.id} AND email = 'owner-a@example.test'`;
+      }));
+      expect(identityRows[0]?.["identity_provider"]).toBe("google");
+      // The discovered organizations remain registered even when omitted from
+      // a later complete Keycloak organization listing.
+      expect((await registry.list()).map(({id}) => id)).toContain(orgA.id);
+      const registryRows = await registry.list();
+      expect(findDisappearedOrganizations(registryRows, [organizationB]))
+        .toContainEqual({alias: aliasA, id: idA});
+      expect(await registry.find(aliasA)).toMatchObject({keycloakId: idA});
+    } finally {
+      await Promise.all([runtimeA.close(), runtimeB.close()]);
+    }
+  }, 60_000);
 });
 
 function trackedObjectStorageFactory(
@@ -1074,6 +1178,39 @@ function runtimeAdmissionPolicy(
   };
   if (policy.guestGroupPrefixes === undefined) return groupRolePolicy;
   return {...groupRolePolicy, guestGroupPrefixes: policy.guestGroupPrefixes};
+}
+
+async function startRoutedOidcLogin(baseUrl: string, slug: string) {
+  const loginResponse = await fetch(`${baseUrl}/o/${slug}/auth/login`, {
+    headers: {Host: "artifacts.example.com"},
+    redirect: "manual",
+  });
+  const authorization = loginResponse.headers.get("location");
+  if (authorization === null) {
+    throw new Error(`Organization login answered HTTP ${loginResponse.status} without a redirect.`);
+  }
+  const authorizationUrl = new URL(authorization);
+  const authorizationResponse = await fetch(authorizationUrl, {redirect: "manual"});
+  const callback = authorizationResponse.headers.get("location");
+  if (callback === null) {
+    throw new Error(`Stub authorization answered HTTP ${authorizationResponse.status} without a callback.`);
+  }
+  const callbackUrl = new URL(callback);
+  callbackUrl.host = new URL(baseUrl).host;
+  callbackUrl.protocol = new URL(baseUrl).protocol;
+  return {
+    authorizationUrl,
+    callbackUrl,
+    handshakeCookie: routedLoginHandshakeCookie(loginResponse),
+  };
+}
+
+function routedLoginHandshakeCookie(response: Response): string {
+  const cookie = response.headers.getSetCookie().find((value) =>
+    /^(?:__Host-)?artifact_login(?:-|=)/u.test(value),
+  );
+  if (cookie === undefined) throw new Error("Organization login did not set its handshake cookie.");
+  return cookie.split(";", 1)[0] ?? "";
 }
 
 async function mcpToolNames(response: Response): Promise<string[]> {

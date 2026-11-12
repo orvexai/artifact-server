@@ -8,7 +8,10 @@ import {
   type GroupDirectory,
   syncDirectoryGroups,
   syncDirectoryMembers,
+  syncOrganizationDirectoryMembers,
 } from "../application/directory-sync.js";
+import type {DirectoryOrganization, OrganizationDirectory} from
+  "../identity/keycloak-directory.js";
 import type {GroupRoleSeedEntry} from "../core/group-role-policy.js";
 import {
   type GroupRoleSeedResult,
@@ -23,6 +26,27 @@ export function runDirectorySyncPass(
   return runtime.runPromise(syncDirectoryMembers(directory).pipe(
     Effect.mapError((error) => new Error(`${error._tag}: ${error.message}`)),
   ));
+}
+
+/** Sync one Keycloak organization's members with the configured safety cap. */
+export function runOrganizationDirectorySyncPass(
+  runtime: ApplicationRuntime,
+  directory: OrganizationDirectory,
+  organization: DirectoryOrganization,
+): Promise<DirectorySyncReport> {
+  const configured = process.env["ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS"];
+  if (configured !== undefined && !/^[0-9]+$/u.test(configured)) {
+    return Promise.reject(new Error("ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS must contain only decimal digits."));
+  }
+  const maximumDeactivations = configured === undefined ? 5 : Number(configured);
+  if (!Number.isSafeInteger(maximumDeactivations) || maximumDeactivations < 0) {
+    return Promise.reject(new Error("ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS must be a non-negative integer."));
+  }
+  return runtime.runPromise(syncOrganizationDirectoryMembers(
+    directory,
+    organization,
+    maximumDeactivations,
+  ).pipe(Effect.mapError((error) => new Error(`${error._tag}: ${error.message}`))));
 }
 
 /** Copy every directory group and its members, rejecting with a stable message. */

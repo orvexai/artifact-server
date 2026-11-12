@@ -6,6 +6,8 @@ import {Redacted} from "effect";
 
 import {
   createExternalStorageRuntime,
+  createOrgRuntime,
+  openExternalStorageDatabase,
   type ExternalStorageRuntimeConfig,
 } from "../external-storage/create-external-storage-runtime.js";
 import {
@@ -51,6 +53,7 @@ import {
 import {PostgresDatabase} from "../storage/postgres-database.js";
 import {
   OrganizationRegistry,
+  findDisappearedOrganizations,
   parseOrganizationAdmissionPolicyJson,
   type OrganizationAdmissionPolicy,
 } from "../external-storage/organization-registry.js";
@@ -149,6 +152,22 @@ function configureMaintenance(program: Command): void {
       }
     });
   maintenance
+    .command("org-sync")
+    .description("Discover Keycloak organizations and sync their members.")
+    .requiredOption("--once", "run one complete pass and exit")
+    .addOption(new Option("--mode <mode>", "external-storage only").choices(["external-storage"]).default("external-storage"))
+    .addOption(dataOption())
+    .addOption(hostOption())
+    .addOption(portOption())
+    .action(async (options: SyncDirectoryOptions) => {
+      const configuration = await lifecycleConfiguration(options);
+      if (configuration.deploymentMode !== "external-storage") {
+        throw new Error("Keycloak organization sync requires external-storage mode.");
+      }
+      const report = await syncKeycloakOrganizations(configuration);
+      console.log(JSON.stringify(report, null, 2));
+    });
+  maintenance
     .command("sync-directory")
     .description(
       "Make installation members match the OIDC issuer's directory groups.",
@@ -231,6 +250,13 @@ function configureMaintenance(program: Command): void {
             unchanged: Math.max(0, memberSync.unchanged - roleChangedDuringRecompute),
             roleChanged: memberSync.roleChanged + roleChangedDuringRecompute,
           }));
+        if (parseOrganizationTenancy(process.env["ARTIFACT_SERVER_ORG_TENANCY"])) {
+          if (configuration.deploymentMode !== "external-storage") {
+            throw new Error("Keycloak organization sync requires external-storage mode.");
+          }
+          const organizationSync = await syncKeycloakOrganizations(configuration);
+          console.log(JSON.stringify({organizationSync}));
+        }
       } finally {
         await runtime.close();
       }
@@ -289,6 +315,90 @@ function configureOrganizations(program: Command): void {
         await database.close();
       }
     });
+  organization.command("sync")
+    .description("Discover Keycloak organizations and sync their members.")
+    .addOption(new Option("--mode <mode>", "external-storage only").choices(["external-storage"]).default("external-storage"))
+    .addOption(hostOption())
+    .addOption(portOption())
+    .action(async (options: StartExternalStorageOptions) => {
+      const configuration = await parseExternalConfiguration(options.host, options.port);
+      const report = await syncKeycloakOrganizations(configuration);
+      console.log(JSON.stringify(report, null, 2));
+    });
+}
+
+interface OrganizationSyncReport {
+  readonly discovered: readonly string[];
+  readonly disappeared: readonly {readonly alias: string; readonly id: string}[];
+  readonly memberSync: readonly {readonly alias: string; readonly report: unknown}[];
+}
+
+async function syncKeycloakOrganizations(
+  configuration: ExternalStorageRuntimeConfiguration,
+): Promise<OrganizationSyncReport> {
+  if (configuration.deploymentMode !== "external-storage") {
+    throw new Error("Keycloak organization sync requires external-storage mode.");
+  }
+  if (!parseOrganizationTenancy(process.env["ARTIFACT_SERVER_ORG_TENANCY"])) {
+    throw new Error("Keycloak organization sync requires ARTIFACT_SERVER_ORG_TENANCY=on.");
+  }
+  assertAtMostOneBrowserLoginProvider(process.env);
+  const oidc = await loadOidcConfiguration({
+    ...process.env,
+    ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL: configuration.bootstrapAdministratorEmail,
+    ARTIFACT_SERVER_ORIGIN: configuration.applicationOrigin,
+  });
+  const directorySettings = oidc?.directory ?? null;
+  if (oidc === null || directorySettings === null) {
+    throw new Error("Keycloak organization sync requires OIDC and ARTIFACT_SERVER_OIDC_DIRECTORY_* settings.");
+  }
+  const directoryConfig: KeycloakDirectoryConfig = {
+    adminBaseUrl: directorySettings.adminBaseUrl,
+    clientId: directorySettings.clientId,
+    clientSecret: directorySettings.clientSecret,
+    issuer: oidc.issuer,
+  };
+  const directory = new KeycloakDirectory(directorySettings.tokenEndpoint === undefined
+    ? directoryConfig
+    : {...directoryConfig, tokenEndpoint: directorySettings.tokenEndpoint});
+  const database = await openExternalStorageDatabase(externalMaintenanceConfig(configuration));
+  try {
+    const registry = new OrganizationRegistry(database);
+    await registry.ensureOrvex(configuration.installationId);
+    const before = await registry.list();
+    const keycloakOrganizations = await runCliEffect(directory.listOrganizations());
+    const discovered: string[] = [];
+    const memberSync: {alias: string; report: unknown}[] = [];
+    await keycloakOrganizations.reduce(async (previous, keycloakOrganization) => {
+        await previous;
+      const organization = await registry.syncKeycloakOrganization(
+        keycloakOrganization.alias,
+        keycloakOrganization.name,
+        keycloakOrganization.id,
+      );
+      discovered.push(organization.slug);
+      // Orvex remains governed by the existing issuer-group policy.
+      if (keycloakOrganization.alias === "orvex") return;
+      const orgRuntime = await createOrgRuntime(organization.id, {
+        cookieRouteId: organization.routeId,
+        keycloakOrganizationId: keycloakOrganization.id,
+        slug: organization.slug,
+        applicationOrigin: new URL(`/o/${organization.slug}`, configuration.applicationOrigin).toString(),
+      }, externalMaintenanceConfig(configuration), database);
+      try {
+        memberSync.push({
+          alias: keycloakOrganization.alias,
+          report: await orgRuntime.syncOrganizationMembers(directory, keycloakOrganization),
+        });
+      } finally {
+        await orgRuntime.close();
+      }
+      }, Promise.resolve());
+    const disappeared = findDisappearedOrganizations(before, keycloakOrganizations);
+    return {discovered, disappeared, memberSync};
+  } finally {
+    await Promise.all([configuration.objectStorage.close?.(), database.close()]);
+  }
 }
 
 function configureInitialization(program: Command): void {

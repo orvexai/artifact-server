@@ -8,6 +8,8 @@ import {
   type MemberDirectory,
 } from "../application/directory-sync.js";
 import type {DirectoryGroupRecord} from "../core/directory-groups.js";
+import {mapKeycloakOrganizationGroups, type KeycloakOrganizationRole} from
+  "./oidc-organization-claim.js";
 import {loadOidcAuthorizationServer} from "./oidc-oauth-metadata.js";
 import {isLocalOidcIssuer, normalizeOidcEndpoint} from "./oidc-issuer.js";
 
@@ -46,10 +48,45 @@ const userList = Schema.Array(Schema.Struct({
   lastName: Schema.optionalKey(Schema.String),
   username: Schema.String,
 }));
+const organizationList = Schema.Array(Schema.Struct({
+  alias: Schema.NonEmptyString,
+  id: Schema.NonEmptyString,
+  name: Schema.NonEmptyString,
+}));
+const organizationMemberList = Schema.Array(Schema.Struct({
+  email: Schema.optionalKey(Schema.String),
+  emailVerified: Schema.optionalKey(Schema.Boolean),
+  enabled: Schema.optionalKey(Schema.Boolean),
+  firstName: Schema.optionalKey(Schema.String),
+  groups: Schema.optionalKey(Schema.Array(Schema.String)),
+  id: Schema.NonEmptyString,
+  lastName: Schema.optionalKey(Schema.String),
+  username: Schema.String,
+}));
 const decodeTokenResponse = Schema.decodeUnknownEffect(tokenResponse);
 const decodeGroupList = Schema.decodeUnknownEffect(groupList);
 const decodeGroupTree = Schema.decodeUnknownEffect(groupTree);
 const decodeUserList = Schema.decodeUnknownEffect(userList);
+const decodeOrganizationList = Schema.decodeUnknownEffect(organizationList);
+const decodeOrganizationMemberList = Schema.decodeUnknownEffect(organizationMemberList);
+
+export interface DirectoryOrganization {
+  readonly alias: string;
+  readonly id: string;
+  readonly name: string;
+}
+
+export interface DirectoryOrganizationMember extends DirectoryUser {
+  readonly role: KeycloakOrganizationRole | null;
+}
+
+/** Keycloak Organizations API used by per-org admission and directory sync. */
+export interface OrganizationDirectory {
+  readonly listOrganizations: () => Effect.Effect<readonly DirectoryOrganization[], DirectoryUnavailable>;
+  readonly listOrganizationMembers: (
+    organization: DirectoryOrganization,
+  ) => Effect.Effect<readonly DirectoryOrganizationMember[], DirectoryUnavailable>;
+}
 
 /**
  * Derive the Keycloak admin REST base for one realm issuer, or null when the
@@ -140,7 +177,7 @@ export interface KeycloakDirectoryConfig {
  * client-credentials token. The client needs only realm-management
  * view-users and query-groups.
  */
-export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
+export class KeycloakDirectory implements GroupDirectory, MemberDirectory, OrganizationDirectory {
   readonly #adminBaseUrl: string;
   readonly #clientId: string;
   readonly #clientSecret: Redacted.Redacted;
@@ -183,6 +220,63 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
         groups.push({name, users: yield* this.#groupMembers(token, name, id)});
       }
       return groups;
+    },
+  );
+
+  readonly listOrganizations = Effect.fn("KeycloakDirectory.listOrganizations")(
+    function*(this: KeycloakDirectory) {
+      const token = yield* this.#accessToken();
+      const organizations: DirectoryOrganization[] = [];
+      for (let page = 0; page < maximumPagesPerGroup; page += 1) {
+        const url = new URL(`${this.#adminBaseUrl}/organizations`);
+        url.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+        url.searchParams.set("max", String(keycloakDirectoryPageSize));
+        const body = yield* this.#adminGet(token, url, "The Keycloak organization listing");
+        const listed = yield* decodeOrganizationList(body).pipe(
+          Effect.mapError(() => unavailable("The Keycloak organization listing returned an invalid list.")),
+        );
+        organizations.push(...listed);
+        if (organizations.length > maximumGroups) {
+          return yield* unavailable("Keycloak lists more organizations than one sync reads.");
+        }
+        if (listed.length < keycloakDirectoryPageSize) return organizations;
+      }
+      return yield* unavailable("The Keycloak organization listing has too many pages.");
+    },
+  );
+
+  readonly listOrganizationMembers = Effect.fn("KeycloakDirectory.listOrganizationMembers")(
+    function*(this: KeycloakDirectory, organization: DirectoryOrganization) {
+      const token = yield* this.#accessToken();
+      const members: DirectoryOrganizationMember[] = [];
+      for (let page = 0; page < maximumPagesPerGroup; page += 1) {
+        const url = new URL(
+          `${this.#adminBaseUrl}/organizations/${encodeURIComponent(organization.id)}/members`,
+        );
+        url.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+        url.searchParams.set("max", String(keycloakDirectoryPageSize));
+        const body = yield* this.#adminGet(token, url, `The Keycloak members of ${organization.alias}`);
+        const listed = yield* decodeOrganizationMemberList(body).pipe(
+          Effect.mapError(() => unavailable(`The Keycloak members of ${organization.alias} returned an invalid list.`)),
+        );
+        for (const member of listed) {
+          members.push({
+            email: member.email ?? null,
+            emailVerified: member.emailVerified === true,
+            enabled: member.enabled === true,
+            firstName: member.firstName ?? null,
+            id: member.id,
+            lastName: member.lastName ?? null,
+            role: mapKeycloakOrganizationGroups(member.groups ?? []),
+            username: member.username,
+          });
+        }
+        if (members.length > maximumGroups * keycloakDirectoryPageSize) {
+          return yield* unavailable(`The Keycloak organization ${organization.alias} has too many members.`);
+        }
+        if (listed.length < keycloakDirectoryPageSize) return members;
+      }
+      return yield* unavailable(`The Keycloak organization ${organization.alias} has too many member pages.`);
     },
   );
 

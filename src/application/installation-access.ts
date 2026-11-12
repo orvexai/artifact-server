@@ -261,6 +261,7 @@ export interface InstallationAccessDependencies {
    * external identities; omit it or pass `null` to keep both.
    */
   readonly groupRolePolicy?: GroupRolePolicy | null;
+  readonly organizationAdmission?: {readonly alias: string; readonly id: string};
   readonly ids: IdentityIdProvider;
   readonly installationId: string;
   readonly localBootstrapCredential: Redacted.Redacted | null;
@@ -409,6 +410,7 @@ export interface InstallationAccessOperations {
    */
   readonly reconcileDirectoryMembers: (
     entries: readonly DirectoryMemberEntry[],
+    maximumDeactivations?: number,
   ) => Effect.Effect<
     DirectoryReconciliation,
     IdentityConflict | IdentityRepositoryFailure
@@ -820,8 +822,8 @@ function makeInstallationAccessService(
 
   const reconcileDirectoryMembers = Effect.fn(
     "InstallationAccessService.reconcileDirectoryMembers",
-  )(function*(entries: readonly DirectoryMemberEntry[]) {
-    if (groupRolePolicy === null) {
+  )(function*(entries: readonly DirectoryMemberEntry[], maximumDeactivations?: number) {
+    if (groupRolePolicy === null && dependencies.organizationAdmission === undefined) {
       return yield* Effect.fail(new IdentityConflict({
         message: "Directory sync requires issuer group roles.",
       }));
@@ -857,6 +859,15 @@ function makeInstallationAccessService(
           )
           .map((member) => member.email),
     );
+    const removals = members.filter((member) =>
+      member.status === memberStatuses.active && !desired.has(member.email) &&
+      !keptAdministrators.has(member.email)
+    );
+    if (maximumDeactivations !== undefined && removals.length > maximumDeactivations) {
+      return yield* Effect.fail(new IdentityConflict({
+        message: `Directory sync would deactivate ${removals.length} members, above the configured maximum of ${maximumDeactivations}; nothing was changed.`,
+      }));
+    }
     let admitted = 0;
     let reactivated = 0;
     let roleChanged = 0;
@@ -1093,7 +1104,40 @@ function makeInstallationAccessService(
         email,
       );
     }
-    if (groupRolePolicy !== null) {
+    if (dependencies.organizationAdmission !== undefined) {
+      const expected = dependencies.organizationAdmission;
+      const organization = identity.organizationMembership;
+      if (organization === null || organization === undefined ||
+        organization.alias !== expected.alias || organization.id !== expected.id ||
+        organization.role === null) {
+        return yield* Effect.fail(new IdentityAdmissionDenied({
+          message: "This person is not a member of the requested organization.",
+        }));
+      }
+      const isSoleAdministrator = member !== null && isAdministratorRole(member.role)
+        ? yield* isSoleActiveAdministrator(member, organization.role)
+        : false;
+      if (member !== null && isAdministratorRole(member.role) &&
+        !isAdministratorRole(organization.role) && isSoleAdministrator) {
+        // Keep the last administrator active so the installation can recover.
+      } else if (member === null) {
+        member = yield* dependencies.repository.admitMember({
+          createdAt: dependencies.clock.now().toISOString(),
+          displayName: identity.displayName,
+          email,
+          id: dependencies.ids.memberId(),
+          installationId: dependencies.installationId,
+          role: organization.role,
+        });
+      } else if (member.role !== organization.role) {
+        member = yield* dependencies.repository.setMemberRole(
+          dependencies.installationId,
+          email,
+          organization.role,
+          dependencies.clock.now().toISOString(),
+        );
+      }
+    } else if (groupRolePolicy !== null) {
       member = yield* applyGroupRole(
         groupRolePolicy,
         identity,
@@ -1125,15 +1169,27 @@ function makeInstallationAccessService(
         role: membershipRoles.administrator,
       });
     }
-    yield* dependencies.repository.bindExternalIdentity({
+    if (member === null) {
+      return yield* Effect.fail(new IdentityAdmissionDenied({
+        message: "This person has not been admitted to the Artifact Server.",
+      }));
+    }
+    const binding = {
       boundAt: dependencies.clock.now().toISOString(),
       email,
       memberId: member.id,
       provider: identity.provider,
       subject: identity.subject,
-    });
+    };
+    if (identity.identityProvider !== undefined) {
+      Object.assign(binding, {identityProvider: identity.identityProvider});
+    }
+    yield* dependencies.repository.bindExternalIdentity(binding);
     return member;
-  });
+  }, Effect.catchTag("IdentityNotFound", () =>
+    Effect.fail(new IdentityConflict({
+      message: "The member changed while organization admission was applied.",
+    }))));
 
   const authenticateExternalIdentity = Effect.fn(
     "InstallationAccessService.authenticateExternalIdentity",

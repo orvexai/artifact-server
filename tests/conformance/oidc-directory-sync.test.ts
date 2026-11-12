@@ -1,7 +1,7 @@
 import path from "node:path";
 import {DatabaseSync} from "node:sqlite";
 
-import {Redacted} from "effect";
+import {Effect, Redacted} from "effect";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
 
@@ -117,6 +117,40 @@ describe("Keycloak directory sync", () => {
 
     // A second pass with nothing changed writes nothing.
     expect(await sync()).toEqual(report({directoryUsers: 207, unchanged: 207}));
+  });
+
+  test("reads organization registry and per-org members through bounded admin pages", async () => {
+    const organization = {
+      alias: "smoketest",
+      id: "1f91f545-13d4-448f-839c-485274165908",
+      name: "Smoke Test",
+    };
+    keycloak.organizations.set(organization.id, organization);
+    keycloak.organizationMembers.set(organization.id, [
+      {...keycloakUser("org-viewer"), groups: []},
+      {...keycloakUser("org-editor"), groups: ["/viewer", "/editor"]},
+      {...keycloakUser("org-unknown"), groups: ["/administrator"]},
+    ]);
+    const adminBaseUrl = keycloakAdminBaseUrl(keycloak.issuer);
+    if (adminBaseUrl === null) throw new Error("The stub issuer is not a realm.");
+    const directory = new KeycloakDirectory({
+      adminBaseUrl,
+      clientId: keycloak.clientId,
+      clientSecret: Redacted.make(keycloak.clientSecret),
+      issuer: keycloak.issuer,
+      retryBaseDelayMilliseconds: 0,
+    });
+
+    expect(await Effect.runPromise(directory.listOrganizations())).toEqual([organization]);
+    expect(await Effect.runPromise(directory.listOrganizationMembers(organization)))
+      .toMatchObject([
+        {email: "org-viewer@example.test", role: "viewer"},
+        {email: "org-editor@example.test", role: "editor"},
+        {email: "org-unknown@example.test", role: null},
+      ]);
+    expect(keycloak.adminRequests().map(({path: requestPath}) => requestPath)).toContain(
+      `/organizations/${organization.id}/members`,
+    );
   });
 
   test("guest wins over viewer when member sync collects overlapping groups", async () => {

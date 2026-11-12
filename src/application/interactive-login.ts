@@ -39,6 +39,8 @@ export interface InteractiveIdentityProvider {
   readonly name: string;
   /** Clone this provider with the callback for one routed application base. */
   forApplicationOrigin?(origin: string): InteractiveIdentityProvider;
+  /** Scope a verified Keycloak organization claim to one registered org. */
+  forOrganization?(organization: {readonly alias: string; readonly id: string}): InteractiveIdentityProvider;
   readonly start: () => Effect.Effect<InteractiveAuthorization, IdentityProviderFailure>;
 }
 

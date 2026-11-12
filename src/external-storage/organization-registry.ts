@@ -49,6 +49,7 @@ const organizationNameSchema = z.string().trim().min(1).max(160);
 const organizationSchema = z.object({
   displayName: z.string(),
   id: z.string(),
+  keycloakId: z.string().nullable(),
   admissionPolicy: admissionPolicySchema.nullable(),
   routeId: z.string().regex(/^[a-z0-9]{8}$/u),
   slug: organizationSlugSchema,
@@ -60,9 +61,24 @@ export interface OrganizationRecord {
   readonly admissionPolicy: z.infer<typeof admissionPolicySchema> | null;
   readonly displayName: string;
   readonly id: string;
+  readonly keycloakId: string | null;
   readonly routeId: string;
   readonly slug: string;
   readonly status: "active" | "suspended";
+}
+
+/** Report active registrations absent from the latest complete Keycloak list. */
+export function findDisappearedOrganizations(
+  registered: readonly OrganizationRecord[],
+  observed: readonly {readonly id: string}[],
+): readonly {readonly alias: string; readonly id: string}[] {
+  const observedIds = new Set(observed.map(({id}) => id));
+  return registered.flatMap((organization) =>
+    organization.slug !== "orvex" && organization.status === "active" &&
+      organization.keycloakId !== null && !observedIds.has(organization.keycloakId)
+      ? [{alias: organization.slug, id: organization.keycloakId}]
+      : [],
+  );
 }
 
 /** Registry operations over the shared Postgres pool. */
@@ -77,7 +93,8 @@ export class OrganizationRegistry {
     const row = await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const rows = yield* sql`SELECT id, slug, display_name AS "displayName",
-        route_id AS "routeId", status, admission_policy AS "admissionPolicy"
+        route_id AS "routeId", status, admission_policy AS "admissionPolicy",
+        keycloak_organization_id AS "keycloakId"
         FROM artifact_installations
         WHERE slug = ${slug}`;
       return rows[0] ?? null;
@@ -89,7 +106,8 @@ export class OrganizationRegistry {
     const rows = await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`SELECT id, slug, display_name AS "displayName",
-        route_id AS "routeId", status, admission_policy AS "admissionPolicy"
+        route_id AS "routeId", status, admission_policy AS "admissionPolicy",
+        keycloak_organization_id AS "keycloakId"
         FROM artifact_installations
         WHERE slug IS NOT NULL ORDER BY slug`;
     }));
@@ -129,7 +147,7 @@ export class OrganizationRegistry {
         status = 'active', route_id = COALESCE(artifact_installations.route_id, EXCLUDED.route_id)
       WHERE artifact_installations.slug IS NULL OR artifact_installations.slug = 'orvex'
         RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
-        status, admission_policy AS "admissionPolicy"`;
+        status, admission_policy AS "admissionPolicy", NULL::TEXT AS "keycloakId"`;
       return rows[0] ?? null;
     }));
     if (row === null) {
@@ -146,6 +164,7 @@ export class OrganizationRegistry {
     slugInput: string,
     nameInput: string,
     admissionPolicyInput: OrganizationAdmissionPolicy | null = null,
+    keycloakId: string | null = null,
   ): Promise<OrganizationRecord> {
     const slug = organizationSlugSchema.parse(slugInput);
     const displayName = organizationNameSchema.parse(nameInput);
@@ -157,15 +176,43 @@ export class OrganizationRegistry {
     const row = await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const rows = yield* sql`INSERT INTO artifact_installations (
-        id, created_at, slug, display_name, status, route_id, admission_policy
+        id, created_at, slug, display_name, status, route_id, admission_policy,
+        keycloak_organization_id
       ) VALUES (
         ${id}, ${new Date().toISOString()}, ${slug}, ${displayName}, 'active',
-        ${routeId}, ${admissionPolicy === null ? null : JSON.stringify(admissionPolicy)}::jsonb
+        ${routeId}, ${admissionPolicy === null ? null : JSON.stringify(admissionPolicy)}::jsonb,
+        ${keycloakId}
       ) RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
-        status, admission_policy AS "admissionPolicy"`;
+        status, admission_policy AS "admissionPolicy",
+        keycloak_organization_id AS "keycloakId"`;
       return rows[0];
     }));
     return organizationSchema.parse(row);
+  }
+
+  async syncKeycloakOrganization(
+    alias: string,
+    name: string,
+    keycloakId: string,
+  ): Promise<OrganizationRecord> {
+    const existing = await this.find(alias);
+    if (existing !== null) {
+      if (existing.keycloakId !== null && existing.keycloakId !== keycloakId) {
+        throw new Error(`Organization '${alias}' is already bound to another Keycloak id.`);
+      }
+      const rows = await this.#database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`UPDATE artifact_installations
+          SET display_name = ${organizationNameSchema.parse(name)},
+            keycloak_organization_id = ${keycloakId}
+          WHERE id = ${existing.id}
+          RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
+            status, admission_policy AS "admissionPolicy",
+            keycloak_organization_id AS "keycloakId"`;
+      }));
+      return organizationSchema.parse(rows[0]);
+    }
+    return this.create(alias, name, null, keycloakId);
   }
 }
 

@@ -9,6 +9,8 @@ import type {
 } from "../application/interactive-login.js";
 import {IdentityProviderFailure} from "../core/errors.js";
 import type {ExternalIdentity} from "../core/installation-identity.js";
+import {membershipRoles} from "../core/identity.js";
+import {parseKeycloakOrganizationClaims} from "./oidc-organization-claim.js";
 import {type OidcGroupRoles, readOidcGroupsClaim} from "./oidc-groups-claim.js";
 import {
   isLocalOidcIssuer,
@@ -74,6 +76,7 @@ export interface OidcIdentityProviderConfig {
   readonly issuer: string;
   readonly redirectUri: string;
   readonly scopes: string;
+  readonly organization?: {readonly alias: string; readonly id: string};
 }
 
 /** Complete generic OIDC browser-login settings loaded by one deployment. */
@@ -96,6 +99,7 @@ export class OidcIdentityProvider implements InteractiveIdentityProvider {
   readonly #issuer: string;
   readonly #redirectUri: string;
   readonly #scopes: string;
+  readonly #organization: {readonly alias: string; readonly id: string} | null;
   #discovered: OidcDiscovery | null = null;
   #keys: JWTVerifyGetKey | null = null;
 
@@ -108,10 +112,11 @@ export class OidcIdentityProvider implements InteractiveIdentityProvider {
     this.#issuer = requireOidcIssuer(config.issuer, "The OIDC issuer");
     this.#redirectUri = config.redirectUri;
     this.#scopes = config.scopes;
+    this.#organization = config.organization ?? null;
   }
 
   forApplicationOrigin(origin: string): OidcIdentityProvider {
-    return new OidcIdentityProvider({
+    const config: OidcIdentityProviderConfig = {
       clientId: this.#clientId,
       clientSecret: this.#clientSecret,
       fetch: this.#fetch,
@@ -119,6 +124,25 @@ export class OidcIdentityProvider implements InteractiveIdentityProvider {
       issuer: this.#issuer,
       redirectUri: applicationCallbackUri(origin),
       scopes: this.#scopes,
+    };
+    if (this.#organization !== null) {
+      Object.assign(config, {organization: this.#organization});
+    }
+    return new OidcIdentityProvider(config);
+  }
+
+  forOrganization(organization: {readonly alias: string; readonly id: string}): OidcIdentityProvider {
+    const scopes = this.#scopes.split(/\s+/u).filter(Boolean);
+    if (!scopes.includes("organization:*")) scopes.push("organization:*");
+    return new OidcIdentityProvider({
+      clientId: this.#clientId,
+      clientSecret: this.#clientSecret,
+      fetch: this.#fetch,
+      groupsClaim: this.#groupsClaim,
+      issuer: this.#issuer,
+      organization,
+      redirectUri: this.#redirectUri,
+      scopes: scopes.join(" "),
     });
   }
 
@@ -199,6 +223,44 @@ export class OidcIdentityProvider implements InteractiveIdentityProvider {
           )
         ),
       );
+      let organizationMembership: NonNullable<ExternalIdentity["organizationMembership"]> | null = null;
+      let identityProvider: string | null = null;
+      if (this.#organization !== null) {
+        const organizationClaim = payload["organization"];
+        const identityProviderClaim = payload["identity_provider"];
+        const parsedOrganizationClaim = organizationClaim === undefined
+          ? undefined
+          : z.json().safeParse(organizationClaim);
+        const parsedIdentityProviderClaim = identityProviderClaim === undefined
+          ? undefined
+          : z.json().safeParse(identityProviderClaim);
+        if (parsedOrganizationClaim !== undefined && !parsedOrganizationClaim.success) {
+          return yield* providerFailure();
+        }
+        if (parsedIdentityProviderClaim !== undefined && !parsedIdentityProviderClaim.success) {
+          return yield* providerFailure();
+        }
+        const parsed = parseKeycloakOrganizationClaims(
+          parsedOrganizationClaim?.data,
+          parsedIdentityProviderClaim?.data,
+        );
+        if (!parsed.ok) return yield* providerFailure();
+        const selected = parsed.value.organizations.find((entry) =>
+          entry.alias === this.#organization?.alias && entry.id === this.#organization?.id,
+        );
+        organizationMembership = selected === undefined ? null : {
+          alias: selected.alias,
+          id: selected.id,
+          role: selected.role === "owner"
+          ? membershipRoles.owner
+          : selected?.role === "editor"
+          ? membershipRoles.member
+          : selected?.role === "viewer"
+          ? membershipRoles.viewer
+          : null,
+        };
+        identityProvider = parsed.value.identityProvider;
+      }
       const identity: ExternalIdentity = {
         displayName: displayName(claims.data),
         email: claims.data.email,
@@ -207,6 +269,9 @@ export class OidcIdentityProvider implements InteractiveIdentityProvider {
         provider: oidcIdentityProviderName(this.#issuer),
         subject: claims.data.sub,
       };
+      if (this.#organization !== null) {
+        Object.assign(identity, {organizationMembership, identityProvider});
+      }
       return identity;
     },
   );

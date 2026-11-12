@@ -990,6 +990,17 @@ const addOrganizationAdmissionPolicy = Effect.gen(function*() {
     ADD COLUMN admission_policy JSONB`);
 });
 
+const addOrgTenancyIdentityFields = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN keycloak_organization_id TEXT`);
+  yield* sql.unsafe(`CREATE UNIQUE INDEX artifact_installations_keycloak_org_unique
+    ON artifact_installations (keycloak_organization_id)
+    WHERE keycloak_organization_id IS NOT NULL`);
+  yield* sql.unsafe(`ALTER TABLE external_identities
+    ADD COLUMN identity_provider TEXT`);
+});
+
 const postgresMigrations = {
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -1022,6 +1033,7 @@ const postgresMigrations = {
   "0029_project_provisioner_audit_events": addProjectProvisionerAuditEvents,
   "0030_organization_registry": addOrganizationRegistry,
   "0031_organization_admission_policy": addOrganizationAdmissionPolicy,
+  "0032_org_tenancy_identity_fields": addOrgTenancyIdentityFields,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

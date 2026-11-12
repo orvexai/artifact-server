@@ -157,6 +157,8 @@ export interface ApplicationAdapters {
   readonly externalMcpOAuthVerifier: ExternalMcpBearerVerifier | null;
   /** Issuer groups that admit people and set their role; absent keeps admission manual. */
   readonly groupRolePolicy?: GroupRolePolicy | null;
+  /** A Keycloak organization whose verified membership admits browser users. */
+  readonly organizationAdmission?: {readonly alias: string; readonly id: string};
   /**
    * Agent-dispatch persistence. Every backend implements the dispatch tables,
    * so omitting the slot is a compile error rather than a runtime failure.
@@ -819,7 +821,7 @@ export function createApplicationLayer(
     membershipRole: membershipRoles.member,
   };
   const identityRepository = adapters.identityRepository;
-  const identityLayer = InstallationAccessService.layer({
+  const installationAccessDependencies: Parameters<typeof InstallationAccessService.layer>[0] = {
     bootstrapAdministratorEmail: adapters.bootstrapAdministratorEmail,
     clock: adapters.clock,
     groupRolePolicy: adapters.groupRolePolicy ?? null,
@@ -1007,7 +1009,13 @@ export function createApplicationLayer(
       issue: () => randomBase64Url(32),
     },
     sessionLifetimeMilliseconds: 12 * 60 * 60 * 1_000,
-  });
+  };
+  if (adapters.organizationAdmission !== undefined) {
+    Object.assign(installationAccessDependencies, {
+      organizationAdmission: adapters.organizationAdmission,
+    });
+  }
+  const identityLayer = InstallationAccessService.layer(installationAccessDependencies);
   const authenticationLayer = Layer.effect(
     AuthenticationService,
     InstallationAccessService.use((installationAccess) => {

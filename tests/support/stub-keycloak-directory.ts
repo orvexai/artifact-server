@@ -20,6 +20,13 @@ export interface StubKeycloakUser {
   readonly id: string;
   readonly lastName?: string;
   readonly username: string;
+  readonly groups?: readonly string[];
+}
+
+export interface StubKeycloakOrganization {
+  readonly alias: string;
+  readonly id: string;
+  readonly name: string;
 }
 
 /** One admin request the stub answered, for pagination assertions. */
@@ -34,6 +41,8 @@ export interface RunningStubKeycloak {
   readonly clientSecret: string;
   /** Group name to its complete, ordered membership. */
   readonly groups: Map<string, StubKeycloakUser[]>;
+  readonly organizations: Map<string, StubKeycloakOrganization>;
+  readonly organizationMembers: Map<string, StubKeycloakUser[]>;
   readonly issuer: string;
   adminRequests(): readonly StubKeycloakAdminRequest[];
   /**
@@ -57,6 +66,8 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
   const clientId = "artifact-server-directory";
   const clientSecret = `directory-secret-${randomUUID()}`;
   const groups = new Map<string, StubKeycloakUser[]>();
+  const organizations = new Map<string, StubKeycloakOrganization>();
+  const organizationMembers = new Map<string, StubKeycloakUser[]>();
   const groupIds = new Map<string, string>();
   const adminRequests: StubKeycloakAdminRequest[] = [];
   const issuedTokens = new Set<string>();
@@ -151,6 +162,22 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
       };
       const path = url.pathname.slice(adminPath.length);
       adminRequests.push({path, query: withoutUndefined(query)});
+      if (path === "/organizations") {
+        json(200, JSON.stringify(page(
+          [...organizations.values()], query.first, query.max,
+        )));
+        return;
+      }
+      const organizationMembersMatch = /^\/organizations\/([^/]+)\/members$/u.exec(path);
+      if (organizationMembersMatch !== null) {
+        const users = organizationMembers.get(decodeURIComponent(organizationMembersMatch[1] ?? ""));
+        if (users === undefined) {
+          json(404, JSON.stringify({error: "Could not find organization by id"}));
+          return;
+        }
+        json(200, JSON.stringify(page(users, query.first, query.max)));
+        return;
+      }
       if (path === "/groups" && query.search === undefined) {
         // Keycloak 26 lists top-level groups with a count of their children.
         json(200, JSON.stringify(
@@ -240,6 +267,8 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
       failingPage = first === null ? null : {first, remaining: times, status};
     },
     groups,
+    organizations,
+    organizationMembers,
     issuer,
     setTokenStatus: (status) => {
       tokenStatus = status;

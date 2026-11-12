@@ -35,6 +35,7 @@ export interface BindExternalIdentityRecord {
   readonly memberId: string;
   readonly provider: string;
   readonly subject: string;
+  readonly identityProvider?: string | null;
 }
 
 /** Values persisted when creating one browser application session. */

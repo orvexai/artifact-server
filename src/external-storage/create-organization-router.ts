@@ -88,6 +88,9 @@ export async function createOrganizationRouter(
         cookieRouteId: organization.routeId,
         slug: organization.slug,
       };
+      if (organization.keycloakId !== null) {
+        Object.assign(orgConfig, {keycloakOrganizationId: organization.keycloakId});
+      }
       if (config.applicationOrigin !== undefined) {
         Object.assign(orgConfig, {
           applicationOrigin: new URL(`/o/${organization.slug}`, config.applicationOrigin).toString(),

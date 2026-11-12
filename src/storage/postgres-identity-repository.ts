@@ -871,14 +871,17 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
       const changed = await this.#database.run(Effect.gen({self: this}, function*() {
         const sql = yield* SqlClient;
         return yield* sql`INSERT INTO external_identities (
-          installation_id, provider, subject, member_id, email, bound_at
+          installation_id, provider, subject, member_id, email, bound_at,
+          identity_provider
         ) VALUES (
           ${installationId}, ${command.provider}, ${command.subject},
-          ${command.memberId}, ${command.email}, ${command.boundAt}
+          ${command.memberId}, ${command.email}, ${command.boundAt},
+          ${command.identityProvider ?? null}
         )
         ON CONFLICT (installation_id, provider, subject) DO UPDATE SET
           email = EXCLUDED.email,
-          bound_at = EXCLUDED.bound_at
+          bound_at = EXCLUDED.bound_at,
+          identity_provider = EXCLUDED.identity_provider
         WHERE external_identities.member_id = EXCLUDED.member_id
         RETURNING member_id`;
       }));

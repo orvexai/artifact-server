@@ -39,6 +39,14 @@ export interface ExternalIdentity {
   readonly groups: readonly string[] | null;
   readonly provider: string;
   readonly subject: string;
+  /** Matching Keycloak org identity and mapped role, when routed by org. */
+  readonly organizationMembership?: {
+    readonly alias: string;
+    readonly id: string;
+    readonly role: MembershipRole | null;
+  } | null;
+  /** Keycloak broker alias from the verified `identity_provider` claim. */
+  readonly identityProvider?: string | null;
   /** True only for a verified client-credentials service account token. */
   readonly serviceAccount?: boolean;
   /** True when its OAuth client opted in to embed question binding. */
