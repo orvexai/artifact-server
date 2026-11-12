@@ -64,10 +64,10 @@ export interface ProjectAccessRecord {
 export type ProjectAccess =
   | {
     readonly mode: "installation";
-    /** An active member who created it may still manage it once opened. */
+    /** The principal who created it may still manage it once opened. */
     readonly isCreator: boolean;
   }
-  | {readonly mode: "restricted"; readonly role: ProjectRole | null};
+  | {readonly mode: "restricted"; readonly isCreator?: boolean; readonly role: ProjectRole | null};
 
 /**
  * Decide one principal's access from storage. Service principals use only
@@ -103,8 +103,8 @@ export function resolveProjectAccess(
   }
   if (record.accessMode === projectAccessModes.installation) {
     return {
-      isCreator: principal.kind === principalKinds.human && record.isCreator &&
-        record.member?.status === "active",
+      isCreator: record.isCreator && (principal.kind === principalKinds.service ||
+        record.member?.status === "active"),
       mode: "installation",
     };
   }
@@ -114,7 +114,8 @@ export function resolveProjectAccess(
     }
     return {
       mode: "restricted",
-      role: record.grantRoles.reduce<ProjectRole | null>(
+      isCreator: record.isCreator,
+      role: record.isCreator ? "manager" : record.grantRoles.reduce<ProjectRole | null>(
         (best, role) => best === null || roleRank[role] > roleRank[best]
           ? role
           : best,

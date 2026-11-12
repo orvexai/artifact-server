@@ -304,7 +304,7 @@ describe("restricted projects shared with directory groups", () => {
     expect(await visibleTo("viewer")).toMatchObject({accessMode: "restricted", yourRole: "viewer"});
 
     const viewerShare = await tool(key("viewer"), "project_share", {
-      group: "Managers",
+      group: "/Managers",
       projectId,
       role: "editor",
     });
@@ -312,7 +312,7 @@ describe("restricted projects shared with directory groups", () => {
     expect(viewerShare.content[0]?.text).toContain("AUTHORIZATION_DENIED");
 
     const unknown = await tool(key("editor"), "project_share", {
-      group: "No Such Group",
+      group: "/No Such Group",
       projectId,
       role: "viewer",
     });
@@ -320,7 +320,7 @@ describe("restricted projects shared with directory groups", () => {
     expect(unknown.content[0]?.text).toContain("GROUP_NOT_FOUND");
 
     const shared = await tool(key("editor"), "project_share", {
-      group: "Managers",
+      group: "/Managers",
       projectId,
       role: "editor",
     });

@@ -444,6 +444,7 @@ export class ArtifactRepositoryFailure extends Schema.TaggedError<ArtifactReposi
       "listCommentThreads",
       "listArtifactVersions",
       "listProjectAuditEvents",
+      "recordProjectProvisionerAuditEvent",
       "listPublicLinks",
       "listExpiredStagedUploads",
       "listRegisteredAgents",
@@ -483,6 +484,7 @@ export class IdentityRepositoryFailure extends Schema.TaggedError<IdentityReposi
   "IdentityRepositoryFailure",
   {
     cause: Schema.Defect(),
+    message: Schema.String,
     operation: Schema.Literals([
       "admitMember",
       "applyDirectoryGroups",

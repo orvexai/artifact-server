@@ -277,6 +277,7 @@ function makeAuthorizationService(
       hasCapability(principal, principalCapabilities.issueContentSession) ||
       hasCapability(principal, principalCapabilities.manageAnyArtifact) ||
       hasCapability(principal, principalCapabilities.manageProjects) ||
+      hasCapability(principal, principalCapabilities.provisionProjects) ||
       hasCapability(principal, principalCapabilities.publishAnyArtifact) ||
       hasCapability(principal, principalCapabilities.readArtifacts) ||
       hasCapability(principal, principalCapabilities.readArtifactResponses) ||

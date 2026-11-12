@@ -77,6 +77,7 @@ import {
   type PageCursor,
   type PublishedVersion,
   type ProjectAuditEvent,
+  type ProjectProvisionerAuditEvent,
   type ProjectRecord,
   type RegisteredAgentPresence,
   type RegisteredAgentRecord,
@@ -622,8 +623,9 @@ export class SqliteArtifactRepository implements
         this.#database.prepare(`
           INSERT INTO projects (
             id, installation_id, name, created_at, archived_at, created_by_member_id,
+            created_by_principal_id,
             access_mode
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           command.id,
           this.#installationId,
@@ -631,6 +633,7 @@ export class SqliteArtifactRepository implements
           command.createdAt,
           command.archivedAt,
           command.createdByMemberId,
+          command.createdByPrincipalId,
           command.accessMode,
         );
       } catch (cause) {
@@ -1247,22 +1250,57 @@ export class SqliteArtifactRepository implements
 
   listProjectAuditEvents(projectId: string): Promise<readonly ProjectAuditEvent[]> {
     return Promise.resolve().then(() => z.array(z.object({
-      action: z.enum(["archive", "unarchive"]),
+      action: z.enum(["archive", "unarchive", "create", "share", "set_access"]),
       actorDisplayName: z.string(),
       authorizedByPrincipalId: z.string().nullable(),
+      clientId: z.string().nullable(),
       createdAt: z.string(),
+      details: z.string().nullable(),
       id: z.number().int(),
       principalId: z.string(),
       projectId: z.string(),
-    })).parse(this.#database.prepare(`
+    })).parse([
+      ...this.#database.prepare(`
       SELECT id, project_id AS projectId, action,
         principal_id AS principalId,
         authorized_by_principal_id AS authorizedByPrincipalId,
-        actor_display_name AS actorDisplayName, created_at AS createdAt
+        actor_display_name AS actorDisplayName, NULL AS clientId,
+        NULL AS details, created_at AS createdAt
       FROM project_archive_events
       WHERE installation_id = ? AND project_id = ?
       ORDER BY id DESC
-    `).all(this.#installationId, projectId)));
+    `).all(this.#installationId, projectId),
+      ...this.#database.prepare(`
+      SELECT -id AS id, project_id AS projectId, action, principal_id AS principalId,
+        NULL AS authorizedByPrincipalId,
+        actor_display_name AS actorDisplayName, client_id AS clientId,
+        details_json AS details, created_at AS createdAt
+      FROM project_provisioner_audit_events
+      WHERE installation_id = ? AND project_id = ?
+      ORDER BY id DESC
+    `).all(this.#installationId, projectId),
+    ]).toSorted((left, right) => right.createdAt.localeCompare(left.createdAt)));
+  }
+
+  recordProjectProvisionerAuditEvent(event: ProjectProvisionerAuditEvent): Promise<void> {
+    return Promise.resolve().then(() => {
+      this.#database.prepare(`
+        INSERT INTO project_provisioner_audit_events (
+          installation_id, project_id, action, principal_id, client_id,
+          actor_display_name, details_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        this.#installationId,
+        event.projectId,
+        event.action,
+        event.principalId,
+        event.clientId,
+        event.actorDisplayName,
+        event.details,
+        event.createdAt,
+      );
+      return undefined;
+    });
   }
 
   close(): void {
@@ -5465,6 +5503,18 @@ export class SqliteArtifactRepository implements
         created_at TEXT NOT NULL
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS project_provisioner_audit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        installation_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        action TEXT NOT NULL CHECK (action IN ('create', 'share', 'set_access')),
+        principal_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        actor_display_name TEXT NOT NULL,
+        details_json TEXT,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
       CREATE TABLE IF NOT EXISTS artifacts (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES projects(id),
@@ -5627,6 +5677,8 @@ export class SqliteArtifactRepository implements
         ON actions (artifact_id, created_at DESC, id DESC);
       CREATE INDEX IF NOT EXISTS project_archive_events_project_created
         ON project_archive_events (installation_id, project_id, created_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS project_provisioner_audit_project_created
+        ON project_provisioner_audit_events (installation_id, project_id, created_at DESC, id DESC);
       CREATE INDEX IF NOT EXISTS manifest_entries_sha256
         ON manifest_entries (sha256);
       CREATE INDEX IF NOT EXISTS staged_uploads_expiry
@@ -5668,6 +5720,9 @@ export class SqliteArtifactRepository implements
     }
     if (!columns.includes("created_by_member_id")) {
       this.#database.exec("ALTER TABLE projects ADD COLUMN created_by_member_id TEXT");
+    }
+    if (!columns.includes("created_by_principal_id")) {
+      this.#database.exec("ALTER TABLE projects ADD COLUMN created_by_principal_id TEXT");
     }
   }
 

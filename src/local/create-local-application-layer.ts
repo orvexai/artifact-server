@@ -434,6 +434,10 @@ export function createApplicationLayer(
         try: () => adapters.repository.listProjectAuditEvents(projectId),
         catch: (cause) => repositoryFailure("listProjectAuditEvents", cause),
       }),
+      recordProjectProvisionerAuditEvent: (event) => Effect.tryPromise({
+        try: () => adapters.repository.recordProjectProvisionerAuditEvent(event),
+        catch: (cause) => repositoryFailure("recordProjectProvisionerAuditEvent", cause),
+      }),
       renameProject: (command) => Effect.tryPromise({
         try: () => adapters.repository.renameProject(command),
         catch: (cause) => cause instanceof ProjectNotFound
@@ -1085,6 +1089,17 @@ export function createApplicationLayer(
           }));
         }
         const verified = yield* verifier.verify(credential);
+        if (verified.provisionerClient === true) {
+          const identity = yield* verifier.resolveIdentity(verified, credential);
+          const principal = yield* installationAccess.authenticateExternalIdentity(identity);
+          return {
+            clientId: verified.clientId,
+            expiresAt: verified.expiresAt,
+            oauthClientId: verified.clientId,
+            principal,
+            scopes: ["mcp"],
+          };
+        }
         // Under an issuer group policy this answers null, so every token's
         // groups are evaluated again and a removed group takes effect at once.
         let principal = yield* installationAccess.authenticateExternalSubject(
@@ -1327,8 +1342,17 @@ function identityEffect<A>(
 ): Effect.Effect<A, IdentityRepositoryFailure> {
   return Effect.tryPromise({
     try: run,
-    catch: (cause) => new IdentityRepositoryFailure({cause, operation}),
+    catch: (cause) => new IdentityRepositoryFailure({cause, message: identityCauseMessage(cause), operation}),
   });
+}
+
+function identityCauseMessage(cause: unknown): string {
+  if (!(cause instanceof Error)) return String(cause);
+  const nestedCause = cause.cause;
+  if (nestedCause instanceof Error && nestedCause.message.trim() !== "") {
+    return `${cause.message || cause.name}: ${identityCauseMessage(nestedCause)}`;
+  }
+  return cause.message.trim() === "" ? cause.name : cause.message;
 }
 
 function identityEffectWithConflict<A>(
@@ -1339,7 +1363,7 @@ function identityEffectWithConflict<A>(
     try: run,
     catch: (cause) => cause instanceof IdentityConflict
       ? cause
-      : new IdentityRepositoryFailure({cause, operation}),
+      : new IdentityRepositoryFailure({cause, message: identityCauseMessage(cause), operation}),
   });
 }
 
@@ -1351,7 +1375,7 @@ function identityEffectWithNotFound<A>(
     try: run,
     catch: (cause) => cause instanceof IdentityNotFound
       ? cause
-      : new IdentityRepositoryFailure({cause, operation}),
+      : new IdentityRepositoryFailure({cause, message: identityCauseMessage(cause), operation}),
   });
 }
 
@@ -1367,7 +1391,7 @@ function identityEffectWithConflictOrNotFound<A>(
     catch: (cause) =>
       cause instanceof IdentityConflict || cause instanceof IdentityNotFound
         ? cause
-        : new IdentityRepositoryFailure({cause, operation}),
+        : new IdentityRepositoryFailure({cause, message: identityCauseMessage(cause), operation}),
   });
 }
 
@@ -1379,7 +1403,7 @@ function loginAttemptEffect<A>(
     try: run,
     catch: (cause) => cause instanceof LoginAttemptRejected
       ? cause
-      : new IdentityRepositoryFailure({cause, operation}),
+      : new IdentityRepositoryFailure({cause, message: identityCauseMessage(cause), operation}),
   });
 }
 

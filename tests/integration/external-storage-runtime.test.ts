@@ -1035,7 +1035,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
     const database = await PostgresDatabase.open({
       maxConnections: 2,
       url: Redacted.make(environment.databaseUrl),
-    }, "validate");
+    }, "apply");
     const keycloak = await startStubKeycloak();
     const roleInstallation = `member-role-${randomUUID()}`;
     const syncInstallation = `directory-sync-${randomUUID()}`;
@@ -1098,6 +1098,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_ID: keycloak.clientId,
         ARTIFACT_SERVER_OIDC_DIRECTORY_CLIENT_SECRET: keycloak.clientSecret,
         ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: "keycloak",
+        ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES: "/Guests/",
         ARTIFACT_SERVER_OIDC_ISSUER: keycloak.issuer,
         ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: "artifact-users",
         ARTIFACT_SERVER_ORIGIN: "https://artifacts.example.com",
@@ -1168,8 +1169,112 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         {email: "ada@example.test", role: "member", status: "inactive"},
         {email: "bob@example.test", role: "administrator", status: "active"},
       ]);
+
+      keycloak.groups.set("Guests", []);
+      keycloak.groups.set("acme", [keycloakUser("dave")]);
+      keycloak.nestGroup("acme", "Guests");
+      expect(await sync()).toMatchObject({report: {groups: 2, admitted: 1}});
+      expect(await members()).toContainEqual({
+        email: "dave@example.test", role: "guest", status: "active",
+      });
     } finally {
       await keycloak.stop();
+      await database.close();
+    }
+  });
+
+  test("Postgres backfills only unassigned matching guest groups once per installation", async () => {
+    const database = await PostgresDatabase.open({
+      maxConnections: 2,
+      url: Redacted.make(environment.databaseUrl),
+    }, "apply");
+    const scopedInstallation = `guest-rule-backfill-${randomUUID()}`;
+    const repository = new PostgresIdentityRepository(database, scopedInstallation);
+    const provider = "guest-rule-backfill-test";
+    const firstSyncAt = "2026-11-11T23:00:00.000Z";
+    const groups = [
+      {id: "smoketest", name: "smoketest", path: "/Guests/smoketest", members: []},
+      {id: "nova3d", name: "nova3d", path: "/Guests/nova3d", members: [
+        {email: "nova3d@example.test", subject: "nova3d-subject"},
+      ]},
+      {id: "bare-guests", name: "Guests", path: "/Guests", members: []},
+      {id: "tenant-staff", name: "x-staff", path: "/TenantWorkspaces/x/x-staff", members: [
+        {email: "tenant-staff@example.test", subject: "tenant-staff-subject"},
+      ]},
+    ];
+    try {
+      await PostgresArtifactRepository.open(database, scopedInstallation);
+      await repository.applyDirectoryGroups(scopedInstallation, {
+        groups,
+        provider,
+        recomputeRoles: false,
+        syncedAt: firstSyncAt,
+      });
+      await repository.setGroupRole(scopedInstallation, "smoketest", "guest", firstSyncAt, "owner:smoketest");
+      await repository.setGroupRole(scopedInstallation, "tenant-staff", "member", firstSyncAt, "owner:staff");
+      await repository.admitMember({
+        createdAt: firstSyncAt,
+        displayName: "Nova 3D",
+        email: "nova3d@example.test",
+        id: "nova3d-member",
+        installationId: scopedInstallation,
+        role: "viewer",
+      });
+      await repository.admitMember({
+        createdAt: firstSyncAt,
+        displayName: "Tenant Staff",
+        email: "tenant-staff@example.test",
+        id: "tenant-staff-member",
+        installationId: scopedInstallation,
+        role: "member",
+      });
+
+      const explicitBefore = (await repository.listGroupRoles(scopedInstallation))
+        .find(({groupId}) => groupId === "smoketest");
+      const firstRuleSync = await repository.applyDirectoryGroups(scopedInstallation, {
+        groups,
+        guestGroupPrefixes: ["/Guests/"],
+        provider,
+        syncedAt: "2026-11-11T23:01:00.000Z",
+      });
+      const rolesAfterFirst = await repository.listGroupRoles(scopedInstallation);
+      const membersAfterFirst = (await repository.listMembers(scopedInstallation))
+        .map(({email, role, status}) => ({email, role, status}));
+      expect(rolesAfterFirst.find(({groupId}) => groupId === "smoketest")).toEqual(explicitBefore);
+      expect(rolesAfterFirst.find(({groupId}) => groupId === "nova3d"))
+        .toMatchObject({role: "guest", source: "rule"});
+      expect(rolesAfterFirst.some(({groupId}) => groupId === "bare-guests")).toBe(false);
+      expect(rolesAfterFirst.find(({groupId}) => groupId === "tenant-staff"))
+        .toMatchObject({role: "member"});
+      expect(membersAfterFirst).toContainEqual({
+        email: "nova3d@example.test", role: "guest", status: "active",
+      });
+      expect(membersAfterFirst).toContainEqual({
+        email: "tenant-staff@example.test", role: "member", status: "active",
+      });
+      expect(firstRuleSync.roleChanged).toBe(1);
+
+      const markerRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql.unsafe<object>(
+          "SELECT installation_id FROM directory_group_role_rule_backfills WHERE installation_id = $1",
+          [scopedInstallation],
+        );
+      }));
+      expect(markerRows).toHaveLength(1);
+
+      const secondRuleSync = await repository.applyDirectoryGroups(scopedInstallation, {
+        groups,
+        guestGroupPrefixes: ["/Guests/"],
+        provider,
+        syncedAt: "2026-11-11T23:02:00.000Z",
+      });
+      expect(secondRuleSync).toMatchObject({created: 0, deleted: 0, renamed: 0});
+      expect(secondRuleSync.roleChanged ?? 0).toBe(0);
+      expect(await repository.listGroupRoles(scopedInstallation)).toEqual(rolesAfterFirst);
+      expect((await repository.listMembers(scopedInstallation))
+        .map(({email, role, status}) => ({email, role, status}))).toEqual(membersAfterFirst);
+    } finally {
       await database.close();
     }
   });

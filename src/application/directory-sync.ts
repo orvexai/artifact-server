@@ -4,7 +4,8 @@ import type {
   DirectoryGroupObservation,
   DirectoryGroupRecord,
 } from "../core/directory-groups.js";
-import {membershipRoleAtLeast, type MembershipRole} from "../core/identity.js";
+import {membershipRolePrecedence} from "../core/group-role-policy.js";
+import type {MembershipRole} from "../core/identity.js";
 import {
   type DirectoryMemberEntry,
   InstallationAccessService,
@@ -102,7 +103,7 @@ export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
       const seen = rolesByUser.get(user.id);
       if (seen === undefined) {
         rolesByUser.set(user.id, {role: assignment.role, user});
-      } else if (!membershipRoleAtLeast(seen.role, assignment.role)) {
+      } else if (membershipRolePrecedence(assignment.role) > membershipRolePrecedence(seen.role)) {
         seen.role = assignment.role;
       }
     }
@@ -120,7 +121,7 @@ export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
     const previous = desired.get(email);
     // Two directory users sharing one address are one member; the stronger
     // role wins, as one person in both groups would.
-    if (previous === undefined || !membershipRoleAtLeast(previous.role, role)) {
+    if (previous === undefined || membershipRolePrecedence(role) > membershipRolePrecedence(previous.role)) {
       desired.set(email, {displayName: displayName(user, email), email, role});
     }
   }
@@ -207,14 +208,14 @@ export const syncDirectoryGroups = Effect.fn("syncDirectoryGroups")(function*(
   }
   const roleGroups = yield* InstallationAccessService.use((access) => access.listGroupRoles());
   const rolesSeeded = yield* InstallationAccessService.use((access) => access.isGroupRoleSeedApplied());
-  const roleGroupIds = new Set(roleGroups.map(({groupId}) => groupId));
-  if (roleGroupIds.size > 0 && !groups.some((group) => roleGroupIds.has(group.id) && (group.members?.length ?? 0) > 0)) {
+  const nonGuestRoleGroupIds = new Set(roleGroups.filter(({role}) => role !== "guest").map(({groupId}) => groupId));
+  if (nonGuestRoleGroupIds.size > 0 && !groups.some((group) => nonGuestRoleGroupIds.has(group.id) && (group.members?.length ?? 0) > 0)) {
     return yield* Effect.fail(new DirectoryUnavailable({message: "Refusing a directory snapshot with no members in any role-bearing group."}));
   }
   const applied = yield* InstallationAccessService.use((access) =>
     access.applyDirectoryGroups({
       groups, provider, syncedAt, maxDeactivations,
-      recomputeRoles: recomputeRoles && (rolesSeeded || roleGroupIds.size > 0),
+      recomputeRoles: recomputeRoles && (rolesSeeded || roleGroups.length > 0),
     })
   );
   // Field order is the order operators read the one-line summary in.

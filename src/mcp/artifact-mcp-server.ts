@@ -5,7 +5,6 @@ import {
   McpServer,
   ResourceTemplate,
   type McpRequestContext,
-  type RegisteredTool,
   type StandardSchemaWithJSON,
   type ToolAnnotations,
   type ToolCallback,
@@ -68,7 +67,14 @@ import {
   type SourceBindingRecord,
   type StagedUpload,
 } from "../core/model.js";
-import {isAdministratorRole, membershipRoles, principalKinds, type Principal} from "../core/identity.js";
+import {
+  isAdministratorRole,
+  membershipRoles,
+  principalCapabilities,
+  principalKinds,
+  type Principal,
+} from "../core/identity.js";
+import {provisionerToolAllowList} from "./provisioner-tools.js";
 import {
   gitHistoryProviders,
   gitHistoryProviderStates,
@@ -115,7 +121,7 @@ import {
   type ToolResultNudgeFacts,
 } from "./tool-result-nudges.js";
 
-const serverVersion = "0.1.16";
+const serverVersion = "0.1.18";
 const maximumListedArtifacts = 100;
 const maximumTextDiffBytes = 256 * 1_024;
 const accessSettingSchema = z.enum([
@@ -170,9 +176,10 @@ const listedProjectSchema = projectProjectionSchema.extend({
   accessMode: projectAccessModeSchema,
   yourRole: projectRoleSchema.nullable(),
 }).strict();
-const projectGroupReferenceSchema = z.string().trim().min(1).max(500).describe(
-  "A group's id, full path such as /Engineering/Platform, or a name only one group has. group_list shows them.",
-);
+const projectGroupReferenceSchema = z.string().trim().min(1).max(500)
+  .describe(
+    "A directory group's ID, full path, or unique name. Provisioners must use a full path.",
+  );
 const projectSharingSchema = z.object({
   accessMode: projectAccessModeSchema,
   groups: z.array(z.object({
@@ -482,6 +489,8 @@ export function createArtifactMcpServer(
       instructions: agentInstructions(dependencies.mode),
     },
   );
+  const isProvisioner = identity.principal.serviceAccountSource === "oidc" &&
+    identity.principal.capabilities.includes(principalCapabilities.provisionProjects);
 
   /**
    * Keep the verified OAuth client as the durable actor and use the MCP
@@ -526,13 +535,17 @@ export function createArtifactMcpServer(
       annotations?: ToolAnnotations;
     },
     callback: ToolCallback<InputArgs>,
-  ): RegisteredTool {
+  ): void {
+    if (
+      isProvisioner &&
+      !provisionerToolAllowList.has(name)
+    ) return;
     const registered = server.registerTool(name, config, callback);
     // A schemaless tool keeps its original callback on purpose: the SDK
     // invokes such a tool with a single context argument, which the
     // two-argument nudge wrapper below cannot forward. None exist today.
     if (nudgeFreeTools.has(name) || config.inputSchema === undefined) {
-      return registered;
+      return;
     }
     const execute = registered.executor;
     registered.update({
@@ -548,7 +561,7 @@ export function createArtifactMcpServer(
         return nudge === null ? result : appendToolResultNudge(result, nudge);
       },
     });
-    return registered;
+    return;
   }
 
   /**
@@ -754,6 +767,7 @@ export function createArtifactMcpServer(
           name: z.string(),
           path: z.string(),
           role: z.enum(["guest", "viewer", "member", "administrator", "owner"]).nullable().optional(),
+          source: z.literal("rule").optional(),
           syncedAt: z.string(),
         }).strict()),
       }).strict(),
@@ -764,13 +778,23 @@ export function createArtifactMcpServer(
         dependencies,
         listDirectoryGroups(identity.principal),
       );
+      if (identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest) {
+        return {groups: []};
+      }
       const roles = groups.length === 0 ? [] : await runMcpApplicationEffect(dependencies,
         InstallationAccessService.use((access) => access.listGroupRoles()));
       const privilegedHuman = identity.principal.kind === "human" && isAdministratorRole(identity.principal.membershipRole);
       const roleByGroup = new Map(roles.map(({groupId, role}) => [groupId, role]));
-      return {groups: groups.map((group) => privilegedHuman
-        ? Object.assign({}, group, {role: roleByGroup.get(group.id) ?? null})
-        : (({hasHigherRoleOverlap: _overlap, ...visible}) => visible)(group))};
+      const sourceByGroup = new Set(roles.filter(({source}) => source === "rule").map(({groupId}) => groupId));
+      return {groups: groups.map((group) => {
+        if (!privilegedHuman) {
+          const {hasHigherRoleOverlap: _overlap, ...visible} = group;
+          return visible;
+        }
+        const visible = Object.assign({}, group, {role: roleByGroup.get(group.id) ?? null});
+        if (sourceByGroup.has(group.id)) Object.assign(visible, {source: "rule" as const});
+        return visible;
+      })};
     }),
   );
 
@@ -806,7 +830,7 @@ export function createArtifactMcpServer(
         name: z.string().trim().min(1).max(120),
         shareWith: z.array(z.object({
           group: projectGroupReferenceSchema,
-          role: projectGrantRoleSchema.describe(
+          role: (isProvisioner ? z.enum(["viewer", "editor"]) : projectGrantRoleSchema).describe(
             "viewer reads and comments; editor also publishes and manages artifacts; manager also renames, archives and shares the project.",
           ),
         }).strict()).max(50).optional(),
@@ -869,7 +893,7 @@ export function createArtifactMcpServer(
       inputSchema: z.object({
         group: projectGroupReferenceSchema,
         projectId: projectIdSchema,
-        role: projectGrantRoleSchema,
+        role: isProvisioner ? z.enum(["viewer", "editor"]) : projectGrantRoleSchema,
       }).strict(),
       outputSchema: z.object({sharing: projectSharingSchema}).strict(),
       annotations: idempotentWriteAnnotations,
@@ -914,7 +938,7 @@ export function createArtifactMcpServer(
       description:
         "Set a project's access mode: restricted (only administrators and the groups it is shared with) or installation (every member). Needs the manager role on the project.",
       inputSchema: z.object({
-        accessMode: projectAccessModeSchema,
+        accessMode: isProvisioner ? z.literal("restricted") : projectAccessModeSchema,
         projectId: projectIdSchema,
       }).strict(),
       outputSchema: z.object({sharing: projectSharingSchema}).strict(),
@@ -2793,7 +2817,7 @@ export function createArtifactMcpServer(
     }, mailboxSummary),
   );
 
-  server.registerResource(
+  if (!isProvisioner) server.registerResource(
     "artifact-version-manifest",
     manifestResource,
     {

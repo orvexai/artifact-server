@@ -77,6 +77,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- $oidcGroupsClaim := default "" .Values.identity.oidcGroupsClaim -}}
 {{- $hasOidcGroupLists := or (gt (len (default (list) .Values.identity.oidcMemberGroups)) 0) (gt (len (default (list) .Values.identity.oidcAdministratorGroups)) 0) -}}
 {{- $hasOidcGroupRoleSeed := gt (len (default (list) .Values.identity.oidcGroupRoleSeed)) 0 -}}
+{{- $hasGuestGroupPrefixes := gt (len (default (list) .Values.identity.oidcGuestGroupPrefixes)) 0 -}}
+{{- if and $hasGuestGroupPrefixes (not (or $hasOidcGroupLists $hasOidcGroupRoleSeed)) -}}
+{{- fail "identity.oidcGuestGroupPrefixes requires identity.oidcGroupRoleSeed or identity.oidcMemberGroups / identity.oidcAdministratorGroups" -}}
+{{- end -}}
 {{- $hasOidcGroups := or $hasOidcGroupLists $hasOidcGroupRoleSeed -}}
 {{- if and $hasOidcGroupLists $hasOidcGroupRoleSeed -}}
 {{- fail "set identity.oidcGroupRoleSeed or the older identity.oidcMemberGroups and identity.oidcAdministratorGroups, not both" -}}
@@ -246,6 +250,14 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 - name: ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS
   value: {{ join "," .Values.identity.oidcServiceClients | quote }}
 {{- end }}
+{{- if .Values.identity.oidcProvisionerClients }}
+- name: ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS
+  value: {{ join "," .Values.identity.oidcProvisionerClients | quote }}
+{{- end }}
+{{- if .Values.identity.oidcProvisionerGroupPrefixes }}
+- name: ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES
+  value: {{ join "," .Values.identity.oidcProvisionerGroupPrefixes | quote }}
+{{- end }}
 {{- if .Values.identity.oidcEmbedBindClients }}
 - name: ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS
   value: {{ join "," .Values.identity.oidcEmbedBindClients | quote }}
@@ -257,6 +269,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- if .Values.identity.oidcScopes }}
 - name: ARTIFACT_SERVER_OIDC_SCOPES
   value: {{ .Values.identity.oidcScopes | quote }}
+{{- end }}
+{{- if .Values.identity.oidcGuestGroupPrefixes }}
+- name: ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES
+  value: {{ join "," .Values.identity.oidcGuestGroupPrefixes | quote }}
 {{- end }}
 {{- if .Values.identity.oidcGroupsClaim }}
 - name: ARTIFACT_SERVER_OIDC_GROUPS_CLAIM

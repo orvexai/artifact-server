@@ -31,6 +31,7 @@ import {
   createArtifactMcpServer,
   type ArtifactMcpServerDependencies,
 } from "./artifact-mcp-server.js";
+import {provisionerToolAllowList, provisionerToolNames} from "./provisioner-tools.js";
 
 const principalSchema = z.object({
   authorizedByPrincipalId: z.string().nullable(),
@@ -40,6 +41,7 @@ const principalSchema = z.object({
     principalCapabilities.issueContentSession,
     principalCapabilities.manageAnyArtifact,
     principalCapabilities.manageProjects,
+    principalCapabilities.provisionProjects,
     principalCapabilities.publishAnyArtifact,
     principalCapabilities.readArtifacts,
     principalCapabilities.readArtifactResponses,
@@ -48,7 +50,9 @@ const principalSchema = z.object({
   ])),
   email: z.string().nullable().optional(),
   directoryGroupIds: z.array(z.string()).optional(),
+  provisionerGroupPrefixes: z.array(z.string()).optional(),
   serviceAccountSource: z.literal("oidc").optional(),
+  serviceAccountClientId: z.string().min(1).optional(),
   displayName: z.string().min(1),
   id: z.string().min(1),
   installationId: z.string().min(1),
@@ -157,9 +161,61 @@ export function createMcpHttpAdapter(
             artifactServerMcpClientName: agentDisplayName,
           },
         };
+      const provisioner = principalSchema.safeParse(
+        attributedAuth.extra?.["artifactServerPrincipal"],
+      );
+      if (
+        provisioner.success &&
+        provisioner.data.capabilities.includes(principalCapabilities.provisionProjects)
+      ) {
+        const deniedRequest = await deniedProvisionerTool(request, provisionerToolAllowList);
+        if (deniedRequest !== null) {
+          return Response.json({
+            id: deniedRequest.id,
+            jsonrpc: "2.0",
+            result: {
+              content: [{
+                text: `Permission denied: OIDC project provisioners may call only ${provisionerToolNames.join(", ")}.`,
+                type: "text",
+              }],
+              isError: true,
+            },
+          });
+        }
+      }
       return handler.fetch(request, {authInfo: attributedAuth});
     },
   };
+}
+
+async function deniedProvisionerTool(
+  request: Request,
+  allowedTools: ReadonlySet<string>,
+): Promise<{id: unknown} | null> {
+  try {
+    const body: unknown = await request.clone().json();
+    if (Array.isArray(body)) return {id: null};
+    const envelope = z.object({
+      id: z.unknown().optional(),
+      jsonrpc: z.literal("2.0"),
+      method: z.string(),
+      params: z.unknown().optional(),
+    }).passthrough().safeParse(body);
+    if (!envelope.success) return {id: null};
+    if ([
+      "initialize",
+      "notifications/initialized",
+      "ping",
+      "tools/list",
+    ].includes(envelope.data.method)) return null;
+    if (envelope.data.method !== "tools/call") return {id: envelope.data.id ?? null};
+    const params = z.object({name: z.string()}).passthrough().safeParse(envelope.data.params);
+    return params.success && allowedTools.has(params.data.name)
+      ? null
+      : {id: envelope.data.id ?? null};
+  } catch {
+    return {id: null};
+  }
 }
 
 /** Read MCP client identity for display only; it never supplies authorization. */
@@ -203,7 +259,16 @@ async function authenticateToken(
       ),
       {requestId, spanName: "mcp.authenticate"},
     );
-    if (authenticated.principal.serviceAccountSource === "oidc") {
+    if (
+      authenticated.principal.serviceAccountSource === "oidc" &&
+      (
+        authenticated.principal.kind !== principalKinds.service ||
+        !authenticated.principal.capabilities.includes(principalCapabilities.provisionProjects) ||
+        authenticated.principal.serviceAccountClientId === undefined ||
+        (authenticated.oauthClientId !== undefined && authenticated.oauthClientId !== null &&
+          authenticated.principal.serviceAccountClientId !== authenticated.oauthClientId)
+      )
+    ) {
       throw new OAuthError(
         OAuthErrorCode.InsufficientScope,
         "Service principals cannot use Artifact Server MCP.",
