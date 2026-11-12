@@ -33,6 +33,7 @@ export async function createOrganizationRouter(
     "artifact-server:organization-router",
   );
   const runtimes = new Map<string, CachedRuntime>();
+  const openingRuntimes = new Map<string, Promise<CachedRuntime>>();
   let closed = false;
   let evictionTimer: ReturnType<typeof setInterval> | undefined;
   try {
@@ -58,18 +59,29 @@ export async function createOrganizationRouter(
         runtimes.set(organization.id, cached);
         return cached;
       }
+      const opening = openingRuntimes.get(organization.id);
+      if (opening !== undefined) return opening;
       const orgConfig: ExternalStorageOrgConfig = organization.slug === "orvex"
         ? {bootstrapApiToken: config.apiToken, cookieRouteId: organization.routeId}
         : {cookieRouteId: organization.routeId};
-      const runtime = await createOrgRuntime(
+      const pending = createOrgRuntime(
         organization.id,
         orgConfig,
         config,
         database,
-      );
-      const entry = {activeRequests: 0, lastUsedAt: Date.now(), runtime};
-      runtimes.set(organization.id, entry);
-      return entry;
+      ).then((runtime) => {
+        const entry = {activeRequests: 0, lastUsedAt: Date.now(), runtime};
+        runtimes.set(organization.id, entry);
+        return entry;
+      });
+      openingRuntimes.set(organization.id, pending);
+      try {
+        return await pending;
+      } finally {
+        if (openingRuntimes.get(organization.id) === pending) {
+          openingRuntimes.delete(organization.id);
+        }
+      }
     };
     const evictIdle = async () => {
       const now = Date.now();
