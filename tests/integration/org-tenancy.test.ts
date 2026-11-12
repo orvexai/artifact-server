@@ -1668,7 +1668,7 @@ describe.sequential("organization tenancy security boundary", () => {
       const legacyProjectId = z.object({project: z.object({id: z.string()})})
         .parse(await legacyProjectResponse.json()).project.id;
       const legacyArtifactId = await publishOrgBArtifact(
-        (request) => legacyRuntime.app.fetch(request), apiTokenA, legacyProjectId,
+        (request) => legacyRuntime.app.fetch(request), apiTokenA, legacyProjectId, "orvex",
       );
       const legacyVersionRows = await database.run(Effect.gen(function*() {
         const sql = yield* SqlClient;
