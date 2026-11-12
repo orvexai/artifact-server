@@ -990,23 +990,20 @@ const addOrganizationAdmissionPolicy = Effect.gen(function*() {
     ADD COLUMN admission_policy JSONB`);
 });
 
-const addOrgTenancyIdentityFields = Effect.gen(function*() {
+const addOrganizationEmbedOrigins = Effect.gen(function*() {
   const sql = yield* SqlClient;
-  yield* sql.unsafe(`ALTER TABLE installation_members
-    ADD COLUMN IF NOT EXISTS manual_deactivation BOOLEAN NOT NULL DEFAULT FALSE`);
-  yield* sql.unsafe(`ALTER TABLE installation_members
-    ADD COLUMN IF NOT EXISTS suspended_by_org_at TIMESTAMPTZ`);
-  yield* sql.unsafe(`ALTER TABLE installation_members
-    ADD COLUMN IF NOT EXISTS pre_suspend_status TEXT`);
-  yield* sql.unsafe(`ALTER TABLE installation_members
-    ADD COLUMN IF NOT EXISTS pre_suspend_manual_deactivation BOOLEAN`);
   yield* sql.unsafe(`ALTER TABLE artifact_installations
-    ADD COLUMN keycloak_organization_id TEXT`);
-  yield* sql.unsafe(`CREATE UNIQUE INDEX artifact_installations_keycloak_org_unique
-    ON artifact_installations (keycloak_organization_id)
-    WHERE keycloak_organization_id IS NOT NULL`);
-  yield* sql.unsafe(`ALTER TABLE external_identities
-    ADD COLUMN identity_provider TEXT`);
+    ADD COLUMN IF NOT EXISTS embed_origins JSONB NOT NULL DEFAULT '[]'::jsonb`);
+  yield* sql.unsafe(`DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+      WHERE conname = 'artifact_installations_embed_origins_check'
+    ) THEN
+      ALTER TABLE artifact_installations
+        ADD CONSTRAINT artifact_installations_embed_origins_check
+        CHECK (jsonb_typeof(embed_origins) = 'array');
+    END IF;
+  END $$`);
 });
 
 const addPlatformSessions = Effect.gen(function*() {
@@ -1071,6 +1068,7 @@ const postgresMigrations = {
   "0031_organization_admission_policy": addOrganizationAdmissionPolicy,
   "0032_org_tenancy_identity_fields": addOrgTenancyIdentityFields,
   "0033_platform_sessions": addPlatformSessions,
+  "0034_organization_embed_origins": addOrganizationEmbedOrigins,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

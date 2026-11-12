@@ -557,6 +557,8 @@ export interface HttpAppDependencies {
   readonly browserAccess: BrowserAccess;
   readonly completedRequestLogSampleRate: number;
   readonly contentDomain: string;
+  readonly contentTokenPrefix?: string | undefined;
+  readonly installationId?: string;
   /** Suffix scoped to one configured organization on the shared app host. */
   readonly organizationCookieSuffix?: string;
   /** Keycloak organization bound to this installation for token admission. */
@@ -687,6 +689,7 @@ export function createHttpApp(
     applicationRuntime: dependencies.applicationRuntime,
     contentDomain: dependencies.contentDomain,
     organizationTenancy: dependencies.organizationAdmission !== undefined,
+    contentTokenPrefix: dependencies.contentTokenPrefix,
     gitHistory,
     linkedArtifacts: dependencies.linkedArtifacts === true,
     mode: dependencies.trustedApplicationOrigin === null ? "local" as const : "remote" as const,
@@ -884,7 +887,7 @@ export function createHttpApp(
       // current bytes to authenticated local members and never serves any
       // immutable version route. Everywhere the capability is absent the
       // application service answers the stable capability-unavailable shape.
-      if (isLiveContentToken(contentToken)) {
+      if (isLiveContentToken(contentToken, dependencies.contentTokenPrefix)) {
         return serveLiveContent(
           context,
           contentToken,
@@ -2490,7 +2493,10 @@ export function createHttpApp(
       })));
     const exp = Math.floor(Date.now() / 1_000) + 60 * 60;
     const binding = signEmbedBinding(Redacted.value(signingSecret), {
-      artifactId, exp, jti: randomUUID(), mode: body.mode, questionId: body.questionId,
+      artifactId,
+      exp,
+      installation_id: dependencies.installationId ?? "single-installation",
+      jti: randomUUID(), mode: body.mode, questionId: body.questionId,
       versionId: body.versionId,
     });
     return context.json({binding, expiresAt: new Date(exp * 1_000).toISOString()});
@@ -2671,6 +2677,7 @@ export function createHttpApp(
       body.embedBinding,
       {
         artifactId: context.req.param("artifactId"),
+        installation_id: dependencies.installationId ?? "single-installation",
         versionId: body.versionId,
       },
     );
@@ -4174,7 +4181,7 @@ function liveLink(
   dependencies: HttpAppDependencies,
   artifactId: string,
 ): string | null {
-  const token = liveContentToken(artifactId);
+  const token = liveContentToken(artifactId, dependencies.contentTokenPrefix);
   if (token === null) return null;
   return versionBrowserUrl(requestUrl, dependencies.contentDomain, token);
 }
@@ -5491,6 +5498,7 @@ function escapeHtmlAttribute(value: string): string {
 interface EmbedBindingClaims {
   readonly artifactId: string;
   readonly exp: number;
+  readonly installation_id: string;
   readonly jti: string;
   readonly mode: "view" | "respond";
   readonly questionId: string;
@@ -5506,7 +5514,7 @@ function signEmbedBinding(secret: string, claims: EmbedBindingClaims): string {
 function verifyEmbedBinding(
   secrets: readonly (Redacted.Redacted | undefined)[],
   token: string,
-  expected: Pick<EmbedBindingClaims, "artifactId" | "versionId">,
+  expected: Pick<EmbedBindingClaims, "artifactId" | "installation_id" | "versionId">,
 ): EmbedBindingClaims | null {
   const parts = token.split(".");
   if (parts.length !== 2) return null;
@@ -5524,7 +5532,8 @@ function verifyEmbedBinding(
   let claims: EmbedBindingClaims;
   try {
     claims = z.object({
-      artifactId: z.string().min(1), exp: z.number().int(), jti: z.string().uuid(),
+      artifactId: z.string().min(1), exp: z.number().int(),
+      installation_id: z.string().min(1), jti: z.string().uuid(),
       mode: z.enum(["view", "respond"]), questionId: z.string().min(1).max(200),
       versionId: z.string().min(1),
     }).strict().parse(JSON.parse(Buffer.from(payload, "base64url").toString("utf8")));
@@ -5536,6 +5545,7 @@ function verifyEmbedBinding(
     claims.exp <= now
     || claims.exp > now + 60 * 60
     || claims.artifactId !== expected.artifactId
+    || claims.installation_id !== expected.installation_id
     || claims.versionId !== expected.versionId
   ) return null;
   return claims;

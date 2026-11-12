@@ -47,7 +47,7 @@ export const previewLeaseTokenPrefix = "review-";
 
 /** Return whether a content-host token represents a Review preview lease. */
 export function isPreviewLeaseToken(token: string): boolean {
-  return token.startsWith(previewLeaseTokenPrefix);
+  return token.startsWith(previewLeaseTokenPrefix) || /-review-[a-f0-9]+$/u.test(token);
 }
 
 /** Secret material generated for private-content authorization. */
@@ -60,6 +60,7 @@ export interface IssuedContentSecret {
 export interface ContentSecretProvider {
   readonly digest: (token: Redacted.Redacted) => string;
   readonly issue: () => IssuedContentSecret;
+  readonly tokenPrefix?: string;
 }
 
 /** Repository capabilities required by content access policy. */
@@ -351,7 +352,7 @@ function makeContentAccessService(
     // discriminator gives the lease 224 bits of entropy and a valid label on
     // every deployment without case-folding secret material in DNS.
     const token = Redacted.make(
-      `${previewLeaseTokenPrefix}${issued.digest.slice(0, 56)}`,
+      `${dependencies.secrets.tokenPrefix ?? ""}${previewLeaseTokenPrefix}${issued.digest.slice(0, dependencies.secrets.tokenPrefix === undefined ? 56 : 46)}`,
       {label: "preview-lease-token"},
     );
     const expiresAt = DateTime.formatIso(

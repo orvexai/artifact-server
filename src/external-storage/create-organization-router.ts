@@ -109,6 +109,8 @@ export async function createOrganizationRouter(
           ? config.bootstrapAdministratorEmail
           : null,
         cookieRouteId: organization.routeId,
+        contentTokenPrefix: `${organization.routeId}-`,
+        embedOrigins: organization.embedOrigins,
         slug: organization.slug,
         issuePlatformSession: (identity, existingToken) => platformSessions.issue(identity, existingToken),
       };
@@ -180,7 +182,9 @@ export async function createOrganizationRouter(
       fetch: async (request) => {
         if (closed) return new Response("Service Unavailable", {status: 503});
         const sourceUrl = new URL(request.url);
-        if (sourceUrl.pathname === "/") {
+        const contentHostRequest = contentTokenFromHost(request, config.contentDomain);
+        const contentHost = contentHostRequest.isContentHost;
+        if (!contentHost && sourceUrl.pathname === "/") {
           if (request.method !== "GET" && request.method !== "HEAD") return notFound();
           const token = platformCookie(request);
           const session = token === null ? null : await platformSessions.find(token, true);
@@ -199,7 +203,7 @@ export async function createOrganizationRouter(
             `<li><a href="/o/${encodeURIComponent(slug)}/">${escapeHtml(displayName)}</a></li>`).join("");
           return new Response(`<!doctype html><html><head><meta charset="utf-8"><title>Choose organization</title></head><body><main><h1>Choose an organization</h1><ul>${choices}</ul></main></body></html>`, {headers: {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "private, no-store"}});
         }
-        if (sourceUrl.pathname === "/auth/login" || sourceUrl.pathname === "/auth/platform/login") {
+        if (!contentHost && (sourceUrl.pathname === "/auth/login" || sourceUrl.pathname === "/auth/platform/login")) {
           const returnTo = sourceUrl.searchParams.get("returnTo") ?? "/";
           const organization = await registry.find("orvex").catch(() => null);
           if (organization === null || organization.status !== "active") return notFound();
@@ -212,14 +216,14 @@ export async function createOrganizationRouter(
             : returnTo);
           return entry.runtime.app.fetch(new Request(target, request));
         }
-        if (sourceUrl.pathname === "/api/v1/platform/me/orgs" && request.method === "GET") {
+        if (!contentHost && sourceUrl.pathname === "/api/v1/platform/me/orgs" && request.method === "GET") {
           const token = platformCookie(request);
           const session = token === null ? null : await platformSessions.find(token, true);
           if (session === null) return notFound();
           const active = new Set((await registry.list()).filter(({status}) => status === "active").map(({slug}) => slug));
           return Response.json(session.organizations.filter(({slug}) => active.has(slug)), {headers: {"Cache-Control": "private, no-store"}});
         }
-        if (sourceUrl.pathname === "/api/v1/platform/session/last-org" && request.method === "POST") {
+        if (!contentHost && sourceUrl.pathname === "/api/v1/platform/session/last-org" && request.method === "POST") {
           if (config.applicationOrigin !== undefined && request.headers.get("origin") !== new URL(config.applicationOrigin).origin) return notFound();
           if (request.headers.get("sec-fetch-site") !== "same-origin") return notFound();
           const token = platformCookie(request);
@@ -236,7 +240,7 @@ export async function createOrganizationRouter(
           const saved = await platformSessions.setLastOrg(token, parsedBody.data.slug);
           return saved ? new Response(null, {status: 204}) : notFound();
         }
-        if (sourceUrl.pathname === "/api/v1/platform/session/logout" && request.method === "POST") {
+        if (!contentHost && sourceUrl.pathname === "/api/v1/platform/session/logout" && request.method === "POST") {
           if (config.applicationOrigin !== undefined && request.headers.get("origin") !== new URL(config.applicationOrigin).origin) return notFound();
           if (request.headers.get("sec-fetch-site") !== "same-origin") return notFound();
           const token = platformCookie(request);
@@ -288,14 +292,25 @@ export async function createOrganizationRouter(
           }
           return new Response(null, {headers: logoutHeaders, status: 204});
         }
-        const route = organizationRoute(sourceUrl.pathname) ??
-          rootOAuthMetadataRoute(sourceUrl.pathname) ??
-          (sourceUrl.pathname === "/auth/callback"
-            ? {path: sourceUrl.pathname, slug: "orvex"}
-            : null) ??
-          (sourceUrl.pathname === "/health" || sourceUrl.pathname === "/ready"
-            ? {path: sourceUrl.pathname, slug: "orvex"}
-            : null);
+        let route = contentHost
+          ? null
+          : organizationRoute(sourceUrl.pathname) ??
+            rootOAuthMetadataRoute(sourceUrl.pathname) ??
+            (sourceUrl.pathname === "/auth/callback"
+              ? {path: sourceUrl.pathname, slug: "orvex"}
+              : null) ??
+            (sourceUrl.pathname === "/health" || sourceUrl.pathname === "/ready"
+              ? {path: sourceUrl.pathname, slug: "orvex"}
+              : null);
+        if (contentHost) {
+          if (isForbiddenContentHostPath(sourceUrl.pathname)) return notFound();
+          const prefixedRouteId = /^([a-z0-9]{8})-/u.exec(contentHostRequest.token)?.[1];
+          const contentOrganization = prefixedRouteId === undefined
+            ? await registry.find("orvex").catch(() => null)
+            : await registry.findByRouteId(prefixedRouteId).catch(() => null);
+          if (contentOrganization === null) return notFound();
+          route = {path: sourceUrl.pathname, slug: contentOrganization.slug};
+        }
         if (route === null) {
           const legacy = legacyOrganizationPath(sourceUrl.pathname);
           if (legacy === null) return notFound();
@@ -309,6 +324,7 @@ export async function createOrganizationRouter(
         if (organization === null || organization.status !== "active") {
           return notFound();
         }
+        if (contentHost && isForbiddenContentHostPath(route.path)) return notFound();
         let entry: CachedRuntime;
         try {
           entry = await runtimeFor(organization);
@@ -408,6 +424,29 @@ function rootOAuthMetadataRoute(
     pathname === "/.well-known/oauth-protected-resource/mcp"
   ) return {path: pathname, slug: "orvex"};
   return null;
+}
+
+function contentTokenFromHost(
+  request: Request,
+  contentDomain: string,
+) {
+  const hostHeader = request.headers.get("host");
+  if (hostHeader === null) return {isContentHost: false, token: ""};
+  let hostname: string;
+  try {
+    hostname = new URL(`http://${hostHeader}`).hostname.toLowerCase();
+  } catch {
+    return {isContentHost: false, token: ""};
+  }
+  const suffix = `.${contentDomain.toLowerCase()}`;
+  if (!hostname.endsWith(suffix)) return {isContentHost: false, token: ""};
+  const label = hostname.slice(0, -suffix.length);
+  if (label.includes(".") || label.length === 0) return {isContentHost: true, token: ""};
+  return {isContentHost: true, token: label};
+}
+
+function isForbiddenContentHostPath(pathname: string): boolean {
+  return /^\/(?:api(?:\/|$)|mcp(?:\/|$)|review(?:\/|$)|o(?:\/|$))/u.test(pathname);
 }
 
 function legacyOrganizationPath(pathname: string): string | null {

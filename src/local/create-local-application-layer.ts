@@ -36,6 +36,7 @@ import {
 } from "../application/compare-artifact.js";
 import {
   type ContentAccessDependencies,
+  type ContentSecretProvider,
   ContentAccessService,
 } from "../application/content-access.js";
 import {ExpiredStagingCleanupService} from
@@ -167,6 +168,7 @@ export interface ApplicationAdapters {
    */
   readonly dispatches: AgentDispatchRepository;
   readonly ids: IdGenerator;
+  readonly contentTokenPrefix?: string;
   readonly identityRepository: IdentityRepository;
   readonly installationId: string;
   readonly organizationDirectoryVisibility?: boolean | undefined;
@@ -737,6 +739,20 @@ export function createApplicationLayer(
     },
   };
 
+  const contentSecrets: ContentSecretProvider = {
+    digest: (token) =>
+      createHash("sha256").update(Redacted.value(token)).digest("hex"),
+    issue: () => {
+      const raw = `${adapters.contentTokenPrefix ?? ""}${randomBase64Url(adapters.contentTokenPrefix === undefined ? 32 : 28)}`;
+      return {
+        digest: createHash("sha256").update(raw).digest("hex"),
+        token: Redacted.make(raw, {label: "content-session-token"}),
+      };
+    },
+  };
+  if (adapters.contentTokenPrefix !== undefined) {
+    Object.assign(contentSecrets, {tokenPrefix: adapters.contentTokenPrefix});
+  }
   const contentDependencies: ContentAccessDependencies = {
     clock,
     organizationDirectoryVisibility: adapters.organizationDirectoryVisibility,
@@ -798,17 +814,7 @@ export function createApplicationLayer(
           catch: (cause) => repositoryFailure("findVersionContent", cause),
         }),
     },
-    secrets: {
-      digest: (token) =>
-        createHash("sha256").update(Redacted.value(token)).digest("hex"),
-      issue: () => {
-        const raw = randomBase64Url(32);
-        return {
-          digest: createHash("sha256").update(raw).digest("hex"),
-          token: Redacted.make(raw, {label: "content-session-token"}),
-        };
-      },
-    },
+    secrets: contentSecrets,
   };
 
   const localPrincipal: Principal = {

@@ -1,4 +1,4 @@
-import {createHash, randomUUID} from "node:crypto";
+import {createHash, createHmac, randomUUID} from "node:crypto";
 import {spawnSync} from "node:child_process";
 import {request as httpRequest} from "node:http";
 
@@ -58,6 +58,8 @@ import type {GitHistoryProviderHealthProbe} from
   "../../src/git-history/git-history-provider-health.js";
 import {RecordingGitHistoryProvider} from "../support/git-history-provider.js";
 import {gitHistoryMetadataFiles} from "../../src/git-history/git-history-mirror.js";
+import {isLiveContentToken, liveContentToken} from
+  "../../src/application/linked-artifacts.js";
 import type {ExternalMcpBearerVerifier} from
   "../../src/application/authentication.js";
 import type {
@@ -73,6 +75,7 @@ import {PostgresDatabase} from "../../src/storage/postgres-database.js";
 
 const region = "us-east-1";
 const applicationOrigin = "https://artifacts.example.com";
+const embedBindingSecret = "org-tenancy-test-embed-binding-secret-with-32-bytes-minimum";
 const adminEmail = "administrator@example.test";
 const bytes = new TextEncoder().encode("org B private artifact");
 const crossOrgMatrix = [
@@ -82,6 +85,8 @@ const crossOrgMatrix = [
   {surface: "hono", identifier: "GET /api/v1/projects/:projectId", coverage: "Org B project requested through Org A returns 404"},
   {surface: "hono", identifier: "GET /api/v1/artifacts/:artifactId", coverage: "Org B artifact requested through Org A returns 404"},
   {surface: "hono", identifier: "GET /api/v1/session", coverage: "Org A session cookie is ignored by Org B"},
+  {surface: "hono", identifier: "POST /api/v1/members/:memberId/reactivate", coverage: "admin-only per-org reactivation cannot cross installations"},
+  {surface: "mcp", identifier: "member_reactivate", coverage: "org-only admin reactivation tool rejects service principals"},
   {surface: "platform", identifier: "GET /api/v1/platform/me/orgs", coverage: "shared platform session lists only verified memberships"},
   {surface: "platform", identifier: "POST /api/v1/platform/session/last-org", coverage: "last-org accepts only a current membership"},
   {surface: "platform", identifier: "POST /api/v1/platform/session/logout", coverage: "logout deletes the shared platform session and expires its cookie"},
@@ -283,6 +288,43 @@ const pendingCrossOrgCases = [
   "mcp:project_unshare",
 ] as const;
 
+function crossOrgCoverage(identifier: string) {
+  if (identifier.startsWith("mcp:")) {
+    return {
+      group: "MCP tools",
+      justification: "MCP dispatch uses the selected installation runtime; the foreign bearer rejection is exercised at tools/list before tool dispatch.",
+    } as const;
+  }
+  if (/^hono:(?:GET|HEAD) \/api\/v1\/(?:projects|artifacts|groups|members|agents|api-keys|agent-dispatches)$/u.test(identifier)) {
+    return {
+      group: "list routes",
+      justification: "List routes execute inside the organization runtime; the table-driven project and administration list probes reject a foreign bearer.",
+    } as const;
+  }
+  if (identifier.includes("/api/v1/administration/") || identifier.includes("/api-keys") || identifier.includes("/members")) {
+    return {
+      group: "admin routes",
+      justification: "Administration APIs use the same per-installation API-key verifier; the table-driven administration probes reject a foreign bearer.",
+    } as const;
+  }
+  if (identifier.includes("/api/v1/")) {
+    return {
+      group: "resource-id routes",
+      justification: "Resource routes execute against one installation's repositories; the cross-org artifact and project probes return 404, while foreign API credentials are rejected.",
+    } as const;
+  }
+  if (identifier.includes("/auth/")) {
+    return {
+      group: "authentication routes",
+      justification: "Handshake cookies and callback selection are organization-scoped and exercised by the login/callback cases in this test.",
+    } as const;
+  }
+  return {
+    group: "static and shell routes",
+    justification: "This route serves a shell, static asset, or process-health response; artifact authorization occurs on the separately covered API and content routes.",
+  } as const;
+}
+
 function assertCrossOrgMatrixComplete(
   registeredRoutes: readonly string[],
   registeredTools: readonly string[],
@@ -309,6 +351,16 @@ function assertCrossOrgMatrixComplete(
   for (const identifier of knownCaseSet) {
     if (!currentCases.has(identifier)) throw new Error(`Cross-org matrix case is no longer registered: ${identifier}`);
   }
+  const classified = pendingCrossOrgCases.map(crossOrgCoverage);
+  expect(classified.every(({group, justification}) => group.length > 0 && justification.length > 0)).toBe(true);
+  expect(new Set(classified.map(({group}) => group))).toEqual(new Set([
+    "MCP tools",
+    "list routes",
+    "admin routes",
+    "resource-id routes",
+    "authentication routes",
+    "static and shell routes",
+  ]));
 }
 describe.sequential("organization tenancy security boundary", () => {
   const databaseUrl = process.env["ARTIFACT_SERVER_TEST_DATABASE_URL"];
@@ -397,6 +449,7 @@ describe.sequential("organization tenancy security boundary", () => {
         })),
       }).nullable(),
       displayName: z.string(),
+      embedOrigins: z.array(z.string()),
       id: z.string(),
       keycloakId: z.string().nullable(),
       routeId: z.string(),
@@ -473,6 +526,7 @@ describe.sequential("organization tenancy security boundary", () => {
       bootstrapAdministratorEmail: adminEmail,
       browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
       contentDomain: "content.example.net",
+      embedBindingSecret: Redacted.make(embedBindingSecret),
       databaseUrl: Redacted.make(databaseUrl),
       installationId,
       organizationMemberships: {forIdentity: async () => platformMemberships},
@@ -508,6 +562,8 @@ describe.sequential("organization tenancy security boundary", () => {
       bootstrapApiToken: Redacted.make(apiTokenB),
       cookieRouteId: orgB.routeId,
       slug: orgB.slug,
+      contentTokenPrefix: `${orgB.routeId}-`,
+      embedOrigins: [],
     }, config, database);
     try {
       const projectResponse = await setupB.app.fetch(appRequest(
@@ -1513,17 +1569,210 @@ describe.sequential("organization tenancy security boundary", () => {
     } finally {
       await admissionRuntime.close();
     }
+    const forwardedHost = {
+      ...host,
+      "x-forwarded-host": "artifacts.example.com",
+      "x-forwarded-proto": "https",
+    };
     const registry = new OrganizationRegistry(database);
-    const [projectRows, artifactRows] = await database.run(Effect.gen(function*() {
+    const [projectRows, artifactRows, versionRows] = await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const projects = yield* sql`SELECT id FROM projects
         WHERE installation_id = ${orgB.id} AND name = 'Org B project'`;
       const artifacts = yield* sql`SELECT id FROM artifacts
         WHERE installation_id = ${orgB.id} AND name = 'Org B artifact'`;
-      return [projects, artifacts] as const;
+      const versions = yield* sql`SELECT id, content_token AS "contentToken"
+        FROM versions WHERE installation_id = ${orgB.id}`;
+      return [projects, artifacts, versions] as const;
     }));
     const projectId = z.object({id: z.string()}).parse(projectRows[0]).id;
     const artifactId = z.object({id: z.string()}).parse(artifactRows[0]).id;
+    const version = z.object({id: z.string(), contentToken: z.string()}).parse(versionRows[0]);
+    expect(version.contentToken).toMatch(new RegExp(`^${orgB.routeId}-[A-Za-z0-9_-]{16,100}$`, "u"));
+    const prefixedLiveToken = liveContentToken("art_00000000-0000-4000-8000-000000000001", `${orgB.routeId}-`);
+    expect(prefixedLiveToken).toMatch(new RegExp(`^${orgB.routeId}-live-[0-9a-f-]+$`, "u"));
+    expect(isLiveContentToken(prefixedLiveToken ?? "", `${orgB.routeId}-`)).toBe(true);
+    expect(isLiveContentToken(prefixedLiveToken ?? "", `${orgB.routeId.slice(0, 7)}-`)).toBe(false);
+
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`UPDATE artifact_installations
+        SET embed_origins = ${JSON.stringify(["https://org-b-embed.example.test"])}::jsonb
+        WHERE id = ${orgB.id}`;
+    }));
+
+    const orgBContent = await fetchWithHost(
+      `http://${router.hostname}:${router.port}/`,
+      {headers: {Host: `${version.contentToken}.content.example.net`}},
+      router.hostname,
+      router.port,
+    );
+    expect(orgBContent.status).toBe(401);
+    const contentSession = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/content-sessions?projectId=${projectId}`, {
+      headers: {...host, Authorization: `Bearer ${apiTokenB}`},
+      method: "POST",
+    });
+    expect(contentSession.status).toBe(201);
+    const contentBootstrapUrl = z.object({bootstrapUrl: z.url()})
+      .parse(await contentSession.json()).bootstrapUrl;
+    const contentSessionToken = new URL(contentBootstrapUrl).hostname.split(".")[0] ?? "";
+    expect(contentSessionToken).toMatch(new RegExp(`^${orgB.routeId}-[A-Za-z0-9_-]{16,100}$`, "u"));
+
+    const previewLease = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/versions/${version.id}/preview-leases?projectId=${projectId}`, {
+      headers: {...host, Authorization: `Bearer ${apiTokenB}`},
+      method: "POST",
+    });
+    expect(previewLease.status).toBe(201);
+    const previewUrl = z.object({baseUrl: z.url()}).parse(await previewLease.json()).baseUrl;
+    const previewToken = new URL(previewUrl).hostname.split(".")[0] ?? "";
+    expect(previewToken).toMatch(new RegExp(`^${orgB.routeId}-review-[a-f0-9]+$`, "u"));
+    const previewContent = await fetchWithHost(
+      `http://${router.hostname}:${router.port}/`,
+      {headers: {Host: `${previewToken}.content.example.net`}},
+      router.hostname,
+      router.port,
+    );
+    expect(previewContent.status).toBe(200);
+
+    const forbiddenContentHostPaths = ["/api", "/api/v1/projects", "/mcp", "/review", "/review-frame"];
+    const blockedContentResponses = await Promise.all(forbiddenContentHostPaths.map((path) =>
+      fetchWithHost(
+        `http://${router.hostname}:${router.port}${path}`,
+        {headers: {Host: `${version.contentToken}.content.example.net`}},
+        router.hostname,
+        router.port,
+      )
+    ));
+    expect(blockedContentResponses.map(({status}) => status)).toEqual(
+      forbiddenContentHostPaths.map(() => 404),
+    );
+
+    const legacyInstallationId = `legacy-content-${randomUUID()}`;
+    const legacyRuntime = await createExternalStorageRuntime({
+      ...config,
+      installationId: legacyInstallationId,
+      objectStorage: createS3ObjectStorageProviderFactory({
+        accessKeyId: requiredIntegrationSetting(accessKey, "ARTIFACT_SERVER_TEST_S3_ACCESS_KEY"),
+        bucket,
+        endpoint: requiredIntegrationSetting(endpoint, "ARTIFACT_SERVER_TEST_S3_ENDPOINT"),
+        forcePathStyle: true,
+        region,
+        secretAccessKey: Redacted.make(requiredIntegrationSetting(secretKey, "ARTIFACT_SERVER_TEST_S3_SECRET_KEY")),
+      }),
+    });
+    try {
+      const legacyProjectResponse = await legacyRuntime.app.fetch(appRequest(
+        "/api/v1/projects", apiTokenA, "POST", {name: "Legacy content project"},
+      ));
+      expect(legacyProjectResponse.status).toBe(201);
+      const legacyProjectId = z.object({project: z.object({id: z.string()})})
+        .parse(await legacyProjectResponse.json()).project.id;
+      const legacyArtifactId = await publishOrgBArtifact(
+        (request) => legacyRuntime.app.fetch(request), apiTokenA, legacyProjectId,
+      );
+      const legacyVersionRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT content_token AS "contentToken", id FROM versions
+          WHERE installation_id = ${legacyInstallationId}`;
+      }));
+      const legacyVersion = z.object({contentToken: z.string(), id: z.string()}).parse(legacyVersionRows[0]);
+      expect(legacyVersion.contentToken).toMatch(/^[A-Za-z0-9_-]{16,100}$/u);
+      expect(legacyVersion.contentToken).not.toMatch(/^[a-z0-9]{8}-/u);
+      const makeLegacyPublic = await legacyRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${legacyArtifactId}/access?projectId=${legacyProjectId}`,
+        {
+          body: JSON.stringify({accessSetting: "public_link", expectedCurrentVersionId: legacyVersion.id}),
+          headers: {
+            Authorization: `Bearer ${apiTokenA}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": "org-tenancy-legacy-public-001",
+          },
+          method: "PATCH",
+        },
+      ));
+      expect(makeLegacyPublic.status).toBe(200);
+      const legacyContent = await legacyRuntime.app.fetch(new Request(
+        `https://${legacyVersion.contentToken}.content.example.net/`,
+      ));
+      expect(legacyContent.status).toBe(200);
+      expect(await legacyContent.text()).toContain("org B private artifact");
+    } finally {
+      await legacyRuntime.close();
+    }
+    const orvex = await registry.find("orvex");
+    if (orvex === null) throw new Error("Orvex was not registered.");
+    const forgedForeignRouteToken = `${orvex.routeId}-not-a-real-content-token`;
+    const forgedContent = await fetchWithHost(
+      `http://${router.hostname}:${router.port}/`,
+      {headers: {Host: `${forgedForeignRouteToken}.content.example.net`}},
+      router.hostname,
+      router.port,
+    );
+    expect(forgedContent.status).toBe(404);
+
+    const orgBReviewFrame = await fetch(`${baseUrl}/o/${orgB.slug}/review-frame?embed=1`, {
+      headers: host,
+    });
+    expect(orgBReviewFrame.headers.get("content-security-policy"))
+      .toContain("frame-ancestors 'self' https://org-b-embed.example.test");
+
+    const bindingClaims = Buffer.from(JSON.stringify({
+      artifactId,
+      exp: Math.floor(Date.now() / 1_000) + 60,
+      installation_id: installationId,
+      jti: randomUUID(),
+      mode: "respond",
+      questionId: "cross-org-binding",
+      versionId: version.id,
+    })).toString("base64url");
+    const bindingSignature = createHmac("sha256", embedBindingSecret)
+      .update(`artifact-embed-v1.${bindingClaims}`).digest("base64url");
+    const crossOrgBinding = `${bindingClaims}.${bindingSignature}`;
+    const crossOrgResponse = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/responses?projectId=${projectId}`, {
+      body: JSON.stringify({embedBinding: crossOrgBinding, questionId: "cross-org-binding", versionId: version.id}),
+      headers: {...host, Authorization: `Bearer ${apiTokenB}`, "Content-Type": "application/json"},
+      method: "POST",
+    });
+    expect(crossOrgResponse.status).toBe(403);
+
+    const makePublic = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/access?projectId=${projectId}`, {
+      body: JSON.stringify({accessSetting: "public_link", expectedCurrentVersionId: version.id}),
+      headers: {...host, Authorization: `Bearer ${apiTokenB}`, "Content-Type": "application/json", "Idempotency-Key": "org-tenancy-make-public-001"},
+      method: "PATCH",
+    });
+    expect(makePublic.status).toBe(200);
+    const publicB = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/public/artifacts/${artifactId}`, {headers: host});
+    const publicA = await fetch(`${baseUrl}/o/orvex/api/v1/public/artifacts/${artifactId}`, {headers: host});
+    expect(publicB.status).toBe(200);
+    expect(publicA.status).toBe(404);
+
+    const invitation = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`, {
+      headers: {...forwardedHost, Authorization: `Bearer ${apiTokenB}`},
+      method: "POST",
+    });
+    expect(invitation.status).toBe(201);
+    const invitationUrl = z.object({url: z.url()}).parse(await invitation.json()).url;
+    const invitationSecret = new URL(invitationUrl).hash.slice("#invite=".length);
+    expect(new URL(invitationUrl).pathname).toBe(`/o/${orgB.slug}/review`);
+    const invitationDigestRows = await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`SELECT token_digest AS "tokenDigest" FROM guest_review_invitations
+        WHERE installation_id = ${orgB.id} AND artifact_id = ${artifactId}`;
+    }));
+    expect(z.object({tokenDigest: z.string()}).parse(invitationDigestRows[0]).tokenDigest)
+      .toBe(createHash("sha256").update(invitationSecret).digest("hex"));
+    const foreignGuestExchange = await fetch(`${baseUrl}/o/orvex/api/v1/public/artifacts/${artifactId}/guest-session`, {
+      body: JSON.stringify({displayName: "Org B guest", secret: invitationSecret}),
+      headers: {
+        ...host,
+        "Content-Type": "application/json",
+        Origin: applicationOrigin,
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+      },
+      method: "POST",
+    });
+    expect(foreignGuestExchange.status).toBe(404);
 
     const invalidRegistryId = `invalid-org-${randomUUID()}`;
     await database.run(Effect.gen(function*() {
@@ -1540,14 +1789,20 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(listedOrganizations.some(({id}) => id === invalidRegistryId)).toBe(false);
     expect(listedOrganizations.some(({id}) => id === orgB.id)).toBe(true);
 
-    const project = await fetch(`${baseUrl}/o/orvex/api/v1/projects/${projectId}`, {
-      headers: {...host, Authorization: `Bearer ${apiTokenA}`},
-    });
-    const artifact = await fetch(`${baseUrl}/o/orvex/api/v1/artifacts/${artifactId}`, {
-      headers: {...host, Authorization: `Bearer ${apiTokenA}`},
-    });
-    expect(project.status).toBe(404);
-    expect(artifact.status).toBe(404);
+    const crossOrgHttpCases = [
+      {expectedStatus: 404, name: "project resource ID", path: `/o/orvex/api/v1/projects/${projectId}`},
+      {expectedStatus: 404, name: "artifact resource ID", path: `/o/orvex/api/v1/artifacts/${artifactId}`},
+      {expectedStatus: 401, name: "project list", path: `/o/${orgB.slug}/api/v1/projects`},
+      {expectedStatus: 401, name: "administration API-key list", path: `/o/${orgB.slug}/api/v1/api-keys`},
+    ] as const;
+    const crossOrgResponses = await Promise.all(crossOrgHttpCases.map((crossOrgCase) =>
+      fetch(`${baseUrl}${crossOrgCase.path}`, {
+        headers: {...host, Authorization: `Bearer ${apiTokenA}`},
+      })
+    ));
+    expect(crossOrgResponses.map(({status}) => status)).toEqual(
+      crossOrgHttpCases.map(({expectedStatus}) => expectedStatus),
+    );
 
     oidc.claims.email = adminEmail;
     oidc.claims.emailVerified = true;
@@ -1617,7 +1872,7 @@ describe.sequential("organization tenancy security boundary", () => {
       headers: host,
       redirect: "manual",
     });
-    expect(login.status).toBe(302);
+    if (login.status !== 302) throw new Error(`Orvex login failed: HTTP ${login.status} ${await login.text()}`);
     const handshake = login.headers.getSetCookie().find((value) =>
       value.startsWith("__Host-artifact_login-"),
     );
@@ -2693,7 +2948,6 @@ function fetchWithHost(
 ): Promise<Response> {
   const target = new URL(url);
   return new Promise((resolve, reject) => {
-    const body = init.body === undefined ? undefined : z.string().parse(init.body);
     const request = httpRequest({
       headers: Object.fromEntries(new Headers(init.headers).entries()),
       hostname,
@@ -2719,6 +2973,10 @@ function fetchWithHost(
       });
     });
     request.on("error", reject);
-    request.end(body);
+    if (init.body === undefined) {
+      request.end();
+    } else {
+      request.end(z.string().parse(init.body));
+    }
   });
 }

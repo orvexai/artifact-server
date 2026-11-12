@@ -164,6 +164,8 @@ export interface ExternalStorageOrgConfig {
   readonly bootstrapApiToken?: Redacted.Redacted;
   readonly cookieRouteId: string;
   readonly keycloakOrganizationId?: string | null;
+  readonly contentTokenPrefix?: string;
+  readonly embedOrigins?: readonly string[];
   readonly slug?: string;
   readonly issuePlatformSession?: (identity: ExternalIdentity, existingToken?: string | null) => Promise<string>;
 }
@@ -302,6 +304,13 @@ export async function createOrgRuntime(
       });
     }
     const {blobs, staging} = connectedObjectStorage;
+    const ids = new SystemIdGenerator();
+    if (orgConfig.contentTokenPrefix !== undefined) {
+      const createContentToken = ids.contentToken.bind(ids);
+      Object.assign(ids, {
+        contentToken: () => `${orgConfig.contentTokenPrefix}${createContentToken()}`,
+      });
+    }
     const applicationAdapters: Parameters<typeof createApplicationLayer>[0] = {
       apiToken: null,
       staffHandleSecret: config.apiToken,
@@ -320,7 +329,7 @@ export async function createOrgRuntime(
         ? scopedOAuthVerifier(config.externalMcpOAuthVerifier)
         : null,
       groupRolePolicy,
-      ids: new SystemIdGenerator(),
+      ids,
       identityRepository,
       installationId,
       organizationDirectoryVisibility: !isOrvex && orgConfig.slug !== undefined,
@@ -356,6 +365,9 @@ export async function createOrgRuntime(
     }
     if (gitHistoryProvider !== null) {
       Object.assign(applicationAdapters, {gitHistoryProvider});
+    }
+    if (orgConfig.contentTokenPrefix !== undefined) {
+      Object.assign(applicationAdapters, {contentTokenPrefix: orgConfig.contentTokenPrefix});
     }
     const applicationLayer = createApplicationLayer(applicationAdapters);
     const resources = Layer.effectDiscard(Effect.acquireRelease(
@@ -408,6 +420,8 @@ export async function createOrgRuntime(
         config.completedRequestLogSampleRate ??
           defaultCompletedRequestLogSampleRate,
       contentDomain: config.contentDomain,
+      installationId,
+      contentTokenPrefix: orgConfig.contentTokenPrefix,
       embedBindingSecret: config.embedBindingSecret,
       embedBindingPreviousSecret: config.embedBindingPreviousSecret,
       gitHistory: gitHistoryMonitor?.reader ??
@@ -437,8 +451,12 @@ export async function createOrgRuntime(
         },
       };
     }
-    if (config.embedOrigins !== undefined) {
-      configuredAppDependencies = {...configuredAppDependencies, embedOrigins: config.embedOrigins};
+    if (orgConfig.slug === undefined || orgConfig.slug === "orvex") {
+      if (config.embedOrigins !== undefined) {
+        configuredAppDependencies = {...configuredAppDependencies, embedOrigins: config.embedOrigins};
+      }
+    } else if (orgConfig.embedOrigins !== undefined) {
+      configuredAppDependencies = {...configuredAppDependencies, embedOrigins: orgConfig.embedOrigins};
     }
     let appDependencies: HttpAppDependencies = configuredAppDependencies;
     if (config.apiOAuthResource !== undefined) {

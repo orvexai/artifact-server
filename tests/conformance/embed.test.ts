@@ -20,7 +20,8 @@ function signBinding(secret: string, claims: {
   readonly questionId: string;
   readonly versionId: string;
 }): string {
-  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({installation_id: "local", ...claims}))
+    .toString("base64url");
   const signature = createHmac("sha256", secret)
     .update("artifact-embed-v1." + payload).digest("base64url");
   return payload + "." + signature;

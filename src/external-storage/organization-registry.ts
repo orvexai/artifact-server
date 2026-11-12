@@ -51,6 +51,7 @@ const keycloakOrganizationIdSchema = z.string().uuid();
 const reservedOrganizationSlugs = new Set(["orvex"]);
 const organizationSchema = z.object({
   displayName: z.string(),
+  embedOrigins: z.array(z.string()),
   id: z.string(),
   keycloakId: z.string().nullable(),
   admissionPolicy: admissionPolicySchema.nullable(),
@@ -63,6 +64,7 @@ const organizationSchema = z.object({
 export interface OrganizationRecord {
   readonly admissionPolicy: z.infer<typeof admissionPolicySchema> | null;
   readonly displayName: string;
+  readonly embedOrigins: readonly string[];
   readonly id: string;
   readonly keycloakId: string | null;
   readonly routeId: string;
@@ -105,7 +107,7 @@ export class OrganizationRegistry {
       const sql = yield* SqlClient;
       const rows = yield* sql`SELECT id, slug, display_name AS "displayName",
         route_id AS "routeId", status, admission_policy AS "admissionPolicy",
-        keycloak_organization_id AS "keycloakId"
+keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
         FROM artifact_installations
         WHERE slug = ${slug}`;
       return rows[0] ?? null;
@@ -118,7 +120,7 @@ export class OrganizationRegistry {
       const sql = yield* SqlClient;
       const rows = yield* sql`SELECT id, slug, display_name AS "displayName",
         route_id AS "routeId", status, admission_policy AS "admissionPolicy",
-        keycloak_organization_id AS "keycloakId"
+        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
         FROM artifact_installations
         WHERE keycloak_organization_id = ${keycloakId}`;
       return rows[0] ?? null;
@@ -131,7 +133,7 @@ export class OrganizationRegistry {
       const sql = yield* SqlClient;
       return yield* sql`SELECT id, slug, display_name AS "displayName",
         route_id AS "routeId", status, admission_policy AS "admissionPolicy",
-        keycloak_organization_id AS "keycloakId"
+keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
         FROM artifact_installations
         WHERE slug IS NOT NULL ORDER BY slug`;
     }));
@@ -150,6 +152,18 @@ export class OrganizationRegistry {
       }
     }
     return organizations;
+  }
+
+  async findByRouteId(routeId: string): Promise<OrganizationRecord | null> {
+    const row = await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`SELECT id, slug, display_name AS "displayName",
+        route_id AS "routeId", status, admission_policy AS "admissionPolicy",
+        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
+        FROM artifact_installations WHERE route_id = ${routeId}`;
+      return rows[0] ?? null;
+    }));
+    return row === null ? null : organizationSchema.parse(row);
   }
 
   async ensureOrvex(installationId: string): Promise<OrganizationRecord> {
@@ -171,7 +185,8 @@ export class OrganizationRegistry {
         status = 'active', route_id = COALESCE(artifact_installations.route_id, EXCLUDED.route_id)
       WHERE artifact_installations.slug IS NULL OR artifact_installations.slug = 'orvex'
         RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
-        status, admission_policy AS "admissionPolicy", NULL::TEXT AS "keycloakId"`;
+        status, admission_policy AS "admissionPolicy",
+        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"`;
       return rows[0] ?? null;
     }));
     if (row === null) {
@@ -207,8 +222,8 @@ export class OrganizationRegistry {
         ${routeId}, ${admissionPolicy === null ? null : JSON.stringify(admissionPolicy)}::jsonb,
         ${keycloakId}
       ) RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
-        status, admission_policy AS "admissionPolicy",
-        keycloak_organization_id AS "keycloakId"`;
+status, admission_policy AS "admissionPolicy",
+        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"`;
       return rows[0];
     }));
     return organizationSchema.parse(row);

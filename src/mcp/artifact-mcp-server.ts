@@ -445,6 +445,7 @@ export interface ArtifactMcpServerDependencies {
   readonly applicationOrigin: string;
   readonly applicationRuntime: ApplicationRuntime;
   readonly contentDomain: string;
+  readonly contentTokenPrefix?: string | undefined;
   /** Secret-free optional Git state exposed by capability discovery. */
   readonly gitHistory: GitHistoryCapability;
   /** Advertises the local linked-artifact capability in discovery. */
@@ -1907,6 +1908,7 @@ export function createArtifactMcpServer(
       return linkedPublicationProjection(
         applicationUrl,
         dependencies.contentDomain,
+        dependencies.contentTokenPrefix,
         await runMcpApplicationEffect(
           dependencies,
           LinkedArtifactService.use((linked) =>
@@ -1937,6 +1939,7 @@ export function createArtifactMcpServer(
         linkedPublicationProjection(
           applicationUrl,
           dependencies.contentDomain,
+          dependencies.contentTokenPrefix,
           await runMcpApplicationEffect(
             dependencies,
             LinkedArtifactService.use((linked) =>
@@ -3080,6 +3083,7 @@ function sourceBindingProjection(binding: SourceBindingRecord) {
 function linkedPublicationProjection(
   applicationUrl: URL,
   contentDomain: string,
+  contentTokenPrefix: string | undefined,
   linked: LinkedPublication,
 ) {
   const published = publishedVersionProjection(
@@ -3087,7 +3091,7 @@ function linkedPublicationProjection(
     contentDomain,
     linked.published,
   );
-  const liveToken = liveContentToken(linked.published.artifact.id);
+  const liveToken = liveContentToken(linked.published.artifact.id, contentTokenPrefix);
   return {
     ...published,
     links: {
