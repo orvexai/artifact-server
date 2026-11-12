@@ -49,6 +49,7 @@ import {
   type LocalServerConfig,
 } from "../local/start-local-server.js";
 import {PostgresDatabase} from "../storage/postgres-database.js";
+import {OrganizationRegistry} from "../external-storage/organization-registry.js";
 import {runCliEffect} from "./run-cli-effect.js";
 import {waitForProcessSignal} from "./wait-for-process-signal.js";
 import {
@@ -109,6 +110,7 @@ export function configureLifecycleCommands(
   configureSupportManifest(program, options.build);
   configureIntegrity(program);
   configureMaintenance(program);
+  configureOrganizations(program);
   configureExternalStorageStart(program, options.build.productVersion);
 }
 
@@ -227,6 +229,55 @@ function configureMaintenance(program: Command): void {
           }));
       } finally {
         await runtime.close();
+      }
+    });
+}
+
+function configureOrganizations(program: Command): void {
+  const organization = program.command("org")
+    .description("Manage configured Artifact Server organizations.");
+  organization.command("create")
+    .description("Register an organization without creating credentials.")
+    .argument("<slug>", "lowercase organization route slug")
+    .requiredOption("--name <display-name>", "organization display name")
+    .action(async (slug: string, options: {readonly name: string}) => {
+      const configuration = await runCliEffect(
+        parseExternalMigrationConfiguration(process.env),
+      );
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-org-create:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        console.log(JSON.stringify(
+          await new OrganizationRegistry(database).create(slug, options.name),
+          null,
+          2,
+        ));
+      } finally {
+        await database.close();
+      }
+    });
+  organization.command("list")
+    .description("List configured organizations without sensitive data.")
+    .action(async () => {
+      const configuration = await runCliEffect(
+        parseExternalMigrationConfiguration(process.env),
+      );
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-org-list:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        console.log(JSON.stringify(
+          await new OrganizationRegistry(database).list(),
+          null,
+          2,
+        ));
+      } finally {
+        await database.close();
       }
     });
 }
@@ -398,6 +449,9 @@ function configureExternalStorageStart(
     .addOption(hostOption())
     .addOption(portOption())
     .action(async (options: StartExternalStorageOptions) => {
+      const organizationTenancy = parseOrganizationTenancy(
+        process.env["ARTIFACT_SERVER_ORG_TENANCY"],
+      );
       const parsed = await parseExternalConfiguration(options.host, options.port);
       const embedOrigins = loadEmbedOrigins(process.env);
       writeGitHistoryConfigurationWarnings(parsed.gitHistory);
@@ -429,6 +483,7 @@ function configureExternalStorageStart(
         gitHistory: parsed.gitHistory,
         hostname: parsed.hostname,
         installationId: parsed.installationId,
+        organizationTenancy,
         objectStorage: parsed.objectStorage,
         port: parsed.port,
         postgresMaxConnections: parsed.postgresMaxConnections,
@@ -462,6 +517,12 @@ function configureExternalStorageStart(
         await server.close();
       });
     });
+}
+
+function parseOrganizationTenancy(value: string | undefined): boolean {
+  if (value === undefined || value === "off") return false;
+  if (value === "on") return true;
+  throw new Error("ARTIFACT_SERVER_ORG_TENANCY must be 'off' or 'on'.");
 }
 
 async function startCompactServer(
