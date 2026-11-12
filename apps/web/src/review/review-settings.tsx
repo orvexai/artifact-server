@@ -38,6 +38,9 @@ export function ReviewSettings({
     || principal.capabilities.includes("project:manage");
   const administrator = directHuman
     && isAdministratorRole(principal.membershipRole);
+  const organizationBase = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
+  const tenantDirectory = organizationBase.startsWith("/o/") && !organizationBase.startsWith("/o/orvex");
+  const memberDirectoryVisible = administrator || (tenantDirectory && directHuman && principal.membershipRole !== "guest");
   const reviewHref = readReturnToReview();
 
   return (
@@ -91,9 +94,9 @@ export function ReviewSettings({
           {principal.membershipRole === "guest" ? null : (
             <SettingsLink active={route.kind === "groups"} href="/review/settings/groups">Groups</SettingsLink>
           )}
+          {memberDirectoryVisible ? <SettingsLink active={route.kind === "members"} href="/review/settings/members">Members</SettingsLink> : null}
           {administrator ? (
             <>
-              <SettingsLink active={route.kind === "members"} href="/review/settings/members">Members</SettingsLink>
               <SettingsLink active={route.kind === "apiKeys"} href="/review/settings/api-keys">API keys</SettingsLink>
               <SettingsLink active={route.kind === "publicLinks"} href="/review/settings/public-links">Public links</SettingsLink>
             </>
@@ -103,6 +106,7 @@ export function ReviewSettings({
           <SettingsContent
             administrator={administrator}
             canManageProjects={canManageProjects}
+            memberDirectoryVisible={memberDirectoryVisible}
             onProjectsChanged={onProjectsChanged}
             projects={projects}
             route={route}
@@ -117,6 +121,7 @@ export function ReviewSettings({
 function SettingsContent({
   administrator,
   canManageProjects,
+  memberDirectoryVisible,
   onProjectsChanged,
   projects,
   route,
@@ -124,6 +129,7 @@ function SettingsContent({
 }: {
   readonly administrator: boolean;
   readonly canManageProjects: boolean;
+  readonly memberDirectoryVisible: boolean;
   readonly onProjectsChanged: () => Promise<readonly Project[]>;
   readonly projects: readonly Project[];
   readonly route: SettingsRoute;
@@ -170,11 +176,16 @@ function SettingsContent({
   if (principal.membershipRole === "guest") return <AdministratorPermissionRequired />;
   if (route.kind === "mcp") return <McpScreen administrator={administrator} />;
   if (route.kind === "webmcp") return <WebmcpScreen />;
-  if (route.kind === "groups") return <GroupsScreen canEdit={directHuman && principal.membershipRole === "owner"} />;
+  if (route.kind === "groups") {
+    const organizationBase = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
+    const tenantDirectory = organizationBase.startsWith("/o/") && !organizationBase.startsWith("/o/orvex");
+    return <GroupsScreen canEdit={directHuman && (principal.membershipRole === "owner" || (tenantDirectory && isAdministratorRole(principal.membershipRole)))} />;
+  }
+  if (route.kind === "members" && memberDirectoryVisible) return <MembersScreen canManage={administrator} showEmails={administrator || principal.membershipRole !== "viewer"} showRoles={administrator} />;
   if (!administrator) return <AdministratorPermissionRequired />;
   switch (route.kind) {
     case "members":
-      return <MembersScreen />;
+      return <AdministratorPermissionRequired />;
     case "apiKeys":
       return <ApiKeysScreen />;
     case "publicLinks":

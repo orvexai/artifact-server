@@ -6,6 +6,8 @@ import type {
   ExternalMcpBearerVerifier,
 } from "../application/authentication.js";
 import type {InteractiveIdentityProvider} from "../application/interactive-login.js";
+import type {ExternalIdentity} from "../core/installation-identity.js";
+import type {OrganizationMembershipResolver} from "./organization-memberships.js";
 import type {Clock} from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
 import type {
@@ -115,6 +117,9 @@ export interface ExternalStorageRuntimeConfig {
   /** Issuer groups that admit people and set their role, when configured. */
   readonly groupRolePolicy?: GroupRolePolicy | null;
   readonly installationId: string;
+  /** Verified Keycloak org claims; composed by the identity provider layer. */
+  readonly organizationMemberships?: OrganizationMembershipResolver;
+  readonly issuePlatformSession?: (identity: ExternalIdentity) => Promise<string>;
   readonly interactiveIdentityProvider?: InteractiveIdentityProvider;
   readonly localBootstrapCredential?: Redacted.Redacted;
   readonly mcpOAuthResource?: McpOAuthResourceConfiguration;
@@ -160,6 +165,7 @@ export interface ExternalStorageOrgConfig {
   readonly cookieRouteId: string;
   readonly keycloakOrganizationId?: string | null;
   readonly slug?: string;
+  readonly issuePlatformSession?: (identity: ExternalIdentity) => Promise<string>;
 }
 
 /** Open the single Postgres pool owned by an external-storage process. */
@@ -316,6 +322,7 @@ export async function createOrgRuntime(
       ids: new SystemIdGenerator(),
       identityRepository,
       installationId,
+      organizationDirectoryVisibility: !isOrvex && orgConfig.slug !== undefined,
       gitHistory: {read: () => applicationGitHistory.read()},
       interactiveIdentityProvider: config.interactiveIdentityProvider === undefined
         ? null
@@ -405,8 +412,12 @@ export async function createOrgRuntime(
         fixedGitHistoryCapabilityReader(gitHistory.capability),
       readiness: () => externalStorageReadiness(database, connectedObjectStorage),
       trustedApplicationOrigin: applicationOrigin,
+      organizationSlug: orgConfig.slug,
       webAssets: createNodeWebAssetStore(),
     };
+    if (orgConfig.issuePlatformSession !== undefined) {
+      Object.assign(appDependenciesWithoutOAuth, {issuePlatformSession: orgConfig.issuePlatformSession});
+    }
     let configuredAppDependencies: HttpAppDependencies = appDependenciesWithoutOAuth;
     if (orgConfig.cookieRouteId !== "") {
       configuredAppDependencies = {

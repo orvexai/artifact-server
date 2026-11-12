@@ -746,10 +746,10 @@ export type CommentClearResult = z.infer<typeof commentClearResultSchema>;
 const memberSchema = z.object({
   createdAt: z.string(),
   displayName: z.string(),
-  email: z.string(),
+  email: z.string().optional(),
   id: z.string(),
   installationId: z.string(),
-  role: membershipRoleSchema,
+  role: membershipRoleSchema.optional(),
   status: z.enum(["active", "inactive"]),
   updatedAt: z.string(),
 });
@@ -777,13 +777,20 @@ const directoryGroupSchema = z.object({
   memberCount: z.number().int().nonnegative(),
   name: z.string(),
   path: z.string(),
-  role: membershipRoleSchema.nullable(),
+  role: membershipRoleSchema.nullable().optional(),
   source: z.literal("rule").optional(),
   syncedAt: z.string(),
 });
 
 /** One Keycloak group copied by directory sync. */
 export type DirectoryGroup = z.infer<typeof directoryGroupSchema>;
+
+const platformOrganizationSchema = z.object({
+  displayName: z.string(),
+  role: z.string(),
+  slug: z.string(),
+});
+export type PlatformOrganization = z.infer<typeof platformOrganizationSchema>;
 export type ManagedApiKey = z.infer<typeof apiKeySchema>;
 
 const issuedKeySchema = z.object({
@@ -997,6 +1004,20 @@ const guestCreatedReplySchema = z.object({replayed: z.boolean(), reply: guestCom
 export type GuestCommentThread = z.infer<typeof guestCommentThreadSchema>;
 
 export const api = {
+  platformOrganizations: async (): Promise<readonly PlatformOrganization[]> => {
+    const response = await fetch("/api/v1/platform/me/orgs", {credentials: "same-origin"});
+    if (!response.ok) return [];
+    const parsed = z.array(platformOrganizationSchema).safeParse(await response.json());
+    return parsed.success ? parsed.data : [];
+  },
+  setLastOrganization: async (slug: string): Promise<void> => {
+    await fetch("/api/v1/platform/session/last-org", {
+      body: JSON.stringify({slug}),
+      credentials: "same-origin",
+      headers: {"Content-Type": "application/json"},
+      method: "POST",
+    });
+  },
   embedBootstrap: (artifactId: string, path: string, versionId?: string) => {
     const query = new URLSearchParams({path});
     if (versionId !== undefined) query.set("version", versionId);

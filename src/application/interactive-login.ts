@@ -79,7 +79,7 @@ interface InteractiveLoginOperations {
   readonly complete: (
     command: CompleteInteractiveLoginCommand,
   ) => Effect.Effect<
-    {readonly issued: IssuedApplicationSession; readonly returnTo: string},
+    {readonly identity: ExternalIdentity; readonly issued: IssuedApplicationSession; readonly returnTo: string},
     | IdentityAdmissionDenied
     | IdentityConflict
     | IdentityProviderFailure
@@ -164,7 +164,7 @@ function makeInteractiveLoginService(
         attempt.nonce,
       );
       const issued = yield* installationAccess.completeExternalIdentity(identity);
-      return {issued, returnTo: attempt.returnTo};
+      return {identity, issued, returnTo: attempt.returnTo};
     },
   );
 

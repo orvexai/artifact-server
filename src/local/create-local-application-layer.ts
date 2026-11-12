@@ -168,6 +168,7 @@ export interface ApplicationAdapters {
   readonly ids: IdGenerator;
   readonly identityRepository: IdentityRepository;
   readonly installationId: string;
+  readonly organizationDirectoryVisibility?: boolean | undefined;
   readonly interactiveIdentityProvider: InteractiveIdentityProvider | null;
   readonly uploadUrlLifetimeMilliseconds?: number;
   /** Live optional-provider state used to guard project enablement. */
@@ -832,6 +833,7 @@ export function createApplicationLayer(
       sessionId: () => `session_${randomUUID()}`,
     },
     installationId: adapters.installationId,
+    organizationDirectoryVisibility: adapters.organizationDirectoryVisibility,
     localBootstrapCredential: adapters.localBootstrapCredential,
     localLoginAttemptLifetimeMilliseconds: 60 * 1_000,
     protectBootstrapAdministrator: adapters.protectBootstrapAdministrator,

@@ -86,7 +86,7 @@ import {
   isArtifactServerFailure,
   VersionNotFound,
 } from "../core/errors.js";
-import type { IssuedApplicationSession } from "../core/installation-identity.js";
+import type {ExternalIdentity, IssuedApplicationSession} from "../core/installation-identity.js";
 import {
   browserAccessModes,
   type BrowserAccess,
@@ -558,6 +558,9 @@ export interface HttpAppDependencies {
   readonly organizationCookieSuffix?: string;
   /** Keycloak organization bound to this installation for token admission. */
   readonly organizationAdmission?: {readonly alias: string; readonly id: string};
+  readonly organizationSlug?: string | undefined;
+  /** Creates a shared root-platform session after a verified interactive sign-in. */
+  readonly issuePlatformSession?: (identity: ExternalIdentity) => Promise<string>;
   readonly embedOrigins?: readonly string[];
   readonly embedBindingSecret?: Redacted.Redacted | undefined;
   readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
@@ -1521,6 +1524,16 @@ export function createHttpApp(
         ),
       );
       setApplicationSessionCookies(context, dependencies, completed.issued);
+      if (dependencies.issuePlatformSession !== undefined) {
+        const platformToken = await dependencies.issuePlatformSession(completed.identity);
+        setCookie(context, "__Host-artifact_platform", platformToken, {
+          httpOnly: true,
+          maxAge: 7 * 24 * 60 * 60,
+          path: "/",
+          sameSite: "Strict",
+          secure: true,
+        });
+      }
       context.header("Cache-Control", "private, no-store");
       context.header("Referrer-Policy", "no-referrer");
       clearLoginHandshakeCookie(context, dependencies);
@@ -1613,7 +1626,12 @@ export function createHttpApp(
       listDirectoryGroups(principal),
     );
     const privilegedHuman = principal.kind === "human" && isAdministratorRole(principal.membershipRole);
-    if (!privilegedHuman) return context.json({groups: groups.map(({hasHigherRoleOverlap: _overlap, ...visible}) => visible)});
+    if (!privilegedHuman) {
+      if (dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex") {
+        return context.json({groups: groups.map(({hasHigherRoleOverlap: _overlap, ...visible}) => visible)});
+      }
+      return context.json({groups: groups.map(({hasHigherRoleOverlap: _overlap, ...visible}) => visible)});
+    }
     const roles = await runHttpApplicationEffect(context, dependencies,
       InstallationAccessService.use((access) => access.listGroupRoles()));
     const roleByGroup = new Map(roles.map(({groupId, role}) => [groupId, role]));
@@ -1638,6 +1656,11 @@ export function createHttpApp(
   });
 
   app.get("/api/v1/members", async (context) => {
+    const principal = context.get("principal");
+    const tenantOrganization = dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex";
+    if (tenantOrganization && principal.kind === "human" && principal.membershipRole === membershipRoles.guest) {
+      return context.json({members: []});
+    }
     const members = await runHttpApplicationEffect(
       context,
       dependencies,
@@ -1645,6 +1668,17 @@ export function createHttpApp(
         access.listMembers(context.get("principal"))
       ),
     );
+    if (tenantOrganization && principal.kind === "human" && principal.membershipRole !== membershipRoles.guest) {
+      const privileged = isAdministratorRole(principal.membershipRole);
+      const maySeeEmails = privileged || principal.membershipRole !== membershipRoles.viewer;
+      return context.json({members: members.map((member) => {
+        if (maySeeEmails && privileged) return member;
+        const {email, role, ...base} = member;
+        if (maySeeEmails) return {...base, email};
+        if (privileged) return {...base, role};
+        return base;
+      })});
+    }
     return context.json({members});
   });
 

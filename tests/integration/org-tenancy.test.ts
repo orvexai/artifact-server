@@ -31,6 +31,8 @@ import {
 } from "../../src/external-storage/organization-registry.js";
 import {findDisappearedOrganizations} from
   "../../src/external-storage/organization-registry.js";
+import {PlatformSessions} from
+  "../../src/external-storage/platform-sessions.js";
 import {startExternalStorageServer} from
   "../../src/external-storage/start-external-storage-server.js";
 import {
@@ -65,6 +67,8 @@ const crossOrgMatrix = [
   {surface: "hono", identifier: "GET /api/v1/projects/:projectId", coverage: "Org B project requested through Org A returns 404"},
   {surface: "hono", identifier: "GET /api/v1/artifacts/:artifactId", coverage: "Org B artifact requested through Org A returns 404"},
   {surface: "hono", identifier: "GET /api/v1/session", coverage: "Org A session cookie is ignored by Org B"},
+  {surface: "platform", identifier: "GET /api/v1/platform/me/orgs", coverage: "shared platform session lists only verified memberships"},
+  {surface: "platform", identifier: "POST /api/v1/platform/session/last-org", coverage: "last-org accepts only a current membership"},
   {surface: "hono", identifier: "GET /auth/login", coverage: "org-scoped login handshake cookie"},
   {surface: "hono", identifier: "GET /auth/callback", coverage: "shared callback selects org from handshake cookie"},
   {surface: "hono", identifier: "POST /api/v1/members/:memberId/reactivate", coverage: "admin-only per-org reactivation cannot cross installations"},
@@ -429,6 +433,7 @@ describe.sequential("organization tenancy security boundary", () => {
       contentDomain: "content.example.net",
       databaseUrl: Redacted.make(databaseUrl),
       installationId,
+      organizationMemberships: {forIdentity: async () => [{displayName: "Org B", role: "viewer", slug: orgSlug}]},
       groupRolePolicy: {seed: [{role: "administrator", selector: "/orvex/admin"}]},
       externalMcpOAuthVerifier: testMcpVerifier,
       mcpOAuthResource: {
@@ -497,6 +502,36 @@ describe.sequential("organization tenancy security boundary", () => {
     await database?.close();
     s3?.destroy();
     await oidc?.stop();
+  });
+
+  test("platform membership discovery and single-org landing stay scoped", async () => {
+    const resolver = config.organizationMemberships;
+    if (resolver === undefined) throw new Error("The platform membership test resolver was not configured.");
+    const sessions = new PlatformSessions(database, resolver);
+    const token = await sessions.issue({
+      displayName: "Platform member",
+      email: null,
+      emailVerified: false,
+      groups: [],
+      provider: "test-oidc",
+      subject: "platform-member",
+    });
+    const baseUrl = `http://${router.hostname}:${router.port}`;
+    const cookie = `__Host-artifact_platform=${token}`;
+    const orgs = await fetch(`${baseUrl}/api/v1/platform/me/orgs`, {headers: {Cookie: cookie}});
+    expect(orgs.status).toBe(200);
+    expect(await orgs.json()).toEqual([{displayName: "Org B", role: "viewer", slug: orgB.slug}]);
+    const landing = await fetch(`${baseUrl}/`, {headers: {Cookie: cookie}, redirect: "manual"});
+    expect(landing.status).toBe(302);
+    expect(landing.headers.get("location")).toBe(`/o/${orgB.slug}/`);
+    const unknown = await fetch(`${baseUrl}/api/v1/platform/me/orgs`);
+    expect(unknown.status).toBe(404);
+    const lastOrg = await fetch(`${baseUrl}/api/v1/platform/session/last-org`, {
+      body: JSON.stringify({slug: "not-a-member"}),
+      headers: {Cookie: cookie, "Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Site": "same-origin"},
+      method: "POST",
+    });
+    expect(lastOrg.status).toBe(404);
   });
 
   test("isolates resources and runs the explicit route/tool completeness guard", async () => {

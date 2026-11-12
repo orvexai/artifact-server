@@ -283,6 +283,8 @@ export interface InstallationAccessDependencies {
   readonly organizationAdmission?: {readonly alias: string; readonly id: string};
   readonly ids: IdentityIdProvider;
   readonly installationId: string;
+  /** Let non-guest tenant members read their org-scoped directory. */
+  readonly organizationDirectoryVisibility?: boolean | undefined;
   readonly localBootstrapCredential: Redacted.Redacted | null;
   readonly localLoginAttemptLifetimeMilliseconds: number;
   /** Keep the installation's local-owner member permanently active. */
@@ -721,9 +723,15 @@ function makeInstallationAccessService(
   const listDirectoryGroups = Effect.fn(
     "InstallationAccessService.listDirectoryGroups",
   )(function*() {
-    return yield* dependencies.repository.listDirectoryGroups(
+    const groups = yield* dependencies.repository.listDirectoryGroups(
       dependencies.installationId,
     );
+    if (dependencies.organizationDirectoryVisibility !== true || groupRolePolicy === null) return groups;
+    const staffSelectors = groupRolePolicy.seed.filter(({staff}) => staff === true)
+      .map(({selector}) => selector);
+    return groups.filter((group) => !staffSelectors.some((selector) =>
+      selector.startsWith("/") ? group.path === selector : group.name === selector
+    ));
   });
 
   const listGroupRoles = Effect.fn(
@@ -778,7 +786,8 @@ function makeInstallationAccessService(
     function*(principal: Principal, groupId: string, role: MembershipRole | null) {
       if (
         principal.kind !== "human" || principal.authorizedByPrincipalId !== null ||
-        principal.membershipRole !== membershipRoles.owner
+        principal.membershipRole !== membershipRoles.owner &&
+        !(dependencies.organizationDirectoryVisibility === true && isAdministratorRole(principal.membershipRole))
       ) return yield* new AuthorizationDenied({message: "Only installation owners may edit group roles."});
       yield* dependencies.repository.setGroupRole(
         dependencies.installationId,
@@ -1470,7 +1479,13 @@ function makeInstallationAccessService(
   const listMembers = Effect.fn(
     "InstallationAccessService.listMembers",
   )(function*(principal: Principal) {
-    yield* requireAdministrator(principal, dependencies.installationId);
+    if (dependencies.organizationDirectoryVisibility === true) {
+      if (principal.installationId !== dependencies.installationId || principal.kind !== "human" || principal.membershipRole === membershipRoles.guest) {
+        return yield* new AuthorizationDenied({message: "This organization directory is not available to this principal."});
+      }
+    } else {
+      yield* requireAdministrator(principal, dependencies.installationId);
+    }
     return yield* dependencies.repository.listMembers(dependencies.installationId);
   });
 

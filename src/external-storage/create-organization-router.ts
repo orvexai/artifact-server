@@ -7,6 +7,9 @@ import {
 } from "./create-external-storage-runtime.js";
 import {OrganizationRegistry, type OrganizationRecord} from
   "./organization-registry.js";
+import {z} from "zod";
+import {emptyOrganizationMembershipResolver} from "./organization-memberships.js";
+import {PlatformSessions} from "./platform-sessions.js";
 
 const maximumCachedOrganizations = 16;
 const idleOrganizationMilliseconds = 5 * 60 * 1_000;
@@ -45,6 +48,11 @@ export async function createOrganizationRouter(
   let evictionTimer: ReturnType<typeof setInterval> | undefined;
   try {
     const registry = new OrganizationRegistry(database);
+    const platformSessions = new PlatformSessions(
+      database,
+      config.organizationMemberships ?? emptyOrganizationMembershipResolver,
+    );
+    await platformSessions.ensureSchema();
     await registry.ensureOrvex(config.installationId);
     const closeResources = async () => {
       if (closed) return;
@@ -73,7 +81,9 @@ export async function createOrganizationRouter(
         ? null
         : {
           groupRoots: organization.admissionPolicy.groupRoots,
-          seed: organization.admissionPolicy.seed,
+          seed: organization.admissionPolicy.seed.map(({role, selector, staff}) =>
+          staff === undefined ? {role, selector} : {role, selector, staff}
+          ),
         };
       if (admissionPolicy !== null && organization.admissionPolicy?.guestGroupPrefixes !== undefined) {
         Object.assign(admissionPolicy, {
@@ -87,6 +97,7 @@ export async function createOrganizationRouter(
           : null,
         cookieRouteId: organization.routeId,
         slug: organization.slug,
+        issuePlatformSession: (identity) => platformSessions.issue(identity),
       };
       if (organization.keycloakId !== null) {
         Object.assign(orgConfig, {keycloakOrganizationId: organization.keycloakId});
@@ -155,6 +166,47 @@ export async function createOrganizationRouter(
       fetch: async (request) => {
         if (closed) return new Response("Service Unavailable", {status: 503});
         const sourceUrl = new URL(request.url);
+        if (sourceUrl.pathname === "/") {
+          if (request.method !== "GET" && request.method !== "HEAD") return notFound();
+          const session = await platformSessionForRequest(request, platformSessions);
+          if (session === null) return new Response(null, {headers: {Location: "/o/orvex/auth/login?returnTo=%2F"}, status: 302});
+          const active = new Set((await registry.list()).filter(({status}) => status === "active").map(({slug}) => slug));
+          const organizations = session.organizations.filter(({slug}) => active.has(slug));
+          if (organizations.length === 0) {
+            return new Response('<!doctype html><html><head><meta charset="utf-8"><title>Artifact Server</title></head><body><main><p>You don\'t belong to any organization yet.</p></main></body></html>', {headers: {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "private, no-store"}});
+          }
+          const last = organizations.find(({slug}) => slug === session.lastOrg);
+          if (organizations.length === 1 || last !== undefined) {
+            const selected = organizations.length === 1 ? organizations[0] : last;
+            return new Response(null, {headers: {Location: `/o/${selected?.slug}/`}, status: 302});
+          }
+          const choices = organizations.map(({displayName, slug}) =>
+            `<li><a href="/o/${encodeURIComponent(slug)}/">${escapeHtml(displayName)}</a></li>`).join("");
+          return new Response(`<!doctype html><html><head><meta charset="utf-8"><title>Choose organization</title></head><body><main><h1>Choose an organization</h1><ul>${choices}</ul></main></body></html>`, {headers: {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "private, no-store"}});
+        }
+        if (sourceUrl.pathname === "/auth/login") {
+          return new Response(null, {headers: {Location: "/o/orvex/auth/login?returnTo=%2F"}, status: 302});
+        }
+        if (sourceUrl.pathname === "/api/v1/platform/me/orgs" && request.method === "GET") {
+          const session = await platformSessionForRequest(request, platformSessions);
+          if (session === null) return notFound();
+          const active = new Set((await registry.list()).filter(({status}) => status === "active").map(({slug}) => slug));
+          return Response.json(session.organizations.filter(({slug}) => active.has(slug)), {headers: {"Cache-Control": "private, no-store"}});
+        }
+        if (sourceUrl.pathname === "/api/v1/platform/session/last-org" && request.method === "POST") {
+          if (config.applicationOrigin !== undefined && request.headers.get("origin") !== new URL(config.applicationOrigin).origin) return notFound();
+          if (request.headers.get("sec-fetch-site") !== "same-origin") return notFound();
+          const token = platformCookie(request);
+          if (token === null) return notFound();
+          let body: unknown;
+          try { body = await request.json(); } catch { return notFound(); }
+          const parsedBody = z.object({slug: z.string().min(1).max(40)}).strict().safeParse(body);
+          if (!parsedBody.success) return notFound();
+          const organization = await registry.find(parsedBody.data.slug).catch(() => null);
+          if (organization === null || organization.status !== "active") return notFound();
+          const saved = await platformSessions.setLastOrg(token, parsedBody.data.slug);
+          return saved ? new Response(null, {status: 204}) : notFound();
+        }
         const route = organizationRoute(sourceUrl.pathname) ??
           rootOAuthMetadataRoute(sourceUrl.pathname) ??
           (sourceUrl.pathname === "/auth/callback"
@@ -293,6 +345,25 @@ function requestComesFromAnotherOrganization(request: Request): boolean {
   } catch {
     return true;
   }
+}
+
+async function platformSessionForRequest(
+  request: Request,
+  sessions: PlatformSessions,
+) {
+  const token = platformCookie(request);
+  return token === null ? null : sessions.find(token);
+}
+
+function platformCookie(request: Request): string | null {
+  const value = request.headers.get("cookie")?.split(";").map((part) => part.trim())
+    .find((part) => part.startsWith("__Host-artifact_platform="))?.slice("__Host-artifact_platform=".length);
+  return value !== undefined && /^[A-Za-z0-9_-]{32,}$/u.test(value) ? value : null;
+}
+
+function escapeHtml(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
 function prefixOrganizationRedirect(

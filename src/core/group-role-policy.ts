@@ -5,6 +5,8 @@ export interface GroupRoleSeedEntry {
   readonly role: MembershipRole;
   /** A group's exact name, or its full path when it starts with "/". */
   readonly selector: string;
+  /** Marks this admission group as Orvex staff for tenant-facing masking. */
+  readonly staff?: boolean;
 }
 
 /**

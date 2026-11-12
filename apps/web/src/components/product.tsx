@@ -1,10 +1,33 @@
-import type { ReactNode } from "react";
+import {useEffect, useState, type ReactNode} from "react";
 
-import { ApiError } from "@/api/client";
+import {api, ApiError, type PlatformOrganization} from "@/api/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "@/lib/presentation";
+
+/** Root-scoped organization navigation for people with multiple memberships. */
+export function OrganizationSwitcher() {
+  const [organizations, setOrganizations] = useState<readonly PlatformOrganization[]>([]);
+  useEffect(() => {
+    if (document.querySelector('meta[name="as-organization-base"]') === null) return;
+    void api.platformOrganizations().then(setOrganizations).catch(() => setOrganizations([]));
+  }, []);
+  if (organizations.length < 2) return null;
+  const selected = organizations.find(({slug}) => window.location.pathname.startsWith(`/o/${slug}/`))?.slug ?? "";
+  return (
+    <label className="as-organization-switcher">
+      <span className="sr-only">Organization</span>
+      <select aria-label="Organization" onChange={(event) => {
+        const slug = event.currentTarget.value;
+        if (slug.length === 0) return;
+        void api.setLastOrganization(slug).finally(() => window.location.assign(`/o/${slug}/`));
+      }} value={selected}>
+        {organizations.map(({displayName, slug}) => <option key={slug} value={slug}>{displayName}</option>)}
+      </select>
+    </label>
+  );
+}
 
 /** Primary heading and actions for a management screen. */
 export function PageHeader({

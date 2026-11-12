@@ -13,6 +13,7 @@ const admissionPolicySchema = z.object({
   seed: z.array(z.object({
     role: z.enum(["administrator", "guest", "member", "owner", "viewer"]),
     selector: z.string().min(1),
+    staff: z.boolean().optional(),
   }).strict()),
 }).strict().superRefine((policy, context) => {
   for (const [index, entry] of policy.seed.entries()) {
