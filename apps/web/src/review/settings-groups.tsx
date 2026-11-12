@@ -88,9 +88,9 @@ export function GroupsScreen({canEdit}: {readonly canEdit: boolean}) {
                     <td className="px-4 py-4">{group.memberCount}</td>
                     <td className="px-4 py-4">
                       {canEdit
-                        ? <select aria-label={`Role for ${group.name}`} disabled={pending === group.id} onChange={(event) => void setRole(group, event.target.value)} value={group.role === "member" ? "operator" : group.role === "administrator" ? "admin" : group.role ?? "none"}>
-                            <option value="none">None</option>
-                            {(["guest", "viewer", "operator", "admin", "owner"] as const).map((role) => <option key={role} value={role}>{role === "admin" ? membershipRoleLabels.administrator : role === "operator" ? membershipRoleLabels.member : membershipRoleLabels[role]}{group.source === "rule" && role === "guest" ? " (rule)" : ""}</option>)}
+                        ? <select className="min-w-32 rounded border border-input bg-background px-2 py-1 text-foreground" aria-label={`Role for ${group.name}`} disabled={pending === group.id} onChange={(event) => void setRole(group, event.target.value)} value={group.role === "member" ? "operator" : group.role === "administrator" ? "admin" : group.role ?? "none"}>
+                            <option className="bg-background text-foreground" value="none">None</option>
+                            {(["guest", "viewer", "operator", "admin", "owner"] as const).map((role) => <option className="bg-background text-foreground" key={role} value={role}>{role === "admin" ? membershipRoleLabels.administrator : role === "operator" ? membershipRoleLabels.member : membershipRoleLabels[role]}{group.source === "rule" && role === "guest" ? " (rule)" : ""}</option>)}
                           </select>
                         : group.role === null ? "None" : `${membershipRoleLabels[group.role]}${group.source === "rule" ? " (rule)" : ""}`}
                     </td>
