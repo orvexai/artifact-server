@@ -21,6 +21,7 @@ type ExternalStorageInspectionConfiguration = Pick<
   "databaseUrl" | "deploymentMode" | "installationId"
 > & {
   readonly objectStorage: {
+    close?: () => Promise<void>;
     create(installationId: string): Pick<ObjectStorageProvider, "close" | "readiness">;
   };
 };
@@ -87,6 +88,7 @@ async function inspectExternalStorageRuntime(
   } finally {
     await Promise.all([
       objectStorage?.close() ?? Promise.resolve(),
+      configuration.objectStorage.close?.(),
       database?.close() ?? Promise.resolve(),
     ]);
   }

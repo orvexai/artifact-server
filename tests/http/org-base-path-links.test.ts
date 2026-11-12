@@ -20,9 +20,9 @@ describe("organization application base paths", () => {
   });
 
   test.each([
-    ["local mode", undefined],
-    ["a request that misses the trusted host", "https://trusted.example.test/base"],
-  ])("upload links preserve request-origin behavior in %s", async (_label, applicationOrigin) => {
+    ["local mode", undefined, ""],
+    ["a mismatched host with an org base path", "https://trusted.example.test/o/org-b", "/o/org-b"],
+  ])("upload links preserve request-origin behavior in %s", async (_label, applicationOrigin, expectedBasePath) => {
     const installation = await createTestInstallation();
     const server = await startTestServer(installation, applicationOrigin === undefined
       ? {}
@@ -37,7 +37,7 @@ describe("organization application base paths", () => {
       for (const link of [upload.body.commitUrl, ...upload.body.files.map(({uploadUrl}) => uploadUrl)]) {
         const url = new URL(link);
         expect(url.origin).toBe(new URL(server.baseUrl).origin);
-        expect(url.pathname).toMatch(/^\/api\/v1\/uploads\/upl_[^/]+\//u);
+        expect(url.pathname).toMatch(new RegExp(`^${expectedBasePath}/api/v1/uploads/upl_[^/]+/`, "u"));
         expect(url.pathname).not.toContain("/api/v1/uploads/api/v1/uploads/");
       }
     } finally {

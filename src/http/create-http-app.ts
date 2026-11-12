@@ -1535,6 +1535,15 @@ export function createHttpApp(
           );
         }
         const headers = new Headers();
+        if (response.status === 401) {
+          headers.set("Cache-Control", "private, no-store");
+        }
+        if (error._tag === "AuthenticationRequired") {
+          headers.set(
+            "WWW-Authenticate",
+            apiBearerChallenge(context, dependencies),
+          );
+        }
         for (const cookie of context.res.headers.getSetCookie()) {
           headers.append("Set-Cookie", cookie);
         }
@@ -1549,7 +1558,7 @@ export function createHttpApp(
       if (error instanceof z.ZodError) {
         return context.json({error: {
           code: errorCodes.invalidInput,
-          message: "The callback request does not match the API contract.",
+          message: "The request does not match the API contract.",
         }}, 422);
       }
       await logAdapterFailure(
@@ -3682,7 +3691,9 @@ function responseApplicationUrl(
   ) {
     return trustedUrl;
   }
-  return new URL(requestUrl.origin);
+  const requestOriginWithTrustedPath = new URL(requestUrl.origin);
+  requestOriginWithTrustedPath.pathname = trustedUrl.pathname;
+  return requestOriginWithTrustedPath;
 }
 
 function requireBrowserMutationSecurity(

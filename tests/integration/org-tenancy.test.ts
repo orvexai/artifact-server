@@ -588,6 +588,37 @@ describe.sequential("organization tenancy security boundary", () => {
     if (orgBCallbackUrl === null || new URL(orgBCallbackUrl).pathname !== `/o/${orgB.slug}/auth/callback`) {
       throw new Error("Org B login did not use its organization callback route.");
     }
+    const callbackBase = `${baseUrl}${new URL(orgBCallbackUrl).pathname}`;
+    const malformedCallback = await fetchWithHost(`${callbackBase}?code=&state=`, {
+      headers: host,
+      method: "GET",
+    }, router.hostname, router.port);
+    expect(malformedCallback.status).toBe(422);
+    expect((await malformedCallback.json()).error.message)
+      .toBe("The request does not match the API contract.");
+    expect(malformedCallback.headers.getSetCookie().some((value) =>
+      value.startsWith(`__Host-artifact_login-${orgB.routeId}=`) && /Max-Age=0/u.test(value),
+    )).toBe(true);
+    const callbackWithoutHandshake = await fetchWithHost(
+      `${callbackBase}${new URL(orgBCallbackUrl).search}`,
+      {headers: host, method: "GET"},
+      router.hostname,
+      router.port,
+    );
+    expect(callbackWithoutHandshake.status).toBe(401);
+    expect(callbackWithoutHandshake.headers.get("cache-control"))
+      .toBe("private, no-store");
+    expect(callbackWithoutHandshake.headers.getSetCookie().some((value) =>
+      value.startsWith(`__Host-artifact_login-${orgB.routeId}=`) && /Max-Age=0/u.test(value),
+    )).toBe(true);
+    const apiAuthenticationRequired = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/session`, {
+      headers: host,
+    });
+    expect(apiAuthenticationRequired.status).toBe(401);
+    expect(apiAuthenticationRequired.headers.get("cache-control"))
+      .toBe("private, no-store");
+    expect(apiAuthenticationRequired.headers.get("www-authenticate"))
+      .toMatch(/^Bearer resource_metadata=/u);
     const orgBLoginCallback = await fetch(`${baseUrl}${new URL(orgBCallbackUrl).pathname}${new URL(orgBCallbackUrl).search}`, {
       headers: {...host, Cookie: orgBHandshake.split(";", 1)[0] ?? ""},
       redirect: "manual",
