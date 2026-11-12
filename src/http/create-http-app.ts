@@ -1268,16 +1268,18 @@ export function createHttpApp(
         ),
       );
       context.set("authenticationMethod", "bearer");
-      if (
-        principal.serviceAccountSource === "oidc" &&
-        principal.capabilities.includes(principalCapabilities.readArtifactResponses) &&
-        !((context.req.method === "GET" &&
-          /^\/api\/v1\/artifacts\/[^/]+\/responses(?:\/[^/]+)?$/u.test(context.req.path)) ||
-          (context.req.method === "POST" &&
-            /^\/api\/v1\/embed\/artifacts\/[^/]+\/binding$/u.test(context.req.path) &&
-            principal.capabilities.includes(principalCapabilities.bindArtifactEmbed)))
-      ) {
-        throw new AuthorizationDenied({message: "Service bearers may only read artifact responses."});
+      if (principal.serviceAccountSource === "oidc") {
+        const mayReadResponses =
+          principal.capabilities.includes(principalCapabilities.readArtifactResponses) &&
+          context.req.method === "GET" &&
+          /^\/api\/v1\/artifacts\/[^/]+\/responses(?:\/[^/]+)?$/u.test(context.req.path);
+        const mayBindEmbed =
+          principal.capabilities.includes(principalCapabilities.bindArtifactEmbed) &&
+          context.req.method === "POST" &&
+          /^\/api\/v1\/embed\/artifacts\/[^/]+\/binding$/u.test(context.req.path);
+        if (!mayReadResponses && !mayBindEmbed) {
+          throw new AuthorizationDenied({message: "Service bearers may access only API routes enabled for their capabilities."});
+        }
       }
       context.set("principal", principal);
       context.set("sessionCsrfDigest", null);

@@ -51,6 +51,12 @@ describe("OIDC project provisioner MCP boundary", () => {
     installation = await createTestInstallation();
     const databasePath = `${installation.dataDirectory}/artifact-server.db`;
     server = await startTestServer(installation, {
+      externalApiBearerVerifier: {
+        verify: (credential) => {
+          if (Redacted.value(credential) === "oidc-tenant-cli") return Effect.succeed(provisioner);
+          return Effect.fail(new AuthenticationRequired({message: "Unexpected API test credential."}));
+        },
+      },
       externalMcpBearerVerifier: {
         verify: (credential) => {
           const value = Redacted.value(credential);
@@ -363,6 +369,24 @@ describe("OIDC project provisioner MCP boundary", () => {
     expect(created["isError"]).not.toBe(true);
     expect(z.object({sharing: z.object({accessMode: z.literal("restricted")})})
       .parse(created["structuredContent"]).sharing.accessMode).toBe("restricted");
+  });
+
+  test("provisioner API bearers receive no API routes", async () => {
+    const headers = {Authorization: "Bearer oidc-tenant-cli"};
+    const routes = [
+      ["GET", "/api/v1/groups"],
+      ["GET", "/api/v1/projects/default/audit"],
+      ["DELETE", "/api/v1/projects/default/groups/g-tenant-cli"],
+      ["POST", "/api/v1/projects/default/archive"],
+      ["POST", "/api/v1/projects/default/unarchive"],
+      ["GET", "/api/v1/artifacts/artifact/responses"],
+      ["POST", "/api/v1/embed/artifacts/artifact/binding"],
+    ] as const;
+    for (const [method, route] of routes) {
+      // oxlint-disable-next-line eslint/no-await-in-loop
+      const response = await fetch(`${server.baseUrl}${route}`, {headers, method});
+      expect(response.status, `${method} ${route}`).toBe(403);
+    }
   });
 
   test("create audit records only successful initial shares and audit outages do not fail creation", async () => {
