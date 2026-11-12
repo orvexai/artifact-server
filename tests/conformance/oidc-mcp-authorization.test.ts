@@ -168,6 +168,40 @@ describe("generic OIDC MCP authorization", () => {
     }))).rejects.toThrow("configured API resource");
   });
 
+  test("organization resource rebinding also changes the provisioner audience", async () => {
+    const apiResource = "https://artifacts.example.test/o/acme/api";
+    const mcpResource = "https://artifacts.example.test/o/acme/mcp";
+    const verifier = new OidcMcpBearerVerifier({
+      audience: resource,
+      provisionerAudience: "https://artifacts.example.test/api",
+      issuer,
+      jwksUri: `${issuer}/protocol/openid-connect/certs`,
+      serviceClients: ["tenant-cli"],
+      provisionerClients: ["tenant-cli"],
+    }).forApplicationResources({apiResource, mcpResource});
+    const provisionerToken = await issueToken({
+      audience: apiResource,
+      extraClaims: {
+        azp: "tenant-cli",
+        preferred_username: "service-account-tenant-cli",
+      },
+      profile: false,
+    });
+    await expect(verifiedSubject(verifier, provisionerToken))
+      .resolves.toBe(subject);
+
+    const oldAudienceToken = await issueToken({
+      audience: "https://artifacts.example.test/api",
+      extraClaims: {
+        azp: "tenant-cli",
+        preferred_username: "service-account-tenant-cli",
+      },
+      profile: false,
+    });
+    await expect(verifiedSubject(verifier, oldAudienceToken))
+      .rejects.toThrow("another resource");
+  });
+
   test("a human token using a provisioner azp is refused and never falls back to userinfo", async () => {
     const apiResource = "https://artifacts.example.test/api";
     const verifier = new OidcMcpBearerVerifier({

@@ -199,10 +199,25 @@ export async function createOrgRuntime(
 ): Promise<ExternalStorageRuntime> {
   const runtimeClock = config.clock ?? new SystemClock();
   const isOrvex = orgConfig.slug === undefined || orgConfig.slug === "orvex";
+  const mayUseHostedOAuth = isOrvex || (
+    orgConfig.admissionPolicy !== undefined && orgConfig.admissionPolicy !== null
+  );
   const applicationOrigin = orgConfig.applicationOrigin ?? config.applicationOrigin ?? null;
   const groupRolePolicy = isOrvex
     ? config.groupRolePolicy ?? null
     : orgConfig.admissionPolicy ?? null;
+  const organizationOAuthResources = orgConfig.slug === undefined || applicationOrigin === null
+    ? null
+    : {
+      apiResource: appendApplicationPath(applicationOrigin, "/api"),
+      mcpResource: appendApplicationPath(applicationOrigin, "/mcp"),
+    };
+  const scopedOAuthVerifier = (verifier: ExternalMcpBearerVerifier | undefined) => {
+    if (verifier === undefined) return null;
+    return organizationOAuthResources === null
+      ? verifier
+      : verifier.forApplicationResources?.(organizationOAuthResources) ?? verifier;
+  };
   const stagingCleanupPolicy = config.stagingCleanupPolicy ??
     defaultStagingCleanupPolicy;
   const gitHistory = config.gitHistory ?? offNodeGitHistoryConfiguration();
@@ -261,9 +276,13 @@ export async function createOrgRuntime(
       clock: runtimeClock,
       dispatches: repository,
       externalApiBearerVerifier: isOrvex ? config.externalApiBearerVerifier ?? null : null,
-      externalApiOAuthVerifier: isOrvex ? config.externalApiOAuthVerifier ?? null : null,
+      externalApiOAuthVerifier: mayUseHostedOAuth
+        ? scopedOAuthVerifier(config.externalApiOAuthVerifier)
+        : null,
       externalMcpBearerVerifier: isOrvex ? config.externalMcpBearerVerifier ?? null : null,
-      externalMcpOAuthVerifier: isOrvex ? config.externalMcpOAuthVerifier ?? null : null,
+      externalMcpOAuthVerifier: mayUseHostedOAuth
+        ? scopedOAuthVerifier(config.externalMcpOAuthVerifier)
+        : null,
       groupRolePolicy,
       ids: new SystemIdGenerator(),
       identityRepository,
