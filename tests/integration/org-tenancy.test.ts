@@ -33,25 +33,231 @@ const applicationOrigin = "https://artifacts.example.com";
 const adminEmail = "administrator@example.test";
 const bytes = new TextEncoder().encode("org B private artifact");
 const crossOrgMatrix = [
-  {surface: "hono", matches: (path: string) => path.startsWith("/api/"), evidence: "cross-org project and artifact IDs"},
-  {surface: "hono", matches: (path: string) => path === "/mcp", evidence: "cross-org API key rejection"},
-  {surface: "hono", matches: (path: string) => /^\/(?:auth|login|logout)(?:\/|$)/u.test(path), evidence: "organization-scoped browser cookies"},
-  {surface: "hono", matches: (path: string) => path.startsWith("/review/"), evidence: "suspended organization rejection"},
-  {surface: "hono", matches: (path: string) => path === "/review", evidence: "suspended organization rejection"},
-  {surface: "hono", matches: (path: string) => path === "/review-frame", evidence: "suspended organization rejection"},
-  {surface: "hono", matches: (path: string) => path.startsWith("/embed/"), evidence: "suspended organization rejection"},
-  {surface: "hono", matches: (path: string) => path === "/projects" || path.startsWith("/projects/"), evidence: "org runtime scopes project and artifact data"},
-  {surface: "hono", matches: (path: string) => path.startsWith("/administration/"), evidence: "org runtime scopes administration data"},
-  {surface: "hono", matches: (path: string) => path.startsWith("/artifacts/"), evidence: "org runtime scopes artifact content routes"},
-  {surface: "hono", matches: (path: string) => path.startsWith("/.well-known/"), evidence: "suspended organization rejection"},
-  {surface: "hono", matches: (path: string) => path.startsWith("/workbench"), evidence: "suspended organization rejection"},
-  {surface: "hono", matches: (path: string) => path.startsWith("/assets/"), evidence: "suspended organization rejection"},
-  {surface: "hono", matches: (path: string) => ["/health", "/ready", "/live"].includes(path), evidence: "suspended organization rejection"},
-  {surface: "hono", matches: (path: string) => path === "/*", evidence: "suspended and unknown org 404"},
-  {surface: "hono", matches: (path: string) => path === "/", evidence: "suspended organization rejection"},
-  {surface: "mcp", matches: (name: string) => name.length > 0, evidence: "cross-org API key rejection"},
+  {surface: "hono", identifier: "ALL /*", coverage: "organization router dispatches into an installation-scoped Hono app"},
+  {surface: "hono", identifier: "ALL /api/*", coverage: "cross-org project and artifact identifiers return 404"},
+  {surface: "hono", identifier: "ALL /mcp", coverage: "foreign-org API key is rejected before MCP dispatch"},
+  {surface: "hono", identifier: "GET /api/v1/projects/:projectId", coverage: "Org B project requested through Org A returns 404"},
+  {surface: "hono", identifier: "GET /api/v1/artifacts/:artifactId", coverage: "Org B artifact requested through Org A returns 404"},
+  {surface: "hono", identifier: "GET /api/v1/session", coverage: "Org A session cookie is ignored by Org B"},
+  {surface: "hono", identifier: "GET /auth/login", coverage: "org-scoped login handshake cookie"},
+  {surface: "hono", identifier: "GET /auth/callback", coverage: "shared callback selects org from handshake cookie"},
 ] as const;
 
+const pendingCrossOrgCases = [
+  "hono:DELETE /api/v1/artifacts/:artifactId",
+  "hono:DELETE /api/v1/artifacts/:artifactId/comments/:threadId",
+  "hono:DELETE /api/v1/artifacts/:artifactId/comments/:threadId/replies/:replyId",
+  "hono:DELETE /api/v1/artifacts/:artifactId/guest-invitation",
+  "hono:DELETE /api/v1/artifacts/:artifactId/guest-invitation/sessions/:guestId",
+  "hono:DELETE /api/v1/artifacts/:artifactId/state/:key",
+  "hono:DELETE /api/v1/projects/:projectId/groups/:group",
+  "hono:DELETE /api/v1/public/artifacts/:artifactId/guest/comments/:threadId",
+  "hono:DELETE /api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId",
+  "hono:GET /",
+  "hono:GET /.well-known/oauth-protected-resource/api",
+  "hono:GET /administration/api-keys",
+  "hono:GET /administration/members",
+  "hono:GET /administration/public-links",
+  "hono:GET /api/v1/administration/public-links",
+  "hono:GET /api/v1/agent-dispatches",
+  "hono:GET /api/v1/agent-dispatches/:dispatchId",
+  "hono:GET /api/v1/agents",
+  "hono:GET /api/v1/api-keys",
+  "hono:GET /api/v1/artifacts",
+  "hono:GET /api/v1/artifacts/:artifactId/actions",
+  "hono:GET /api/v1/artifacts/:artifactId/comments",
+  "hono:GET /api/v1/artifacts/:artifactId/comments/:threadId",
+  "hono:GET /api/v1/artifacts/:artifactId/comparisons",
+  "hono:GET /api/v1/artifacts/:artifactId/guest-invitation",
+  "hono:GET /api/v1/artifacts/:artifactId/guest-invitation/sessions",
+  "hono:GET /api/v1/artifacts/:artifactId/responses",
+  "hono:GET /api/v1/artifacts/:artifactId/responses/:responseId",
+  "hono:GET /api/v1/artifacts/:artifactId/state",
+  "hono:GET /api/v1/artifacts/:artifactId/state/:key",
+  "hono:GET /api/v1/artifacts/:artifactId/versions",
+  "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId",
+  "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId/archive",
+  "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId/file",
+  "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId/media",
+  "hono:GET /api/v1/embed/artifacts/:artifactId/bootstrap",
+  "hono:GET /api/v1/groups",
+  "hono:GET /api/v1/members",
+  "hono:GET /api/v1/projects",
+  "hono:GET /api/v1/projects/:projectId/audit",
+  "hono:GET /api/v1/projects/:projectId/git-history",
+  "hono:GET /api/v1/projects/:projectId/sharing",
+  "hono:GET /api/v1/public/artifacts/:artifactId",
+  "hono:GET /api/v1/public/artifacts/:artifactId/guest/comments",
+  "hono:GET /api/v1/public/artifacts/:artifactId/guest/comments/:threadId",
+  "hono:GET /api/v1/public/artifacts/:artifactId/guest/current",
+  "hono:GET /api/v1/public/artifacts/:artifactId/guest/responses",
+  "hono:GET /api/v1/public/artifacts/:artifactId/guest/responses/:responseId",
+  "hono:GET /api/v1/public/embed/artifacts/:artifactId/bootstrap",
+  "hono:GET /artifacts/:artifactId",
+  "hono:GET /assets/*",
+  "hono:GET /auth/context",
+  "hono:GET /auth/local",
+  "hono:GET /embed/artifacts/:artifactId",
+  "hono:GET /embed/signed-in",
+  "hono:GET /health",
+  "hono:GET /projects",
+  "hono:GET /projects/:projectId/artifacts",
+  "hono:GET /projects/:projectId/artifacts/:artifactId",
+  "hono:GET /projects/:projectId/artifacts/:artifactId/versions/:versionId/review",
+  "hono:GET /ready",
+  "hono:GET /review",
+  "hono:GET /review-frame",
+  "hono:GET /review/*",
+  "hono:GET /workbench",
+  "hono:HEAD /",
+  "hono:HEAD /administration/api-keys",
+  "hono:HEAD /administration/members",
+  "hono:HEAD /administration/public-links",
+  "hono:HEAD /api/v1/artifacts/:artifactId/versions/:versionId/archive",
+  "hono:HEAD /api/v1/artifacts/:artifactId/versions/:versionId/media",
+  "hono:HEAD /assets/*",
+  "hono:HEAD /embed/artifacts/:artifactId",
+  "hono:HEAD /projects",
+  "hono:HEAD /projects/:projectId/artifacts",
+  "hono:HEAD /projects/:projectId/artifacts/:artifactId",
+  "hono:HEAD /projects/:projectId/artifacts/:artifactId/versions/:versionId/review",
+  "hono:HEAD /review",
+  "hono:HEAD /review-frame",
+  "hono:HEAD /review/*",
+  "hono:HEAD /workbench",
+  "hono:PATCH /api/v1/artifacts/:artifactId/access",
+  "hono:PATCH /api/v1/artifacts/:artifactId/comments/:threadId",
+  "hono:PATCH /api/v1/artifacts/:artifactId/comments/:threadId/replies/:replyId",
+  "hono:PATCH /api/v1/artifacts/:artifactId/tags",
+  "hono:PATCH /api/v1/projects/:projectId",
+  "hono:PATCH /api/v1/public/artifacts/:artifactId/guest/comments/:threadId",
+  "hono:PATCH /api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId",
+  "hono:POST /api/v1/administration/public-links/make-private",
+  "hono:POST /api/v1/agent-dispatches",
+  "hono:POST /api/v1/agent-dispatches/:dispatchId/cancel",
+  "hono:POST /api/v1/agent-dispatches/:dispatchId/delivered",
+  "hono:POST /api/v1/agent-dispatches/:dispatchId/failed",
+  "hono:POST /api/v1/agents",
+  "hono:POST /api/v1/agents/:agentId/activity",
+  "hono:POST /api/v1/agents/:agentId/claims",
+  "hono:POST /api/v1/agents/:agentId/disconnect",
+  "hono:POST /api/v1/api-keys",
+  "hono:POST /api/v1/api-keys/:keyId/revoke",
+  "hono:POST /api/v1/api-keys/:keyId/rotate",
+  "hono:POST /api/v1/artifacts",
+  "hono:POST /api/v1/artifacts/:artifactId/capture",
+  "hono:POST /api/v1/artifacts/:artifactId/comments/:threadId/replies",
+  "hono:POST /api/v1/artifacts/:artifactId/content-sessions",
+  "hono:POST /api/v1/artifacts/:artifactId/guest-invitation",
+  "hono:POST /api/v1/artifacts/:artifactId/live-sessions",
+  "hono:POST /api/v1/artifacts/:artifactId/responses",
+  "hono:POST /api/v1/artifacts/:artifactId/restore",
+  "hono:POST /api/v1/artifacts/:artifactId/versions",
+  "hono:POST /api/v1/artifacts/:artifactId/versions/:versionId/comments",
+  "hono:POST /api/v1/artifacts/:artifactId/versions/:versionId/content-sessions",
+  "hono:POST /api/v1/artifacts/:artifactId/versions/:versionId/preview-leases",
+  "hono:POST /api/v1/artifacts/link",
+  "hono:POST /api/v1/embed/artifacts/:artifactId/binding",
+  "hono:POST /api/v1/members",
+  "hono:POST /api/v1/members/:memberId/deactivate",
+  "hono:POST /api/v1/projects",
+  "hono:POST /api/v1/projects/:projectId/archive",
+  "hono:POST /api/v1/projects/:projectId/artifacts/:artifactId/comments/clear",
+  "hono:POST /api/v1/projects/:projectId/artifacts/:artifactId/history/clone-token",
+  "hono:POST /api/v1/projects/:projectId/git-history/estimate",
+  "hono:POST /api/v1/projects/:projectId/unarchive",
+  "hono:POST /api/v1/public/artifacts/:artifactId/guest-session",
+  "hono:POST /api/v1/public/artifacts/:artifactId/guest/comments",
+  "hono:POST /api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies",
+  "hono:POST /api/v1/public/artifacts/:artifactId/guest/heartbeat",
+  "hono:POST /api/v1/public/artifacts/:artifactId/guest/responses",
+  "hono:POST /api/v1/session/logout",
+  "hono:POST /api/v1/uploads",
+  "hono:POST /api/v1/uploads/:uploadId/commit",
+  "hono:POST /auth/local",
+  "hono:POST /auth/local-owner",
+  "hono:PUT /api/v1/artifacts/:artifactId/source",
+  "hono:PUT /api/v1/artifacts/:artifactId/state/:key",
+  "hono:PUT /api/v1/groups/:groupId/role",
+  "hono:PUT /api/v1/mcp-uploads/:uploadId/files/:storageToken",
+  "hono:PUT /api/v1/projects/:projectId/access",
+  "hono:PUT /api/v1/projects/:projectId/git-history",
+  "hono:PUT /api/v1/projects/:projectId/groups/:group",
+  "hono:PUT /api/v1/uploads/:uploadId/files/:storageToken",
+  "mcp:artifact_capabilities",
+  "mcp:artifact_capture",
+  "mcp:artifact_commit_upload",
+  "mcp:artifact_create_upload",
+  "mcp:artifact_delete",
+  "mcp:artifact_diff",
+  "mcp:artifact_download",
+  "mcp:artifact_enable_guest_invitation",
+  "mcp:artifact_get",
+  "mcp:artifact_guest_invitation_sessions",
+  "mcp:artifact_guest_invitation_status",
+  "mcp:artifact_history_clone_token",
+  "mcp:artifact_link",
+  "mcp:artifact_list",
+  "mcp:artifact_open",
+  "mcp:artifact_relink",
+  "mcp:artifact_response_list",
+  "mcp:artifact_restore_version",
+  "mcp:artifact_revoke_guest_invitation",
+  "mcp:artifact_revoke_guest_session",
+  "mcp:artifact_set_tags",
+  "mcp:artifact_set_visibility",
+  "mcp:artifact_state_delete",
+  "mcp:artifact_state_get",
+  "mcp:artifact_state_list",
+  "mcp:artifact_state_set",
+  "mcp:artifact_version_list",
+  "mcp:comment_clear",
+  "mcp:comment_create",
+  "mcp:comment_delete",
+  "mcp:comment_get",
+  "mcp:comment_list",
+  "mcp:comment_reply",
+  "mcp:comment_resolve",
+  "mcp:comment_update",
+  "mcp:dispatch_inbox",
+  "mcp:group_list",
+  "mcp:group_set_role",
+  "mcp:project_archive",
+  "mcp:project_create",
+  "mcp:project_git_history_estimate",
+  "mcp:project_git_history_status",
+  "mcp:project_list",
+  "mcp:project_rename",
+  "mcp:project_set_access",
+  "mcp:project_set_git_history",
+  "mcp:project_share",
+  "mcp:project_sharing",
+  "mcp:project_unarchive",
+  "mcp:project_unshare",
+] as const;
+
+function assertCrossOrgMatrixComplete(
+  registeredRoutes: readonly string[],
+  registeredTools: readonly string[],
+): void {
+  const matrixCases = crossOrgMatrix.map(({surface, identifier}) =>
+    `${surface}:${identifier}`,
+  );
+  const knownCases = [...matrixCases, ...pendingCrossOrgCases];
+  const knownCaseSet = new Set(knownCases);
+  const currentCases = new Set([
+    ...registeredRoutes.map((route) => `hono:${route}`),
+    ...registeredTools.map((tool) => `mcp:${tool}`),
+  ]);
+  expect(knownCaseSet.size).toBe(knownCases.length);
+  expect(currentCases.size).toBeGreaterThan(0);
+  for (const identifier of currentCases) {
+    expect(knownCaseSet.has(identifier)).toBe(true);
+  }
+  for (const identifier of knownCaseSet) {
+    expect(currentCases.has(identifier)).toBe(true);
+  }
+}
 describe.sequential("organization tenancy security boundary", () => {
   const databaseUrl = process.env["ARTIFACT_SERVER_TEST_DATABASE_URL"];
   const endpoint = process.env["ARTIFACT_SERVER_TEST_S3_ENDPOINT"];
@@ -186,7 +392,7 @@ describe.sequential("organization tenancy security boundary", () => {
     await oidc?.stop();
   });
 
-  test("isolates resources, cookies, MCP keys, and suspended slugs; route/tool matrix stays complete", async () => {
+  test("isolates resources and runs the explicit route/tool completeness guard", async () => {
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const host = {Host: "artifacts.example.com"};
     const registry = new OrganizationRegistry(database);
@@ -287,21 +493,14 @@ describe.sequential("organization tenancy security boundary", () => {
       cookieRouteId: orgB.routeId,
     }, config, database);
     try {
-      const registeredRoutes = runtime.app.routes.map(({path}) => path);
+      const registeredRoutes = runtime.app.routes.map(({method, path}) => `${method} ${path}`);
       const toolsResponse = await runtime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
         id: 1,
         jsonrpc: "2.0",
         method: "tools/list",
       }, {Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
       const toolNames = await mcpToolNames(toolsResponse);
-      expect(registeredRoutes.length).toBeGreaterThan(0);
-      expect(toolNames.length).toBeGreaterThan(0);
-      for (const path of registeredRoutes) {
-        expect(crossOrgMatrix.some((entry) => entry.surface === "hono" && entry.matches(path))).toBe(true);
-      }
-      for (const name of toolNames) {
-        expect(crossOrgMatrix.some((entry) => entry.surface === "mcp" && entry.matches(name))).toBe(true);
-      }
+      assertCrossOrgMatrixComplete(registeredRoutes, toolNames);
     } finally {
       await runtime.close();
     }
