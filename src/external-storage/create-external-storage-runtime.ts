@@ -84,6 +84,8 @@ import {CloudflareArtifactsGitHistoryProvider} from
 /** Configuration for one stateless Artifact Server process. */
 export interface ExternalStorageRuntimeConfig {
   readonly apiToken: Redacted.Redacted;
+  /** Disable only the bootstrap-key write for read-only maintenance runtimes. */
+  readonly bootstrapApiTokenEnabled?: boolean;
   readonly apiOAuthResource?: ApiOAuthResourceConfiguration;
   readonly applicationOrigin?: string;
   readonly bootstrapAdministratorEmail: string;
@@ -142,8 +144,12 @@ export interface ExternalStorageRuntime {
 
 /** Per-organization security values that differ on a shared process host. */
 export interface ExternalStorageOrgConfig {
+  readonly admissionPolicy?: GroupRolePolicy | null;
+  readonly applicationOrigin?: string;
+  readonly bootstrapAdministratorEmail?: string | null;
   readonly bootstrapApiToken?: Redacted.Redacted;
   readonly cookieRouteId: string;
+  readonly slug?: string;
 }
 
 /** Open the single Postgres pool owned by an external-storage process. */
@@ -164,10 +170,13 @@ export async function createExternalStorageRuntime(
 ): Promise<ExternalStorageRuntime> {
   const database = await openExternalStorageDatabase(config);
   try {
-    const runtime = await createOrgRuntime(config.installationId, {
-      bootstrapApiToken: config.apiToken,
+    const orgConfig: ExternalStorageOrgConfig = {
       cookieRouteId: "",
-    }, config, database);
+    };
+    if (config.bootstrapApiTokenEnabled !== false) {
+      Object.assign(orgConfig, {bootstrapApiToken: config.apiToken});
+    }
+    const runtime = await createOrgRuntime(config.installationId, orgConfig, config, database);
     return {
       ...runtime,
       close: async () => {
@@ -189,6 +198,11 @@ export async function createOrgRuntime(
   database: PostgresDatabase,
 ): Promise<ExternalStorageRuntime> {
   const runtimeClock = config.clock ?? new SystemClock();
+  const isOrvex = orgConfig.slug === undefined || orgConfig.slug === "orvex";
+  const applicationOrigin = orgConfig.applicationOrigin ?? config.applicationOrigin ?? null;
+  const groupRolePolicy = isOrvex
+    ? config.groupRolePolicy ?? null
+    : orgConfig.admissionPolicy ?? null;
   const stagingCleanupPolicy = config.stagingCleanupPolicy ??
     defaultStagingCleanupPolicy;
   const gitHistory = config.gitHistory ?? offNodeGitHistoryConfiguration();
@@ -241,19 +255,25 @@ export async function createOrgRuntime(
     const applicationAdapters: Parameters<typeof createApplicationLayer>[0] = {
       apiToken: null,
       blobs,
-      bootstrapAdministratorEmail: config.bootstrapAdministratorEmail,
+      bootstrapAdministratorEmail: orgConfig.bootstrapAdministratorEmail === undefined
+        ? config.bootstrapAdministratorEmail
+        : orgConfig.bootstrapAdministratorEmail,
       clock: runtimeClock,
       dispatches: repository,
-      externalApiBearerVerifier: config.externalApiBearerVerifier ?? null,
-      externalApiOAuthVerifier: config.externalApiOAuthVerifier ?? null,
-      externalMcpBearerVerifier: config.externalMcpBearerVerifier ?? null,
-      externalMcpOAuthVerifier: config.externalMcpOAuthVerifier ?? null,
-      groupRolePolicy: config.groupRolePolicy ?? null,
+      externalApiBearerVerifier: isOrvex ? config.externalApiBearerVerifier ?? null : null,
+      externalApiOAuthVerifier: isOrvex ? config.externalApiOAuthVerifier ?? null : null,
+      externalMcpBearerVerifier: isOrvex ? config.externalMcpBearerVerifier ?? null : null,
+      externalMcpOAuthVerifier: isOrvex ? config.externalMcpOAuthVerifier ?? null : null,
+      groupRolePolicy,
       ids: new SystemIdGenerator(),
       identityRepository,
       installationId,
       gitHistory: {read: () => applicationGitHistory.read()},
-      interactiveIdentityProvider: config.interactiveIdentityProvider ?? null,
+      interactiveIdentityProvider: config.interactiveIdentityProvider === undefined
+        ? null
+        : orgConfig.slug === undefined || config.interactiveIdentityProvider.forApplicationOrigin === undefined
+        ? config.interactiveIdentityProvider
+        : config.interactiveIdentityProvider.forApplicationOrigin(applicationOrigin ?? ""),
       localBootstrapCredential: config.localBootstrapCredential ?? null,
       protectBootstrapAdministrator: false,
       repository,
@@ -323,7 +343,7 @@ export async function createOrgRuntime(
       gitHistory: gitHistoryMonitor?.reader ??
         fixedGitHistoryCapabilityReader(gitHistory.capability),
       readiness: () => externalStorageReadiness(database, connectedObjectStorage),
-      trustedApplicationOrigin: config.applicationOrigin ?? null,
+      trustedApplicationOrigin: applicationOrigin,
       webAssets: createNodeWebAssetStore(),
     };
     let configuredAppDependencies: HttpAppDependencies = appDependenciesWithoutOAuth;
@@ -340,19 +360,44 @@ export async function createOrgRuntime(
     if (config.apiOAuthResource !== undefined) {
       appDependencies = {
         ...appDependencies,
-        apiOAuthResource: config.apiOAuthResource,
+        apiOAuthResource: {
+          ...config.apiOAuthResource,
+          resource: orgConfig.slug === undefined
+            ? config.apiOAuthResource.resource
+            : appendApplicationPath(applicationOrigin ?? config.apiOAuthResource.resource, "/api"),
+        },
       };
     }
     if (config.mcpOAuthResource !== undefined) {
       appDependencies = {
         ...appDependencies,
-        mcpOAuthResource: config.mcpOAuthResource,
+        mcpOAuthResource: {
+          ...config.mcpOAuthResource,
+          resource: orgConfig.slug === undefined
+            ? config.mcpOAuthResource.resource
+            : appendApplicationPath(applicationOrigin ?? config.mcpOAuthResource.resource, "/mcp"),
+        },
       };
     }
     if (config.discoveredOAuth !== undefined) {
       appDependencies = {
         ...appDependencies,
-        discoveredOAuth: config.discoveredOAuth,
+        discoveredOAuth: orgConfig.slug === undefined
+          ? config.discoveredOAuth
+          : {
+            ...config.discoveredOAuth,
+            apiResource: appendApplicationPath(applicationOrigin ?? config.discoveredOAuth.apiResource, "/api"),
+            mcpResource: appendApplicationPath(applicationOrigin ?? config.discoveredOAuth.mcpResource, "/mcp"),
+            current: () => {
+              const state = config.discoveredOAuth?.current();
+              if (state === undefined || state.status !== "enabled") return state ?? {status: "misconfigured"};
+              return {
+                ...state,
+                api: {...state.api, resource: appendApplicationPath(applicationOrigin ?? state.api.resource, "/api")},
+                mcp: {...state.mcp, resource: appendApplicationPath(applicationOrigin ?? state.mcp.resource, "/mcp")},
+              };
+            },
+          },
       };
     }
     const closeCleanupSchedule = stagingCleanupPolicy.schedule === "background"
@@ -385,6 +430,15 @@ export async function createOrgRuntime(
     }
     throw cause;
   }
+}
+
+function appendApplicationPath(base: string, path: string): string {
+  const url = new URL(base);
+  const prefix = url.pathname.replace(/\/$/u, "");
+  url.pathname = `${prefix}${path}`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
 async function externalStorageReadiness(

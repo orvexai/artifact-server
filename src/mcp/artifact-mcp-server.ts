@@ -102,6 +102,7 @@ import {
   SourceDrifted,
 } from "../core/errors.js";
 import {
+  applicationPathUrl,
   artifactBrowserUrl,
   artifactReviewUrl,
   contentBootstrapBrowserUrl,
@@ -1397,9 +1398,9 @@ export function createArtifactMcpServer(
           })
         ),
       );
-      const archiveUrl = new URL(
-        `/api/v1/artifacts/${encodeURIComponent(artifactId)}/versions/${encodeURIComponent(versionId)}/archive`,
+      const archiveUrl = applicationPathUrl(
         applicationUrl,
+        `/api/v1/artifacts/${encodeURIComponent(artifactId)}/versions/${encodeURIComponent(versionId)}/archive`,
       );
       archiveUrl.searchParams.set("projectId", saved.version.projectId);
       return {
@@ -1723,7 +1724,7 @@ export function createArtifactMcpServer(
     async ({artifactId, projectId}) => toolResult(async () => {
       const issued = await runMcpApplicationEffect(dependencies,
         GuestReviewService.use((guests) => guests.enable({artifactId, principal: identity.principal, projectId})));
-      const url = new URL("/review", applicationUrl);
+      const url = applicationPathUrl(applicationUrl, "/review");
       url.searchParams.set("artifact", artifactId);
       if (projectId !== null) url.searchParams.set("project", projectId);
       url.hash = `invite=${encodeURIComponent(issued.linkSecret)}`;
@@ -2973,9 +2974,9 @@ function uploadPlan(
       method: "PUT" as const,
       path: file.entry.path,
       size: file.entry.size,
-      uploadUrl: new URL(
-        `/api/v1/mcp-uploads/${upload.id}/files/${file.storageToken}`,
+      uploadUrl: applicationPathUrl(
         applicationUrl,
+        `/api/v1/mcp-uploads/${upload.id}/files/${file.storageToken}`,
       ).toString(),
     })),
     manifestDigest: upload.manifest.digest,

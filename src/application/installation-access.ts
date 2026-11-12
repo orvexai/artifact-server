@@ -253,7 +253,7 @@ export interface InstallationAccessDependencies {
    * another process may authenticate here for at most the TTL.
    */
   readonly authenticationCache?: AuthenticationCachePolicy | null;
-  readonly bootstrapAdministratorEmail: string;
+  readonly bootstrapAdministratorEmail: string | null;
   readonly clock: {readonly now: () => Date};
   /**
    * Issuer groups that admit external identities and set their role. When
@@ -601,6 +601,11 @@ function makeInstallationAccessService(
   const loginAsLocalOwner = Effect.fn(
     "InstallationAccessService.loginAsLocalOwner",
   )(function*() {
+    if (dependencies.bootstrapAdministratorEmail === null) {
+      return yield* Effect.fail(new IdentityConflict({
+        message: "No bootstrap administrator is configured for this installation.",
+      }));
+    }
     const email = yield* normalizeEmail(dependencies.bootstrapAdministratorEmail);
     let member = yield* dependencies.repository.findActiveMemberByEmail(
       dependencies.installationId,
@@ -1097,11 +1102,12 @@ function makeInstallationAccessService(
       const hasMembers = yield* dependencies.repository.hasMembers(
         dependencies.installationId,
       );
-      const bootstrapAdministratorEmail = yield* normalizeEmail(
-        dependencies.bootstrapAdministratorEmail,
-      );
+      const bootstrapAdministratorEmail = dependencies.bootstrapAdministratorEmail === null
+        ? null
+        : yield* normalizeEmail(dependencies.bootstrapAdministratorEmail);
       if (
         hasMembers ||
+        bootstrapAdministratorEmail === null ||
         email !== bootstrapAdministratorEmail
       ) {
         return yield* Effect.fail(new IdentityAdmissionDenied({
@@ -1331,13 +1337,13 @@ function makeInstallationAccessService(
       }));
     }
     if (dependencies.protectBootstrapAdministrator) {
-      const [member, bootstrapAdministratorEmail] = yield* Effect.all([
-        dependencies.repository.findMember(
-          dependencies.installationId,
-          memberId,
-        ),
-        normalizeEmail(dependencies.bootstrapAdministratorEmail),
-      ]);
+      const member = yield* dependencies.repository.findMember(
+        dependencies.installationId,
+        memberId,
+      );
+      const bootstrapAdministratorEmail = dependencies.bootstrapAdministratorEmail === null
+        ? null
+        : yield* normalizeEmail(dependencies.bootstrapAdministratorEmail);
       if (member?.email === bootstrapAdministratorEmail) {
         return yield* Effect.fail(new IdentityConflict({
           message: "The local-owner administrator cannot be deactivated.",

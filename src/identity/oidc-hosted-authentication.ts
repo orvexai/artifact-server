@@ -162,6 +162,7 @@ export async function startOidcHostedAuthentication(
 ): Promise<StartedOidcHostedAuthentication> {
   const issuer = requireOidcIssuer(config.issuer, "ARTIFACT_SERVER_OIDC_ISSUER");
   const mcpResource = new URL("/mcp", config.applicationOrigin).toString();
+  const apiResource = config.apiResource ?? new URL("/api", config.applicationOrigin).toString();
   const groupRoles = config.groupRoles ?? null;
   let discoveryOptions: RetryingDiscoveryOptions<OidcHostedAuthentication> = {
     attempt: () => createOidcHostedAuthentication({...config, issuer}),
@@ -189,6 +190,7 @@ export async function startOidcHostedAuthentication(
   const now = options.now ?? Date.now;
   return {
     discoveredOAuth: {
+      apiResource,
       current: () => discoveredOAuthState(discovery.current(), now),
       mcpResource,
       refresh: async () => discoveredOAuthState(await discovery.refresh(), now),

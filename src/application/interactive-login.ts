@@ -37,6 +37,8 @@ export interface InteractiveIdentityProvider {
     nonce: string | null,
   ) => Effect.Effect<ExternalIdentity, IdentityProviderFailure>;
   readonly name: string;
+  /** Clone this provider with the callback for one routed application base. */
+  forApplicationOrigin?(origin: string): InteractiveIdentityProvider;
   readonly start: () => Effect.Effect<InteractiveAuthorization, IdentityProviderFailure>;
 }
 

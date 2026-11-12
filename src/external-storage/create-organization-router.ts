@@ -10,7 +10,13 @@ import {OrganizationRegistry, type OrganizationRecord} from
 
 const maximumCachedOrganizations = 16;
 const idleOrganizationMilliseconds = 5 * 60 * 1_000;
+const organizationEvictionIntervalMilliseconds = 30_000;
 const notFound = () => new Response("Not Found", {status: 404});
+
+export interface OrganizationRouterOptions {
+  readonly idleMilliseconds?: number;
+  readonly evictionIntervalMilliseconds?: number;
+}
 
 interface CachedRuntime {
   activeRequests: number;
@@ -27,6 +33,7 @@ export interface OrganizationRouter {
 /** Start an organization registry router over one process's shared resources. */
 export async function createOrganizationRouter(
   config: ExternalStorageRuntimeConfig,
+  options: OrganizationRouterOptions = {},
 ): Promise<OrganizationRouter> {
   const database = await openExternalStorageDatabase(
     config,
@@ -43,6 +50,7 @@ export async function createOrganizationRouter(
       if (closed) return;
       closed = true;
       if (evictionTimer !== undefined) clearInterval(evictionTimer);
+      await Promise.allSettled(openingRuntimes.values());
       const active = [...runtimes.values()];
       runtimes.clear();
       await Promise.all([
@@ -61,15 +69,42 @@ export async function createOrganizationRouter(
       }
       const opening = openingRuntimes.get(organization.id);
       if (opening !== undefined) return opening;
-      const orgConfig: ExternalStorageOrgConfig = organization.slug === "orvex"
-        ? {bootstrapApiToken: config.apiToken, cookieRouteId: organization.routeId}
-        : {cookieRouteId: organization.routeId};
+      const admissionPolicy = organization.admissionPolicy === null
+        ? null
+        : {seed: organization.admissionPolicy.seed};
+      if (admissionPolicy !== null && organization.admissionPolicy?.guestGroupPrefixes !== undefined) {
+        Object.assign(admissionPolicy, {
+          guestGroupPrefixes: organization.admissionPolicy.guestGroupPrefixes,
+        });
+      }
+      const orgConfig: ExternalStorageOrgConfig = {
+        admissionPolicy,
+        bootstrapAdministratorEmail: organization.slug === "orvex"
+          ? config.bootstrapAdministratorEmail
+          : null,
+        cookieRouteId: organization.routeId,
+        slug: organization.slug,
+      };
+      if (config.applicationOrigin !== undefined) {
+        Object.assign(orgConfig, {
+          applicationOrigin: new URL(`/o/${organization.slug}`, config.applicationOrigin).toString(),
+        });
+      }
+      if (organization.slug === "orvex") {
+        Object.assign(orgConfig, {bootstrapApiToken: config.apiToken});
+      }
       const pending = createOrgRuntime(
         organization.id,
         orgConfig,
         config,
         database,
-      ).then((runtime) => {
+      ).then(async (runtime) => {
+        // close() may race a lazy startup. Never publish a runtime after the
+        // router has closed; close the just-created resources instead.
+        if (closed) {
+          await runtime.close();
+          throw new Error("The organization router is closed.");
+        }
         const entry = {activeRequests: 0, lastUsedAt: Date.now(), runtime};
         runtimes.set(organization.id, entry);
         return entry;
@@ -85,9 +120,10 @@ export async function createOrganizationRouter(
     };
     const evictIdle = async () => {
       const now = Date.now();
+      const idleMilliseconds = options.idleMilliseconds ?? idleOrganizationMilliseconds;
       const expired = [...runtimes.entries()].filter(([, entry]) =>
         entry.activeRequests === 0 &&
-        now - entry.lastUsedAt >= idleOrganizationMilliseconds,
+        now - entry.lastUsedAt >= idleMilliseconds,
       );
       await Promise.all(expired.map(async ([id, entry]) => {
         runtimes.delete(id);
@@ -106,7 +142,7 @@ export async function createOrganizationRouter(
     };
     evictionTimer = setInterval(() => {
       void evictIdle();
-    }, 30_000);
+    }, options.evictionIntervalMilliseconds ?? organizationEvictionIntervalMilliseconds);
     evictionTimer.unref();
     return {
       close: closeResources,
@@ -114,10 +150,13 @@ export async function createOrganizationRouter(
         if (closed) return new Response("Service Unavailable", {status: 503});
         const sourceUrl = new URL(request.url);
         const route = organizationRoute(sourceUrl.pathname) ??
-          await organizationCallbackRoute(request, sourceUrl.pathname, registry);
+          (sourceUrl.pathname === "/health" || sourceUrl.pathname === "/ready"
+            ? {path: sourceUrl.pathname, slug: "orvex"}
+            : null);
         if (route === null) {
           const legacy = legacyOrganizationPath(sourceUrl.pathname);
           if (legacy === null) return notFound();
+          if (requestComesFromAnotherOrganization(request)) return notFound();
           return new Response(null, {
             headers: {Location: `/o/orvex${legacy}${sourceUrl.search}`},
             status: 308,
@@ -127,18 +166,67 @@ export async function createOrganizationRouter(
         if (organization === null || organization.status !== "active") {
           return notFound();
         }
-        const entry = await runtimeFor(organization);
+        let entry: CachedRuntime;
+        try {
+          entry = await runtimeFor(organization);
+        } catch {
+          if (closed) return new Response("Service Unavailable", {status: 503});
+          return notFound();
+        }
         entry.activeRequests += 1;
         entry.lastUsedAt = Date.now();
+        let requestFinished = false;
+        const finish = () => {
+          if (requestFinished) return;
+          requestFinished = true;
+          entry.activeRequests = Math.max(0, entry.activeRequests - 1);
+          entry.lastUsedAt = Date.now();
+          void evictIdle();
+        };
         const target = new URL(request.url);
         target.pathname = route.path;
         try {
-          const response = await entry.runtime.app.fetch(new Request(target, request));
-          return prefixOrganizationRedirect(response, route.slug, config.applicationOrigin);
-        } finally {
-          entry.activeRequests -= 1;
-          entry.lastUsedAt = Date.now();
-          await evictIdle();
+          const response = prefixOrganizationRedirect(
+            await entry.runtime.app.fetch(new Request(target, request)),
+            route.slug,
+            config.applicationOrigin,
+          );
+          if (response.body === null) {
+            finish();
+            return response;
+          }
+          const reader = response.body.getReader();
+          const body = new ReadableStream<Uint8Array>({
+            cancel: async (reason) => {
+              try {
+                await reader.cancel(reason);
+              } finally {
+                finish();
+              }
+            },
+            pull: async (controller) => {
+              try {
+                const chunk = await reader.read();
+                if (chunk.done) {
+                  controller.close();
+                  finish();
+                } else {
+                  controller.enqueue(chunk.value);
+                }
+              } catch (cause) {
+                controller.error(cause);
+                finish();
+              }
+            },
+          });
+          return new Response(body, {
+            headers: response.headers,
+            status: response.status,
+            statusText: response.statusText,
+          });
+        } catch (cause) {
+          finish();
+          throw cause;
         }
       },
     };
@@ -146,29 +234,6 @@ export async function createOrganizationRouter(
     await Promise.all([config.objectStorage.close?.(), database.close()]);
     throw cause;
   }
-}
-
-/** OAuth providers return to the shared callback; its org-scoped handshake cookie selects the runtime. */
-async function organizationCallbackRoute(
-  request: Request,
-  pathname: string,
-  registry: OrganizationRegistry,
-): Promise<{readonly path: string; readonly slug: string} | null> {
-  if (pathname !== "/auth/callback") return null;
-  const cookieNames = new Set((request.headers.get("cookie") ?? "")
-    .split(";")
-    .map((cookie) => cookie.trim().split("=", 1)[0] ?? ""));
-  const organizations = await registry.list();
-  const matched = organizations.filter((organization) =>
-    organization.status === "active" && (
-      cookieNames.has(`__Host-artifact_login-${organization.routeId}`) ||
-      cookieNames.has(`artifact_login-${organization.routeId}`)
-    ),
-  );
-  const organization = matched.at(0);
-  return matched.length === 1 && organization !== undefined
-    ? {path: pathname, slug: organization.slug}
-    : null;
 }
 
 function organizationRoute(pathname: string): {readonly path: string; readonly slug: string} | null {
@@ -187,6 +252,18 @@ function legacyOrganizationPath(pathname: string): string | null {
   return /^\/(?:api(?:\/|$)|mcp(?:\/|$)|review(?:\/|$))/u.test(pathname)
     ? pathname
     : null;
+}
+
+function requestComesFromAnotherOrganization(request: Request): boolean {
+  const referer = request.headers.get("referer");
+  if (referer === null) return false;
+  try {
+    const sourcePath = new URL(referer).pathname;
+    const slug = /^\/o\/([^/]+)(?:\/|$)/u.exec(sourcePath)?.[1];
+    return slug !== undefined && slug !== "orvex";
+  } catch {
+    return true;
+  }
 }
 
 function prefixOrganizationRedirect(

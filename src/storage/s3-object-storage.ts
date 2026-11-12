@@ -81,13 +81,36 @@ export function createS3ObjectStorageProviderFactory(
   config: S3ObjectStorageProviderConfig,
 ): ObjectStorageProviderFactory {
   const client = new S3Client(createS3ClientConfig(config));
+  let providerCount = 0;
+  let factoryClosed = false;
+  let clientDestroyed = false;
+  const destroyIfIdle = () => {
+    if (!factoryClosed || providerCount !== 0 || clientDestroyed) return;
+    clientDestroyed = true;
+    client.destroy();
+  };
   return {
     close: () => {
-      client.destroy();
+      factoryClosed = true;
+      destroyIfIdle();
       return Promise.resolve();
     },
     kind: "s3",
-    create: (installationId) => createS3ObjectStorageProvider(config, client, installationId),
+    create: (installationId) => {
+      if (factoryClosed) throw new Error("The S3 provider factory is closed.");
+      const provider = createS3ObjectStorageProvider(config, client, installationId);
+      providerCount += 1;
+      let providerClosed = false;
+      return {
+        ...provider,
+        close: async () => {
+          if (providerClosed) return;
+          providerClosed = true;
+          providerCount -= 1;
+          destroyIfIdle();
+        },
+      };
+    },
   };
 }
 

@@ -11,8 +11,18 @@ import {SqlClient} from "effect/unstable/sql/SqlClient";
 import {afterAll, beforeAll, describe, expect, test} from "vitest";
 import {z} from "zod";
 
-import {createOrgRuntime, type ExternalStorageRuntimeConfig} from
+import {
+  createExternalStorageRuntime,
+  createOrgRuntime,
+  type ExternalStorageRuntimeConfig,
+} from
   "../../src/external-storage/create-external-storage-runtime.js";
+import {createOrganizationRouter} from
+  "../../src/external-storage/create-organization-router.js";
+import {
+  checkExternalStorageIntegrity,
+  IntegrityCheckError,
+} from "../../src/lifecycle/integrity-check.js";
 import {OrganizationRegistry} from
   "../../src/external-storage/organization-registry.js";
 import {startExternalStorageServer} from
@@ -23,6 +33,8 @@ import {
 } from "../../src/core/browser-access.js";
 import {createOidcIdentityProvider} from
   "../../src/identity/oidc-identity-provider.js";
+import type {ExternalMcpBearerVerifier} from
+  "../../src/application/authentication.js";
 import {startStubOidcProvider} from "../support/stub-oidc-provider.js";
 import {createS3ObjectStorageProviderFactory} from
   "../../src/storage/s3-object-storage.js";
@@ -54,7 +66,8 @@ const pendingCrossOrgCases = [
   "hono:DELETE /api/v1/public/artifacts/:artifactId/guest/comments/:threadId",
   "hono:DELETE /api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId",
   "hono:GET /",
-  "hono:GET /.well-known/oauth-protected-resource/api",
+  "hono:GET /.well-known/oauth-protected-resource/o/:organization/api",
+  "hono:GET /.well-known/oauth-protected-resource/o/:organization/mcp",
   "hono:GET /administration/api-keys",
   "hono:GET /administration/members",
   "hono:GET /administration/public-links",
@@ -246,7 +259,9 @@ function assertCrossOrgMatrixComplete(
   const knownCases = [...matrixCases, ...pendingCrossOrgCases];
   const knownCaseSet = new Set(knownCases);
   const currentCases = new Set([
-    ...registeredRoutes.map((route) => `hono:${route}`),
+    ...registeredRoutes.map((route) =>
+      `hono:${route.replaceAll(/\/o\/[^/]+/gu, "/o/:organization")}`,
+    ),
     ...registeredTools.map((tool) => `mcp:${tool}`),
   ]);
   expect(knownCaseSet.size).toBe(knownCases.length);
@@ -279,6 +294,10 @@ describe.sequential("organization tenancy security boundary", () => {
       throw new Error("Run this test through scripts/with-external-storage-test-providers.sh.");
     }
     oidc = await startStubOidcProvider({clientId: "org-tenancy-test"});
+    oidc.claims.email = adminEmail;
+    oidc.claims.emailVerified = true;
+    oidc.claims.groups = ["/orvex/admin"];
+    const groupRoles = {claim: "groups", seed: [{role: "administrator" as const, selector: "/orvex/admin"}]};
     s3 = new S3Client({
       credentials: {accessKeyId: accessKey, secretAccessKey: secretKey},
       endpoint,
@@ -307,6 +326,13 @@ describe.sequential("organization tenancy security boundary", () => {
       throw new Error(`org create CLI failed: ${createResult.stderr}`);
     }
     orgB = z.object({
+      admissionPolicy: z.object({
+        groupRoots: z.array(z.string()),
+        seed: z.array(z.object({
+          role: z.enum(["administrator", "guest", "member", "owner", "viewer"]),
+          selector: z.string(),
+        })),
+      }).nullable(),
       displayName: z.string(),
       id: z.string(),
       routeId: z.string(),
@@ -336,17 +362,54 @@ describe.sequential("organization tenancy security boundary", () => {
     });
     config = {
       apiToken: Redacted.make(apiTokenA),
+      apiOAuthResource: {
+        authorizationServers: [oidc.issuer],
+        resource: `${applicationOrigin}/api`,
+      },
       applicationOrigin,
       bootstrapAdministratorEmail: adminEmail,
       browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
       contentDomain: "content.example.net",
       databaseUrl: Redacted.make(databaseUrl),
       installationId,
+      groupRolePolicy: {seed: [{role: "administrator", selector: "/orvex/admin"}]},
+      externalMcpOAuthVerifier: {
+        verify: () => Effect.succeed({
+          clientId: "orgvex-service",
+          expiresAt: Math.floor(Date.now() / 1_000) + 60,
+          provider: "test-oidc",
+          scopes: [],
+          subject: "service-account",
+        }),
+        resolveIdentity: () => Effect.succeed({
+          displayName: "service account",
+          email: null,
+          emailVerified: false,
+          groups: ["/orvex/admin"],
+          provider: "test-oidc",
+          serviceAccount: true,
+          subject: "service-account",
+        }),
+      } satisfies ExternalMcpBearerVerifier,
+      mcpOAuthResource: {
+        authorizationServerMetadata: {
+          authorization_endpoint: `${oidc.issuer}/authorize`,
+          client_id_metadata_document_supported: true,
+          code_challenge_methods_supported: ["S256"],
+          grant_types_supported: ["authorization_code"],
+          issuer: oidc.issuer,
+          response_types_supported: ["code"],
+          scopes_supported: ["openid", "email", "profile"],
+          token_endpoint: `${oidc.issuer}/token`,
+        },
+        resource: `${applicationOrigin}/mcp`,
+      },
       interactiveIdentityProvider: createOidcIdentityProvider({
         applicationOrigin,
         clientId: "org-tenancy-test",
         clientSecret: null,
         issuer: oidc.issuer,
+        groupRoles,
         scopes: "openid email profile",
       }),
       objectStorage,
@@ -395,6 +458,7 @@ describe.sequential("organization tenancy security boundary", () => {
   test("isolates resources and runs the explicit route/tool completeness guard", async () => {
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const host = {Host: "artifacts.example.com"};
+    expect(orgB.admissionPolicy).toBeNull();
     const registry = new OrganizationRegistry(database);
     const [projectRows, artifactRows] = await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
@@ -407,6 +471,21 @@ describe.sequential("organization tenancy security boundary", () => {
     const projectId = z.object({id: z.string()}).parse(projectRows[0]).id;
     const artifactId = z.object({id: z.string()}).parse(artifactRows[0]).id;
 
+    const invalidRegistryId = `invalid-org-${randomUUID()}`;
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`INSERT INTO artifact_installations (
+        id, created_at, slug, display_name, status, route_id, admission_policy
+      ) VALUES (
+        ${invalidRegistryId}, ${new Date().toISOString()},
+        ${`invalid-${randomUUID().slice(0, 8)}`}, 'Invalid registry row',
+        'active', 'badroute', ${JSON.stringify({seed: [], groupRoots: "invalid"})}::jsonb
+      )`;
+    }));
+    const listedOrganizations = await registry.list();
+    expect(listedOrganizations.some(({id}) => id === invalidRegistryId)).toBe(false);
+    expect(listedOrganizations.some(({id}) => id === orgB.id)).toBe(true);
+
     const project = await fetch(`${baseUrl}/o/orvex/api/v1/projects/${projectId}`, {
       headers: {...host, Authorization: `Bearer ${apiTokenA}`},
     });
@@ -415,6 +494,35 @@ describe.sequential("organization tenancy security boundary", () => {
     });
     expect(project.status).toBe(404);
     expect(artifact.status).toBe(404);
+
+    const orgBLogin = await fetch(`${baseUrl}/o/${orgB.slug}/auth/login`, {
+      headers: host,
+      redirect: "manual",
+    });
+    expect(orgBLogin.status).toBe(302);
+    const orgBHandshake = orgBLogin.headers.getSetCookie().find((value) =>
+      value.startsWith(`__Host-artifact_login-${orgB.routeId}=`),
+    );
+    const orgBAuthorizationUrl = orgBLogin.headers.get("location");
+    if (orgBHandshake === undefined || orgBAuthorizationUrl === null) {
+      throw new Error("Org B login did not set its scoped handshake cookie and redirect.");
+    }
+    const orgBAuthorization = await fetch(orgBAuthorizationUrl, {redirect: "manual"});
+    const orgBCallbackUrl = orgBAuthorization.headers.get("location");
+    if (orgBCallbackUrl === null || new URL(orgBCallbackUrl).pathname !== `/o/${orgB.slug}/auth/callback`) {
+      throw new Error("Org B login did not use its organization callback route.");
+    }
+    const orgBLoginCallback = await fetch(`${baseUrl}${new URL(orgBCallbackUrl).pathname}${new URL(orgBCallbackUrl).search}`, {
+      headers: {...host, Cookie: orgBHandshake.split(";", 1)[0] ?? ""},
+      redirect: "manual",
+    });
+    expect(orgBLoginCallback.status).toBe(403);
+    expect(orgBLoginCallback.headers.getSetCookie().some((value) =>
+      value.startsWith(`__Host-artifact_login-${orgB.routeId}=`) && /Max-Age=0/u.test(value),
+    )).toBe(true);
+    expect(orgBLoginCallback.headers.getSetCookie().some((value) =>
+      value.startsWith(`__Host-artifact_session-${orgB.routeId}=`),
+    )).toBe(false);
 
     const login = await fetch(`${baseUrl}/o/orvex/auth/login`, {
       headers: host,
@@ -430,8 +538,8 @@ describe.sequential("organization tenancy security boundary", () => {
     }
     const authorization = await fetch(authorizationUrl, {redirect: "manual"});
     const callbackUrl = authorization.headers.get("location");
-    if (callbackUrl === null || new URL(callbackUrl).pathname !== "/auth/callback") {
-      throw new Error("Org A login callback did not use the shared callback route.");
+    if (callbackUrl === null || new URL(callbackUrl).pathname !== "/o/orvex/auth/callback") {
+      throw new Error("Org A login callback did not use its organization callback route.");
     }
     const callback = new URL(callbackUrl);
     const session = await fetch(`${baseUrl}${callback.pathname}${callback.search}`, {
@@ -447,6 +555,11 @@ describe.sequential("organization tenancy security boundary", () => {
       headers: {...host, Cookie: sessionCookie.split(";", 1)[0] ?? ""},
     });
     expect(foreignSession.status).toBe(401);
+    const legacyCookieName = sessionCookie.split(";", 1)[0]?.replace("__Host-", "");
+    const secureCookieOnly = await fetch(`${baseUrl}/o/orvex/api/v1/session`, {
+      headers: {...host, Cookie: legacyCookieName ?? ""},
+    });
+    expect(secureCookieOnly.status).toBe(401);
 
     const mcp = await fetchWithHost(`${baseUrl}/o/${orgB.slug}/mcp`, {
       body: JSON.stringify({id: 1, jsonrpc: "2.0", method: "tools/list"}),
@@ -460,6 +573,35 @@ describe.sequential("organization tenancy security boundary", () => {
       method: "POST",
     }, router.hostname, router.port);
     expect(mcp.status).toBe(401);
+
+    const serviceAccount = await fetchWithHost(`${baseUrl}/o/${orgB.slug}/mcp`, {
+      body: JSON.stringify({id: 2, jsonrpc: "2.0", method: "tools/list"}),
+      headers: {
+        ...host,
+        Accept: "application/json, text/event-stream",
+        Authorization: "Bearer oidc-service-account",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }, router.hostname, router.port);
+    expect(serviceAccount.status).toBe(401);
+    const orvexMcpBearer = await fetchWithHost(`${baseUrl}/o/orvex/mcp`, {
+      body: JSON.stringify({id: 3, jsonrpc: "2.0", method: "tools/list"}),
+      headers: {
+        ...host,
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${apiTokenA}`,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }, router.hostname, router.port);
+    expect(orvexMcpBearer.status).toBe(200);
+
+    const resourceMetadata = await fetch(`${baseUrl}/o/${orgB.slug}/.well-known/oauth-protected-resource/o/${orgB.slug}/mcp`, {
+      headers: host,
+    });
+    expect(resourceMetadata.status).toBe(200);
+    expect((await resourceMetadata.json()).resource).toBe(`${applicationOrigin}/o/${orgB.slug}/mcp`);
 
     const suspended = await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
@@ -489,8 +631,10 @@ describe.sequential("organization tenancy security boundary", () => {
     }));
 
     const runtime = await createOrgRuntime(orgB.id, {
+      applicationOrigin: new URL(`/o/${orgB.slug}`, applicationOrigin).toString(),
       bootstrapApiToken: Redacted.make(apiTokenB),
       cookieRouteId: orgB.routeId,
+      slug: orgB.slug,
     }, config, database);
     try {
       const registeredRoutes = runtime.app.routes.map(({method, path}) => `${method} ${path}`);
@@ -505,8 +649,197 @@ describe.sequential("organization tenancy security boundary", () => {
       await runtime.close();
     }
     expect(await registry.find(orgB.slug)).toMatchObject({status: "suspended"});
+
+    // A failed lazy startup racing close must not publish its runtime after
+    // closeResources has completed.
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`UPDATE artifact_installations SET status = 'active'
+        WHERE id = ${orgB.id}`;
+    }));
+    let readinessEntered!: () => void;
+    let releaseReadiness!: () => void;
+    const enteredReadiness = new Promise<void>((resolve) => { readinessEntered = resolve; });
+    const readinessGate = new Promise<void>((resolve) => { releaseReadiness = resolve; });
+    let raceProviderCloseCount = 0;
+    const raceFactory = trackedObjectStorageFactory({
+      onClose: () => { raceProviderCloseCount += 1; },
+      readiness: async (signal, provider) => {
+        readinessEntered();
+        await readinessGate;
+        await provider.readiness(signal);
+      },
+    }, {
+      accessKey: requiredIntegrationSetting(accessKey, "S3 access key"),
+      bucket,
+      endpoint: requiredIntegrationSetting(endpoint, "S3 endpoint"),
+      secretKey: requiredIntegrationSetting(secretKey, "S3 secret key"),
+    });
+    const racingRouter = await createOrganizationRouter({...config, objectStorage: raceFactory});
+    const racingRequest = racingRouter.fetch(new Request(
+      `https://artifacts.example.com/o/${orgB.slug}/api/v1/projects`,
+      {headers: {Host: "artifacts.example.com"}},
+    ));
+    await enteredReadiness;
+    const closeDuringStartup = racingRouter.close();
+    releaseReadiness();
+    await closeDuringStartup;
+    expect((await racingRequest).status).toBe(503);
+    expect(raceProviderCloseCount).toBe(1);
+    expect((await racingRouter.fetch(new Request(
+      `https://artifacts.example.com/o/${orgB.slug}/api/v1/projects`,
+    ))).status).toBe(503);
+
+    // A response body keeps its runtime active until it is consumed or
+    // cancelled, even when the idle timeout is zero.
+    let streamProviderCloseCount = 0;
+    const streamFactory = trackedObjectStorageFactory({
+      onClose: () => { streamProviderCloseCount += 1; },
+    }, {
+      accessKey: requiredIntegrationSetting(accessKey, "S3 access key"),
+      bucket,
+      endpoint: requiredIntegrationSetting(endpoint, "S3 endpoint"),
+      secretKey: requiredIntegrationSetting(secretKey, "S3 secret key"),
+    });
+    const streamingRouter = await createOrganizationRouter(
+      {...config, objectStorage: streamFactory},
+      {evictionIntervalMilliseconds: 5, idleMilliseconds: 0},
+    );
+    const streamResponse = await streamingRouter.fetch(new Request(
+      `https://artifacts.example.com/o/${orgB.slug}/mcp`,
+      {
+        body: JSON.stringify({id: 9, jsonrpc: "2.0", method: "tools/list"}),
+        headers: {
+          Accept: "application/json, text/event-stream",
+          Authorization: `Bearer ${apiTokenB}`,
+          "Content-Type": "application/json",
+          Host: "artifacts.example.com",
+          Origin: applicationOrigin,
+        },
+        method: "POST",
+      },
+    ));
+    expect(streamResponse.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(streamProviderCloseCount).toBe(0);
+    await streamResponse.body?.cancel();
+    await waitFor(() => streamProviderCloseCount === 1);
+    await streamingRouter.close();
+
+    // Maintenance runtimes share the same composition path but never seed
+    // the configured bootstrap API key. Closing this non-router runtime must
+    // close both its provider and its factory.
+    let maintenanceProviderCloseCount = 0;
+    let maintenanceFactoryCloseCount = 0;
+    const maintenanceFactory = trackedObjectStorageFactory({
+      onClose: () => { maintenanceProviderCloseCount += 1; },
+      onFactoryClose: () => { maintenanceFactoryCloseCount += 1; },
+    }, {
+      accessKey: requiredIntegrationSetting(accessKey, "S3 access key"),
+      bucket,
+      endpoint: requiredIntegrationSetting(endpoint, "S3 endpoint"),
+      secretKey: requiredIntegrationSetting(secretKey, "S3 secret key"),
+    });
+    const maintenanceRuntime = await createExternalStorageRuntime({
+      ...config,
+      bootstrapApiTokenEnabled: false,
+      installationId: `maintenance-${randomUUID()}`,
+      objectStorage: maintenanceFactory,
+    });
+    try {
+      const bootstrapKey = await maintenanceRuntime.app.fetch(appRequest(
+        "/api/v1/projects",
+        apiTokenA,
+        "GET",
+      ));
+      expect(bootstrapKey.status).toBe(401);
+    } finally {
+      await maintenanceRuntime.close();
+    }
+    expect(maintenanceProviderCloseCount).toBe(1);
+    expect(maintenanceFactoryCloseCount).toBe(1);
+
+    let failedFactoryCloseCount = 0;
+    const constructionFailure: ExternalStorageRuntimeConfig["objectStorage"] = {
+      close: async () => { failedFactoryCloseCount += 1; },
+      create: () => { throw new Error("provider constructor failed"); },
+      kind: "s3",
+    };
+    await expect(checkExternalStorageIntegrity({
+      databaseUrl: config.databaseUrl,
+      installationId: orgB.id,
+      objectStorage: constructionFailure,
+    })).rejects.toBeInstanceOf(IntegrityCheckError);
+    expect(failedFactoryCloseCount).toBe(1);
   }, 60_000);
 });
+
+function trackedObjectStorageFactory(
+  hooks: {
+    readonly onClose: () => void;
+    readonly onFactoryClose?: () => void;
+    readonly readiness?: (
+      signal: AbortSignal,
+      provider: ReturnType<ExternalStorageRuntimeConfig["objectStorage"]["create"]>,
+    ) => Promise<void>;
+  },
+  settings: {
+    readonly accessKey: string;
+    readonly bucket: string;
+    readonly endpoint: string;
+    readonly secretKey: string;
+  },
+): ExternalStorageRuntimeConfig["objectStorage"] {
+  const factory = createS3ObjectStorageProviderFactory({
+    accessKeyId: settings.accessKey,
+    bucket: settings.bucket,
+    endpoint: settings.endpoint,
+    forcePathStyle: true,
+    region,
+    secretAccessKey: Redacted.make(settings.secretKey),
+  });
+  return {
+    close: async () => {
+      hooks.onFactoryClose?.();
+      await factory.close?.();
+    },
+    create: (id) => {
+      const provider = factory.create(id);
+      return {
+        ...provider,
+        close: async () => {
+          hooks.onClose();
+          await provider.close();
+        },
+        readiness: (signal) => hooks.readiness === undefined
+          ? provider.readiness(signal)
+          : hooks.readiness(signal, provider),
+      };
+    },
+    kind: factory.kind,
+  };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  await new Promise<void>((resolve, reject) => {
+    const poll = () => {
+      if (predicate()) {
+        resolve();
+      } else if (Date.now() >= deadline) {
+        reject(new Error("Timed out waiting for organization runtime eviction."));
+      } else {
+        setTimeout(poll, 5);
+      }
+    };
+    poll();
+  });
+}
+
+function requiredIntegrationSetting(value: string | undefined, name: string): string {
+  if (value === undefined) throw new Error(`Missing integration setting: ${name}.`);
+  return value;
+}
 
 function managedTestKey(label: string): string {
   const id = createHash("sha256").update(`id:${label}`).digest("hex").slice(0, 32);
@@ -561,7 +894,7 @@ async function publishOrgBArtifact(
     headers: {Authorization: `Bearer ${token}`, Host: "artifacts.example.com"},
     method: "PUT",
   }));
-  expect(put.status).toBe(200);
+  expect(put.status, `${putUrl.pathname}: ${await put.clone().text()}`).toBe(200);
   const commitUrl = new URL(upload.commitUrl);
   const commit = await appFetch(appRequest(
     `${commitUrl.pathname}${commitUrl.search}`,

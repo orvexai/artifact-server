@@ -166,7 +166,7 @@ export async function checkExternalStorageIntegrity(
       configuration.installationId,
     );
   } catch {
-    await database.close();
+    await Promise.all([configuration.objectStorage.close?.(), database.close()]);
     throw new IntegrityCheckError({
       message: "Object storage could not be inspected.",
       provider: configuration.objectStorage.kind,
@@ -197,7 +197,11 @@ export async function checkExternalStorageIntegrity(
       provider: "postgres",
     });
   } finally {
-    await Promise.all([objectStorage.close(), database.close()]);
+    await Promise.all([
+      objectStorage.close(),
+      configuration.objectStorage.close?.(),
+      database.close(),
+    ]);
   }
 }
 

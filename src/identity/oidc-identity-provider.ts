@@ -110,6 +110,18 @@ export class OidcIdentityProvider implements InteractiveIdentityProvider {
     this.#scopes = config.scopes;
   }
 
+  forApplicationOrigin(origin: string): OidcIdentityProvider {
+    return new OidcIdentityProvider({
+      clientId: this.#clientId,
+      clientSecret: this.#clientSecret,
+      fetch: this.#fetch,
+      groupsClaim: this.#groupsClaim,
+      issuer: this.#issuer,
+      redirectUri: applicationCallbackUri(origin),
+      scopes: this.#scopes,
+    });
+  }
+
   readonly start = Effect.fn("OidcIdentityProvider.start")(
     function*(this: OidcIdentityProvider) {
       const discovery = yield* this.#discovery();
@@ -224,6 +236,12 @@ export class OidcIdentityProvider implements InteractiveIdentityProvider {
     this.#keys = keys;
     return keys;
   }
+}
+
+function applicationCallbackUri(origin: string): string {
+  const url = new URL(origin);
+  url.pathname = `${url.pathname.replace(/\/$/u, "")}/auth/callback`;
+  return url.toString();
 }
 
 /** Build the generic OIDC browser-login provider from loaded settings. */

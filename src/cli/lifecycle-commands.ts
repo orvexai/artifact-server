@@ -49,7 +49,11 @@ import {
   type LocalServerConfig,
 } from "../local/start-local-server.js";
 import {PostgresDatabase} from "../storage/postgres-database.js";
-import {OrganizationRegistry} from "../external-storage/organization-registry.js";
+import {
+  OrganizationRegistry,
+  parseOrganizationAdmissionPolicyJson,
+  type OrganizationAdmissionPolicy,
+} from "../external-storage/organization-registry.js";
 import {runCliEffect} from "./run-cli-effect.js";
 import {waitForProcessSignal} from "./wait-for-process-signal.js";
 import {
@@ -240,7 +244,12 @@ function configureOrganizations(program: Command): void {
     .description("Register an organization without creating credentials.")
     .argument("<slug>", "lowercase organization route slug")
     .requiredOption("--name <display-name>", "organization display name")
-    .action(async (slug: string, options: {readonly name: string}) => {
+    .option("--group-role-seed <json>", "admission policy JSON with seed and optional groupRoots")
+    .action(async (slug: string, options: {readonly groupRoleSeed?: string; readonly name: string}) => {
+      let admissionPolicy: OrganizationAdmissionPolicy | null = null;
+      if (options.groupRoleSeed !== undefined) {
+        admissionPolicy = parseOrganizationAdmissionPolicyJson(options.groupRoleSeed);
+      }
       const configuration = await runCliEffect(
         parseExternalMigrationConfiguration(process.env),
       );
@@ -251,7 +260,7 @@ function configureOrganizations(program: Command): void {
       });
       try {
         console.log(JSON.stringify(
-          await new OrganizationRegistry(database).create(slug, options.name),
+          await new OrganizationRegistry(database).create(slug, options.name, admissionPolicy),
           null,
           2,
         ));
@@ -691,6 +700,7 @@ function externalMaintenanceConfig(
 ): ExternalStorageRuntimeConfig {
   return {
     apiToken: configuration.apiToken,
+    bootstrapApiTokenEnabled: false,
     applicationOrigin: configuration.applicationOrigin,
     bootstrapAdministratorEmail: configuration.bootstrapAdministratorEmail,
     browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),

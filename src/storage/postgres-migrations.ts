@@ -984,6 +984,12 @@ const addOrganizationRegistry = Effect.gen(function*() {
     $$`);
 });
 
+const addOrganizationAdmissionPolicy = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN admission_policy JSONB`);
+});
+
 const postgresMigrations = {
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -1015,6 +1021,7 @@ const postgresMigrations = {
   "0028_project_principal_creator": addProjectPrincipalCreator,
   "0029_project_provisioner_audit_events": addProjectProvisionerAuditEvents,
   "0030_organization_registry": addOrganizationRegistry,
+  "0031_organization_admission_policy": addOrganizationAdmissionPolicy,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

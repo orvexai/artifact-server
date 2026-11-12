@@ -149,7 +149,7 @@ import type {
 export interface ApplicationAdapters {
   readonly apiToken: Redacted.Redacted | null;
   readonly blobs: BlobStore;
-  readonly bootstrapAdministratorEmail: string;
+  readonly bootstrapAdministratorEmail: string | null;
   readonly clock: Clock;
   readonly externalApiBearerVerifier: BearerCredentialVerifier | null;
   readonly externalApiOAuthVerifier: ExternalMcpBearerVerifier | null;

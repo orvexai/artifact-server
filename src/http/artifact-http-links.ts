@@ -3,7 +3,7 @@ export function artifactBrowserUrl(
   applicationUrl: URL,
   artifactId: string,
 ): string {
-  return new URL(`/artifacts/${artifactId}`, applicationUrl).toString();
+  return applicationPathUrl(applicationUrl, `/artifacts/${artifactId}`).toString();
 }
 
 /** Build the authenticated, exact-version review URL used for review and comments. */
@@ -13,7 +13,7 @@ export function artifactReviewUrl(
   artifactId: string,
   versionId: string,
 ): string {
-  const reviewUrl = new URL("/review", applicationUrl);
+  const reviewUrl = applicationPathUrl(applicationUrl, "/review");
   reviewUrl.search = new URLSearchParams({
     artifact: artifactId,
     project: projectId,
@@ -21,6 +21,17 @@ export function artifactReviewUrl(
     view: "focus",
   }).toString();
   return reviewUrl.toString();
+}
+
+/** Resolve an app-relative route while preserving an organization base path. */
+export function applicationPathUrl(applicationUrl: URL, path: string): URL {
+  const url = new URL(applicationUrl);
+  const basePath = url.pathname.replace(/\/$/u, "");
+  const route = new URL(path, "http://application.invalid");
+  url.pathname = `${basePath}${route.pathname}`;
+  url.search = route.search;
+  url.hash = route.hash;
+  return url;
 }
 
 /** Build the browser origin for one exact immutable version. */
