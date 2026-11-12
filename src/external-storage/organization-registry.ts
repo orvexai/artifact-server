@@ -6,14 +6,27 @@ import {z} from "zod";
 
 import type {PostgresDatabase} from "../storage/postgres-database.js";
 
+const organizationGroupRootSchema = z.string().regex(/^\/(?:[^/\s]+\/)+$/u);
 const admissionPolicySchema = z.object({
-  groupRoots: z.array(z.string().min(1)).default([]),
+  groupRoots: z.array(organizationGroupRootSchema).default([]),
   guestGroupPrefixes: z.array(z.string().min(1)).optional(),
   seed: z.array(z.object({
     role: z.enum(["administrator", "guest", "member", "owner", "viewer"]),
     selector: z.string().min(1),
   }).strict()),
-}).strict();
+}).strict().superRefine((policy, context) => {
+  for (const [index, entry] of policy.seed.entries()) {
+    if (!entry.selector.startsWith("/") || !policy.groupRoots.some((root) =>
+      entry.selector.startsWith(root) && entry.selector.length > root.length
+    )) {
+      context.addIssue({
+        code: "custom",
+        message: "Admission selectors must be full group paths beneath one of the organization's groupRoots.",
+        path: ["seed", index, "selector"],
+      });
+    }
+  }
+});
 export type OrganizationAdmissionPolicy = z.infer<typeof admissionPolicySchema>;
 
 export function parseOrganizationAdmissionPolicyJson(
@@ -136,7 +149,9 @@ export class OrganizationRegistry {
   ): Promise<OrganizationRecord> {
     const slug = organizationSlugSchema.parse(slugInput);
     const displayName = organizationNameSchema.parse(nameInput);
-    const admissionPolicy = admissionPolicyInput;
+    const admissionPolicy = admissionPolicyInput === null
+      ? null
+      : admissionPolicySchema.parse(admissionPolicyInput);
     const id = randomUUID();
     const routeId = randomRouteId();
     const row = await this.#database.run(Effect.gen(function*() {

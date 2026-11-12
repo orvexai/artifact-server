@@ -969,7 +969,9 @@ function makeInstallationAccessService(
         message: "No group has been given a role in the Artifact Server yet.",
       }));
     }
-    const role = groupMembershipRole(assignments, identity.groups);
+    const role = policy.groupRoots === undefined
+      ? groupMembershipRole(assignments, identity.groups)
+      : groupMembershipRole(assignments, identity.groups, policy.groupRoots);
     // The last active Admin or Owner keeps their role, so someone can always
     // give the roles out again after a group that held them is lost.
     if (
@@ -1148,7 +1150,9 @@ function makeInstallationAccessService(
         ? yield* dependencies.repository.listGroupRoles(dependencies.installationId)
         : configuredGroupRoleAssignments(groupRolePolicy.seed);
       const assignments = baseAssignments;
-      const role = groupMembershipRole(assignments, identity.groups);
+      const role = groupRolePolicy.groupRoots === undefined
+        ? groupMembershipRole(assignments, identity.groups)
+        : groupMembershipRole(assignments, identity.groups, groupRolePolicy.groupRoots);
       if (role === null) {
         return yield* new IdentityAdmissionDenied({
           message: "This service account is not in a group admitted to the Artifact Server.",
@@ -1157,7 +1161,12 @@ function makeInstallationAccessService(
       const storedGroups = yield* dependencies.repository.listDirectoryGroups(
         dependencies.installationId,
       );
-      const reported = new Set(identity.groups ?? []);
+      const reported = new Set((identity.groups ?? []).filter((group) =>
+        groupRolePolicy.groupRoots === undefined ||
+        groupRolePolicy.groupRoots.some((root) =>
+          group.startsWith(root) && group.length > root.length
+        )
+      ));
       const nameCounts = new Map<string, number>();
       for (const group of storedGroups) {
         nameCounts.set(group.name, (nameCounts.get(group.name) ?? 0) + 1);

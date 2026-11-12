@@ -16,6 +16,15 @@ import type {
   ExternalStorageRuntimeConfiguration,
 } from "./runtime-configuration.js";
 
+type ExternalStorageInspectionConfiguration = Pick<
+  ExternalStorageRuntimeConfiguration,
+  "databaseUrl" | "deploymentMode" | "installationId"
+> & {
+  readonly objectStorage: {
+    create(installationId: string): Pick<ObjectStorageProvider, "close" | "readiness">;
+  };
+};
+
 /** Safe status of one required runtime provider. */
 export interface ProviderInspection {
   readonly status: "ready" | "unavailable";
@@ -31,7 +40,7 @@ export interface RuntimeInspection {
 
 /** Inspect configured providers without applying a migration or serving. */
 export async function inspectRuntimeConfiguration(
-  configuration: CompactRuntimeConfiguration | ExternalStorageRuntimeConfiguration,
+  configuration: CompactRuntimeConfiguration | ExternalStorageInspectionConfiguration,
 ): Promise<RuntimeInspection> {
   return configuration.deploymentMode === "compact"
     ? inspectCompactRuntime(configuration)
@@ -53,7 +62,7 @@ function inspectCompactRuntime(
 }
 
 async function inspectExternalStorageRuntime(
-  configuration: ExternalStorageRuntimeConfiguration,
+  configuration: ExternalStorageInspectionConfiguration,
 ): Promise<RuntimeInspection> {
   const database = await openDatabase(configuration);
   const objectStorage = createObjectStorage(configuration);
@@ -84,8 +93,8 @@ async function inspectExternalStorageRuntime(
 }
 
 function createObjectStorage(
-  configuration: ExternalStorageRuntimeConfiguration,
-): ObjectStorageProvider | null {
+  configuration: ExternalStorageInspectionConfiguration,
+): Pick<ObjectStorageProvider, "close" | "readiness"> | null {
   try {
     return configuration.objectStorage.create(configuration.installationId);
   } catch {
@@ -94,7 +103,7 @@ function createObjectStorage(
 }
 
 async function openDatabase(
-  configuration: ExternalStorageRuntimeConfiguration,
+  configuration: Pick<ExternalStorageRuntimeConfiguration, "databaseUrl" | "installationId">,
 ): Promise<PostgresDatabase | null> {
   return PostgresDatabase.inspect({
     applicationName: `artifact-server-config-check:${configuration.installationId}`,

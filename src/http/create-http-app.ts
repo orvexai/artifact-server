@@ -1520,9 +1520,48 @@ export function createHttpApp(
       setApplicationSessionCookies(context, dependencies, completed.issued);
       context.header("Cache-Control", "private, no-store");
       context.header("Referrer-Policy", "no-referrer");
-      return context.redirect(completed.returnTo, 303);
-    } finally {
       clearLoginHandshakeCookie(context, dependencies);
+      return context.redirect(completed.returnTo, 303);
+    } catch (error) {
+      clearLoginHandshakeCookie(context, dependencies);
+      if (error instanceof Error && isArtifactServerFailure(error)) {
+        const response = httpFailure(error);
+        if (response.status >= 500) {
+          await logAdapterFailure(
+            dependencies.applicationRuntime,
+            context.get("requestId"),
+            error._tag,
+            "request",
+          );
+        }
+        const headers = new Headers();
+        for (const cookie of context.res.headers.getSetCookie()) {
+          headers.append("Set-Cookie", cookie);
+        }
+        return Response.json(
+          {error: {code: response.code, message: response.message}},
+          {
+            headers,
+            status: response.status,
+          },
+        );
+      }
+      if (error instanceof z.ZodError) {
+        return context.json({error: {
+          code: errorCodes.invalidInput,
+          message: "The callback request does not match the API contract.",
+        }}, 422);
+      }
+      await logAdapterFailure(
+        dependencies.applicationRuntime,
+        context.get("requestId"),
+        "UnhandledError",
+        error instanceof Error ? error.name : "unknown",
+      );
+      return context.json({error: {
+        code: "INTERNAL_ERROR",
+        message: "The server could not complete the request.",
+      }}, 500);
     }
   });
 
@@ -3338,7 +3377,7 @@ export function createHttpApp(
           "request",
         );
       }
-      const headers = new Headers(context.res.headers);
+      const headers = new Headers();
       if (response.status === 401) {
         headers.set("Cache-Control", "private, no-store");
       }
@@ -3625,7 +3664,9 @@ function responseApplicationUrl(
   dependencies: HttpAppDependencies,
 ): URL {
   const requestUrl = new URL(context.req.url);
-  if (dependencies.trustedApplicationOrigin === null) return requestUrl;
+  if (dependencies.trustedApplicationOrigin === null) {
+    return new URL(requestUrl.origin);
+  }
   const trustedUrl = new URL(dependencies.trustedApplicationOrigin);
   const forwardedProtocol = context.req.header("x-forwarded-proto")
     ?.split(",")[0]?.trim();
@@ -3641,7 +3682,7 @@ function responseApplicationUrl(
   ) {
     return trustedUrl;
   }
-  return requestUrl;
+  return new URL(requestUrl.origin);
 }
 
 function requireBrowserMutationSecurity(

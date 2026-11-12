@@ -252,6 +252,7 @@ class DiscoveredOidcBearerVerifier implements ExternalMcpBearerVerifier {
     hosted: OidcHostedAuthentication,
   ) => ExternalMcpBearerVerifier;
   readonly #unconfiguredMessage: string;
+  readonly #selected = new WeakMap<OidcHostedAuthentication, ExternalMcpBearerVerifier>();
 
   constructor(
     discovery: RetryingDiscovery<OidcHostedAuthentication>,
@@ -314,7 +315,12 @@ class DiscoveredOidcBearerVerifier implements ExternalMcpBearerVerifier {
     AuthenticationRequired | IdentityProviderFailure
   > {
     if (state.status === "ready") {
-      return Effect.succeed(this.#select(state.value));
+      let verifier = this.#selected.get(state.value);
+      if (verifier === undefined) {
+        verifier = this.#select(state.value);
+        this.#selected.set(state.value, verifier);
+      }
+      return Effect.succeed(verifier);
     }
     if (state.status === "misconfigured") {
       return Effect.fail(new AuthenticationRequired({

@@ -206,7 +206,7 @@ export async function createOrgRuntime(
   const groupRolePolicy = isOrvex
     ? config.groupRolePolicy ?? null
     : orgConfig.admissionPolicy ?? null;
-  const organizationOAuthResources = orgConfig.slug === undefined || applicationOrigin === null
+  const organizationOAuthResources = orgConfig.slug === undefined || isOrvex || applicationOrigin === null
     ? null
     : {
       apiResource: appendApplicationPath(applicationOrigin, "/api"),
@@ -214,9 +214,14 @@ export async function createOrgRuntime(
     };
   const scopedOAuthVerifier = (verifier: ExternalMcpBearerVerifier | undefined) => {
     if (verifier === undefined) return null;
-    return organizationOAuthResources === null
-      ? verifier
-      : verifier.forApplicationResources?.(organizationOAuthResources) ?? verifier;
+    if (organizationOAuthResources === null) return verifier;
+    if (verifier.forApplicationResources === undefined) {
+      if (mayUseHostedOAuth) {
+        throw new Error("This identity provider cannot scope OAuth resources to an organization.");
+      }
+      return null;
+    }
+    return verifier.forApplicationResources(organizationOAuthResources);
   };
   const stagingCleanupPolicy = config.stagingCleanupPolicy ??
     defaultStagingCleanupPolicy;
@@ -292,7 +297,9 @@ export async function createOrgRuntime(
         ? null
         : orgConfig.slug === undefined || config.interactiveIdentityProvider.forApplicationOrigin === undefined
         ? config.interactiveIdentityProvider
-        : config.interactiveIdentityProvider.forApplicationOrigin(applicationOrigin ?? ""),
+        : config.interactiveIdentityProvider.forApplicationOrigin(
+          isOrvex ? config.applicationOrigin ?? applicationOrigin ?? "" : applicationOrigin ?? "",
+        ),
       localBootstrapCredential: config.localBootstrapCredential ?? null,
       protectBootstrapAdministrator: false,
       repository,
@@ -381,7 +388,7 @@ export async function createOrgRuntime(
         ...appDependencies,
         apiOAuthResource: {
           ...config.apiOAuthResource,
-          resource: orgConfig.slug === undefined
+          resource: orgConfig.slug === undefined || isOrvex
             ? config.apiOAuthResource.resource
             : appendApplicationPath(applicationOrigin ?? config.apiOAuthResource.resource, "/api"),
         },
@@ -392,7 +399,7 @@ export async function createOrgRuntime(
         ...appDependencies,
         mcpOAuthResource: {
           ...config.mcpOAuthResource,
-          resource: orgConfig.slug === undefined
+          resource: orgConfig.slug === undefined || isOrvex
             ? config.mcpOAuthResource.resource
             : appendApplicationPath(applicationOrigin ?? config.mcpOAuthResource.resource, "/mcp"),
         },
@@ -401,7 +408,7 @@ export async function createOrgRuntime(
     if (config.discoveredOAuth !== undefined) {
       appDependencies = {
         ...appDependencies,
-        discoveredOAuth: orgConfig.slug === undefined
+        discoveredOAuth: orgConfig.slug === undefined || isOrvex
           ? config.discoveredOAuth
           : {
             ...config.discoveredOAuth,

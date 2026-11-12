@@ -45,6 +45,16 @@ describe("stored group roles", () => {
     expect(groupMembershipRole(assignments, ["/Administrators"])).toBe("owner");
   });
 
+  test("organization group roots admit only reported full paths beneath the configured root", () => {
+    const organizationAssignments = [assignment("/org-b/admins", "administrator")];
+    expect(groupMembershipRole(organizationAssignments, ["/org-a/admins"], ["/org-b/"]))
+      .toBeNull();
+    expect(groupMembershipRole(organizationAssignments, ["admins"], ["/org-b/"]))
+      .toBeNull();
+    expect(groupMembershipRole(organizationAssignments, ["/org-b/admins"], ["/org-b/"]))
+      .toBe("administrator");
+  });
+
   test("a name another group shares never stands for the group that has the role", () => {
     // /temporal/default:admin is Owner; /other/default:admin has no role.
     const shared = [assignment("/temporal/default:admin", "owner", false)];

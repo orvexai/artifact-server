@@ -17,14 +17,17 @@ import {
   type ExternalStorageRuntimeConfig,
 } from
   "../../src/external-storage/create-external-storage-runtime.js";
+import type {GroupRolePolicy} from "../../src/core/group-role-policy.js";
 import {createOrganizationRouter} from
   "../../src/external-storage/create-organization-router.js";
 import {
   checkExternalStorageIntegrity,
   IntegrityCheckError,
 } from "../../src/lifecycle/integrity-check.js";
-import {OrganizationRegistry} from
-  "../../src/external-storage/organization-registry.js";
+import {
+  OrganizationRegistry,
+  type OrganizationAdmissionPolicy,
+} from "../../src/external-storage/organization-registry.js";
 import {startExternalStorageServer} from
   "../../src/external-storage/start-external-storage-server.js";
 import {
@@ -33,6 +36,8 @@ import {
 } from "../../src/core/browser-access.js";
 import {createOidcIdentityProvider} from
   "../../src/identity/oidc-identity-provider.js";
+import {WorkOsMcpBearerVerifier} from
+  "../../src/identity/workos-mcp-bearer-verifier.js";
 import type {ExternalMcpBearerVerifier} from
   "../../src/application/authentication.js";
 import {startStubOidcProvider} from "../support/stub-oidc-provider.js";
@@ -313,14 +318,31 @@ describe.sequential("organization tenancy security boundary", () => {
     const registry = new OrganizationRegistry(database);
     await registry.ensureOrvex(installationId);
     const orgSlug = `team-${randomUUID().slice(0, 8)}`;
+    const groupRoot = `/teams/${orgSlug}/`;
+    const admissionPolicy = {
+      groupRoots: [groupRoot],
+      seed: [{role: "administrator" as const, selector: `${groupRoot}admins`}],
+    };
     const cliEnvironment = {
       ...process.env,
       ARTIFACT_SERVER_DATABASE_URL: databaseUrl,
       ARTIFACT_SERVER_INSTALLATION_ID: installationId,
     };
+    const invalidPolicyResult = spawnSync(process.execPath, [
+      "--import", "tsx", "src/cli/main.ts", "org", "create", `invalid-${orgSlug}`,
+      "--name", "Invalid selector",
+      "--group-role-seed", JSON.stringify({
+        groupRoots: [groupRoot],
+        seed: [{role: "administrator", selector: "admins"}],
+      }),
+    ], {cwd: process.cwd(), encoding: "utf8", env: cliEnvironment});
+    if (invalidPolicyResult.status === 0) {
+      throw new Error("org create accepted a bare-name group selector.");
+    }
     const createResult = spawnSync(process.execPath, [
       "--import", "tsx", "src/cli/main.ts", "org", "create", orgSlug,
       "--name", "Org B",
+      "--group-role-seed", JSON.stringify(admissionPolicy),
     ], {cwd: process.cwd(), encoding: "utf8", env: cliEnvironment});
     if (createResult.status !== 0) {
       throw new Error(`org create CLI failed: ${createResult.stderr}`);
@@ -360,6 +382,26 @@ describe.sequential("organization tenancy security boundary", () => {
       region,
       secretAccessKey: Redacted.make(secretKey),
     });
+    let testMcpVerifier!: ExternalMcpBearerVerifier;
+    testMcpVerifier = {
+      forApplicationResources: () => testMcpVerifier,
+      verify: () => Effect.succeed({
+        clientId: "orgvex-service",
+        expiresAt: Math.floor(Date.now() / 1_000) + 60,
+        provider: "test-oidc",
+        scopes: [],
+        subject: "service-account",
+      }),
+      resolveIdentity: () => Effect.succeed({
+        displayName: "service account",
+        email: null,
+        emailVerified: false,
+        groups: ["/orvex/admin"],
+        provider: "test-oidc",
+        serviceAccount: true,
+        subject: "service-account",
+      }),
+    };
     config = {
       apiToken: Redacted.make(apiTokenA),
       apiOAuthResource: {
@@ -373,24 +415,7 @@ describe.sequential("organization tenancy security boundary", () => {
       databaseUrl: Redacted.make(databaseUrl),
       installationId,
       groupRolePolicy: {seed: [{role: "administrator", selector: "/orvex/admin"}]},
-      externalMcpOAuthVerifier: {
-        verify: () => Effect.succeed({
-          clientId: "orgvex-service",
-          expiresAt: Math.floor(Date.now() / 1_000) + 60,
-          provider: "test-oidc",
-          scopes: [],
-          subject: "service-account",
-        }),
-        resolveIdentity: () => Effect.succeed({
-          displayName: "service account",
-          email: null,
-          emailVerified: false,
-          groups: ["/orvex/admin"],
-          provider: "test-oidc",
-          serviceAccount: true,
-          subject: "service-account",
-        }),
-      } satisfies ExternalMcpBearerVerifier,
+      externalMcpOAuthVerifier: testMcpVerifier,
       mcpOAuthResource: {
         authorizationServerMetadata: {
           authorization_endpoint: `${oidc.issuer}/authorize`,
@@ -416,8 +441,11 @@ describe.sequential("organization tenancy security boundary", () => {
     };
 
     const setupB = await createOrgRuntime(orgB.id, {
+      admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
+      applicationOrigin: new URL(`/o/${orgB.slug}`, applicationOrigin).toString(),
       bootstrapApiToken: Redacted.make(apiTokenB),
       cookieRouteId: orgB.routeId,
+      slug: orgB.slug,
     }, config, database);
     try {
       const projectResponse = await setupB.app.fetch(appRequest(
@@ -435,6 +463,7 @@ describe.sequential("organization tenancy security boundary", () => {
         (request) => setupB.app.fetch(request),
         apiTokenB,
         projectId,
+        orgB.slug,
       );
       if (!artifactId.startsWith("art_")) throw new Error("The Org B fixture artifact ID is malformed.");
     } finally {
@@ -458,7 +487,50 @@ describe.sequential("organization tenancy security boundary", () => {
   test("isolates resources and runs the explicit route/tool completeness guard", async () => {
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const host = {Host: "artifacts.example.com"};
-    expect(orgB.admissionPolicy).toBeNull();
+    expect(orgB.admissionPolicy).toMatchObject({groupRoots: [`/teams/${orgB.slug}/`]});
+    const admissionRuntime = await createOrgRuntime(orgB.id, {
+      admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
+      applicationOrigin: `${applicationOrigin}/o/${orgB.slug}`,
+      cookieRouteId: orgB.routeId,
+      slug: orgB.slug,
+    }, config, database);
+    try {
+      const loginWithGroups = async (groups: readonly string[], subject: string) => {
+        oidc.claims.email = `${subject}@example.test`;
+        oidc.claims.emailVerified = true;
+        oidc.claims.groups = groups;
+        oidc.claims.subject = subject;
+        const login = await admissionRuntime.app.fetch(new Request(
+          `https://artifacts.example.com/auth/login`,
+          {redirect: "manual"},
+        ));
+        const cookieName = `__Host-artifact_login-${orgB.routeId}`;
+        const cookie = login.headers.getSetCookie().find((value) => value.startsWith(`${cookieName}=`));
+        const authorizationUrl = login.headers.get("location");
+        if (cookie === undefined || authorizationUrl === null) {
+          throw new Error("Org B login did not issue its scoped handshake.");
+        }
+        const authorization = await fetch(authorizationUrl, {redirect: "manual"});
+        const callbackLocation = authorization.headers.get("location");
+        if (callbackLocation === null) throw new Error("OIDC did not redirect to its callback.");
+        const callbackUrl = new URL(callbackLocation);
+        return admissionRuntime.app.fetch(new Request(
+          `https://artifacts.example.com/auth/callback${callbackUrl.search}`,
+          {headers: {Cookie: cookie.split(";", 1)[0] ?? ""}},
+        ));
+      };
+      const foreignRoot = await loginWithGroups(["/orvex/admin"], "foreign-root-user");
+      expect(foreignRoot.status).toBe(403);
+      expect(foreignRoot.headers.getSetCookie().some((cookie) =>
+        cookie.startsWith(`__Host-artifact_login-${orgB.routeId}=`) && /Max-Age=0/iu.test(cookie)
+      )).toBe(true);
+      const siblingRoot = await loginWithGroups(["/teams/other/admins"], "sibling-root-user");
+      expect(siblingRoot.status).toBe(403);
+      const admitted = await loginWithGroups([`/teams/${orgB.slug}/admins`], "org-b-admin-user");
+      expect(admitted.status).toBe(303);
+    } finally {
+      await admissionRuntime.close();
+    }
     const registry = new OrganizationRegistry(database);
     const [projectRows, artifactRows] = await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
@@ -495,6 +567,10 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(project.status).toBe(404);
     expect(artifact.status).toBe(404);
 
+    oidc.claims.email = adminEmail;
+    oidc.claims.emailVerified = true;
+    oidc.claims.groups = ["/orvex/admin"];
+    oidc.claims.subject = "stub-oidc-subject-1";
     const orgBLogin = await fetch(`${baseUrl}/o/${orgB.slug}/auth/login`, {
       headers: host,
       redirect: "manual",
@@ -538,8 +614,8 @@ describe.sequential("organization tenancy security boundary", () => {
     }
     const authorization = await fetch(authorizationUrl, {redirect: "manual"});
     const callbackUrl = authorization.headers.get("location");
-    if (callbackUrl === null || new URL(callbackUrl).pathname !== "/o/orvex/auth/callback") {
-      throw new Error("Org A login callback did not use its organization callback route.");
+    if (callbackUrl === null || new URL(callbackUrl).pathname !== "/auth/callback") {
+      throw new Error("Orvex login did not preserve its legacy callback route.");
     }
     const callback = new URL(callbackUrl);
     const session = await fetch(`${baseUrl}${callback.pathname}${callback.search}`, {
@@ -602,6 +678,53 @@ describe.sequential("organization tenancy security boundary", () => {
     });
     expect(resourceMetadata.status).toBe(200);
     expect((await resourceMetadata.json()).resource).toBe(`${applicationOrigin}/o/${orgB.slug}/mcp`);
+    const rootResourceMetadata = await fetch(`${baseUrl}/.well-known/oauth-protected-resource/o/${orgB.slug}/mcp`, {headers: host});
+    expect(rootResourceMetadata.status).toBe(200);
+    expect((await rootResourceMetadata.json()).resource).toBe(`${applicationOrigin}/o/${orgB.slug}/mcp`);
+    const orvexMetadata = await fetch(`${baseUrl}/.well-known/oauth-protected-resource/mcp`, {headers: host});
+    expect(orvexMetadata.status).toBe(200);
+    expect((await orvexMetadata.json()).resource).toBe(`${applicationOrigin}/mcp`);
+    expect((await fetch(`${baseUrl}/.well-known/oauth-authorization-server`, {headers: host})).status).toBe(200);
+    const orvexLogin = await fetchWithHost(`${baseUrl}/o/orvex/auth/login`, {
+      headers: host,
+      method: "GET",
+    }, router.hostname, router.port);
+    expect(orvexLogin.status).toBe(302);
+    const loginLocation = orvexLogin.headers.get("location");
+    if (loginLocation === null) throw new Error("Orvex login did not start OIDC.");
+    const orvexAuthorization = await fetch(loginLocation, {redirect: "manual"});
+    const callbackLocation = orvexAuthorization.headers.get("location");
+    if (callbackLocation === null) throw new Error("Orvex OIDC did not return to a callback.");
+    const orvexCallbackUrl = new URL(callbackLocation);
+    expect(orvexCallbackUrl.pathname).toBe("/auth/callback");
+    const orvexRecord = await registry.find("orvex");
+    if (orvexRecord === null) throw new Error("The Orvex registry entry is missing.");
+    const orvexHandshake = orvexLogin.headers.getSetCookie().find((cookie) =>
+      cookie.startsWith(`__Host-artifact_login-${orvexRecord.routeId}=`)
+    );
+    if (orvexHandshake === undefined) throw new Error("Orvex login did not issue its handshake cookie.");
+    const legacyCallback = await fetchWithHost(`${baseUrl}/auth/callback${orvexCallbackUrl.search}`, {
+      headers: {...host, Cookie: orvexHandshake.split(";", 1)[0] ?? ""},
+      method: "GET",
+    }, router.hostname, router.port);
+    expect(legacyCallback.status).toBe(303);
+    expect(legacyCallback.headers.getSetCookie().some((cookie) =>
+      cookie.startsWith("__Host-artifact_login-") && /Max-Age=0/iu.test(cookie)
+    )).toBe(true);
+
+    await expect(createOrgRuntime(orgB.id, {
+      admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
+      applicationOrigin: `${applicationOrigin}/o/${orgB.slug}`,
+      cookieRouteId: orgB.routeId,
+      slug: orgB.slug,
+    }, {
+      ...config,
+      externalMcpOAuthVerifier: new WorkOsMcpBearerVerifier({
+        apiKey: Redacted.make("test-workos-api-key"),
+        issuer: "https://issuer.example.test",
+        resource: `${applicationOrigin}/mcp`,
+      }),
+    }, database)).rejects.toThrow("cannot scope OAuth resources");
 
     const suspended = await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
@@ -874,6 +997,7 @@ async function publishOrgBArtifact(
   appFetch: (request: Request) => Response | Promise<Response>,
   token: string,
   projectId: string,
+  orgSlug: string,
 ): Promise<string> {
   const digest = createHash("sha256").update(bytes).digest("hex");
   const uploadResponse = await appFetch(appRequest("/api/v1/uploads", token, "POST", {
@@ -889,7 +1013,8 @@ async function publishOrgBArtifact(
   const planned = upload.files[0];
   if (planned === undefined) throw new Error("Upload plan is missing its declared file.");
   const putUrl = new URL(planned.uploadUrl);
-  const put = await appFetch(new Request(`${applicationOrigin}${putUrl.pathname}${putUrl.search}`, {
+  const appPath = (url: URL) => url.pathname.replace(`/o/${orgSlug}`, "");
+  const put = await appFetch(new Request(`${applicationOrigin}${appPath(putUrl)}${putUrl.search}`, {
     body: bytes,
     headers: {Authorization: `Bearer ${token}`, Host: "artifacts.example.com"},
     method: "PUT",
@@ -897,7 +1022,7 @@ async function publishOrgBArtifact(
   expect(put.status, `${putUrl.pathname}: ${await put.clone().text()}`).toBe(200);
   const commitUrl = new URL(upload.commitUrl);
   const commit = await appFetch(appRequest(
-    `${commitUrl.pathname}${commitUrl.search}`,
+    `${appPath(commitUrl)}${commitUrl.search}`,
     token,
     "POST",
     {target: {accessSetting: "account_required", kind: "new_artifact", name: "Org B artifact"}},
@@ -906,6 +1031,18 @@ async function publishOrgBArtifact(
   expect(commit.status).toBe(201);
   return z.object({artifact: z.object({id: z.string()})})
     .parse(await commit.json()).artifact.id;
+}
+
+function runtimeAdmissionPolicy(
+  policy: OrganizationAdmissionPolicy | null,
+): GroupRolePolicy | null {
+  if (policy === null) return null;
+  const groupRolePolicy = {
+    groupRoots: policy.groupRoots,
+    seed: policy.seed,
+  };
+  if (policy.guestGroupPrefixes === undefined) return groupRolePolicy;
+  return {...groupRolePolicy, guestGroupPrefixes: policy.guestGroupPrefixes};
 }
 
 async function mcpToolNames(response: Response): Promise<string[]> {
@@ -925,7 +1062,7 @@ function fetchWithHost(
 ): Promise<Response> {
   const target = new URL(url);
   return new Promise((resolve, reject) => {
-    const body = z.string().parse(init.body);
+    const body = init.body === undefined ? undefined : z.string().parse(init.body);
     const request = httpRequest({
       headers: Object.fromEntries(new Headers(init.headers).entries()),
       hostname,

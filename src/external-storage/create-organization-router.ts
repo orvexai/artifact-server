@@ -71,7 +71,10 @@ export async function createOrganizationRouter(
       if (opening !== undefined) return opening;
       const admissionPolicy = organization.admissionPolicy === null
         ? null
-        : {seed: organization.admissionPolicy.seed};
+        : {
+          groupRoots: organization.admissionPolicy.groupRoots,
+          seed: organization.admissionPolicy.seed,
+        };
       if (admissionPolicy !== null && organization.admissionPolicy?.guestGroupPrefixes !== undefined) {
         Object.assign(admissionPolicy, {
           guestGroupPrefixes: organization.admissionPolicy.guestGroupPrefixes,
@@ -150,6 +153,10 @@ export async function createOrganizationRouter(
         if (closed) return new Response("Service Unavailable", {status: 503});
         const sourceUrl = new URL(request.url);
         const route = organizationRoute(sourceUrl.pathname) ??
+          rootOAuthMetadataRoute(sourceUrl.pathname) ??
+          (sourceUrl.pathname === "/auth/callback"
+            ? {path: sourceUrl.pathname, slug: "orvex"}
+            : null) ??
           (sourceUrl.pathname === "/health" || sourceUrl.pathname === "/ready"
             ? {path: sourceUrl.pathname, slug: "orvex"}
             : null);
@@ -246,6 +253,25 @@ function organizationRoute(pathname: string): {readonly path: string; readonly s
     return null;
   }
   return {path: match[2] || "/", slug};
+}
+
+function rootOAuthMetadataRoute(
+  pathname: string,
+): {readonly path: string; readonly slug: string} | null {
+  const resource = /^\/.well-known\/oauth-protected-resource\/o\/([^/]+)\/(?:api|mcp)$/u.exec(pathname);
+  if (resource !== null) {
+    try {
+      return {path: pathname, slug: decodeURIComponent(resource[1] ?? "")};
+    } catch {
+      return null;
+    }
+  }
+  if (
+    pathname === "/.well-known/oauth-authorization-server" ||
+    pathname === "/.well-known/oauth-protected-resource/api" ||
+    pathname === "/.well-known/oauth-protected-resource/mcp"
+  ) return {path: pathname, slug: "orvex"};
+  return null;
 }
 
 function legacyOrganizationPath(pathname: string): string | null {

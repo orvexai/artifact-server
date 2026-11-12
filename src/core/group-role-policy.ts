@@ -14,6 +14,8 @@ export interface GroupRoleSeedEntry {
  */
 export interface GroupRolePolicy {
   readonly seed: readonly GroupRoleSeedEntry[];
+  /** Full-path roots that constrain which reported directory groups can admit an org member. */
+  readonly groupRoots?: readonly string[];
   /** Full-path prefixes whose newly mirrored directory groups receive guest. */
   readonly guestGroupPrefixes?: readonly string[];
 }
@@ -75,9 +77,14 @@ export function configuredGroupRoleAssignments(
 export function groupMembershipRole(
   assignments: readonly GroupRoleAssignment[],
   groups: readonly string[] | null,
+  groupRoots?: readonly string[],
 ): MembershipRole | null {
   if (groups === null) return null;
-  const reported = new Set(groups);
+  const reported = new Set(groupRoots === undefined
+    ? groups
+    : groups.filter((group) => groupRoots.some((root) =>
+      group.startsWith(root) && group.length > root.length
+    )));
   let bestPrivileged: MembershipRole | null = null;
   let bestNonGuest: MembershipRole | null = null;
   let hasGuestRole = false;
