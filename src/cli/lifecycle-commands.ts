@@ -437,12 +437,20 @@ function configureIntegrity(program: Command): void {
     .addOption(hostOption())
     .addOption(portOption())
     .action(async (options: LifecycleOptions) => {
-      const report = options.mode === "compact"
-        ? await runCliEffect(checkCompactIntegrity(path.resolve(options.data)))
-        : await checkExternalStorageIntegrity(await parseExternalConfiguration(
+      let report: Awaited<ReturnType<typeof checkExternalStorageIntegrity>>;
+      if (options.mode === "compact") {
+        report = await runCliEffect(checkCompactIntegrity(path.resolve(options.data)));
+      } else {
+        const configuration = await parseExternalConfiguration(
           options.host,
           options.port,
-        ));
+        );
+        try {
+          report = await checkExternalStorageIntegrity(configuration);
+        } finally {
+          await configuration.objectStorage.close?.();
+        }
+      }
       console.log(JSON.stringify(report, null, 2));
       if (report.status !== "healthy") process.exitCode = 2;
     });
