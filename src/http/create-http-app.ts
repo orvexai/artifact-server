@@ -553,6 +553,8 @@ export interface HttpAppDependencies {
   readonly browserAccess: BrowserAccess;
   readonly completedRequestLogSampleRate: number;
   readonly contentDomain: string;
+  /** Suffix scoped to one configured organization on the shared app host. */
+  readonly organizationCookieSuffix?: string;
   readonly embedOrigins?: readonly string[];
   readonly embedBindingSecret?: Redacted.Redacted | undefined;
   readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
@@ -1093,8 +1095,9 @@ export function createHttpApp(
     const issued = exchangeResult;
     if (issued === null) return context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404);
     const secure = usesSecureApplicationCookies(dependencies);
-    const sessionName = secure ? secureGuestSessionCookie : guestSessionCookie;
-    const csrfName = secure ? secureGuestCsrfCookie : guestCsrfCookie;
+    const suffix = dependencies.organizationCookieSuffix ?? "";
+    const sessionName = `${secure ? secureGuestSessionCookie : guestSessionCookie}${suffix}`;
+    const csrfName = `${secure ? secureGuestCsrfCookie : guestCsrfCookie}${suffix}`;
     const expires = new Date(issued.expiresAt);
     setCookie(context, sessionName, Redacted.value(issued.sessionToken), {expires, httpOnly: true, maxAge: 7 * 24 * 60 * 60, path: "/", sameSite: "Strict", secure});
     setCookie(context, csrfName, issued.csrfToken, {expires, httpOnly: false, maxAge: 7 * 24 * 60 * 60, path: "/", sameSite: "Strict", secure});
@@ -3585,16 +3588,17 @@ function applicationCookieNames(
   readonly handshake: string;
   readonly session: string;
 } {
+  const suffix = dependencies.organizationCookieSuffix ?? "";
   return usesSecureApplicationCookies(dependencies)
     ? {
-      csrf: secureApplicationCsrfCookie,
-      handshake: secureLoginHandshakeCookie,
-      session: secureApplicationSessionCookie,
+      csrf: `${secureApplicationCsrfCookie}${suffix}`,
+      handshake: `${secureLoginHandshakeCookie}${suffix}`,
+      session: `${secureApplicationSessionCookie}${suffix}`,
     }
     : {
-      csrf: applicationCsrfCookie,
-      handshake: loginHandshakeCookie,
-      session: applicationSessionCookie,
+      csrf: `${applicationCsrfCookie}${suffix}`,
+      handshake: `${loginHandshakeCookie}${suffix}`,
+      session: `${applicationSessionCookie}${suffix}`,
     };
 }
 
@@ -3665,8 +3669,9 @@ async function requireGuestReviewer(
   mutation: boolean,
 ): Promise<GuestReviewer | null> {
   const secure = usesSecureApplicationCookies(dependencies);
-  const sessionName = secure ? secureGuestSessionCookie : guestSessionCookie;
-  const csrfName = secure ? secureGuestCsrfCookie : guestCsrfCookie;
+  const suffix = dependencies.organizationCookieSuffix ?? "";
+  const sessionName = `${secure ? secureGuestSessionCookie : guestSessionCookie}${suffix}`;
+  const csrfName = `${secure ? secureGuestCsrfCookie : guestCsrfCookie}${suffix}`;
   const rawSession = sessionTokenSchema.safeParse(getCookie(context, sessionName));
   if (!rawSession.success) return null;
   const session = await runHttpApplicationEffect(context, dependencies,

@@ -140,9 +140,53 @@ export interface ExternalStorageRuntime {
   ): Promise<DirectoryGroupSyncReport>;
 }
 
+/** Per-organization security values that differ on a shared process host. */
+export interface ExternalStorageOrgConfig {
+  readonly bootstrapApiToken?: Redacted.Redacted;
+  readonly cookieRouteId: string;
+}
+
+/** Open the single Postgres pool owned by an external-storage process. */
+export async function openExternalStorageDatabase(
+  config: ExternalStorageRuntimeConfig,
+  applicationName = `artifact-server:${config.installationId}`,
+): Promise<PostgresDatabase> {
+  return PostgresDatabase.open({
+    applicationName,
+    maxConnections: config.postgresMaxConnections ?? 10,
+    url: config.databaseUrl,
+  }, "validate");
+}
+
 /** Connect external providers, validate migrations, verify readiness, and build the app. */
 export async function createExternalStorageRuntime(
   config: ExternalStorageRuntimeConfig,
+): Promise<ExternalStorageRuntime> {
+  const database = await openExternalStorageDatabase(config);
+  try {
+    const runtime = await createOrgRuntime(config.installationId, {
+      bootstrapApiToken: config.apiToken,
+      cookieRouteId: "",
+    }, config, database);
+    return {
+      ...runtime,
+      close: async () => {
+        await runtime.close();
+        await Promise.all([config.objectStorage.close?.(), database.close()]);
+      },
+    };
+  } catch (cause) {
+    await Promise.all([config.objectStorage.close?.(), database.close()]);
+    throw cause;
+  }
+}
+
+/** Build one installation-scoped Hono app over shared process resources. */
+export async function createOrgRuntime(
+  installationId: string,
+  orgConfig: ExternalStorageOrgConfig,
+  config: ExternalStorageRuntimeConfig,
+  database: PostgresDatabase,
 ): Promise<ExternalStorageRuntime> {
   const runtimeClock = config.clock ?? new SystemClock();
   const stagingCleanupPolicy = config.stagingCleanupPolicy ??
@@ -151,18 +195,13 @@ export async function createExternalStorageRuntime(
   let applicationGitHistory = fixedGitHistoryCapabilityReader(
     gitHistory.capability,
   );
-  const database = await PostgresDatabase.open({
-    applicationName: `artifact-server:${config.installationId}`,
-    maxConnections: config.postgresMaxConnections ?? 10,
-    url: config.databaseUrl,
-  }, "validate");
   let objectStorage: ObjectStorageProvider | null = null;
   let applicationRuntime: ApplicationRuntime | null = null;
   let gitHistoryMonitor: GitHistoryCapabilityMonitor | null = null;
   let gitHistoryWorker: Awaited<ReturnType<typeof startGitHistoryMirrorWorker>> | null = null;
   try {
     const connectedObjectStorage = config.objectStorage.create(
-      config.installationId,
+      installationId,
     );
     objectStorage = connectedObjectStorage;
     await Promise.all([
@@ -171,11 +210,11 @@ export async function createExternalStorageRuntime(
     ]);
     const repository = await PostgresArtifactRepository.open(
       database,
-      config.installationId,
+      installationId,
     );
     const identityRepository = new PostgresIdentityRepository(
       database,
-      config.installationId,
+      installationId,
     );
     const configuredGitHistory = configuredNodeGitHistory(gitHistory);
     const gitHistoryProvider = configuredGitHistory === null
@@ -188,14 +227,16 @@ export async function createExternalStorageRuntime(
       ? null
       : new PostgresGitHistoryProviderIdentityStore(
         database,
-        config.installationId,
+        installationId,
       );
-    await ensureBootstrapManagedApiKey({
-      credential: config.apiToken,
-      installationId: config.installationId,
-      now: runtimeClock.now(),
-      repository: identityRepository,
-    });
+    if (orgConfig.bootstrapApiToken !== undefined) {
+      await ensureBootstrapManagedApiKey({
+        credential: orgConfig.bootstrapApiToken,
+        installationId,
+        now: runtimeClock.now(),
+        repository: identityRepository,
+      });
+    }
     const {blobs, staging} = connectedObjectStorage;
     const applicationAdapters: Parameters<typeof createApplicationLayer>[0] = {
       apiToken: null,
@@ -210,7 +251,7 @@ export async function createExternalStorageRuntime(
       groupRolePolicy: config.groupRolePolicy ?? null,
       ids: new SystemIdGenerator(),
       identityRepository,
-      installationId: config.installationId,
+      installationId,
       gitHistory: {read: () => applicationGitHistory.read()},
       interactiveIdentityProvider: config.interactiveIdentityProvider ?? null,
       localBootstrapCredential: config.localBootstrapCredential ?? null,
@@ -231,12 +272,12 @@ export async function createExternalStorageRuntime(
     const resources = Layer.effectDiscard(Effect.acquireRelease(
       Effect.void,
       () => Effect.promise(async () => {
-        await Promise.all([connectedObjectStorage.close(), database.close()]);
+        await connectedObjectStorage.close();
       }),
     ));
     const telemetry = otlpLayer({
       deploymentMode: "external-storage",
-      installationId: config.installationId,
+      installationId,
       serviceVersion: config.serviceVersion ?? "0.0.0",
     }).pipe(Layer.provideMerge(structuredLoggingLayer));
     applicationRuntime = ManagedRuntime.make(
@@ -264,7 +305,7 @@ export async function createExternalStorageRuntime(
       gitHistoryWorker = await startGitHistoryMirrorWorker({
         blobs,
         capability: applicationGitHistory,
-        installationId: config.installationId,
+        installationId,
         provider: gitHistoryProvider,
         store: repository,
       });
@@ -286,6 +327,12 @@ export async function createExternalStorageRuntime(
       webAssets: createNodeWebAssetStore(),
     };
     let configuredAppDependencies: HttpAppDependencies = appDependenciesWithoutOAuth;
+    if (orgConfig.cookieRouteId !== "") {
+      configuredAppDependencies = {
+        ...configuredAppDependencies,
+        organizationCookieSuffix: `-${orgConfig.cookieRouteId}`,
+      };
+    }
     if (config.embedOrigins !== undefined) {
       configuredAppDependencies = {...configuredAppDependencies, embedOrigins: config.embedOrigins};
     }
@@ -332,10 +379,7 @@ export async function createExternalStorageRuntime(
     if (gitHistoryWorker !== null) await gitHistoryWorker.close();
     if (gitHistoryMonitor !== null) await gitHistoryMonitor.close();
     if (applicationRuntime === null) {
-      await Promise.all([
-        objectStorage?.close() ?? Promise.resolve(),
-        database.close(),
-      ]);
+      await (objectStorage?.close() ?? Promise.resolve());
     } else {
       await applicationRuntime.dispose();
     }

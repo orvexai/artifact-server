@@ -80,9 +80,14 @@ export interface S3ObjectStorageAdapters {
 export function createS3ObjectStorageProviderFactory(
   config: S3ObjectStorageProviderConfig,
 ): ObjectStorageProviderFactory {
+  const client = new S3Client(createS3ClientConfig(config));
   return {
+    close: () => {
+      client.destroy();
+      return Promise.resolve();
+    },
     kind: "s3",
-    create: (installationId) => createS3ObjectStorageProvider(config, installationId),
+    create: (installationId) => createS3ObjectStorageProvider(config, client, installationId),
   };
 }
 
@@ -106,9 +111,9 @@ export function createS3ClientConfig(
 
 function createS3ObjectStorageProvider(
   config: S3ObjectStorageProviderConfig,
+  client: S3Client,
   installationId: string,
 ): ObjectStorageProvider {
-  const client = new S3Client(createS3ClientConfig(config));
   const adapters = createS3ObjectStorageAdapters({
     bucket: config.bucket,
     client,
@@ -117,10 +122,7 @@ function createS3ObjectStorageProvider(
   return {
     ...adapters,
     kind: "s3",
-    close: () => {
-      client.destroy();
-      return Promise.resolve();
-    },
+    close: () => Promise.resolve(),
     readiness: async (signal) => {
       await client.send(
         new HeadBucketCommand({Bucket: config.bucket}),
