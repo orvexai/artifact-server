@@ -1,3 +1,4 @@
+import {DatabaseSync} from "node:sqlite";
 import {Effect, Redacted} from "effect";
 import {afterAll, beforeAll, describe, expect, test} from "vitest";
 import {z} from "zod";
@@ -29,7 +30,7 @@ const mcpResultSchema = z.object({
 const mcpEnvelopeSchema = z.object({result: mcpResultSchema}).passthrough();
 const provisioner = {
   authorizedByPrincipalId: null,
-  capabilities: [principalCapabilities.readArtifactResponses, principalCapabilities.provisionProjects],
+  capabilities: [principalCapabilities.provisionProjects],
   directoryGroupIds: ["g-tenant-cli"],
   displayName: "tenant-cli",
   email: null,
@@ -146,6 +147,21 @@ describe("OIDC project provisioner MCP boundary", () => {
   });
 
   test("allows exactly five provisioner tools and creates a restricted two-group project", async () => {
+    const projectSeedRepository = new SqliteArtifactRepository(`${installation.dataDirectory}/artifact-server.db`, "local");
+    try {
+      await projectSeedRepository.createProject({
+        accessMode: "restricted",
+        archivedAt: null,
+        createdAt: "2026-11-12T00:00:00.000Z",
+        createdByMemberId: null,
+        createdByPrincipalId: "another-principal",
+        id: "another-principal-project",
+        installationId: "local",
+        name: "Another principal project",
+      });
+    } finally {
+      projectSeedRepository.close();
+    }
     const names = await call("oidc-tenant-cli", "tools/list", {}).then((result) =>
       z.object({tools: z.array(z.object({name: z.string()}))})
         .parse(result)["tools"].map(({name}) => name).toSorted()
@@ -162,6 +178,10 @@ describe("OIDC project provisioner MCP boundary", () => {
       name: "project_list", arguments: {},
     });
     expect(listed["isError"]).not.toBe(true);
+    const initialProjects = z.object({projects: z.array(z.object({id: z.string()}))})
+      .parse(listed["structuredContent"]).projects;
+    expect(initialProjects.some(({id}) => id === "default")).toBe(false);
+    expect(initialProjects.some(({id}) => id === "another-principal-project")).toBe(false);
 
     const created = await call("oidc-tenant-cli", "tools/call", {
       name: "project_create",
@@ -190,6 +210,12 @@ describe("OIDC project provisioner MCP boundary", () => {
       ],
       yourRole: "manager",
     });
+    const visibleProjects = z.object({projects: z.array(z.object({id: z.string()}))})
+      .parse((await call("oidc-tenant-cli", "tools/call", {
+        name: "project_list", arguments: {},
+      }))["structuredContent"]).projects;
+    expect(visibleProjects.map(({id}) => id)).toContain(sharing.projectId);
+    expect(visibleProjects.some(({id}) => id === "default")).toBe(false);
     const bareGroup = await call("oidc-tenant-cli", "tools/call", {
       name: "project_share",
       arguments: {group: "Support", projectId: sharing.projectId, role: "editor"},
@@ -237,6 +263,14 @@ describe("OIDC project provisioner MCP boundary", () => {
       name: "project_sharing", arguments: {projectId: sharing.projectId},
     });
     expect(details["isError"]).not.toBe(true);
+    const openProjectDetails = await call("oidc-tenant-cli", "tools/call", {
+      name: "project_sharing", arguments: {projectId: "default"},
+    });
+    expect(openProjectDetails["isError"]).toBe(true);
+    const unrelatedRestrictedProjectDetails = await call("oidc-tenant-cli", "tools/call", {
+      name: "project_sharing", arguments: {projectId: "another-principal-project"},
+    });
+    expect(unrelatedRestrictedProjectDetails["isError"]).toBe(true);
     const changedShare = await call("oidc-tenant-cli", "tools/call", {
       name: "project_share",
       arguments: {group: "/Tenant/Support", projectId: sharing.projectId, role: "editor"},
@@ -288,6 +322,94 @@ describe("OIDC project provisioner MCP boundary", () => {
       );
     } finally {
       repository.close();
+    }
+  });
+
+  test("provisioner completes the MCP initialize handshake before project creation over HTTP", async () => {
+    const initialized = await mcpRequestRaw("oidc-tenant-cli", JSON.stringify({
+      id: 1,
+      jsonrpc: "2.0",
+      method: "initialize",
+      params: {
+        capabilities: {},
+        clientInfo: {name: "tenant-cli-test", version: "1.0.0"},
+        protocolVersion: "2025-06-18",
+      },
+    }), "initialize");
+    expect(initialized.status).toBe(200);
+    expect(await readJsonRpc(initialized)).toMatchObject({
+      result: {protocolVersion: "2025-06-18"},
+    });
+
+    const ping = await mcpRequest("oidc-tenant-cli", "ping", {});
+    expect(ping.status).toBe(200);
+    expect(await readJsonRpc(ping)).toMatchObject({result: {}});
+
+    const notification = await mcpRequestRaw("oidc-tenant-cli", JSON.stringify({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+    }), "notifications/initialized");
+    expect([200, 202, 204]).toContain(notification.status);
+
+    const listed = await call("oidc-tenant-cli", "tools/list", {});
+    expect(z.object({tools: z.array(z.object({name: z.string()}))})
+      .parse(listed).tools.map(({name}) => name).toSorted())
+      .toEqual([...provisionerToolNames].toSorted());
+
+    const created = await call("oidc-tenant-cli", "tools/call", {
+      name: "project_create",
+      arguments: {name: "Handshake-created project", shareWith: []},
+    });
+    expect(created["isError"]).not.toBe(true);
+    expect(z.object({sharing: z.object({accessMode: z.literal("restricted")})})
+      .parse(created["structuredContent"]).sharing.accessMode).toBe("restricted");
+  });
+
+  test("create audit records only successful initial shares and audit outages do not fail creation", async () => {
+    const database = new DatabaseSync(`${installation.dataDirectory}/artifact-server.db`);
+    database.exec(`
+      CREATE TRIGGER reject_initial_group_share
+      BEFORE INSERT ON project_group_grants
+      BEGIN SELECT RAISE(ABORT, 'injected sharing failure'); END;
+    `);
+    try {
+      const created = await call("oidc-tenant-cli", "tools/call", {
+        name: "project_create",
+        arguments: {
+          name: "Initial share failure project",
+          shareWith: [{group: "/Tenant/CLI", role: "editor"}],
+        },
+      });
+      expect(created["isError"]).not.toBe(true);
+      const projectId = z.object({sharing: z.object({projectId: z.string()})})
+        .parse(created["structuredContent"]).sharing.projectId;
+      database.exec("DROP TRIGGER reject_initial_group_share;");
+      const repository = new SqliteArtifactRepository(
+        `${installation.dataDirectory}/artifact-server.db`,
+        "local",
+      );
+      try {
+        const audit = await repository.listProjectAuditEvents(projectId);
+        expect(audit.map(({action}) => action)).toEqual(["create"]);
+      } finally {
+        repository.close();
+      }
+
+      database.exec(`
+        CREATE TRIGGER reject_provisioner_audit
+        BEFORE INSERT ON project_provisioner_audit_events
+        BEGIN SELECT RAISE(ABORT, 'injected audit outage'); END;
+      `);
+      const auditOutageCreate = await call("oidc-tenant-cli", "tools/call", {
+        name: "project_create",
+        arguments: {name: "Audit outage project", shareWith: []},
+      });
+      expect(auditOutageCreate["isError"]).not.toBe(true);
+      database.exec("DROP TRIGGER reject_provisioner_audit;");
+    } finally {
+      database.exec("DROP TRIGGER IF EXISTS reject_initial_group_share;");
+      database.exec("DROP TRIGGER IF EXISTS reject_provisioner_audit;");
+      database.close();
     }
   });
 

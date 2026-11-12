@@ -202,7 +202,12 @@ async function deniedProvisionerTool(
       params: z.unknown().optional(),
     }).passthrough().safeParse(body);
     if (!envelope.success) return {id: null};
-    if (envelope.data.method === "tools/list") return null;
+    if ([
+      "initialize",
+      "notifications/initialized",
+      "ping",
+      "tools/list",
+    ].includes(envelope.data.method)) return null;
     if (envelope.data.method !== "tools/call") return {id: envelope.data.id ?? null};
     const params = z.object({name: z.string()}).passthrough().safeParse(envelope.data.params);
     return params.success && allowedTools.has(params.data.name)

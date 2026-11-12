@@ -361,11 +361,14 @@ function makeProjectManagementService(
       yield* authorization.requireProjectAccess(principal);
       const all = yield* dependencies.repository.listProjects();
       const visible: {readonly access: ProjectAccess; readonly project: ProjectRecord}[] = [];
+      const provisioner = hasCapability(principal, principalCapabilities.provisionProjects);
       for (const project of all) {
         const projectAccess = yield* access.projectAccess(principal, project.id);
         if (
           projectAccess !== null &&
-          (projectAccess.mode === "installation" || projectAccess.role !== null)
+          (provisioner
+            ? projectAccess.mode === "restricted" && projectAccess.role !== null
+            : projectAccess.mode === "installation" || projectAccess.role !== null)
         ) {
           visible.push({access: projectAccess, project});
         }
@@ -515,9 +518,9 @@ function makeProjectManagementService(
     if (!hasCapability(principal, principalCapabilities.provisionProjects)) return;
     const clientId = principal.serviceAccountClientId;
     if (clientId === undefined) {
-      yield* Effect.fail(new AuthorizationDenied({
-        message: "Provisioner activity requires a verified service client identity.",
-      }));
+      yield* Effect.logError("Provisioner audit event was skipped: verified service client identity is missing.").pipe(
+        Effect.annotateLogs({action, principalId: principal.id, projectId}),
+      );
       return;
     }
     const event: ProjectProvisionerAuditEvent = {
@@ -529,7 +532,18 @@ function makeProjectManagementService(
       principalId: principal.id,
       projectId,
     };
-    yield* dependencies.repository.recordProjectProvisionerAuditEvent(event);
+    yield* dependencies.repository.recordProjectProvisionerAuditEvent(event).pipe(
+      Effect.catchTag("ArtifactRepositoryFailure", (failure) =>
+        Effect.logError(`Provisioner audit event could not be persisted: ${failure.operation}`).pipe(
+          Effect.annotateLogs({
+            action,
+            clientId,
+            principalId: principal.id,
+            projectId,
+          }),
+        )
+      ),
+    );
   });
 
   const createProject = Effect.fn("ProjectManagementService.createProject")(
@@ -569,19 +583,22 @@ function makeProjectManagementService(
       // removed by directory sync) must not report the whole create as
       // failed: the caller reads the shares that took effect from sharing.
       for (const grant of grants) {
-        yield* access.projectSharing.put({
+        const shareSucceeded = yield* access.projectSharing.put({
           grantedAt: createdAt,
           grantedByPrincipalId: command.principal.id,
           groupId: grant.groupId,
           projectId: project.id,
           role: grant.role,
-        }).pipe(Effect.catchTag("IdentityRepositoryFailure", (failure) =>
-          Effect.logWarning(
+        }).pipe(
+          Effect.as(true),
+          Effect.catchTag("IdentityRepositoryFailure", (failure) =>
+            Effect.logWarning(
             `Project ${project.id} was created but not shared with ${grant.groupId}: ${failure.operation}`,
-          )
-        ));
+            ).pipe(Effect.as(false))
+          ),
+        );
         const group = directory.find((candidate) => candidate.id === grant.groupId);
-        if (group !== undefined) {
+        if (shareSucceeded && group !== undefined) {
           yield* recordProvisionerAudit(command.principal, project.id, "share", {
             groupId: group.id,
             groupPath: group.path,
@@ -655,6 +672,12 @@ function makeProjectManagementService(
         command.projectId,
         "viewer",
       );
+      if (
+        hasCapability(command.principal, principalCapabilities.provisionProjects) &&
+        (found.access.mode !== "restricted" || found.access.role === null)
+      ) {
+        return yield* new ProjectNotFound({message: "The project does not exist."});
+      }
       return yield* sharingOf(found.project, found.access);
     },
   );

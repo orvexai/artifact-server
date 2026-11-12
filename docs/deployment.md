@@ -155,11 +155,12 @@ MCP, the client can call only `project_list`, `project_create`,
 `project_sharing`, `project_share`, and `project_set_access`; tools/list exposes
 only those five. MCP resources and prompts are unavailable to provisioners.
 Project creation is restricted and records the service principal as creator.
-The creator can manage its own projects, while other projects still require the
-normal project role. A provisioner cannot open projects to the installation or
-grant manager roles. Every shared group must use an existing full path beneath
-one of the configured prefixes. Each provisioner create/share/access change
-records an audit event with its principal and client IDs.
+A provisioner can manage only projects it created; a manager grant on another
+project does not give it management rights. A provisioner cannot open projects
+to the installation or grant manager roles. Every shared group must use an
+existing full path beneath one of the configured prefixes. Each provisioner
+create/share/access change records an audit event with its principal and client
+IDs.
 
 This setting grants no API-key capability. The existing `/api` service-bearer
 restriction remains in force.

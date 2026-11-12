@@ -1163,7 +1163,10 @@ function makeInstallationAccessService(
       return {
         authorizedByPrincipalId: null,
         capabilities: [
-          principalCapabilities.readArtifactResponses,
+          ...(identity.provisionProjectsServiceAccount !== true ||
+              identity.embedBindingServiceAccount === true
+            ? [principalCapabilities.readArtifactResponses]
+            : []),
           ...(identity.embedBindingServiceAccount === true
             ? [principalCapabilities.bindArtifactEmbed]
             : []),
