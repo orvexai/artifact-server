@@ -1026,6 +1026,16 @@ export function createApplicationLayer(
         ),
     });
   }
+  if (identityRepository.reactivateMember !== undefined) {
+    Object.assign(installationAccessDependencies.repository, {
+      reactivateMember: (installationId: string, memberId: string, updatedAt: string) =>
+        identityEffectWithConflictOrNotFound(
+          "reactivateMember",
+          () => identityRepository.reactivateMember?.(installationId, memberId, updatedAt) ??
+            Promise.reject(new Error("Organization member reactivation is unavailable.")),
+        ),
+    });
+  }
   if (identityRepository.applyOrganizationMemberSnapshot !== undefined) {
     Object.assign(installationAccessDependencies.repository, {
       applyOrganizationMemberSnapshot: (

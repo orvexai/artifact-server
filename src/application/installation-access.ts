@@ -184,6 +184,12 @@ export interface InstallationIdentityRepository {
     InstallationMember,
     IdentityConflict | IdentityNotFound | IdentityRepositoryFailure
   >;
+  readonly reactivateMember?: (
+    installationId: string,
+    memberId: string,
+    updatedAt: string,
+  ) => Effect.Effect<InstallationMember,
+    IdentityConflict | IdentityNotFound | IdentityRepositoryFailure>;
   readonly findActiveMemberByEmail: (
     installationId: string,
     email: string,
@@ -381,6 +387,11 @@ export interface InstallationAccessOperations {
     InstallationMember,
     AuthorizationDenied | IdentityConflict | IdentityNotFound | IdentityRepositoryFailure
   >;
+  readonly reactivateMember?: (
+    principal: Principal,
+    memberId: string,
+  ) => Effect.Effect<InstallationMember,
+    AuthorizationDenied | IdentityConflict | IdentityNotFound | IdentityRepositoryFailure>;
   readonly issueApiKey: (
     command: IssueApiKeyCommand,
   ) => Effect.Effect<
@@ -1497,6 +1508,25 @@ function makeInstallationAccessService(
     return member;
   });
 
+  const reactivateMember = Effect.fn(
+    "InstallationAccessService.reactivateMember",
+  )(function*(principal: Principal, memberId: string) {
+    yield* requireAdministrator(principal, dependencies.installationId);
+    if (dependencies.organizationAdmission === undefined ||
+      dependencies.repository.reactivateMember === undefined) {
+      return yield* Effect.fail(new AuthorizationDenied({
+        message: "Member reactivation is available only for organization installations.",
+      }));
+    }
+    const member = yield* dependencies.repository.reactivateMember(
+      dependencies.installationId,
+      memberId,
+      dependencies.clock.now().toISOString(),
+    );
+    clearAuthenticationCaches();
+    return member;
+  });
+
   const issueApiKey = Effect.fn(
     "InstallationAccessService.issueApiKey",
   )(function*(command: IssueApiKeyCommand) {
@@ -1634,6 +1664,7 @@ function makeInstallationAccessService(
     authenticateSession,
     completeExternalIdentity,
     deactivateMember,
+    reactivateMember,
     findActiveHumanPrincipal,
     issueApiKey,
     issueLocalBrowserLogin,

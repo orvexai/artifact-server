@@ -349,9 +349,11 @@ function configureOrganizations(program: Command): void {
       }
     });
   organization.command("suspend")
-    .description("Suspend an organization and deactivate its members.")
+    .description("Suspend an organization and deactivate its members; reversible only with org resume.")
     .argument("<slug>", "registered Artifact Server organization slug")
-    .action(async (slug: string) => {
+    .option("--yes", "confirm suspension of this organization")
+    .action(async (slug: string, options: {readonly yes?: boolean}) => {
+      if (options.yes !== true) throw new Error("Organization suspension requires --yes.");
       const configuration = await runCliEffect(
         parseExternalMigrationConfiguration(process.env),
       );
@@ -362,6 +364,24 @@ function configureOrganizations(program: Command): void {
       });
       try {
         console.log(JSON.stringify(await new OrganizationRegistry(database).suspend(slug), null, 2));
+      } finally {
+        await database.close();
+      }
+    });
+  organization.command("resume")
+    .description("Resume an organization suspended with org suspend.")
+    .argument("<slug>", "registered Artifact Server organization slug")
+    .action(async (slug: string) => {
+      const configuration = await runCliEffect(
+        parseExternalMigrationConfiguration(process.env),
+      );
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-org-resume:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        console.log(JSON.stringify(await new OrganizationRegistry(database).resume(slug), null, 2));
       } finally {
         await database.close();
       }

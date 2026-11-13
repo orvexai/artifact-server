@@ -202,16 +202,39 @@ describe("Keycloak directory sync", () => {
     const firstMember = keycloakUser("drift-first");
     const secondMember = keycloakUser("drift-second");
     keycloak.organizations.set(driftedOrganization.id, driftedOrganization);
-    keycloak.organizationMembers.set(driftedOrganization.id, [firstMember]);
+    const replacedMember = keycloakUser("drift-replaced");
+    keycloak.organizationMembers.set(driftedOrganization.id, [firstMember, secondMember]);
     keycloak.organizationRoleGroups.set(driftedOrganization.id, new Map());
     keycloak.replaceOrganizationMembersAfterNextRead(driftedOrganization.id, [
       firstMember,
-      secondMember,
+      replacedMember,
     ]);
     expect(await Effect.runPromise(directory.listOrganizationMembers(driftedOrganization)))
       .toMatchObject([
         {id: "user-drift-first", role: "viewer"},
-        {id: "user-drift-second", role: "viewer"},
+        {id: "user-drift-replaced", role: "viewer"},
+      ]);
+
+    const roleDriftOrganization = {
+      alias: "org-role-drift",
+      enabled: true,
+      id: crypto.randomUUID(),
+      name: "Drifting role group",
+    };
+    const roleBefore = keycloakUser("role-before");
+    const roleAfter = keycloakUser("role-after");
+    keycloak.organizations.set(roleDriftOrganization.id, roleDriftOrganization);
+    keycloak.organizationMembers.set(roleDriftOrganization.id, [roleBefore, roleAfter]);
+    keycloak.organizationRoleGroups.set(roleDriftOrganization.id, new Map([
+      ["/owner", [roleBefore]],
+    ]));
+    keycloak.replaceOrganizationRoleGroupAfterNextRead(
+      roleDriftOrganization.id, "/owner", [roleAfter],
+    );
+    expect(await Effect.runPromise(directory.listOrganizationMembers(roleDriftOrganization)))
+      .toMatchObject([
+        {id: "user-role-before", role: "viewer"},
+        {id: "user-role-after", role: "owner"},
       ]);
 
     const continuouslyChangingOrganization = {

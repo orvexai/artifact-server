@@ -48,6 +48,7 @@ export interface RunningStubKeycloak {
   readonly organizationRoleGroupIds: Map<string, Map<string, string>>;
   replaceOrganizationMembersAfterNextRead(organizationId: string, members: StubKeycloakUser[]): void;
   changeOrganizationMembersAfterReads(organizationId: string, replacements: StubKeycloakUser[][]): void;
+  replaceOrganizationRoleGroupAfterNextRead(organizationId: string, path: string, members: StubKeycloakUser[]): void;
   readonly issuer: string;
   adminRequests(): readonly StubKeycloakAdminRequest[];
   /**
@@ -76,6 +77,7 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
   const organizationRoleGroups = new Map<string, Map<string, StubKeycloakUser[]>>();
   const organizationRoleGroupIds = new Map<string, Map<string, string>>();
   const replacementAfterMemberRead = new Map<string, StubKeycloakUser[][]>();
+  const replacementAfterRoleGroupRead = new Map<string, Map<string, StubKeycloakUser[]>>();
   const groupIds = new Map<string, string>();
   const adminRequests: StubKeycloakAdminRequest[] = [];
   const issuedTokens = new Set<string>();
@@ -214,7 +216,14 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
           json(failingPage.status, JSON.stringify({error: "server_error"}));
           return;
         }
-        json(200, JSON.stringify(page(users, query.first, query.max)));
+        const responsePage = page(users, query.first, query.max);
+        const replacements = replacementAfterRoleGroupRead.get(organizationId);
+        const replacement = replacements?.get(pathName ?? "");
+        if (replacement !== undefined) {
+          roleGroups?.set(pathName ?? "", replacement);
+          replacements?.delete(pathName ?? "");
+        }
+        json(200, JSON.stringify(responsePage));
         return;
       }
       const organizationMembersMatch = /^\/organizations\/([^/]+)\/members$/u.exec(path);
@@ -335,6 +344,11 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
     },
     changeOrganizationMembersAfterReads: (organizationId, replacements) => {
       replacementAfterMemberRead.set(organizationId, [...replacements]);
+    },
+    replaceOrganizationRoleGroupAfterNextRead: (organizationId, path, members) => {
+      const replacements = replacementAfterRoleGroupRead.get(organizationId) ?? new Map();
+      replacements.set(path, members);
+      replacementAfterRoleGroupRead.set(organizationId, replacements);
     },
     issuer,
     setTokenStatus: (status) => {

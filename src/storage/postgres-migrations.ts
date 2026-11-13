@@ -993,7 +993,13 @@ const addOrganizationAdmissionPolicy = Effect.gen(function*() {
 const addOrgTenancyIdentityFields = Effect.gen(function*() {
   const sql = yield* SqlClient;
   yield* sql.unsafe(`ALTER TABLE installation_members
-    ADD COLUMN manual_deactivation BOOLEAN NOT NULL DEFAULT FALSE`);
+    ADD COLUMN IF NOT EXISTS manual_deactivation BOOLEAN NOT NULL DEFAULT FALSE`);
+  yield* sql.unsafe(`ALTER TABLE installation_members
+    ADD COLUMN IF NOT EXISTS suspended_by_org_at TIMESTAMPTZ`);
+  yield* sql.unsafe(`ALTER TABLE installation_members
+    ADD COLUMN IF NOT EXISTS pre_suspend_status TEXT`);
+  yield* sql.unsafe(`ALTER TABLE installation_members
+    ADD COLUMN IF NOT EXISTS pre_suspend_manual_deactivation BOOLEAN`);
   yield* sql.unsafe(`ALTER TABLE artifact_installations
     ADD COLUMN keycloak_organization_id TEXT`);
   yield* sql.unsafe(`CREATE UNIQUE INDEX artifact_installations_keycloak_org_unique

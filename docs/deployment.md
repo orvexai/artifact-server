@@ -50,8 +50,10 @@ The sync command reports disappeared organizations but never deletes or
 suspends them. An enabled organization with zero members is reported as
 `emptied` and makes the command exit non-zero to raise an alert. Investigate
 the Keycloak membership first; when suspension is intended, run
-`artifact-server org suspend <slug>`. This deactivates that installation's
-members, revokes their sessions and human API keys, and suspends its route.
+`artifact-server org suspend <slug> --yes`. This deactivates every member,
+revokes their sessions and human API keys, and suspends its route. Suspension
+is reversible only with `artifact-server org resume <slug>`, which restores
+members to their prior active/inactive and manual-deactivation state.
 Artifact Server administrator deactivations are sticky; only a
 Keycloak-driven deactivation is automatically reversed when the member returns.
 

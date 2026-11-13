@@ -1676,6 +1676,18 @@ export function createHttpApp(
     return context.json({member});
   });
 
+  app.post("/api/v1/members/:memberId/reactivate", async (context) => {
+    const member = await runHttpApplicationEffect(
+      context,
+      dependencies,
+      InstallationAccessService.use((access) =>
+        access.reactivateMember?.(context.get("principal"), context.req.param("memberId"))
+          ?? Effect.fail(new AuthorizationDenied({message: "Member reactivation is unavailable."}))
+      ),
+    );
+    return context.json({member});
+  });
+
   app.get("/api/v1/api-keys", async (context) => {
     const apiKeys = await runHttpApplicationEffect(
       context,

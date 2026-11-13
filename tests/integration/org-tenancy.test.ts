@@ -186,6 +186,7 @@ const pendingCrossOrgCases = [
   "hono:POST /api/v1/embed/artifacts/:artifactId/binding",
   "hono:POST /api/v1/members",
   "hono:POST /api/v1/members/:memberId/deactivate",
+  "hono:POST /api/v1/members/:memberId/reactivate",
   "hono:POST /api/v1/projects",
   "hono:POST /api/v1/projects/:projectId/archive",
   "hono:POST /api/v1/projects/:projectId/artifacts/:artifactId/comments/clear",
@@ -247,6 +248,7 @@ const pendingCrossOrgCases = [
   "mcp:comment_update",
   "mcp:dispatch_inbox",
   "mcp:group_list",
+  "mcp:member_reactivate",
   "mcp:group_set_role",
   "mcp:project_archive",
   "mcp:project_create",
@@ -1057,6 +1059,34 @@ describe.sequential("organization tenancy security boundary", () => {
       const ownerRepo = new PostgresIdentityRepository(database, orgA.id);
       const ownerIds = z.array(z.string()).parse(memberRows.map((row) => row["id"]));
       expect(ownerIds).toHaveLength(2);
+      const secondOwnerRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT id FROM installation_members
+          WHERE installation_id = ${orgA.id} AND email = 'owner-a-two@example.test'`;
+      }));
+      const secondOwnerId = z.string().parse(secondOwnerRows[0]?.["id"]);
+      await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        yield* sql`UPDATE installation_members SET status = 'inactive',
+          manual_deactivation = TRUE WHERE installation_id = ${orgA.id} AND id = ${secondOwnerId}`;
+      }));
+      snapshotA = [
+        {...ownerA, role: "editor" as const},
+        {...secondOwnerA, role: "owner" as const},
+      ];
+      await runtimeA.syncOrganizationMembers(directory, organizationA);
+      const protectedOwner = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT role FROM installation_members
+          WHERE installation_id = ${orgA.id} AND email = 'owner-a@example.test'`;
+      }));
+      expect(protectedOwner[0]?.["role"]).toBe("owner");
+      await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        yield* sql`UPDATE installation_members SET status = 'active',
+          manual_deactivation = FALSE WHERE installation_id = ${orgA.id} AND id = ${secondOwnerId}`;
+      }));
+      snapshotA = usersA;
       await Promise.all(ownerIds.map((memberId) => ownerRepo.setOrganizationMemberRole(
         orgA.id, memberId, "member", new Date().toISOString(),
       )));
@@ -1140,6 +1170,26 @@ describe.sequential("organization tenancy security boundary", () => {
           WHERE installation_id = ${orgA.id} AND id = ${editorId}`;
       }));
       expect(stillManualRows[0]).toMatchObject({status: "inactive", manual_deactivation: true});
+      const reactivated = await fetch(`${baseUrl}/o/${aliasA}/api/v1/members/${editorId}/reactivate`, {
+        method: "POST",
+        headers: {
+          Cookie: cookieA,
+          Host: "artifacts.example.com",
+          Origin: "https://artifacts.example.com",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfCookie,
+        },
+        body: "{}",
+      });
+      expect(reactivated.status).toBe(200);
+      const reactivatedManualRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT status, manual_deactivation FROM installation_members
+          WHERE installation_id = ${orgA.id} AND id = ${editorId}`;
+      }));
+      expect(reactivatedManualRows[0]).toMatchObject({status: "active", manual_deactivation: false});
       const loginB = await startRoutedOidcLogin(baseUrl, aliasB);
       const completedB = await fetch(loginB.callbackUrl, {
         headers: {Cookie: loginB.handshakeCookie},
@@ -1175,6 +1225,20 @@ describe.sequential("organization tenancy security boundary", () => {
         .toMatchObject({kind: "conflict"});
       await expect(registry.syncKeycloakOrganization("Invalid Slug", "Invalid", randomUUID()))
         .rejects.toThrow(/slug/u);
+      const manuallyDeactivatedAgain = await fetch(`${baseUrl}/o/${aliasA}/api/v1/members/${editorId}/deactivate`, {
+        method: "POST",
+        headers: {
+          Cookie: cookieA,
+          Host: "artifacts.example.com",
+          Origin: "https://artifacts.example.com",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfCookie,
+        },
+        body: "{}",
+      });
+      expect(manuallyDeactivatedAgain.status).toBe(200);
       snapshotA = [];
       expect(await runtimeA.syncOrganizationMembers(directory, organizationA))
         .toMatchObject({kind: "emptied"});
@@ -1182,9 +1246,27 @@ describe.sequential("organization tenancy security boundary", () => {
       const suspendedRows = await database.run(Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_members
-          WHERE installation_id = ${orgA.id} AND status = 'active'`;
+          WHERE installation_id = ${orgA.id} AND suspended_by_org_at IS NOT NULL
+            AND status = 'inactive' AND manual_deactivation = TRUE`;
       }));
-      expect(suspendedRows[0]?.["count"]).toBe(0);
+      const allOrgMembers = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_members
+          WHERE installation_id = ${orgA.id}`;
+      }));
+      expect(suspendedRows[0]?.["count"]).toBe(allOrgMembers[0]?.["count"]);
+      snapshotA = usersA;
+      await expect(runtimeA.syncOrganizationMembers(directory, organizationA))
+        .rejects.toThrow("suspended organization installation");
+      expect(await registry.resume(aliasA)).toMatchObject({status: "active"});
+      const resumedEditor = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT status, manual_deactivation, suspended_by_org_at
+          FROM installation_members WHERE installation_id = ${orgA.id} AND id = ${editorId}`;
+      }));
+      expect(resumedEditor[0]).toMatchObject({
+        status: "inactive", manual_deactivation: true, suspended_by_org_at: null,
+      });
     } finally {
       await Promise.all([runtimeA.close(), runtimeB.close()]);
     }

@@ -78,6 +78,11 @@ export interface IdentityRepository {
     updatedAt: string,
     manualDeactivation?: boolean,
   ): Promise<InstallationMember>;
+  reactivateMember?(
+    installationId: string,
+    memberId: string,
+    updatedAt: string,
+  ): Promise<InstallationMember>;
   findActiveMemberByEmail(
     installationId: string,
     email: string,

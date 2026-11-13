@@ -305,8 +305,11 @@ export class OrganizationRegistry {
           hashtextextended(${`artifact-server:member-policy:${organization.id}`}, 0)
         )`;
         const members = yield* sql`UPDATE installation_members SET
+          suspended_by_org_at = COALESCE(suspended_by_org_at, ${updatedAt}),
+          pre_suspend_status = COALESCE(pre_suspend_status, status),
+          pre_suspend_manual_deactivation = COALESCE(pre_suspend_manual_deactivation, manual_deactivation),
           status = 'inactive', manual_deactivation = TRUE, updated_at = ${updatedAt}
-          WHERE installation_id = ${organization.id} AND status = 'active'
+          WHERE installation_id = ${organization.id}
           RETURNING id`;
         const memberIds = members.map((member) => member["id"]);
         if (memberIds.length > 0) {
@@ -324,6 +327,37 @@ export class OrganizationRegistry {
       }));
     }));
     if (rows[0] === undefined) throw new Error(`Organization '${slug}' disappeared while being suspended.`);
+    return organizationSchema.parse(rows[0]);
+  }
+
+  async resume(slug: string): Promise<OrganizationRecord> {
+    const organization = await this.find(slug);
+    if (organization === null) throw new Error(`No organization '${slug}' is registered.`);
+    if (organization.slug === "orvex") throw new Error("The Orvex installation cannot be resumed with this command.");
+    const updatedAt = new Date().toISOString();
+    const rows = await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:directory-groups:${organization.id}`}, 0)
+        )`;
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:member-policy:${organization.id}`}, 0)
+        )`;
+        yield* sql`UPDATE installation_members SET
+          status = COALESCE(pre_suspend_status, 'inactive'),
+          manual_deactivation = COALESCE(pre_suspend_manual_deactivation, FALSE),
+          suspended_by_org_at = NULL, pre_suspend_status = NULL,
+          pre_suspend_manual_deactivation = NULL, updated_at = ${updatedAt}
+          WHERE installation_id = ${organization.id} AND suspended_by_org_at IS NOT NULL`;
+        return yield* sql`UPDATE artifact_installations SET status = 'active'
+          WHERE id = ${organization.id}
+          RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
+            status, admission_policy AS "admissionPolicy",
+            keycloak_organization_id AS "keycloakId"`;
+      }));
+    }));
+    if (rows[0] === undefined) throw new Error(`Organization '${slug}' disappeared while being resumed.`);
     return organizationSchema.parse(rows[0]);
   }
 }
