@@ -312,8 +312,8 @@ export interface InstallationAccessDependencies {
   /** Let non-guest tenant members read their org-scoped directory. */
   readonly organizationDirectoryVisibility?: boolean | undefined;
   /**
-   * This tenant's Orvex staff definition: platform staff groups plus the
-   * org's own staff selectors, staff email domains and trusted providers.
+   * This tenant's Orvex staff definition: platform staff groups ({slug}
+   * expanded) plus the org's own staff selectors.
    */
   readonly tenantStaff?: TenantStaffDefinition | undefined;
   readonly localBootstrapCredential: Redacted.Redacted | null;
@@ -1360,19 +1360,13 @@ function makeInstallationAccessService(
     yield* dependencies.repository.bindExternalIdentity(binding);
     const tenantStaff = dependencies.tenantStaff ?? emptyTenantStaffDefinition;
     if (dependencies.organizationDirectoryVisibility === true &&
-      (groupRolePolicy !== null || tenantStaff.groups.length > 0 || tenantStaff.emailDomains.length > 0)) {
+      (groupRolePolicy !== null || tenantStaff.groups.length > 0)) {
       const fullPathGroups = (identity.groups ?? []).filter((group) => group.startsWith("/"));
       if (fullPathGroups.length === 0) yield* Effect.logWarning("Tenant login carried no full-path groups; retaining sticky staff privacy marker.");
-      // Only a provider-verified email may mark staff by domain; a staff
-      // group covers its subgroups.
+      // Staff come only from staff groups; each covers its subgroups.
       const matchedStaffSelector = tenantLoginIsStaff({
-        email,
-        emailVerified: identity.emailVerified,
         groups: fullPathGroups,
-        identityProvider: identity.identityProvider,
         seed: groupRolePolicy?.seed ?? [],
-        staffEmailDomains: tenantStaff.emailDomains,
-        staffEmailTrustedIdps: tenantStaff.emailTrustedIdps,
         staffGroups: tenantStaff.groups,
       });
       // This persisted marker is intentionally sticky: old authored content

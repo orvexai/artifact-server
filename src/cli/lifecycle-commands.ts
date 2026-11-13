@@ -61,11 +61,7 @@ import {
   type OrganizationAdmissionPolicy,
 } from "../external-storage/organization-registry.js";
 import {
-  organizationStaffEmailDomainsVariable,
-  organizationStaffEmailTrustedIdpsVariable,
   organizationStaffGroupsVariable,
-  parseOrganizationStaffEmailDomains,
-  parseOrganizationStaffEmailTrustedIdps,
   parseOrganizationStaffGroups,
   requireOrganizationStaffGroups,
 } from "../external-storage/organization-staff-groups.js";
@@ -478,12 +474,6 @@ async function syncKeycloakOrganizations(
   const organizationStaffGroups = requireOrganizationStaffGroups(
     parseOrganizationStaffGroups(process.env[organizationStaffGroupsVariable]),
   );
-  const organizationStaffEmailDomains = parseOrganizationStaffEmailDomains(
-    process.env[organizationStaffEmailDomainsVariable],
-  );
-  const organizationStaffEmailTrustedIdps = parseOrganizationStaffEmailTrustedIdps(
-    process.env[organizationStaffEmailTrustedIdpsVariable],
-  );
   assertAtMostOneBrowserLoginProvider(process.env);
   const oidc = await loadOidcConfiguration({
     ...process.env,
@@ -564,8 +554,6 @@ async function syncKeycloakOrganizations(
           applicationOrigin: new URL(`/o/${organization.slug}`, configuration.applicationOrigin).toString(),
         }, {
           ...externalMaintenanceConfig(configuration),
-          organizationStaffEmailDomains,
-          organizationStaffEmailTrustedIdps,
           organizationStaffGroups,
         }, database);
         try {
@@ -575,6 +563,10 @@ async function syncKeycloakOrganizations(
             emptied.push({alias: keycloakOrganization.alias, reason: memberReport.reason});
           } else {
             memberSync.push({alias: keycloakOrganization.alias, report: memberReport});
+            const missing = "staffGroupsMissing" in memberReport ? memberReport.staffGroupsMissing ?? [] : [];
+            if (missing.length > 0) {
+              console.warn(`Organization ${keycloakOrganization.alias}: staff groups not found in Keycloak, counted as having no members: ${missing.join(", ")}`);
+            }
           }
         } finally {
           // oxlint-disable-next-line eslint/no-await-in-loop
@@ -783,12 +775,6 @@ function configureExternalStorageStart(
         process.env[organizationStaffGroupsVariable],
       );
       if (organizationTenancy) requireOrganizationStaffGroups(organizationStaffGroups);
-      const organizationStaffEmailDomains = parseOrganizationStaffEmailDomains(
-        process.env[organizationStaffEmailDomainsVariable],
-      );
-      const organizationStaffEmailTrustedIdps = parseOrganizationStaffEmailTrustedIdps(
-        process.env[organizationStaffEmailTrustedIdpsVariable],
-      );
       const parsed = await parseExternalConfiguration(options.host, options.port);
       const embedOrigins = loadEmbedOrigins(process.env);
       writeGitHistoryConfigurationWarnings(parsed.gitHistory);
@@ -820,8 +806,6 @@ function configureExternalStorageStart(
         gitHistory: parsed.gitHistory,
         hostname: parsed.hostname,
         installationId: parsed.installationId,
-        organizationStaffEmailDomains,
-        organizationStaffEmailTrustedIdps,
         organizationStaffGroups,
         organizationTenancy,
         objectStorage: parsed.objectStorage,

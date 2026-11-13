@@ -125,16 +125,6 @@ export interface ExternalStorageRuntimeConfig {
    * exact group paths masked as staff in every non-Orvex organization.
    */
   readonly organizationStaffGroups?: readonly string[];
-  /**
-   * Verified-email domains of Orvex staff (ARTIFACT_SERVER_ORG_STAFF_EMAIL_DOMAINS),
-   * matched exactly in every non-Orvex organization.
-   */
-  readonly organizationStaffEmailDomains?: readonly string[];
-  /**
-   * Identity-provider aliases trusted to assert staff emails
-   * (ARTIFACT_SERVER_ORG_STAFF_EMAIL_TRUSTED_IDPS), such as `google`.
-   */
-  readonly organizationStaffEmailTrustedIdps?: readonly string[];
   readonly installationId: string;
   /** Verified Keycloak org claims; composed by the identity provider layer. */
   readonly organizationMemberships?: OrganizationMembershipResolver;
@@ -614,16 +604,14 @@ export function tenantStaffGroupPaths(
  * groups have `{slug}` expanded; only those templated paths may be missing.
  */
 export function tenantStaffDefinition(
-  config: Pick<ExternalStorageRuntimeConfig, "organizationStaffEmailDomains" | "organizationStaffEmailTrustedIdps" | "organizationStaffGroups">,
+  config: Pick<ExternalStorageRuntimeConfig, "organizationStaffGroups">,
   policy: GroupRolePolicy | null,
   slug: string,
 ): TenantStaffDefinition {
   const platform = config.organizationStaffGroups ?? [];
   return {
-    emailDomains: config.organizationStaffEmailDomains ?? [],
-    emailTrustedIdps: config.organizationStaffEmailTrustedIdps ?? [],
     groups: tenantStaffGroupPaths(platform, policy, slug),
-    groupsMissingIsEmpty: expandOrganizationStaffGroups(
+    groupsMayBeMissing: expandOrganizationStaffGroups(
       platform.filter((group) => group.includes(organizationSlugPlaceholder)),
       slug,
     ),

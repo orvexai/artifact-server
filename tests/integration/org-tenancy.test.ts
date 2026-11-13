@@ -2586,7 +2586,6 @@ describe.sequential("organization tenancy security boundary", () => {
     ];
     const staffLookups: string[] = [];
     const directory: OrganizationDirectory = {
-      listFederatedIdentityProviders: () => Effect.succeed([]),
       listGroupMemberIdsByPath: (path) => {
         staffLookups.push(path);
         return Effect.succeed(path === `${groupRoot}support` ? ["kc-staff"] : []);
@@ -2636,7 +2635,6 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(synced.organization.admissionPolicy).toBeNull();
     const organization: DirectoryOrganization = {alias, id: keycloakId, name: "Synced Org"};
     const directory: OrganizationDirectory = {
-      listFederatedIdentityProviders: () => Effect.succeed([]),
       listGroupMemberIdsByPath: (path) => Effect.succeed(path === "/Developers" ? ["kc-dev"] : []),
       listOrganizationMembers: () => Effect.succeed([
         {id: "kc-client", username: "client", email: `client@${alias}.test`, emailVerified: true, enabled: true, firstName: null, lastName: null, role: "owner"},
@@ -2700,7 +2698,6 @@ describe.sequential("organization tenancy security boundary", () => {
     ];
     let snapshotA: readonly DirectoryOrganizationMember[] = usersA;
     const directory: OrganizationDirectory = {
-      listFederatedIdentityProviders: () => Effect.succeed([]),
       // The platform staff group (/Developers) has no members in this fixture.
       listGroupMemberIdsByPath: () => Effect.succeed([]),
       listOrganizations: () => Effect.succeed([organizationA, organizationB]),
@@ -3093,7 +3090,6 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(resumedOwner[0]).toMatchObject({role: "owner", status: "active"});
 
       const failingDirectory: OrganizationDirectory = {
-        listFederatedIdentityProviders: directory.listFederatedIdentityProviders,
         listGroupMemberIdsByPath: directory.listGroupMemberIdsByPath,
         listOrganizations: directory.listOrganizations,
         listOrganizationMembers: () => Effect.fail(new DirectoryUnavailable({
