@@ -119,7 +119,7 @@ export interface ExternalStorageRuntimeConfig {
   readonly installationId: string;
   /** Verified Keycloak org claims; composed by the identity provider layer. */
   readonly organizationMemberships?: OrganizationMembershipResolver;
-  readonly issuePlatformSession?: (identity: ExternalIdentity) => Promise<string>;
+  readonly issuePlatformSession?: (identity: ExternalIdentity, existingToken?: string | null) => Promise<string>;
   readonly interactiveIdentityProvider?: InteractiveIdentityProvider;
   readonly localBootstrapCredential?: Redacted.Redacted;
   readonly mcpOAuthResource?: McpOAuthResourceConfiguration;
@@ -165,7 +165,7 @@ export interface ExternalStorageOrgConfig {
   readonly cookieRouteId: string;
   readonly keycloakOrganizationId?: string | null;
   readonly slug?: string;
-  readonly issuePlatformSession?: (identity: ExternalIdentity) => Promise<string>;
+  readonly issuePlatformSession?: (identity: ExternalIdentity, existingToken?: string | null) => Promise<string>;
 }
 
 /** Open the single Postgres pool owned by an external-storage process. */

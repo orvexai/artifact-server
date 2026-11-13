@@ -562,7 +562,7 @@ export interface HttpAppDependencies {
   readonly organizationAdmission?: {readonly alias: string; readonly id: string};
   readonly organizationSlug?: string | undefined;
   /** Creates a shared root-platform session after a verified interactive sign-in. */
-  readonly issuePlatformSession?: (identity: ExternalIdentity) => Promise<string>;
+  readonly issuePlatformSession?: (identity: ExternalIdentity, existingToken?: string | null) => Promise<string>;
   readonly embedOrigins?: readonly string[];
   readonly embedBindingSecret?: Redacted.Redacted | undefined;
   readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
@@ -1173,7 +1173,7 @@ export function createHttpApp(
         since: query.since ?? null, state: query.state ?? null,
         versionId: query.versionId ?? null,
       })));
-    return context.json(guestThreadPageResponse(responseApplicationUrl(context, dependencies), page, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex"));
+    return context.json(guestThreadPageResponse(responseApplicationUrl(context, dependencies), page, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies)));
   });
 
   app.get("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", async (context) => {
@@ -1181,7 +1181,7 @@ export function createHttpApp(
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const details = await runHttpApplicationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestGetThread({guest, threadId: context.req.param("threadId")})));
-    return context.json(guestThreadDetailsResponse(responseApplicationUrl(context, dependencies), details, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex"));
+    return context.json(guestThreadDetailsResponse(responseApplicationUrl(context, dependencies), details, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies)));
   });
 
   app.post("/api/v1/public/artifacts/:artifactId/guest/comments", boundedJsonBody, async (context) => {
@@ -1194,7 +1194,7 @@ export function createHttpApp(
         idempotencyKey: requiredIdempotencyKey(context.req.header("idempotency-key")),
         versionId: body.versionId,
       })));
-    return context.json({replayed: created.replayed, thread: guestThreadResponse(responseApplicationUrl(context, dependencies), created.thread, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex")}, 201);
+    return context.json({replayed: created.replayed, thread: guestThreadResponse(responseApplicationUrl(context, dependencies), created.thread, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies))}, 201);
   });
 
   app.post("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies", boundedJsonBody, async (context) => {
@@ -1203,7 +1203,7 @@ export function createHttpApp(
     const body = createCommentReplySchema.parse(await context.req.json());
     const created = await runHttpApplicationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestCreateReply({guest, threadId: context.req.param("threadId"), body: body.body, idempotencyKey: requiredIdempotencyKey(context.req.header("idempotency-key"))})));
-    return context.json({replayed: created.replayed, reply: guestReplyResponse(created.reply, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex")}, 201);
+    return context.json({replayed: created.replayed, reply: guestReplyResponse(created.reply, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies))}, 201);
   });
 
   app.patch("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", boundedJsonBody, async (context) => {
@@ -1216,7 +1216,7 @@ export function createHttpApp(
     if (body.body !== undefined) update.body = body.body;
     const thread = await runHttpApplicationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestUpdateThread({guest, threadId: context.req.param("threadId"), ...update})));
-    return context.json({thread: guestThreadResponse(responseApplicationUrl(context, dependencies), thread, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex")});
+    return context.json({thread: guestThreadResponse(responseApplicationUrl(context, dependencies), thread, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies))});
   });
 
   app.delete("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", async (context) => {
@@ -1234,7 +1234,7 @@ export function createHttpApp(
       ArtifactCommentService.use((comments) => comments.guestUpdateReply({
         guest, threadId: context.req.param("threadId"), replyId: context.req.param("replyId"), body: body.body,
       })));
-    return context.json({reply: guestReplyResponse(reply, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex")});
+    return context.json({reply: guestReplyResponse(reply, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies))});
   });
 
   app.delete("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId", async (context) => {
@@ -1526,9 +1526,9 @@ export function createHttpApp(
       );
       if (returnTo.returnTo === "/__artifact_platform_login?returnTo=%2F") {
         if (dependencies.issuePlatformSession === undefined) return context.notFound();
-        const platformToken = await dependencies.issuePlatformSession(returnTo.identity);
+        const platformToken = await dependencies.issuePlatformSession(returnTo.identity, getCookie(context, "__Host-artifact_platform"));
         setCookie(context, "__Host-artifact_platform", platformToken, {
-          httpOnly: true, maxAge: 7 * 24 * 60 * 60, path: "/", sameSite: "Lax", secure: true,
+          httpOnly: true, maxAge: 60 * 60, path: "/", sameSite: "Lax", secure: true,
         });
         context.header("Cache-Control", "private, no-store");
         context.header("Referrer-Policy", "no-referrer");
@@ -1542,9 +1542,9 @@ export function createHttpApp(
       );
       setApplicationSessionCookies(context, dependencies, completed);
       if (dependencies.issuePlatformSession !== undefined) {
-        const platformToken = await dependencies.issuePlatformSession(returnTo.identity);
+        const platformToken = await dependencies.issuePlatformSession(returnTo.identity, getCookie(context, "__Host-artifact_platform"));
         setCookie(context, "__Host-artifact_platform", platformToken, {
-          httpOnly: true, maxAge: 7 * 24 * 60 * 60, path: "/", sameSite: "Lax", secure: true,
+          httpOnly: true, maxAge: 60 * 60, path: "/", sameSite: "Lax", secure: true,
         });
       }
       context.header("Cache-Control", "private, no-store");
@@ -1610,7 +1610,10 @@ export function createHttpApp(
         gitHistory: gitHistory.read(),
         linkedArtifacts: dependencies.linkedArtifacts === true,
       },
-      principal: context.get("principal"),
+      principal: (() => {
+        const {staff: _staff, tenantStaffPrincipalIds: _staffIds, ...principal} = context.get("principal");
+        return principal;
+      })(),
     }));
 
   app.post("/api/v1/session/logout", async (context) => {
@@ -2165,7 +2168,7 @@ export function createHttpApp(
     const principal = context.get("principal");
     const projectedEvents = principal.tenantStaffPrincipalIds === undefined ? events : events.map((event) => {
       const actor = tenantIdentityPresentation(principal, {displayName: event.actorDisplayName, principalId: event.principalId});
-      return actor.isStaff ? Object.assign({}, event, {actorDisplayName: actor.displayName}) : event;
+      return actor.isStaff ? Object.assign({}, event, {actorDisplayName: actor.displayName, principalId: null}) : event;
     });
     return context.json({events: projectedEvents});
   });
@@ -3512,25 +3515,29 @@ export function createHttpApp(
 }
 
 async function projectGuestResponse<Value extends ArtifactResponseRecord>(context: Context<HttpEnvironment>, dependencies: HttpAppDependencies, response: Value) {
-  if (dependencies.organizationSlug === undefined || dependencies.organizationSlug === "orvex") return response;
+  const projected = guestResponseProjection(response);
+  if (dependencies.organizationSlug === undefined || dependencies.organizationSlug === "orvex") return projected;
   const ids = new Set(await runHttpApplicationEffect(context, dependencies, InstallationAccessService.use((access) => access.listStaffOnlyMemberIds())));
-  const author = tenantIdentityPresentation(undefined, {
-    displayName: response.authorDisplayName, email: response.authorEmail,
-    principalId: response.authorSubject, staff: ids.has(response.authorSubject),
-  });
-  return {...response, authorDisplayName: author.isStaff || response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName, authorEmail: null, authorSubject: undefined};
+  const author = tenantIdentityPresentation(undefined, {displayName: response.authorDisplayName, email: response.authorEmail, principalId: response.authorSubject, staff: ids.has(response.authorSubject)});
+  return {...projected, authorDisplayName: author.displayName};
 }
 
 async function projectGuestResponses<Value extends {readonly items: readonly ArtifactResponseRecord[]}>(context: Context<HttpEnvironment>, dependencies: HttpAppDependencies, page: Value) {
-  if (dependencies.organizationSlug === undefined || dependencies.organizationSlug === "orvex") return page;
+  const projected = {...page, items: page.items.map(guestResponseProjection)};
+  if (dependencies.organizationSlug === undefined || dependencies.organizationSlug === "orvex") return projected;
   const ids = new Set(await runHttpApplicationEffect(context, dependencies, InstallationAccessService.use((access) => access.listStaffOnlyMemberIds())));
   return {...page, items: page.items.map((response) => {
     const author = tenantIdentityPresentation(undefined, {
       displayName: response.authorDisplayName, email: response.authorEmail,
       principalId: response.authorSubject, staff: ids.has(response.authorSubject),
     });
-    return {...response, authorDisplayName: author.isStaff || response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName, authorEmail: null, authorSubject: undefined};
+    const guest = guestResponseProjection(response);
+    return {...guest, authorDisplayName: author.displayName};
   })};
+}
+
+function guestResponseProjection<T extends ArtifactResponseRecord>(response: T): Omit<T, "authorEmail" | "authorSubject"> & {readonly authorEmail: null; readonly authorSubject?: undefined} {
+  return {...response, authorEmail: null, authorSubject: undefined};
 }
 
 function projectTenantStateIdentity(entry: ArtifactStateEntry, principal: Principal, isGuest: boolean) {
@@ -3539,7 +3546,13 @@ function projectTenantStateIdentity(entry: ArtifactStateEntry, principal: Princi
   return staff ? {...entry, updatedBy: {displayName: "Orvex Support", principalId: null}} : entry;
 }
 
-export function projectHttpTenantResponse<T extends ArtifactResponseRecord>(response: T, principal: Principal): T & {readonly authorSubject?: string | undefined} {
+export function projectHttpTenantResponse<T extends ArtifactResponseRecord>(response: T, principal: Principal): T | (Omit<T, "authorEmail" | "authorSubject"> & {readonly authorEmail: string | null; readonly authorSubject?: undefined}) {
+  if (principal.membershipRole === membershipRoles.guest) {
+    const projected = guestResponseProjection(response);
+    if (principal.tenantStaffPrincipalIds === undefined) return projected;
+    const author = tenantIdentityPresentation(principal, {displayName: response.authorDisplayName, email: response.authorEmail, principalId: response.authorSubject});
+    return {...projected, authorDisplayName: author.displayName};
+  }
   if (principal.tenantStaffPrincipalIds === undefined) return response;
   const author = tenantIdentityPresentation(principal, {displayName: response.authorDisplayName, email: response.authorEmail, principalId: response.authorSubject});
   const maySeeEmail = principal.membershipRole === membershipRoles.member || principal.membershipRole === membershipRoles.owner;
@@ -4283,8 +4296,12 @@ function agentDispatchPageResponse(page: AgentDispatchPage, principal?: Principa
 function agentDispatchResponse(dispatch: AgentDispatchRecord, principal?: Principal) {
   const senderPublic = tenantIdentityPresentation(principal, dispatch.sender);
   const {staff: _staff, ...sender} = dispatch.sender;
+  const authorizedByStaff = dispatch.sender.authorizedByPrincipalId !== null &&
+    principal?.tenantStaffPrincipalIds?.includes(dispatch.sender.authorizedByPrincipalId) === true;
+  const publicSender = {...sender, displayName: senderPublic.displayName, email: senderPublic.email, principalId: senderPublic.subject};
+  if (authorizedByStaff) Object.assign(publicSender, {authorizedByPrincipalId: null});
   return {
-    sender: {...sender, displayName: senderPublic.displayName, email: senderPublic.email, principalId: senderPublic.subject},
+    sender: publicSender,
     addressedAt: dispatch.addressedAt,
     agentDisplayName: dispatch.agentDisplayName,
     agentId: dispatch.agentId,
@@ -4380,8 +4397,8 @@ function commentThreadPageResponse(requestUrl: URL, page: CommentThreadPage, isG
   return {items: page.items.map((thread) => commentThreadResponse(requestUrl, thread, isGuest, principal)), nextCursor: encodePageCursor(page.nextCursor)};
 }
 
-function guestThreadPageResponse(requestUrl: URL, page: CommentThreadPage, guest: GuestReviewer, tenant: boolean) {
-  return {items: page.items.map((thread) => guestThreadResponse(requestUrl, thread, guest, tenant)), nextCursor: encodePageCursor(page.nextCursor)};
+function guestThreadPageResponse(requestUrl: URL, page: CommentThreadPage, guest: GuestReviewer, tenant: boolean, staffIds?: ReadonlySet<string>) {
+  return {items: page.items.map((thread) => guestThreadResponse(requestUrl, thread, guest, tenant, staffIds)), nextCursor: encodePageCursor(page.nextCursor)};
 }
 
 function commentThreadDetailsResponse(requestUrl: URL, details: CommentThreadDetails, isGuest = false, principal?: Principal) {
@@ -4403,12 +4420,19 @@ function commentAuthorResponse(author: CommentAuthor, isGuest: boolean, principa
   // Guest projection takes precedence, preserving the public reviewer contract.
   if (isGuest) {
     const {principalId: _principalId, staff: _staff, ...visible} = author;
-    return {...visible, displayName: visible.displayName.includes("@") ? "Team member" : visible.displayName};
+    const staff = principal?.tenantStaffPrincipalIds !== undefined && (author.staff === true || principal.tenantStaffPrincipalIds.includes(author.principalId));
+    const authorizedByStaff = author.authorizedByPrincipalId !== null && principal?.tenantStaffPrincipalIds?.includes(author.authorizedByPrincipalId) === true;
+    const displayName = principal?.tenantStaffPrincipalIds === undefined ? visible.displayName : tenantIdentityPresentation(principal, author).displayName;
+    const projected = {...visible, displayName: staff ? "Orvex Support" : displayName.includes("@") ? "Team member" : displayName};
+    if (staff || authorizedByStaff) Object.assign(projected, {authorizedByPrincipalId: null});
+    return projected;
   }
   const {staff: _staff, ...visible} = author;
   if (principal?.tenantStaffPrincipalIds !== undefined) {
     const publicIdentity = tenantIdentityPresentation(principal, author);
-    if (publicIdentity.isStaff) return {...visible, displayName: publicIdentity.displayName, principalId: null};
+    const authorizedByStaff = author.authorizedByPrincipalId !== null && principal.tenantStaffPrincipalIds.includes(author.authorizedByPrincipalId);
+    if (publicIdentity.isStaff) return {...visible, displayName: publicIdentity.displayName, principalId: null, authorizedByPrincipalId: null};
+    if (authorizedByStaff) return {...visible, authorizedByPrincipalId: null};
   }
   return visible;
 }
@@ -4425,23 +4449,31 @@ function guestStateEntryProjection(entry: ArtifactStateEntry) {
   }};
 }
 
-function guestAuthorResponse(author: CommentAuthor, guest: GuestReviewer, _tenant: boolean) {
+function guestAuthorResponse(author: CommentAuthor, guest: GuestReviewer, tenant: boolean, staffIds?: ReadonlySet<string>) {
   const isYou = author.principalId === `guest_${guest.guestId}`;
-  if (isYou) return {displayName: author.displayName, isYou};
+  const publicName = tenant ? tenantIdentityPresentation(undefined, author).displayName : author.displayName;
+  if (isYou) return {displayName: publicName, isYou};
+  if (tenant && (author.staff === true || staffIds?.has(author.principalId) === true)) return {displayName: "Orvex Support", isYou: false};
   const principalLike = /^(?:service|guest|human|member|principal|user|key)[_:-]/iu.test(author.displayName) || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(author.displayName) || author.displayName === author.principalId;
-  return {displayName: principalLike || author.displayName.includes("@") ? "Team member" : author.displayName, isYou: false};
+  return {displayName: principalLike || publicName.includes("@") ? "Team member" : publicName, isYou: false};
 }
 
-function guestThreadResponse(requestUrl: URL, thread: CommentThreadRecord, guest: GuestReviewer, tenant: boolean) {
-  return {...commentThreadResponse(requestUrl, thread), author: guestAuthorResponse(thread.author, guest, tenant), resolvedBy: thread.resolvedBy === null ? null : guestAuthorResponse(thread.resolvedBy, guest, tenant)};
+function guestThreadResponse(requestUrl: URL, thread: CommentThreadRecord, guest: GuestReviewer, tenant: boolean, staffIds?: ReadonlySet<string>) {
+  return {...commentThreadResponse(requestUrl, thread), author: guestAuthorResponse(thread.author, guest, tenant, staffIds), resolvedBy: thread.resolvedBy === null ? null : guestAuthorResponse(thread.resolvedBy, guest, tenant, staffIds)};
 }
 
-function guestThreadDetailsResponse(requestUrl: URL, details: CommentThreadDetails, guest: GuestReviewer, tenant: boolean) {
-  return {replies: details.replies.map((reply) => guestReplyResponse(reply, guest, tenant)), thread: guestThreadResponse(requestUrl, details.thread, guest, tenant)};
+function guestThreadDetailsResponse(requestUrl: URL, details: CommentThreadDetails, guest: GuestReviewer, tenant: boolean, staffIds?: ReadonlySet<string>) {
+  return {replies: details.replies.map((reply) => guestReplyResponse(reply, guest, tenant, staffIds)), thread: guestThreadResponse(requestUrl, details.thread, guest, tenant, staffIds)};
 }
 
-function guestReplyResponse(reply: CommentReplyRecord, guest: GuestReviewer, tenant: boolean) {
-  return {...reply, author: guestAuthorResponse(reply.author, guest, tenant)};
+function guestReplyResponse(reply: CommentReplyRecord, guest: GuestReviewer, tenant: boolean, staffIds?: ReadonlySet<string>) {
+  return {...reply, author: guestAuthorResponse(reply.author, guest, tenant, staffIds)};
+}
+
+async function guestMaskingStaffIds(context: Context<HttpEnvironment>, dependencies: HttpAppDependencies): Promise<ReadonlySet<string> | undefined> {
+  if (dependencies.organizationSlug === undefined || dependencies.organizationSlug === "orvex") return undefined;
+  const ids = await runHttpApplicationEffect(context, dependencies, InstallationAccessService.use((access) => access.listStaffOnlyMemberIds()));
+  return new Set(ids);
 }
 
 interface CommentThreadUpdate {

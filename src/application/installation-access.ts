@@ -568,6 +568,7 @@ function makeInstallationAccessService(
   const apiKeyCache = cachePolicy === null
     ? null
     : new AuthenticationCache<Principal>(cachePolicy);
+  let staffIdsCache: {readonly expiresAt: number; readonly ids: readonly string[]} | null = null;
   const cacheKey = (digest: string): string =>
     `${dependencies.installationId}:${digest}`;
   // Session entries are keyed by token digest, not member, so the rare
@@ -575,13 +576,13 @@ function makeInstallationAccessService(
   const clearAuthenticationCaches = (): void => {
     sessionCache?.clear();
     apiKeyCache?.clear();
+    staffIdsCache = null;
   };
   const groupRolePolicy = dependencies.groupRolePolicy ?? null;
   const withTenantStaffContext = Effect.fn("InstallationAccessService.withTenantStaffContext")(
     function*(principal: Principal) {
       if (dependencies.organizationDirectoryVisibility !== true) return principal;
-      const members = yield* dependencies.repository.listMembers(dependencies.installationId);
-      const staffIds = members.filter(({staff}) => staff === true).map(({id}) => id);
+      const staffIds = yield* getTenantStaffIds();
       return {
         ...principal,
         staff: staffIds.includes(principal.id),
@@ -589,6 +590,14 @@ function makeInstallationAccessService(
       };
     },
   );
+  const getTenantStaffIds = Effect.fn("InstallationAccessService.getTenantStaffIds")(function*() {
+    const now = dependencies.clock.now().getTime();
+    if (staffIdsCache !== null && staffIdsCache.expiresAt > now) return staffIdsCache.ids;
+    const members = yield* dependencies.repository.listMembers(dependencies.installationId);
+    const ids = members.filter(({staff}) => staff === true).map(({id}) => id);
+    staffIdsCache = {expiresAt: now + 30_000, ids};
+    return ids;
+  });
 
   const issueSession = Effect.fn(
     "InstallationAccessService.issueSession",
@@ -810,7 +819,7 @@ function makeInstallationAccessService(
     function*(principal: Principal, groupId: string, role: MembershipRole | null) {
       const directHuman = principal.kind === "human" && principal.authorizedByPrincipalId === null;
       const tenantOrganization = dependencies.organizationDirectoryVisibility === true;
-      if (!groupRoleEditAllowed(principal.membershipRole, directHuman, tenantOrganization)) {
+      if (!groupRoleEditAllowed(principal.membershipRole, directHuman)) {
         return yield* new AuthorizationDenied({message: "Only installation owners may edit group roles."});
       }
       const groups = yield* dependencies.repository.listDirectoryGroups(dependencies.installationId);
@@ -1313,15 +1322,19 @@ function makeInstallationAccessService(
       Object.assign(binding, {identityProvider: identity.identityProvider});
     }
     yield* dependencies.repository.bindExternalIdentity(binding);
-    if (dependencies.organizationDirectoryVisibility === true && groupRolePolicy !== null) {
+    if (dependencies.organizationDirectoryVisibility === true && groupRolePolicy !== null &&
+      identity.groups !== null && identity.groups.length > 0 && identity.groups.every((group) => group.startsWith("/"))) {
       const staff = identity.groups !== null && groupRolePolicy.seed.some(({selector, staff: isStaff}) =>
         isStaff === true && selector.startsWith("/") && identity.groups?.includes(selector) === true
       );
-      yield* dependencies.repository.setMemberStaff(dependencies.installationId, member.id, staff).pipe(
-        Effect.catchTag("IdentityNotFound", () => Effect.fail(new IdentityAdmissionDenied({
-          message: "The member could not be updated for this organization login.",
-        }))),
-      );
+      if (member.staff !== staff) {
+        yield* dependencies.repository.setMemberStaff(dependencies.installationId, member.id, staff).pipe(
+          Effect.catchTag("IdentityNotFound", () => Effect.fail(new IdentityAdmissionDenied({
+            message: "The member could not be updated for this organization login.",
+          }))),
+        );
+        clearAuthenticationCaches();
+      }
       member = {...member, staff};
     }
     return member;
@@ -1541,8 +1554,7 @@ function makeInstallationAccessService(
 
   const listStaffOnlyMemberIds = Effect.fn("InstallationAccessService.listStaffOnlyMemberIds")(function*() {
     if (dependencies.organizationDirectoryVisibility !== true) return [];
-    const members = yield* dependencies.repository.listMembers(dependencies.installationId);
-    return members.filter(({staff}) => staff === true).map(({id}) => id);
+    return yield* getTenantStaffIds();
   });
   const listStaffOnlyMembers = Effect.fn("InstallationAccessService.listStaffOnlyMembers")(function*() {
     if (dependencies.organizationDirectoryVisibility !== true) return [];
@@ -1615,6 +1627,9 @@ function makeInstallationAccessService(
       dependencies.clock.now(),
     );
     const name = yield* requireText(command.name, "API key name");
+    if (dependencies.organizationDirectoryVisibility === true && name.replace(/\s/gu, "").toLowerCase() === "orvexsupport") {
+      return yield* Effect.fail(new AuthorizationDenied({message: "This API key name is reserved."}));
+    }
     const id = dependencies.ids.apiKeyId();
     const secret = dependencies.secrets.issue();
     const token = `as_key_${id}_${secret}`;
@@ -1666,14 +1681,29 @@ function makeInstallationAccessService(
     const keys = yield* dependencies.repository.listApiKeys(dependencies.installationId);
     if (dependencies.organizationDirectoryVisibility !== true) return keys;
     const members = yield* dependencies.repository.listMembers(dependencies.installationId);
-    const staffIds = new Set(members.filter(({staff}) => staff === true).map(({id}) => id));
-    return keys.filter(({principalId}) => !staffIds.has(principalId));
+    const byId = new Map(members.map((member) => [member.id, member]));
+    return keys.flatMap((key) => {
+      const member = byId.get(key.principalId);
+      const staff = member?.staff === true;
+      if (staff && principal.membershipRole !== membershipRoles.owner) return [];
+      if (member?.role === membershipRoles.owner && principal.membershipRole !== membershipRoles.owner) return [];
+      return [staff ? {...key, staff: true} : key];
+    });
   });
 
   const revokeApiKey = Effect.fn(
     "InstallationAccessService.revokeApiKey",
   )(function*(principal: Principal, keyId: string) {
     yield* requireAdministrator(principal, dependencies.installationId);
+    if (dependencies.organizationDirectoryVisibility === true) {
+      const key = yield* dependencies.repository.findApiKey(dependencies.installationId, keyId);
+      if (key !== null && key.principalKind === principalKinds.human) {
+        const member = yield* dependencies.repository.findMember(dependencies.installationId, key.principalId);
+        if ((member?.staff === true && principal.membershipRole !== membershipRoles.owner) || member !== null && member !== undefined && membershipRolePrecedence(member.role) > membershipRolePrecedence(principal.membershipRole)) {
+          return yield* Effect.fail(new AuthorizationDenied({message: "Tenant API key is bound to a staff member or a higher role."}));
+        }
+      }
+    }
     const revoked = yield* dependencies.repository.revokeApiKey(
       dependencies.installationId,
       keyId,
@@ -1701,6 +1731,9 @@ function makeInstallationAccessService(
     }
     if (previous.principalKind === principalKinds.human) {
       const member = yield* dependencies.repository.findMember(dependencies.installationId, previous.principalId);
+      if (dependencies.organizationDirectoryVisibility === true && (member?.staff === true || member !== null && member !== undefined && membershipRolePrecedence(member.role) > membershipRolePrecedence(principal.membershipRole))) {
+        return yield* Effect.fail(new AuthorizationDenied({message: "Tenant API key is bound to a staff member or a higher role."}));
+      }
       if (member?.role === membershipRoles.guest) {
         return yield* Effect.fail(new AuthorizationDenied({message: "Guest member API keys cannot be rotated."}));
       }

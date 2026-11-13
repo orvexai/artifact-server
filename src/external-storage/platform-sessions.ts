@@ -18,7 +18,6 @@ const externalIdentitySchema = z.object({
   groups: z.array(z.string()).nullable(), provider: z.string(), subject: z.string(),
   organizations: z.record(z.string(), z.object({id: z.string(), groups: z.array(z.string())})).optional(),
 }).strict();
-
 interface PlatformIdentitySnapshot {
   readonly displayName: string;
   readonly email: string | null;
@@ -40,24 +39,38 @@ export class PlatformSessions {
     this.#memberships = memberships;
   }
 
-  async issue(identity: ExternalIdentity): Promise<string> {
-    const token = randomBytes(32).toString("base64url");
+  async issue(identity: ExternalIdentity, existingToken?: string | null): Promise<string> {
     const now = new Date();
+    const token = randomBytes(32).toString("base64url");
     const memberships = parseMemberships(await this.#memberships.forIdentity(identity));
+    const reusable = existingToken !== undefined && existingToken !== null && await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`SELECT 1 AS present FROM artifact_platform_sessions
+        WHERE token_digest = ${digest(existingToken)} AND expires_at > ${now.toISOString()}`;
+      return rows.length > 0;
+    }));
+    const issuedToken = reusable ? existingToken : token;
     await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       yield* sql`DELETE FROM artifact_platform_sessions WHERE expires_at <= ${now.toISOString()}`;
+      if (reusable) {
+        yield* sql`UPDATE artifact_platform_sessions SET organizations_json = ${JSON.stringify(memberships)}::jsonb,
+          identity_json = ${JSON.stringify(identitySnapshot(identity))}::jsonb, expires_at = ${new Date(now.getTime() + 60 * 60 * 1000).toISOString()}
+          WHERE token_digest = ${digest(issuedToken)} AND expires_at > ${now.toISOString()}`;
+        return;
+      }
       yield* sql`INSERT INTO artifact_platform_sessions
         (token_digest, organizations_json, last_org, identity_json, provider, subject, created_at, expires_at)
         VALUES (${digest(token)}, ${JSON.stringify(memberships)}::jsonb, NULL,
           ${JSON.stringify(identitySnapshot(identity))}::jsonb, ${identity.provider}, ${identity.subject},
-          ${now.toISOString()}, ${new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString()})
+          ${now.toISOString()}, ${new Date(now.getTime() + 60 * 60 * 1000).toISOString()})
         ON CONFLICT (token_digest) DO NOTHING`;
     }));
-    return token;
+    this.#membershipCache.delete(digest(issuedToken));
+    return issuedToken;
   }
 
-  async find(token: string): Promise<PlatformSession | null> {
+  async find(token: string, refreshMemberships = false): Promise<PlatformSession | null> {
     const row = await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const rows = yield* sql`SELECT organizations_json::text AS "organizations", identity_json::text AS "identity",
@@ -83,7 +96,7 @@ export class PlatformSessions {
     const cacheKey = digest(token);
     const cached = this.#membershipCache.get(cacheKey);
     let organizations: readonly OrganizationMembership[];
-    if (cached !== undefined && cached.expiresAt > Date.now()) organizations = cached.organizations;
+    if (!refreshMemberships && cached !== undefined && cached.expiresAt > Date.now()) organizations = cached.organizations;
     else {
       organizations = parseMemberships(await this.#memberships.forIdentity(storedIdentity));
       this.#membershipCache.set(cacheKey, {organizations, expiresAt: Date.now() + 60_000});
@@ -113,7 +126,7 @@ export class PlatformSessions {
   }
 
   async setLastOrg(token: string, slug: string): Promise<boolean> {
-    const session = await this.find(token);
+    const session = await this.find(token, true);
     if (session === null || !session.organizations.some((org) => org.slug === slug)) return false;
     await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;

@@ -31,13 +31,12 @@ export function groupRoleSeedMarksStaff(
     (entry.selector.startsWith("/") ? entry.selector === group.path : entry.selector === group.name));
 }
 
-/** Tenant group-role edits stay with direct owners; legacy Orvex admins retain current access. */
+/** Group-role edits stay with direct installation owners. */
 export function groupRoleEditAllowed(
   role: MembershipRole,
   directHuman: boolean,
-  tenantOrganization: boolean,
 ): boolean {
-  return directHuman && (role === "owner" || !tenantOrganization && role === "administrator");
+  return directHuman && role === "owner";
 }
 
 /** Who stored a role that came from the configured seed rather than a person. */

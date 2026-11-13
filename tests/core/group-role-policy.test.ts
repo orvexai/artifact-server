@@ -33,9 +33,9 @@ const assignments = [
 describe("stored group roles", () => {
   test("tenant role edits are owner-only and staff groups stay protected", () => {
     const staffSeed = [{role: "member" as const, selector: "/Tenant/Support", staff: true}];
-    expect(groupRoleEditAllowed("administrator", true, true)).toBe(false);
-    expect(groupRoleEditAllowed("owner", true, true)).toBe(true);
-    expect(groupRoleEditAllowed("administrator", true, false)).toBe(true);
+    expect(groupRoleEditAllowed("administrator", true)).toBe(false);
+    expect(groupRoleEditAllowed("owner", true)).toBe(true);
+    expect(groupRoleEditAllowed("owner", false)).toBe(false);
     expect(groupRoleSeedMarksStaff({name: "Support", path: "/Tenant/Support"}, staffSeed)).toBe(true);
     expect(groupRoleSeedMarksStaff({name: "Support", path: "/Tenant/Customer/Support"}, staffSeed)).toBe(false);
   });

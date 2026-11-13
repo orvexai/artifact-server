@@ -105,8 +105,9 @@ export function tenantIdentityPresentation(
   identity: {readonly principalId: string; readonly displayName: string; readonly email?: string | null; readonly staff?: boolean},
 ) {
   const isStaff = identity.staff === true || principal !== undefined && isTenantStaffIdentity(principal, identity.principalId);
+  const normalizedDisplayName = identity.displayName.replace(/\s/gu, "").toLowerCase();
   return {
-    displayName: isStaff ? "Orvex Support" : identity.displayName,
+    displayName: isStaff ? "Orvex Support" : normalizedDisplayName === "orvexsupport" ? "Orvex Support (member)" : identity.displayName,
     email: isStaff || identity.email === undefined ? null : identity.email,
     isStaff,
     subject: isStaff ? null : identity.principalId,

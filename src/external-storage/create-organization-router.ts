@@ -8,6 +8,8 @@ import {
 import {OrganizationRegistry, type OrganizationRecord} from
   "./organization-registry.js";
 import {z} from "zod";
+import {Effect} from "effect";
+import {SqlClient} from "effect/unstable/sql/SqlClient";
 import {createKeycloakOrganizationMembershipResolver} from "./organization-memberships.js";
 import {PlatformSessions} from "./platform-sessions.js";
 
@@ -50,7 +52,19 @@ export async function createOrganizationRouter(
     const registry = new OrganizationRegistry(database);
     const platformSessions = new PlatformSessions(
       database,
-        config.organizationMemberships ?? createKeycloakOrganizationMembershipResolver((slug) => registry.find(slug)),
+        config.organizationMemberships ?? createKeycloakOrganizationMembershipResolver(
+          (slug) => registry.find(slug),
+          async (organization, identity) => database.run(Effect.gen(function*() {
+            const sql = yield* SqlClient;
+            const rows = yield* sql`SELECT EXISTS (
+              SELECT 1 FROM external_identities identity
+              JOIN installation_members member ON member.installation_id = identity.installation_id AND member.id = identity.member_id
+              WHERE identity.installation_id = ${organization.id} AND identity.provider = ${identity.provider}
+                AND identity.subject = ${identity.subject} AND (member.manual_deactivation = TRUE OR member.status = 'inactive')
+            ) AS deactivated`;
+            return rows[0]?.["deactivated"] === true;
+          })),
+        ),
     );
     await registry.ensureOrvex(config.installationId);
     const closeResources = async () => {
@@ -96,7 +110,7 @@ export async function createOrganizationRouter(
           : null,
         cookieRouteId: organization.routeId,
         slug: organization.slug,
-        issuePlatformSession: (identity) => platformSessions.issue(identity),
+        issuePlatformSession: (identity, existingToken) => platformSessions.issue(identity, existingToken),
       };
       if (organization.keycloakId !== null) {
         Object.assign(orgConfig, {keycloakOrganizationId: organization.keycloakId});
@@ -168,7 +182,8 @@ export async function createOrganizationRouter(
         const sourceUrl = new URL(request.url);
         if (sourceUrl.pathname === "/") {
           if (request.method !== "GET" && request.method !== "HEAD") return notFound();
-          const session = await platformSessionForRequest(request, platformSessions);
+          const token = platformCookie(request);
+          const session = token === null ? null : await platformSessions.find(token, true);
           if (session === null) return new Response(null, {headers: {Location: "/auth/platform/login?returnTo=%2F"}, status: 302});
           const active = new Set((await registry.list()).filter(({status}) => status === "active").map(({slug}) => slug));
           const organizations = session.organizations.filter(({slug}) => active.has(slug));
@@ -198,7 +213,8 @@ export async function createOrganizationRouter(
           return entry.runtime.app.fetch(new Request(target, request));
         }
         if (sourceUrl.pathname === "/api/v1/platform/me/orgs" && request.method === "GET") {
-          const session = await platformSessionForRequest(request, platformSessions);
+          const token = platformCookie(request);
+          const session = token === null ? null : await platformSessions.find(token, true);
           if (session === null) return notFound();
           const active = new Set((await registry.list()).filter(({status}) => status === "active").map(({slug}) => slug));
           return Response.json(session.organizations.filter(({slug}) => active.has(slug)), {headers: {"Cache-Control": "private, no-store"}});
@@ -224,20 +240,21 @@ export async function createOrganizationRouter(
           if (config.applicationOrigin !== undefined && request.headers.get("origin") !== new URL(config.applicationOrigin).origin) return notFound();
           if (request.headers.get("sec-fetch-site") !== "same-origin") return notFound();
           const token = platformCookie(request);
-          if (token !== null) await platformSessions.logout(token);
+          if (token !== null) await platformSessions.logout(token).catch(() => undefined);
           const cookies = request.headers.get("cookie") ?? "";
           const values = new Map(cookies.split(";").flatMap((part) => {
             const index = part.indexOf("=");
             return index < 0 ? [] : [[part.slice(0, index).trim(), part.slice(index + 1).trim()] as const];
           }));
           const origin = config.applicationOrigin === undefined ? new URL(request.url).origin : new URL(config.applicationOrigin).origin;
-          const organizations = await registry.list();
+          const organizations = await registry.list().catch(() => []);
           await Promise.all(organizations.filter((organization) => organization.status === "active").map(async (organization) => {
+            try {
             const suffix = `-${organization.routeId}`;
             const csrf = values.get(`__Host-artifact_csrf${suffix}`) ?? values.get(`artifact_csrf${suffix}`);
             const hasSession = values.has(`__Host-artifact_session${suffix}`) || values.has(`artifact_session${suffix}`);
             if (!hasSession) return;
-            if (csrf === undefined) throw new Error("An organization session cookie has no matching CSRF cookie.");
+            if (csrf === undefined) return;
             const headers = new Headers({
               cookie: cookies,
               origin,
@@ -249,15 +266,25 @@ export async function createOrganizationRouter(
             const target = new URL(request.url);
             target.pathname = "/api/v1/session/logout";
             const response = await Promise.resolve(entry.runtime.app.fetch(new Request(target, {headers, method: "POST"})));
-            if (!response.ok) throw new Error(`The ${organization.slug} application session could not be revoked.`);
+            void response;
+            } catch {
+              // Each org session is best effort; the platform logout always clears browser cookies.
+            }
           }));
           const logoutHeaders = new Headers();
           logoutHeaders.append("Set-Cookie", "__Host-artifact_platform=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax");
+          const sessionCookieNames = new Set<string>();
           for (const organization of organizations) {
             const suffix = `-${organization.routeId}`;
             for (const name of [`__Host-artifact_session${suffix}`, `__Host-artifact_csrf${suffix}`]) {
-              logoutHeaders.append("Set-Cookie", `${name}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure; SameSite=Lax`);
+              sessionCookieNames.add(name);
             }
+          }
+          for (const name of values.keys()) {
+            if (/^(?:__Host-artifact_(?:session|csrf)-[a-z0-9]{8}|artifact_(?:session|csrf)(?:-[a-z0-9]{8})?)$/u.test(name)) sessionCookieNames.add(name);
+          }
+          for (const name of sessionCookieNames) {
+              logoutHeaders.append("Set-Cookie", `${name}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure; SameSite=Lax`);
           }
           return new Response(null, {headers: logoutHeaders, status: 204});
         }
@@ -399,14 +426,6 @@ function requestComesFromAnotherOrganization(request: Request): boolean {
   } catch {
     return true;
   }
-}
-
-async function platformSessionForRequest(
-  request: Request,
-  sessions: PlatformSessions,
-) {
-  const token = platformCookie(request);
-  return token === null ? null : sessions.find(token);
 }
 
 function platformCookie(request: Request): string | null {

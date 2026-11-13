@@ -24,6 +24,9 @@ describe("tenant identity projection", () => {
     expect(tenantIdentityPresentation(principal, {
       displayName: "Private staff name", email: "member@example.test", principalId: "member-id",
     })).toEqual({displayName: "Private staff name", email: "member@example.test", isStaff: false, subject: "member-id"});
+    expect(tenantIdentityPresentation(principal, {
+      displayName: "  ORVEX   SUPPORT ", email: "member@example.test", principalId: "member-id",
+    })).toEqual({displayName: "Orvex Support (member)", email: "member@example.test", isStaff: false, subject: "member-id"});
   });
 
   test("tenant directory projection hides staff and applies role visibility", () => {
@@ -59,5 +62,9 @@ describe("tenant identity projection", () => {
     expect(editorResponse).toMatchObject({authorDisplayName: "Support Person", authorEmail: "support@example.test", data: {answer: "unchanged"}});
     expect(JSON.parse(JSON.stringify(editorResponse))).not.toHaveProperty("authorSubject");
     expect(projectHttpTenantResponse(response, {...principal, tenantStaffPrincipalIds: undefined})).toEqual(response);
+    const guest = {...staffViewer, membershipRole: "guest" as const};
+    const guestTenantResponse = projectHttpTenantResponse(response, guest);
+    expect(guestTenantResponse).toMatchObject({authorDisplayName: "Orvex Support", authorEmail: null});
+    expect(JSON.parse(JSON.stringify(guestTenantResponse))).not.toHaveProperty("authorSubject");
   });
 });

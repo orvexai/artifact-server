@@ -32,6 +32,7 @@ export function createOrganizationMembershipsAdapter(
 /** Adapter point for verified Keycloak `organization` claims without directory synchronization. */
 export function createKeycloakOrganizationMembershipResolver(
   findOrganization: (slug: string) => Promise<OrganizationRecord | null>,
+  isManuallyDeactivated?: (organization: OrganizationRecord, identity: ExternalIdentity) => Promise<boolean>,
 ): OrganizationMembershipResolver {
   return {
     forIdentity: async (identity) => {
@@ -39,6 +40,7 @@ export function createKeycloakOrganizationMembershipResolver(
       const results = await Promise.all(Object.entries(claim).map(async ([slug, membership]) => {
         const organization = await findOrganization(slug);
         if (organization === null || organization.status !== "active" || organization.admissionPolicy === null) return null;
+        if (isManuallyDeactivated !== undefined && await isManuallyDeactivated(organization, identity)) return null;
         const groups = new Set(membership.groups);
         const roles = organization.admissionPolicy.seed
           .filter(({selector}) => selector.startsWith("/") && groups.has(selector))

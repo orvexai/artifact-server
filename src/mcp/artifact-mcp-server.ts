@@ -2126,7 +2126,9 @@ export function createArtifactMcpServer(
           items: page.items.map((response) => artifactResponseProjection(
             response,
             identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest,
-            identity.principal.kind === "human" && (identity.principal.membershipRole === membershipRoles.member || identity.principal.membershipRole === membershipRoles.owner),
+            identity.principal.kind === "human" && (isTenantOrganization
+              ? identity.principal.membershipRole === membershipRoles.member || identity.principal.membershipRole === membershipRoles.owner
+              : identity.principal.membershipRole !== membershipRoles.guest),
             identity.principal,
             isTenantOrganization,
           )),
@@ -3221,11 +3223,12 @@ function commentThreadProjection(thread: CommentThreadRecord, isGuest = false, p
 
 function artifactResponseProjection(response: ArtifactResponseRecord, isGuest: boolean, canSeeEmails: boolean, principal?: Principal, tenant = false) {
   const author = tenant ? tenantIdentityPresentation(principal, {displayName: response.authorDisplayName, email: response.authorEmail, principalId: response.authorSubject}) : null;
+  const guest = isGuest;
   return {
     ...response,
     authorDisplayName: author?.displayName ?? (isGuest && response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName),
-    authorEmail: author?.isStaff === true || !canSeeEmails ? null : author?.email ?? response.authorEmail,
-    authorSubject: tenant ? null : isGuest ? undefined : response.authorSubject,
+    authorEmail: guest || author?.isStaff === true || tenant && !canSeeEmails ? null : author?.email ?? response.authorEmail,
+    authorSubject: tenant ? null : guest ? undefined : response.authorSubject,
   };
 }
 
@@ -3249,12 +3252,17 @@ function guestStateEntryProjection(entry: ArtifactStateEntry) {
 function commentAuthorProjection(author: CommentAuthor, isGuest: boolean, principal?: Principal, tenant = false) {
   if (isGuest) {
     const {principalId: _principalId, staff: _staff, ...visibleAuthor} = author;
-    return {...visibleAuthor, displayName: author.displayName.includes("@") ? "Team member" : author.displayName};
+    const staff = tenant && (author.staff === true || principal?.tenantStaffPrincipalIds?.includes(author.principalId) === true);
+    const authorizedByStaff = tenant && visibleAuthor.authorizedByPrincipalId !== null && principal?.tenantStaffPrincipalIds?.includes(visibleAuthor.authorizedByPrincipalId) === true;
+    const displayName = tenant ? tenantIdentityPresentation(undefined, author).displayName : author.displayName;
+    return {...visibleAuthor, authorizedByPrincipalId: staff || authorizedByStaff ? null : visibleAuthor.authorizedByPrincipalId, displayName: staff ? "Orvex Support" : displayName.includes("@") ? "Team member" : displayName};
   }
   const {staff: _staff, ...visibleAuthor} = author;
   if (tenant) {
     const publicIdentity = tenantIdentityPresentation(principal, author);
-    if (publicIdentity.isStaff) return {...visibleAuthor, displayName: publicIdentity.displayName, principalId: null};
+    const authorizedByStaff = visibleAuthor.authorizedByPrincipalId !== null && principal?.tenantStaffPrincipalIds?.includes(visibleAuthor.authorizedByPrincipalId) === true;
+    if (publicIdentity.isStaff) return {...visibleAuthor, displayName: publicIdentity.displayName, principalId: null, authorizedByPrincipalId: null};
+    if (authorizedByStaff) return {...visibleAuthor, authorizedByPrincipalId: null};
   }
   return visibleAuthor;
 }

@@ -97,6 +97,8 @@ export interface ManagedApiKey {
   readonly prefix: string;
   readonly principalId: string;
   readonly principalKind: PrincipalKind;
+  /** Present only in a tenant owner's staff-key listing. */
+  readonly staff?: boolean;
   readonly revokedAt: string | null;
   readonly rotatedFromId: string | null;
 }
