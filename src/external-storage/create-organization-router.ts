@@ -16,6 +16,7 @@ import {PlatformSessions} from "./platform-sessions.js";
 const maximumCachedOrganizations = 16;
 const idleOrganizationMilliseconds = 5 * 60 * 1_000;
 const organizationEvictionIntervalMilliseconds = 30_000;
+const routeIdCacheMilliseconds = 1_000;
 const notFound = () => new Response("Not Found", {status: 404});
 
 export interface OrganizationRouterOptions {
@@ -26,7 +27,13 @@ export interface OrganizationRouterOptions {
 interface CachedRuntime {
   activeRequests: number;
   lastUsedAt: number;
+  readonly securityFingerprint: string;
   readonly runtime: ExternalStorageRuntime;
+}
+
+interface CachedRoute {
+  readonly expiresAt: number;
+  readonly slug: string;
 }
 
 /** One shared pool and provider factory serving lazily opened org runtimes. */
@@ -45,7 +52,9 @@ export async function createOrganizationRouter(
     "artifact-server:organization-router",
   );
   const runtimes = new Map<string, CachedRuntime>();
+  const retiredRuntimes = new Set<CachedRuntime>();
   const openingRuntimes = new Map<string, Promise<CachedRuntime>>();
+  const routeIds = new Map<string, CachedRoute>();
   let closed = false;
   let evictionTimer: ReturnType<typeof setInterval> | undefined;
   try {
@@ -76,17 +85,30 @@ export async function createOrganizationRouter(
       runtimes.clear();
       await Promise.all([
         ...active.map(({runtime}) => runtime.close()),
+        ...[...retiredRuntimes].map(({runtime}) => runtime.close()),
         config.objectStorage.close?.(),
       ]);
       await database.close();
     };
     const runtimeFor = async (organization: OrganizationRecord) => {
+      const securityFingerprint = JSON.stringify({
+        admissionPolicy: organization.admissionPolicy,
+        embedOrigins: organization.embedOrigins,
+        routeId: organization.routeId,
+        slug: organization.slug,
+        status: organization.status,
+      });
       const cached = runtimes.get(organization.id);
-      if (cached !== undefined) {
+      if (cached !== undefined && cached.securityFingerprint === securityFingerprint) {
         cached.lastUsedAt = Date.now();
         runtimes.delete(organization.id);
         runtimes.set(organization.id, cached);
         return cached;
+      }
+      if (cached !== undefined) {
+        runtimes.delete(organization.id);
+        if (cached.activeRequests === 0) await cached.runtime.close();
+        else retiredRuntimes.add(cached);
       }
       const opening = openingRuntimes.get(organization.id);
       if (opening !== undefined) return opening;
@@ -113,7 +135,7 @@ export async function createOrganizationRouter(
         embedOrigins: organization.embedOrigins,
         slug: organization.slug,
         issuePlatformSession: (identity, existingToken) => platformSessions.issue(identity, existingToken),
-      };
+        allowLegacyEmbedBinding: organization.slug === "orvex",      };
       if (organization.keycloakId !== null) {
         Object.assign(orgConfig, {keycloakOrganizationId: organization.keycloakId});
       }
@@ -137,7 +159,7 @@ export async function createOrganizationRouter(
           await runtime.close();
           throw new Error("The organization router is closed.");
         }
-        const entry = {activeRequests: 0, lastUsedAt: Date.now(), runtime};
+        const entry = {activeRequests: 0, lastUsedAt: Date.now(), securityFingerprint, runtime};
         runtimes.set(organization.id, entry);
         return entry;
       });
@@ -303,11 +325,30 @@ export async function createOrganizationRouter(
               ? {path: sourceUrl.pathname, slug: "orvex"}
               : null);
         if (contentHost) {
+          if (contentHostRequest.token === null) return notFound();
           if (isForbiddenContentHostPath(sourceUrl.pathname)) return notFound();
           const prefixedRouteId = /^([a-z0-9]{8})-/u.exec(contentHostRequest.token)?.[1];
-          const contentOrganization = prefixedRouteId === undefined
-            ? await registry.find("orvex").catch(() => null)
-            : await registry.findByRouteId(prefixedRouteId).catch(() => null);
+          let contentOrganization: OrganizationRecord | null;
+          if (prefixedRouteId === undefined) {
+            // Before tenancy was enabled in production, all issued unprefixed
+            // capabilities belonged to Orvex. No other installation can have
+            // a legacy unprefixed token to migrate or honor.
+            contentOrganization = await registry.find("orvex").catch(() => null);
+          } else {
+            const now = Date.now();
+            const cachedRoute = routeIds.get(prefixedRouteId);
+            const slug = cachedRoute !== undefined && cachedRoute.expiresAt > now
+              ? cachedRoute.slug
+              : (await registry.findByRouteId(prefixedRouteId).catch(() => null))?.slug;
+            if (slug !== undefined) {
+              routeIds.set(prefixedRouteId, {expiresAt: now + routeIdCacheMilliseconds, slug});
+              contentOrganization = await registry.find(slug).catch(() => null);
+              if (contentOrganization?.routeId !== prefixedRouteId) contentOrganization = null;
+            } else {
+              routeIds.delete(prefixedRouteId);
+              contentOrganization = null;
+            }
+          }
           if (contentOrganization === null) return notFound();
           route = {path: sourceUrl.pathname, slug: contentOrganization.slug};
         }
@@ -340,6 +381,9 @@ export async function createOrganizationRouter(
           requestFinished = true;
           entry.activeRequests = Math.max(0, entry.activeRequests - 1);
           entry.lastUsedAt = Date.now();
+          if (entry.activeRequests === 0 && retiredRuntimes.delete(entry)) {
+            void entry.runtime.close();
+          }
           void evictIdle();
         };
         const target = new URL(request.url);
@@ -426,27 +470,42 @@ function rootOAuthMetadataRoute(
   return null;
 }
 
+interface ContentHostToken {
+  readonly isContentHost: boolean;
+  readonly token: string | null;
+}
+
 function contentTokenFromHost(
   request: Request,
   contentDomain: string,
-) {
+): ContentHostToken {
   const hostHeader = request.headers.get("host");
-  if (hostHeader === null) return {isContentHost: false, token: ""};
+  if (hostHeader === null) return {isContentHost: false, token: null};
   let hostname: string;
   try {
-    hostname = new URL(`http://${hostHeader}`).hostname.toLowerCase();
+    hostname = new URL(`http://${hostHeader}`).hostname.toLowerCase().replace(/\.$/u, "");
   } catch {
-    return {isContentHost: false, token: ""};
+    return {isContentHost: false, token: null};
   }
-  const suffix = `.${contentDomain.toLowerCase()}`;
-  if (!hostname.endsWith(suffix)) return {isContentHost: false, token: ""};
+  const normalizedDomain = contentDomain.toLowerCase().replace(/\.$/u, "");
+  const suffix = `.${normalizedDomain}`;
+  if (hostname !== normalizedDomain && !hostname.endsWith(suffix)) {
+    return {isContentHost: false, token: null};
+  }
+  if (hostname === normalizedDomain) return {isContentHost: true, token: null};
   const label = hostname.slice(0, -suffix.length);
-  if (label.includes(".") || label.length === 0) return {isContentHost: true, token: ""};
-  return {isContentHost: true, token: label};
+  if (label.includes(".") || label.length === 0) return {isContentHost: true, token: null};
+  return {isContentHost: true, token: /^[A-Za-z0-9_-]{16,100}$/u.test(label) ? label : null};
 }
 
 function isForbiddenContentHostPath(pathname: string): boolean {
-  return /^\/(?:api(?:\/|$)|mcp(?:\/|$)|review(?:\/|$)|o(?:\/|$))/u.test(pathname);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return true;
+  }
+  return /^\/(?:api(?:\/|$)|mcp(?:\/|$)|review(?:\/|$)|o(?:\/|$)|auth(?:\/|$)|embed(?:\/|$)|review-frame(?:\/|$))/iu.test(decoded);
 }
 
 function legacyOrganizationPath(pathname: string): string | null {

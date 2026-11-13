@@ -994,16 +994,19 @@ const addOrganizationEmbedOrigins = Effect.gen(function*() {
   const sql = yield* SqlClient;
   yield* sql.unsafe(`ALTER TABLE artifact_installations
     ADD COLUMN IF NOT EXISTS embed_origins JSONB NOT NULL DEFAULT '[]'::jsonb`);
-  yield* sql.unsafe(`DO $$ BEGIN
-    IF NOT EXISTS (
-      SELECT 1 FROM pg_constraint
-      WHERE conname = 'artifact_installations_embed_origins_check'
-    ) THEN
-      ALTER TABLE artifact_installations
-        ADD CONSTRAINT artifact_installations_embed_origins_check
-        CHECK (jsonb_typeof(embed_origins) = 'array');
-    END IF;
-  END $$`);
+  yield* sql.unsafe(`DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'artifact_installations_embed_origins_check'
+          AND conrelid = 'artifact_installations'::regclass
+      ) THEN
+        ALTER TABLE artifact_installations
+          ADD CONSTRAINT artifact_installations_embed_origins_check
+          CHECK (jsonb_typeof(embed_origins) = 'array');
+      END IF;
+    END
+    $$`);
 });
 
 const addPlatformSessions = Effect.gen(function*() {

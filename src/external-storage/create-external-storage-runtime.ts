@@ -37,6 +37,7 @@ import type {
   DiscoveredOAuthResources,
   HttpAppDependencies,
   McpOAuthResourceConfiguration,
+  WebAssetStore,
 } from "../http/create-http-app.js";
 import {
   defaultCompletedRequestLogSampleRate,
@@ -129,6 +130,8 @@ export interface ExternalStorageRuntimeConfig {
   readonly serviceVersion?: string;
   readonly uploadUrlLifetimeMilliseconds?: number;
   readonly stagingCleanupPolicy?: StagingCleanupPolicy;
+  /** Optional in-process asset provider for tests and embedded deployments. */
+  readonly webAssets?: WebAssetStore;
 }
 
 /** One ready external-storage runtime and its protocol adapter. */
@@ -159,6 +162,7 @@ export interface ExternalStorageRuntime {
 /** Per-organization security values that differ on a shared process host. */
 export interface ExternalStorageOrgConfig {
   readonly admissionPolicy?: GroupRolePolicy | null;
+  readonly allowLegacyEmbedBinding?: boolean;
   readonly applicationOrigin?: string;
   readonly bootstrapAdministratorEmail?: string | null;
   readonly bootstrapApiToken?: Redacted.Redacted;
@@ -420,8 +424,6 @@ export async function createOrgRuntime(
         config.completedRequestLogSampleRate ??
           defaultCompletedRequestLogSampleRate,
       contentDomain: config.contentDomain,
-      installationId,
-      contentTokenPrefix: orgConfig.contentTokenPrefix,
       embedBindingSecret: config.embedBindingSecret,
       embedBindingPreviousSecret: config.embedBindingPreviousSecret,
       gitHistory: gitHistoryMonitor?.reader ??
@@ -429,12 +431,22 @@ export async function createOrgRuntime(
       readiness: () => externalStorageReadiness(database, connectedObjectStorage),
       trustedApplicationOrigin: applicationOrigin,
       organizationSlug: orgConfig.slug,
-      webAssets: createNodeWebAssetStore(),
-    };
+      webAssets: config.webAssets ?? createNodeWebAssetStore(),    };
     if (orgConfig.issuePlatformSession !== undefined) {
       Object.assign(appDependenciesWithoutOAuth, {issuePlatformSession: orgConfig.issuePlatformSession});
     }
     let configuredAppDependencies: HttpAppDependencies = appDependenciesWithoutOAuth;
+    if (orgConfig.contentTokenPrefix !== undefined) {
+      configuredAppDependencies = {
+        ...configuredAppDependencies,
+        contentHostRoutingEnabled: true,
+        contentTokenPrefix: orgConfig.contentTokenPrefix,
+        installationId,
+      };
+    }
+    if (orgConfig.allowLegacyEmbedBinding === true) {
+      configuredAppDependencies = {...configuredAppDependencies, allowLegacyEmbedBinding: true};
+    }
     if (orgConfig.cookieRouteId !== "") {
       configuredAppDependencies = {
         ...configuredAppDependencies,

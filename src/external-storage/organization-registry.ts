@@ -5,6 +5,7 @@ import {SqlClient} from "effect/unstable/sql/SqlClient";
 import {z} from "zod";
 
 import type {PostgresDatabase} from "../storage/postgres-database.js";
+import {validateEmbedOrigins} from "../http/embed-origins.js";
 
 const organizationGroupRootSchema = z.string().regex(/^\/(?:[^/\s]+\/)+$/u);
 const admissionPolicySchema = z.object({
@@ -51,7 +52,16 @@ const keycloakOrganizationIdSchema = z.string().uuid();
 const reservedOrganizationSlugs = new Set(["orvex"]);
 const organizationSchema = z.object({
   displayName: z.string(),
-  embedOrigins: z.array(z.string()),
+  embedOrigins: z.array(z.string()).superRefine((origins, context) => {
+    try {
+      validateEmbedOrigins(origins);
+    } catch (cause) {
+      context.addIssue({
+        code: "custom",
+        message: cause instanceof Error ? cause.message : "Invalid embed origin configuration.",
+      });
+    }
+  }),
   id: z.string(),
   keycloakId: z.string().nullable(),
   admissionPolicy: admissionPolicySchema.nullable(),

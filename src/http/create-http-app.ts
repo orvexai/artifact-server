@@ -557,8 +557,12 @@ export interface HttpAppDependencies {
   readonly browserAccess: BrowserAccess;
   readonly completedRequestLogSampleRate: number;
   readonly contentDomain: string;
+  /** Reject malformed content-domain hosts before they can reach app routes. */
+  readonly contentHostRoutingEnabled?: boolean;
   readonly contentTokenPrefix?: string | undefined;
   readonly installationId?: string;
+  /** Transitional compatibility for pre-slice-4 bindings, Orvex only. */
+  readonly allowLegacyEmbedBinding?: boolean;
   /** Suffix scoped to one configured organization on the shared app host. */
   readonly organizationCookieSuffix?: string;
   /** Keycloak organization bound to this installation for token admission. */
@@ -862,12 +866,20 @@ export function createHttpApp(
 
   app.use("*", async (context, next) => {
     const requestUrl = new URL(context.req.url);
+    const isContentDomain = isContentDomainHost(requestUrl.hostname, dependencies.contentDomain);
     const contentToken = tokenFromContentHost(
       requestUrl.hostname,
       dependencies.contentDomain,
     );
+    if (dependencies.contentHostRoutingEnabled === true && isContentDomain) {
+      if (
+        contentToken === null ||
+        (context.req.method !== "GET" && context.req.method !== "HEAD") ||
+        isForbiddenContentHostPath(requestUrl.pathname)
+      ) return context.notFound();
+    }
     if (contentToken !== null) {
-      if (isPreviewLeaseToken(contentToken)) {
+      if (isPreviewLeaseToken(contentToken, dependencies.contentTokenPrefix)) {
         return servePreviewLeaseContent(
           context,
           requestUrl,
@@ -2492,13 +2504,18 @@ export function createHttpApp(
         artifactId, principal, projectId: requestedProjectId(context), versionId: body.versionId,
       })));
     const exp = Math.floor(Date.now() / 1_000) + 60 * 60;
-    const binding = signEmbedBinding(Redacted.value(signingSecret), {
+    const claims = {
       artifactId,
       exp,
-      installation_id: dependencies.installationId ?? "single-installation",
-      jti: randomUUID(), mode: body.mode, questionId: body.questionId,
+      jti: randomUUID(),
+      mode: body.mode,
+      questionId: body.questionId,
       versionId: body.versionId,
-    });
+    };
+    if (dependencies.installationId !== undefined) {
+      Object.assign(claims, {installation_id: dependencies.installationId});
+    }
+    const binding = signEmbedBinding(Redacted.value(signingSecret), claims);
     return context.json({binding, expiresAt: new Date(exp * 1_000).toISOString()});
   });
 
@@ -2672,14 +2689,18 @@ export function createHttpApp(
 
   app.post("/api/v1/artifacts/:artifactId/responses", boundedJsonBody, async (context) => {
     const body = artifactResponseWriteSchema.parse(await context.req.json());
+    const expectedBinding = {
+      allowLegacyInstallationless: dependencies.allowLegacyEmbedBinding === true,
+      artifactId: context.req.param("artifactId"),
+      versionId: body.versionId,
+    };
+    if (dependencies.installationId !== undefined) {
+      Object.assign(expectedBinding, {installation_id: dependencies.installationId});
+    }
     const bindingClaims = body.embedBinding === undefined ? null : verifyEmbedBinding(
       [dependencies.embedBindingSecret, dependencies.embedBindingPreviousSecret],
       body.embedBinding,
-      {
-        artifactId: context.req.param("artifactId"),
-        installation_id: dependencies.installationId ?? "single-installation",
-        versionId: body.versionId,
-      },
+      expectedBinding,
     );
     if (body.embedBinding !== undefined && bindingClaims === null) {
       throw new AuthorizationDenied({message: "The embed response binding is invalid or expired."});
@@ -5404,12 +5425,28 @@ function tokenFromContentHost(
   hostname: string,
   contentDomain: string,
 ): string | null {
-  const suffix = `.${contentDomain.toLocaleLowerCase("en-US")}`;
-  const normalizedHostname = hostname.toLocaleLowerCase("en-US");
+  const suffix = `.${contentDomain.toLocaleLowerCase("en-US").replace(/\.$/u, "")}`;
+  const normalizedHostname = hostname.toLocaleLowerCase("en-US").replace(/\.$/u, "");
   if (!normalizedHostname.endsWith(suffix)) return null;
   const candidate = normalizedHostname.slice(0, -suffix.length);
   const parsed = contentTokenSchema.safeParse(candidate);
   return parsed.success ? parsed.data : null;
+}
+
+function isContentDomainHost(hostname: string, contentDomain: string): boolean {
+  const normalizedHostname = hostname.toLocaleLowerCase("en-US").replace(/\.$/u, "");
+  const normalizedDomain = contentDomain.toLocaleLowerCase("en-US").replace(/\.$/u, "");
+  return normalizedHostname === normalizedDomain || normalizedHostname.endsWith(`.${normalizedDomain}`);
+}
+
+function isForbiddenContentHostPath(pathname: string): boolean {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return true;
+  }
+  return /^\/(?:api(?:\/|$)|mcp(?:\/|$)|review(?:\/|$)|o(?:\/|$)|auth(?:\/|$)|embed(?:\/|$)|review-frame(?:\/|$))/iu.test(decoded);
 }
 
 function isContentBootstrapRequest(requestUrl: URL): boolean {
@@ -5498,7 +5535,7 @@ function escapeHtmlAttribute(value: string): string {
 interface EmbedBindingClaims {
   readonly artifactId: string;
   readonly exp: number;
-  readonly installation_id: string;
+  readonly installation_id?: string | undefined;
   readonly jti: string;
   readonly mode: "view" | "respond";
   readonly questionId: string;
@@ -5514,7 +5551,9 @@ function signEmbedBinding(secret: string, claims: EmbedBindingClaims): string {
 function verifyEmbedBinding(
   secrets: readonly (Redacted.Redacted | undefined)[],
   token: string,
-  expected: Pick<EmbedBindingClaims, "artifactId" | "installation_id" | "versionId">,
+  expected: Pick<EmbedBindingClaims, "artifactId" | "installation_id" | "versionId"> & {
+    readonly allowLegacyInstallationless?: boolean;
+  },
 ): EmbedBindingClaims | null {
   const parts = token.split(".");
   if (parts.length !== 2) return null;
@@ -5533,7 +5572,7 @@ function verifyEmbedBinding(
   try {
     claims = z.object({
       artifactId: z.string().min(1), exp: z.number().int(),
-      installation_id: z.string().min(1), jti: z.string().uuid(),
+      installation_id: z.string().min(1).optional(), jti: z.string().uuid(),
       mode: z.enum(["view", "respond"]), questionId: z.string().min(1).max(200),
       versionId: z.string().min(1),
     }).strict().parse(JSON.parse(Buffer.from(payload, "base64url").toString("utf8")));
@@ -5545,7 +5584,8 @@ function verifyEmbedBinding(
     claims.exp <= now
     || claims.exp > now + 60 * 60
     || claims.artifactId !== expected.artifactId
-    || claims.installation_id !== expected.installation_id
+    || (expected.installation_id !== undefined && claims.installation_id !== expected.installation_id
+      && !(claims.installation_id === undefined && expected.allowLegacyInstallationless === true))
     || claims.versionId !== expected.versionId
   ) return null;
   return claims;

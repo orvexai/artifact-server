@@ -46,8 +46,12 @@ const contentSessionLifetimeMilliseconds = 15 * 60 * 1_000;
 export const previewLeaseTokenPrefix = "review-";
 
 /** Return whether a content-host token represents a Review preview lease. */
-export function isPreviewLeaseToken(token: string): boolean {
-  return token.startsWith(previewLeaseTokenPrefix) || /-review-[a-f0-9]+$/u.test(token);
+export function isPreviewLeaseToken(token: string, contentTokenPrefix?: string): boolean {
+  const hasScopedPrefix = contentTokenPrefix !== undefined && token.startsWith(contentTokenPrefix);
+  const scopedToken = hasScopedPrefix
+    ? token.slice(contentTokenPrefix.length)
+    : token;
+  return new RegExp(`^review-[a-f0-9]{${hasScopedPrefix ? 46 : 56}}$`, "u").test(scopedToken);
 }
 
 /** Secret material generated for private-content authorization. */
