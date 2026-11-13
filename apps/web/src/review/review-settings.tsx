@@ -137,6 +137,8 @@ function SettingsContent({
 }) {
   const principal = session.principal;
   const directHuman = principal.kind === "human" && principal.authorizedByPrincipalId === null;
+  const organizationBase = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
+  const tenantDirectory = organizationBase.startsWith("/o/") && organizationBase.replace(/\/+$/u, "") !== "/o/orvex";
   if (route.kind === "notFound") {
     return (
       <StatePanel
@@ -177,8 +179,6 @@ function SettingsContent({
   if (route.kind === "mcp") return <McpScreen administrator={administrator} />;
   if (route.kind === "webmcp") return <WebmcpScreen />;
   if (route.kind === "groups") {
-    const organizationBase = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
-    const tenantDirectory = organizationBase.startsWith("/o/") && organizationBase.replace(/\/+$/u, "") !== "/o/orvex";
     return <GroupsScreen canEdit={directHuman && (tenantDirectory
       ? principal.membershipRole === "owner"
       : isAdministratorRole(principal.membershipRole))} />;

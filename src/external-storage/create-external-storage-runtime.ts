@@ -262,7 +262,9 @@ export async function createOrgRuntime(
   };
   const stagingCleanupPolicy = config.stagingCleanupPolicy ??
     defaultStagingCleanupPolicy;
-  const gitHistory = config.gitHistory ?? offNodeGitHistoryConfiguration();
+  const gitHistory = isOrvex
+    ? config.gitHistory ?? offNodeGitHistoryConfiguration()
+    : offNodeGitHistoryConfiguration();
   let applicationGitHistory = fixedGitHistoryCapabilityReader(
     gitHistory.capability,
   );

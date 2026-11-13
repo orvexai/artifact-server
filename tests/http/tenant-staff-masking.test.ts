@@ -138,7 +138,8 @@ describe("tenant identity projection", () => {
   test("platform memberships require the claim organization id to match the registry", async () => {
     const organization = {
       admissionPolicy: {groupRoots: ["/teams/acme/"], seed: [{role: "viewer" as const, selector: "/teams/acme/reviewers"}]},
-      displayName: "Acme", id: "installation-id", keycloakId: "keycloak-org-id", routeId: "route1234", slug: "acme", status: "active" as const,
+      displayName: "Acme", embedOrigins: [], id: "installation-id", keycloakId: "keycloak-org-id",
+      registryVersion: "1", routeId: "route1234", slug: "acme", status: "active" as const,
     };
     const resolver = createKeycloakOrganizationMembershipResolver(async () => organization);
     const identity = {

@@ -49,25 +49,26 @@ import {createOidcIdentityProvider} from
   "../../src/identity/oidc-identity-provider.js";
 import {WorkOsMcpBearerVerifier} from
   "../../src/identity/workos-mcp-bearer-verifier.js";
-import {defaultGitHistoryFileCopyBytes, defaultGitHistoryVersionCopyBytes} from
-  "../../src/git-history/git-history-capability.js";
 import type {NodeGitHistoryConfiguration} from
   "../../src/git-history/node-git-history-configuration.js";
 import type {GitHistoryProviderHealthProbe} from
   "../../src/git-history/git-history-provider-health.js";
 import {RecordingGitHistoryProvider} from "../support/git-history-provider.js";
-import {gitHistoryMetadataFiles} from "../../src/git-history/git-history-mirror.js";
 import {isLiveContentToken, liveContentToken} from
   "../../src/application/linked-artifacts.js";
 import type {ExternalMcpBearerVerifier} from
   "../../src/application/authentication.js";
+import type {
+  DirectoryOrganization,
+  DirectoryOrganizationMember,
+  OrganizationDirectory,
+} from "../../src/identity/keycloak-directory.js";
+import {DirectoryUnavailable} from "../../src/application/directory-sync.js";
 import {startStubOidcProvider} from "../support/stub-oidc-provider.js";
 import {createS3ObjectStorageProviderFactory} from
   "../../src/storage/s3-object-storage.js";
 import {PostgresDatabase} from "../../src/storage/postgres-database.js";
-import type {NodeGitHistoryConfiguration} from "../../src/git-history/node-git-history-configuration.js";
-import type {GitHistoryProviderHealthProbe} from "../../src/git-history/git-history-provider-health.js";
-import {RecordingGitHistoryProvider} from "../support/git-history-provider.js";
+import {PostgresIdentityRepository} from "../../src/storage/postgres-identity-repository.js";
 
 const region = "us-east-1";
 const applicationOrigin = "https://artifacts.example.com";
@@ -127,8 +128,6 @@ const crossOrgMatrix = [
   {surface: "platform", identifier: "GET /api/v1/platform/me/orgs", coverage: "shared platform session lists only verified memberships"},
   {surface: "platform", identifier: "POST /api/v1/platform/session/last-org", coverage: "last-org accepts only a current membership"},
   {surface: "platform", identifier: "POST /api/v1/platform/session/logout", coverage: "logout deletes the shared platform session and expires its cookie"},
-  {surface: "hono", identifier: "GET /auth/login", coverage: "org-scoped login handshake cookie"},
-  {surface: "hono", identifier: "GET /auth/callback", coverage: "shared callback selects org from handshake cookie"},
 ] as const;
 
 const pendingCrossOrgCases = [
@@ -497,22 +496,6 @@ describe.sequential("organization tenancy security boundary", () => {
           serviceAccount: true,
           subject: "service-account",
         }),
-      verify: () => Effect.succeed({
-        clientId: "orgvex-service",
-        expiresAt: Math.floor(Date.now() / 1_000) + 60,
-        provider: "test-oidc",
-        scopes: [],
-        subject: "service-account",
-      }),
-      resolveIdentity: () => Effect.succeed({
-        displayName: "service account",
-        email: null,
-        emailVerified: false,
-        groups: ["/orvex/admin"],
-        provider: "test-oidc",
-        serviceAccount: true,
-        subject: "service-account",
-      }),
     };
     config = {
       apiToken: Redacted.make(apiTokenA),
@@ -721,6 +704,7 @@ describe.sequential("organization tenancy security boundary", () => {
       applicationOrigin: new URL(`/o/${orgB.slug}`, applicationOrigin).toString(),
       bootstrapApiToken: Redacted.make(apiTokenB),
       cookieRouteId: orgB.routeId,
+      keycloakOrganizationId: randomUUID(),
       slug: orgB.slug,
     }, config, database);
     try {
@@ -878,33 +862,12 @@ describe.sequential("organization tenancy security boundary", () => {
     let orgBMemberCookie = "";
     let orgBCsrf = "";
     expect(orgB.admissionPolicy).toMatchObject({groupRoots: [`/teams/${orgB.slug}/`]});
-    const gitHistoryProvider = new RecordingGitHistoryProvider();
-    const tenantGitHistory: NodeGitHistoryConfiguration = {
-      _tag: "CloudflareArtifactsRest",
-      apiToken: Redacted.make("org-tenancy-git-history-test-token"),
-      capability: {
-        limits: {
-          fileCopyBytes: defaultGitHistoryFileCopyBytes,
-          logicalCopiedBytes: 0,
-          logicalReservedBytes: 0,
-          storageBudgetBytes: null,
-          versionCopyBytes: defaultGitHistoryVersionCopyBytes,
-        },
-        provider: "cloudflare-artifacts",
-        providerState: "available",
-      },
-      identity: {accountId: "org-tenancy-test", namespace: "org-tenancy-test", provider: "cloudflare-artifacts"},
-      issues: [],
-    };
-    const gitHistoryHealthProbe: GitHistoryProviderHealthProbe = {
-      check: () => Effect.succeed({state: "available"}),
-    };
     const admissionRuntime = await createOrgRuntime(orgB.id, {
       admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
       applicationOrigin: `${applicationOrigin}/o/${orgB.slug}`,
       cookieRouteId: orgB.routeId,
       slug: orgB.slug,
-    }, {...config, gitHistory: tenantGitHistory, gitHistoryHealthProbe, gitHistoryProvider}, database);
+    }, withoutGitHistory(config), database);
     try {
       const loginWithGroups = async (groups: readonly string[], subject: string) => {
         oidc.claims.email = `${subject}@example.test`;
@@ -940,6 +903,15 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(siblingRoot.status).toBe(403);
       const admitted = await loginWithGroups([`/teams/${orgB.slug}/admins`], "org-b-admin-user");
       expect(admitted.status).toBe(303);
+      orgBMemberCookie = admitted.headers.getSetCookie()
+        .map((cookie) => cookie.split(";", 1)[0])
+        .join("; ");
+      const orgBCsrfCookie = admitted.headers.getSetCookie().find((cookie) =>
+        cookie.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`)
+      );
+      const orgBCsrfValue = orgBCsrfCookie?.split(";", 1)[0]?.split("=", 2)[1];
+      if (orgBCsrfValue === undefined) throw new Error("Org B administrator login did not issue a CSRF token.");
+      orgBCsrf = orgBCsrfValue;
 
       const staffLogin = await loginWithGroups([`/teams/${orgB.slug}/support`], "tenant-support-user");
       expect(staffLogin.status).toBe(303);
@@ -1208,12 +1180,14 @@ describe.sequential("organization tenancy security boundary", () => {
         `https://artifacts.example.com/api/v1/public/embed/artifacts/${staffArtifact.id}/bootstrap?path=index.html`,
       ));
       expect(publicEmbedBootstrap.status).toBe(200);
-      const enableGitHistory = await admissionRuntime.app.fetch(appRequest(
-        `/api/v1/projects/${staffProjectId}/git-history`, apiTokenB, "PUT",
-        {confirmEstimate: true, enabled: true},
+      const orgBCloneRefusal = await admissionRuntime.app.fetch(appRequest(
+        `/api/v1/projects/${staffProjectId}/artifacts/${staffArtifact.id}/history/clone-token`,
+        apiTokenB, "POST", {ttlSeconds: 60},
       ));
-      expect(enableGitHistory.status).toBe(200);
-      await expect.poll(() => gitHistoryProvider.commitCalls, {timeout: 8_000}).toBeGreaterThan(0);
+      expect(orgBCloneRefusal.status).toBe(404);
+      const orgBCloneBody = await orgBCloneRefusal.text();
+      expect(orgBCloneBody).not.toContain('"token"');
+      expect(orgBCloneBody).not.toContain('"remote"');
       const requiredEditorMutationPairs = [
         ["editor", "POST /api/v1/artifacts/:artifactId/restore", editorRestore.status],
         ["editor", "PATCH /api/v1/artifacts/:artifactId/tags", editorTags.status],
@@ -1276,38 +1250,38 @@ describe.sequential("organization tenancy security boundary", () => {
       for (const [role, actor] of issuedActorKeys) actorCookies.set(role, actor);
       const viewerWithKey = actorCookies.get("viewer");
       if (viewerWithKey?.token === undefined) throw new Error("The route walker has no viewer API key.");
-      const viewerClone = await admissionRuntime.app.fetch(appRequest(
-        `/api/v1/projects/${staffProjectId}/artifacts/${staffArtifact.id}/history/clone-token`,
-        viewerWithKey.token, "POST", {ttlSeconds: 60},
-      ));
-      expect(viewerClone.status).toBe(201);
-      expect(await viewerClone.json()).toMatchObject({remote: `https://git.example.test/${staffArtifact.id}`});
-      const clonedCommitFiles = gitHistoryProvider.commitRequests.flatMap((request) =>
-        request.files.concat(gitHistoryMetadataFiles(request))
-      );
-      expect(clonedCommitFiles.length).toBeGreaterThan(0);
-      for (const file of clonedCommitFiles) {
-        const contents = new TextDecoder().decode(file.bytes);
-        expect(contents).not.toContain(staffMember.id);
-        expect(contents).not.toContain(staffMember.email);
-        expect(contents).not.toContain(staffMember.displayName);
-      }
-      const versionMetadataFiles = clonedCommitFiles
-        .filter(({path}) => path === ".artifactserver/version.json");
-      expect(versionMetadataFiles.length).toBeGreaterThan(0);
-      for (const file of versionMetadataFiles) {
-        const metadata = z.record(z.string(), z.unknown()).parse(JSON.parse(new TextDecoder().decode(file.bytes)));
-        expect(metadata).not.toHaveProperty("publisherPrincipalId");
-        expect(JSON.stringify(metadata)).not.toContain(staffMember.id);
-      }
       const mcpActorTokens = new Map<string, string>([...actorCookies].flatMap(([role, actor]) => actor.token === undefined ? [] : [[role, actor.token] as const]));
 
-      const routeInventory = admissionRuntime.app.routes.map(({method, path}) => `${method} ${path}`);
-      const toolInventoryResponse = await admissionRuntime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
-        id: "route-walker-tools", jsonrpc: "2.0", method: "tools/list",
-      }, {Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
-      const toolDefinitions = await mcpToolDefinitions(toolInventoryResponse);
-      const toolInventory = toolDefinitions.map(({name}) => name);
+      const conditionalRuntimeToken = managedTestKey("org-tenancy-conditional");
+      const conditionalAdmissionRuntime = await createOrgRuntime(orgC.id, {
+        admissionPolicy: runtimeAdmissionPolicy(orgC.admissionPolicy),
+        applicationOrigin: `${applicationOrigin}/o/${orgC.slug}`,
+        bootstrapApiToken: Redacted.make(conditionalRuntimeToken),
+        cookieRouteId: orgC.routeId,
+        keycloakOrganizationId: randomUUID(),
+        slug: orgC.slug,
+      }, withoutGitHistory(config), database);
+      let routeInventory: string[];
+      let toolDefinitions: McpToolDefinition[];
+      let toolInventory: string[];
+      try {
+        routeInventory = [...new Set([
+          ...admissionRuntime.app.routes.map(({method, path}) => `${method} ${path}`),
+          ...conditionalAdmissionRuntime.app.routes.map(({method, path}) => `${method} ${path}`),
+        ])];
+        const conditionalToolsResponse = await conditionalAdmissionRuntime.app.fetch(appRequest("/mcp", conditionalRuntimeToken, "POST", {
+          id: "route-walker-conditional-tools", jsonrpc: "2.0", method: "tools/list",
+        }, {Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+        const conditionalTools = await mcpToolDefinitions(conditionalToolsResponse);
+        const baseToolsResponse = await admissionRuntime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
+          id: "route-walker-tools", jsonrpc: "2.0", method: "tools/list",
+        }, {Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+        const baseTools = await mcpToolDefinitions(baseToolsResponse);
+        toolDefinitions = baseTools;
+        toolInventory = [...new Set([...baseTools, ...conditionalTools].map(({name}) => name))];
+      } finally {
+        await conditionalAdmissionRuntime.close();
+      }
       assertCrossOrgMatrixComplete(routeInventory, toolInventory);
 
       const staffSecrets = [staffMember.displayName, staffMember.email, staffMember.id];
@@ -1469,7 +1443,7 @@ describe.sequential("organization tenancy security boundary", () => {
         bootstrapApiToken: Redacted.make(apiTokenB),
         cookieRouteId: orgB.routeId,
         slug: orgB.slug,
-      }, config, database);
+      }, withoutGitHistory(config), database);
       try {
         const mcpCommentList = await staffMcpRuntime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
           id: 1, jsonrpc: "2.0", method: "tools/call", params: {
@@ -2045,12 +2019,6 @@ describe.sequential("organization tenancy security boundary", () => {
       target.pathname = `/o/orvex${target.pathname}`;
       return fetch(new Request(new URL(`${target.pathname}${target.search}`, baseUrl), request));
     };
-    const orgAArtifactId = await publishOrgBArtifact(
-      orgAAppFetch,
-      apiTokenA,
-      orgAProjectId,
-      "orvex",
-    );
     const orgAEstimate = await fetch(
       `${baseUrl}/o/orvex/api/v1/projects/${orgAProjectId}/git-history/estimate`,
       {headers: {...host, Authorization: `Bearer ${apiTokenA}`}, method: "POST"},
@@ -2065,6 +2033,12 @@ describe.sequential("organization tenancy security boundary", () => {
       },
     );
     expect(orgAHistoryEnabled.status).toBe(200);
+    const orgAArtifactId = await publishOrgBArtifact(
+      orgAAppFetch,
+      apiTokenA,
+      orgAProjectId,
+      "orvex",
+    );
     await expect.poll(
       () => orgTenancyGitProvider.repositories.has(orgAArtifactId),
       {timeout: 5_000},
@@ -2422,6 +2396,7 @@ describe.sequential("organization tenancy security boundary", () => {
       applicationOrigin: new URL(`/o/${orgB.slug}`, applicationOrigin).toString(),
       bootstrapApiToken: Redacted.make(apiTokenB),
       cookieRouteId: orgB.routeId,
+      keycloakOrganizationId: randomUUID(),
       slug: orgB.slug,
     }, config, database);
     try {

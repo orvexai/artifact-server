@@ -273,6 +273,7 @@ export async function createOrganizationRouter(
           const organization = await registry.find("orvex").catch(() => null);
           if (organization === null || organization.status !== "active") return notFound();
           const entry = await runtimeFor(organization);
+          if (entry === null) return notFound();
           const target = new URL(request.url);
           target.pathname = "/auth/login";
           target.search = "";
@@ -332,6 +333,7 @@ export async function createOrganizationRouter(
               "x-csrf-token": csrf,
             });
             const entry = await runtimeFor(organization);
+            if (entry === null) return;
             const target = new URL(request.url);
             target.pathname = "/api/v1/session/logout";
             const response = await Promise.resolve(entry.runtime.app.fetch(new Request(target, {headers, method: "POST"})));
