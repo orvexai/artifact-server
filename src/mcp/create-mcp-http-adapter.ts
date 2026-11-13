@@ -188,9 +188,51 @@ export function createMcpHttpAdapter(
           });
         }
       }
-      return handler.fetch(request, {authInfo: attributedAuth});
+      const toolCall = await isMcpToolCall(request);
+      const response = await handler.fetch(request, {authInfo: attributedAuth});
+      return toolCall ? withExplicitMcpSuccessFlag(response) : response;
     },
   };
+}
+
+/** Keep the standard success discriminator explicit for route-walker clients. */
+async function isMcpToolCall(request: Request): Promise<boolean> {
+  try {
+    const requestBody = z.object({method: z.string().optional()}).passthrough()
+      .safeParse(await request.clone().json());
+    return requestBody.success && requestBody.data.method === "tools/call";
+  } catch {
+    return false;
+  }
+}
+
+async function withExplicitMcpSuccessFlag(response: Response): Promise<Response> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json") && !contentType.includes("text/event-stream")) {
+    return response;
+  }
+  const body = await response.text();
+  const normalizeLine = (line: string): string => {
+    const dataPrefix = line.match(/^data:\s*/u)?.[0];
+    const prefix = dataPrefix ?? "";
+    if (prefix === "" && !contentType.includes("application/json")) return line;
+    const value = prefix === "" ? line : line.slice(prefix.length);
+    try {
+      const envelope = z.record(z.string(), z.unknown()).safeParse(JSON.parse(value));
+      if (!envelope.success) return line;
+      const result = z.record(z.string(), z.unknown()).safeParse(envelope.data["result"]);
+      if (!result.success || result.data["isError"] !== undefined) return line;
+      return `${prefix}${JSON.stringify({...envelope.data, result: {...result.data, isError: false}})}`;
+    } catch {
+      return line;
+    }
+  };
+  const normalized = contentType.includes("text/event-stream")
+    ? body.split("\n").map(normalizeLine).join("\n")
+    : normalizeLine(body);
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return new Response(normalized, {headers, status: response.status, statusText: response.statusText});
 }
 
 async function deniedProvisionerTool(

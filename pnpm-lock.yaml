@@ -56,6 +56,9 @@ importers:
       '@modelcontextprotocol/server':
         specifier: 2.0.0
         version: 2.0.0
+      '@verifyhash/unicode-inspector':
+        specifier: 0.1.0
+        version: 0.1.0
       '@workos-inc/node':
         specifier: 10.9.0
         version: 10.9.0
@@ -3729,6 +3732,9 @@ packages:
   '@vercel/detect-agent@1.2.5':
     resolution: {integrity: sha512-0krENrjuitlW8s6TJu0MlqCevyCU7K7JK63jZAf7xZ6n17tx+vUEwzHT3sTxawtwZxaW21hu+oFUpoOrm49FsQ==}
     engines: {node: '>=14'}
+
+  '@verifyhash/unicode-inspector@0.1.0':
+    resolution: {integrity: sha512-LZHVQst3hLlDIfCIp7FWVRI7TEsxJt68z9DKwmlZ/DQODsuU+xWcZ+K9h9z79q9UYOxgZz60BiMS66XzISzklQ==}
 
   '@vitejs/plugin-react@6.0.5':
     resolution: {integrity: sha512-BOVzne/NL162sMdResB25mUv+vWMF5NoAjNf09TeGlE7ZpszZWSD3winycicLJw72yeVsoCn/2kOhEuCvEShMA==}
@@ -11560,6 +11566,8 @@ snapshots:
       d3-transition: 3.0.1(d3-selection@3.0.0)
 
   '@vercel/detect-agent@1.2.5': {}
+
+  '@verifyhash/unicode-inspector@0.1.0': {}
 
   '@vitejs/plugin-react@6.0.5(vite@8.2.1(@types/node@26.6.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))':
     dependencies:

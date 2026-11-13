@@ -4,6 +4,7 @@ import {isReservedTenantIdentityName, tenantIdentityPresentation, tenantVersionR
 import {projectHttpTenantResponse, projectTenantMembers} from "../../src/http/create-http-app.js";
 import type {ArtifactResponseRecord} from "../../src/core/model.js";
 import {createKeycloakOrganizationMembershipResolver} from "../../src/external-storage/organization-memberships.js";
+import {gitHistoryMetadataFiles, gitHistoryVersionMetadata} from "../../src/git-history/git-history-mirror.js";
 
 describe("tenant identity projection", () => {
   const principal: Principal = {
@@ -39,8 +40,16 @@ describe("tenant identity projection", () => {
       "ᴏʀᴠᴇx ѕᴜᴘᴘᴏʀᴛ",
       "orѵex-support",
       "Orvex\u0307.Support",
+      "or\u2c9fvexsupport",
+      "orvex ꜱupport",
+      "orvexꜱupport",
+      "orʋexsupport",
+      "orvexҽupport",
+      "orvҽxsupport",
+      "orvex suppo\u2ca3t",
+      "оrvexsupport",
     ]) {
-      expect(isReservedTenantIdentityName(value)).toBe(true);
+      expect(isReservedTenantIdentityName(value), `reserved identity: ${value}`).toBe(true);
       expect(tenantIdentityPresentation(principal, {displayName: value, principalId: "member-id"}).displayName)
         .toBe("Orvex Support (member)");
     }
@@ -54,6 +63,27 @@ describe("tenant identity projection", () => {
     expect(tenantVersionRecord(principal, version).publisherPrincipalId).toBeNull();
     expect(tenantVersionRecord(undefined, version).publisherPrincipalId).toBeNull();
     expect(tenantVersionRecord(principal, {...version, publisherPrincipalId: "member-id"}).publisherPrincipalId).toBe("member-id");
+  });
+
+  test("tenant Git history commits omit the publisher identity from metadata files", () => {
+    const version = {
+      artifactId: "art_test", createdAt: "2026-11-12T00:00:00.000Z", entryPath: "index.html",
+      id: "ver_test", manifestDigest: "sha256:test", number: 1, projectId: "prj_test",
+      publisherPrincipalId: "staff-id",
+    };
+    const metadata = gitHistoryVersionMetadata(version, "tenant-installation", false);
+    expect(metadata).not.toHaveProperty("publisherPrincipalId");
+    const metadataFile = gitHistoryMetadataFiles({
+      coordinates: {
+        artifactId: version.artifactId, defaultBranch: "main", projectId: version.projectId,
+        provider: "cloudflare-artifacts", remoteUrl: "https://git.example.test/repo",
+        repositoryName: "repo", status: "provisioned",
+      },
+      files: [], metadata, pointers: [],
+    }).find(({path}) => path === ".artifactserver/version.json");
+    if (metadataFile === undefined) throw new Error("The Git history version metadata file was not written.");
+    expect(JSON.parse(new TextDecoder().decode(metadataFile.bytes))).not.toHaveProperty("publisherPrincipalId");
+    expect(gitHistoryVersionMetadata(version, "orvex-installation", true).publisherPrincipalId).toBe("staff-id");
   });
 
   test("platform memberships require the claim organization id to match the registry", async () => {

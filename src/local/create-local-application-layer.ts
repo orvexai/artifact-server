@@ -654,6 +654,7 @@ export function createApplicationLayer(
     clock,
     ids: adapters.ids,
     installationId: adapters.installationId,
+    organizationDirectoryVisibility: adapters.organizationDirectoryVisibility === true,
     repository: {
       cancelDispatch: (command) => dispatchEffect(
         "cancelAgentDispatch",

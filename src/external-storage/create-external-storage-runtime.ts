@@ -393,6 +393,7 @@ export async function createOrgRuntime(
       gitHistoryWorker = await startGitHistoryMirrorWorker({
         blobs,
         capability: applicationGitHistory,
+        includePublisherPrincipalId: isOrvex,
         installationId,
         provider: gitHistoryProvider,
         store: repository,

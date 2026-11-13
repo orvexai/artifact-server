@@ -1024,6 +1024,17 @@ const addPlatformSessions = Effect.gen(function*() {
   )`);
   yield* sql.unsafe(`CREATE INDEX artifact_platform_sessions_expiry
     ON artifact_platform_sessions (expires_at)`);
+  yield* sql.unsafe(`CREATE TABLE installation_member_staff_audit (
+    id BIGSERIAL PRIMARY KEY,
+    installation_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    member_email TEXT NOT NULL,
+    actor TEXT NOT NULL CHECK (actor = 'operator_cli'),
+    action TEXT NOT NULL CHECK (action = 'clear_staff'),
+    created_at TEXT NOT NULL
+  )`);
+  yield* sql.unsafe(`CREATE INDEX installation_member_staff_audit_recent
+    ON installation_member_staff_audit (installation_id, created_at DESC, id DESC)`);
 });
 
 const postgresMigrations = {

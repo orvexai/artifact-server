@@ -1,3 +1,5 @@
+import {detectConfusables, skeleton} from "@verifyhash/unicode-inspector";
+
 /** Principal kinds recognized by Artifact Server policy. */
 export const principalKinds = {
   human: "human",
@@ -105,23 +107,15 @@ export function tenantVisiblePrincipalId(principal: Principal | undefined, princ
   return isTenantStaffIdentity(principal, principalId) ? null : principalId;
 }
 
-const reservedNameConfusables = new Map(Object.entries({
-  "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "@": "a", "$": "s",
-  "а": "a", "е": "e", "і": "i", "ο": "o", "о": "o", "р": "p", "с": "c", "τ": "t", "т": "t", "х": "x", "у": "y", "ѕ": "s", "ӏ": "l", "ѵ": "v",
-  "в": "b", "г": "r", "д": "d", "и": "n", "к": "k", "м": "m", "н": "h", "п": "n", "ь": "b", "э": "e", "я": "r",
-  "օ": "o", "ս": "s", "α": "a", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "ρ": "p", "σ": "s", "υ": "u", "χ": "x", "ϲ": "c", "ϱ": "p", "ϖ": "w",
-  "ᴏ": "o", "ʀ": "r", "ᴠ": "v", "ᴇ": "e", "ᴜ": "u", "ᴘ": "p", "ᴛ": "t", "ᴄ": "c", "ᴅ": "d", "ɴ": "n", "ᴍ": "m", "ʜ": "h", "ᴋ": "k", "ᴡ": "w",
-}));
-
 /** Compare reserved tenant identity labels after compatibility and confusable folding. */
 export function isReservedTenantIdentityName(value: string): boolean {
-  const normalized = [...value.normalize("NFKD")
-    .replace(/[\p{Default_Ignorable_Code_Point}\p{Cc}]/gu, "")
-    .toLowerCase()
-    .replace(/[\p{M}\p{P}\p{S}\p{Z}]/gu, "")]
-    .map((character) => reservedNameConfusables.get(character) ?? character)
-    .join("");
-  return normalized.includes("orvexsupport");
+  // U+028B is an official UTS #39 confusable of "u", while tenant users
+  // commonly use it visually for the "v" in this reserved label.
+  const normalized = value.normalize("NFKC").replace(/\u028b/gu, "v");
+  const canonicalSkeleton = skeleton(normalized).toLowerCase()
+    .replace(/[\p{M}\p{P}\p{S}\p{Z}\p{Default_Ignorable_Code_Point}]/gu, "");
+  return detectConfusables(normalized).mixedScripts.length > 0 ||
+    canonicalSkeleton.includes("orvexsupport");
 }
 
 /** Apply the tenant author projection to a version at the application boundary. */

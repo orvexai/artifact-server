@@ -49,6 +49,14 @@ import {createOidcIdentityProvider} from
   "../../src/identity/oidc-identity-provider.js";
 import {WorkOsMcpBearerVerifier} from
   "../../src/identity/workos-mcp-bearer-verifier.js";
+import {defaultGitHistoryFileCopyBytes, defaultGitHistoryVersionCopyBytes} from
+  "../../src/git-history/git-history-capability.js";
+import type {NodeGitHistoryConfiguration} from
+  "../../src/git-history/node-git-history-configuration.js";
+import type {GitHistoryProviderHealthProbe} from
+  "../../src/git-history/git-history-provider-health.js";
+import {RecordingGitHistoryProvider} from "../support/git-history-provider.js";
+import {gitHistoryMetadataFiles} from "../../src/git-history/git-history-mirror.js";
 import type {ExternalMcpBearerVerifier} from
   "../../src/application/authentication.js";
 import type {
@@ -766,12 +774,33 @@ describe.sequential("organization tenancy security boundary", () => {
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const host = {Host: "artifacts.example.com"};
     expect(orgB.admissionPolicy).toMatchObject({groupRoots: [`/teams/${orgB.slug}/`]});
+    const gitHistoryProvider = new RecordingGitHistoryProvider();
+    const tenantGitHistory: NodeGitHistoryConfiguration = {
+      _tag: "CloudflareArtifactsRest",
+      apiToken: Redacted.make("org-tenancy-git-history-test-token"),
+      capability: {
+        limits: {
+          fileCopyBytes: defaultGitHistoryFileCopyBytes,
+          logicalCopiedBytes: 0,
+          logicalReservedBytes: 0,
+          storageBudgetBytes: null,
+          versionCopyBytes: defaultGitHistoryVersionCopyBytes,
+        },
+        provider: "cloudflare-artifacts",
+        providerState: "available",
+      },
+      identity: {accountId: "org-tenancy-test", namespace: "org-tenancy-test", provider: "cloudflare-artifacts"},
+      issues: [],
+    };
+    const gitHistoryHealthProbe: GitHistoryProviderHealthProbe = {
+      check: () => Effect.succeed({state: "available"}),
+    };
     const admissionRuntime = await createOrgRuntime(orgB.id, {
       admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
       applicationOrigin: `${applicationOrigin}/o/${orgB.slug}`,
       cookieRouteId: orgB.routeId,
       slug: orgB.slug,
-    }, config, database);
+    }, {...config, gitHistory: tenantGitHistory, gitHistoryHealthProbe, gitHistoryProvider}, database);
     try {
       const loginWithGroups = async (groups: readonly string[], subject: string) => {
         oidc.claims.email = `${subject}@example.test`;
@@ -953,6 +982,89 @@ describe.sequential("organization tenancy security boundary", () => {
       }));
       const staffMember = z.object({displayName: z.string(), email: z.string(), id: z.string()}).parse(staffMemberRows[0]);
 
+      const editorLogin = await loginWithGroups([`/teams/${orgB.slug}/editors`], "route-walker-editor-mutations");
+      expect(editorLogin.status).toBe(303);
+      const editorCookies = editorLogin.headers.getSetCookie();
+      const editorCookie = editorCookies.map((value) => value.split(";", 1)[0]).join("; ");
+      const editorCsrfCookie = editorCookies.find((value) => value.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`));
+      if (editorCsrfCookie === undefined) throw new Error("The editor mutation login did not issue a CSRF cookie.");
+      const editorCsrf = editorCsrfCookie.split(";", 1)[0]?.split("=", 2)[1];
+      if (editorCsrf === undefined) throw new Error("The editor mutation login issued an invalid CSRF cookie.");
+      const editorActor = {cookie: editorCookie, csrf: editorCsrf};
+      const editorComment = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/versions/${staffVersionId}/comments?projectId=${staffProjectId}`,
+        {body: JSON.stringify({body: "Tenant editor dispatches to the support mailbox."}), headers: {
+          Cookie: editorActor.cookie, "Content-Type": "application/json", "Idempotency-Key": randomUUID(),
+          Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": editorActor.csrf,
+        }, method: "POST"},
+      ));
+      expect(editorComment.status).toBe(201);
+      const editorThreadId = z.object({thread: z.object({id: z.string()})}).parse(await editorComment.json()).thread.id;
+      const editorDispatch = await admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com/api/v1/agent-dispatches", {
+          body: JSON.stringify({agentId: staffAgentId, note: "Tenant member handoff", projectId: staffProjectId, threadIds: [editorThreadId]}),
+          headers: {Cookie: editorActor.cookie, "Content-Type": "application/json", "Idempotency-Key": randomUUID(),
+            Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": editorActor.csrf},
+          method: "POST",
+        },
+      ));
+      expect(editorDispatch.status).toBe(201);
+      const editorDispatchBody = await editorDispatch.json();
+      expect(JSON.stringify(editorDispatchBody)).toContain("Orvex Support");
+      expect(JSON.stringify(editorDispatchBody)).not.toContain(staffMember.displayName);
+      const editorMutationHeaders = new Headers({Cookie: editorActor.cookie, "Content-Type": "application/json",
+        Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": editorActor.csrf});
+      const editorRestore = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/restore?projectId=${staffProjectId}`,
+        {body: JSON.stringify({expectedCurrentVersionId: staffVersionId, versionId: firstVersionId}), headers: new Headers([...editorMutationHeaders, ["Idempotency-Key", randomUUID()]]), method: "POST"},
+      ));
+      expect(editorRestore.status).toBe(200);
+      staffVersionId = z.object({version: z.object({id: z.string()})}).parse(await editorRestore.json()).version.id;
+      const editorTags = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/tags?projectId=${staffProjectId}`,
+        {body: JSON.stringify({expectedCurrentVersionId: staffVersionId, tags: ["walker-proof"]}), headers: new Headers([...editorMutationHeaders, ["Idempotency-Key", randomUUID()]]), method: "PATCH"},
+      ));
+      expect(editorTags.status).toBe(200);
+      staffVersionId = z.object({version: z.object({id: z.string()})}).parse(await editorTags.json()).version.id;
+      const editorReply = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/comments/${editorThreadId}/replies?projectId=${staffProjectId}`,
+        {body: JSON.stringify({body: "Reply from the tenant editor."}), headers: new Headers([...editorMutationHeaders, ["Idempotency-Key", randomUUID()]]), method: "POST"},
+      ));
+      expect(editorReply.status).toBe(201);
+      const editorResolve = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/comments/${editorThreadId}?projectId=${staffProjectId}`,
+        {body: JSON.stringify({state: "resolved"}), headers: editorMutationHeaders, method: "PATCH"},
+      ));
+      expect(editorResolve.status).toBe(200);
+      const editorAccess = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/access?projectId=${staffProjectId}`,
+        {body: JSON.stringify({accessSetting: "public_link", expectedCurrentVersionId: staffVersionId}), headers: new Headers([...editorMutationHeaders, ["Idempotency-Key", randomUUID()]]), method: "PATCH"},
+      ));
+      expect(editorAccess.status).toBe(200);
+      staffVersionId = z.object({version: z.object({id: z.string()})}).parse(await editorAccess.json()).version.id;
+      const publicEmbedBootstrap = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/public/embed/artifacts/${staffArtifact.id}/bootstrap?path=index.html`,
+      ));
+      expect(publicEmbedBootstrap.status).toBe(200);
+      const enableGitHistory = await admissionRuntime.app.fetch(appRequest(
+        `/api/v1/projects/${staffProjectId}/git-history`, apiTokenB, "PUT",
+        {confirmEstimate: true, enabled: true},
+      ));
+      expect(enableGitHistory.status).toBe(200);
+      await expect.poll(() => gitHistoryProvider.commitCalls, {timeout: 8_000}).toBeGreaterThan(0);
+      const requiredEditorMutationPairs = [
+        ["editor", "POST /api/v1/artifacts/:artifactId/restore", editorRestore.status],
+        ["editor", "PATCH /api/v1/artifacts/:artifactId/tags", editorTags.status],
+        ["editor", "POST /api/v1/artifacts/:artifactId/versions/:versionId/comments", editorComment.status],
+        ["editor", "POST /api/v1/artifacts/:artifactId/comments/:threadId/replies", editorReply.status],
+        ["editor", "PATCH /api/v1/artifacts/:artifactId/comments/:threadId", editorResolve.status],
+        ["editor", "PATCH /api/v1/artifacts/:artifactId/access", editorAccess.status],
+      ] as const;
+      for (const [role, operation, status] of requiredEditorMutationPairs) {
+        expect(status, `${role} must successfully perform ${operation} with the seeded resource`).toBeGreaterThanOrEqual(200);
+        expect(status, `${role} must successfully perform ${operation} with the seeded resource`).toBeLessThan(300);
+      }
+
       type RouteWalkerActor = {readonly csrf: string; readonly cookie: string; readonly memberId: string; readonly token?: string};
       const roleGroups = [["admin", "admins"], ["editor", "editors"], ["viewer", "viewers"]] as const;
       const actorEntries = await roleGroups.reduce<Promise<Array<[string, RouteWalkerActor]>>>(
@@ -1000,6 +1112,32 @@ describe.sequential("organization tenancy security boundary", () => {
         return [role, {...actor, token}] as const;
       }));
       for (const [role, actor] of issuedActorKeys) actorCookies.set(role, actor);
+      const viewerWithKey = actorCookies.get("viewer");
+      if (viewerWithKey?.token === undefined) throw new Error("The route walker has no viewer API key.");
+      const viewerClone = await admissionRuntime.app.fetch(appRequest(
+        `/api/v1/projects/${staffProjectId}/artifacts/${staffArtifact.id}/history/clone-token`,
+        viewerWithKey.token, "POST", {ttlSeconds: 60},
+      ));
+      expect(viewerClone.status).toBe(201);
+      expect(await viewerClone.json()).toMatchObject({remote: `https://git.example.test/${staffArtifact.id}`});
+      const clonedCommitFiles = gitHistoryProvider.commitRequests.flatMap((request) =>
+        request.files.concat(gitHistoryMetadataFiles(request))
+      );
+      expect(clonedCommitFiles.length).toBeGreaterThan(0);
+      for (const file of clonedCommitFiles) {
+        const contents = new TextDecoder().decode(file.bytes);
+        expect(contents).not.toContain(staffMember.id);
+        expect(contents).not.toContain(staffMember.email);
+        expect(contents).not.toContain(staffMember.displayName);
+      }
+      const versionMetadataFiles = clonedCommitFiles
+        .filter(({path}) => path === ".artifactserver/version.json");
+      expect(versionMetadataFiles.length).toBeGreaterThan(0);
+      for (const file of versionMetadataFiles) {
+        const metadata = z.record(z.string(), z.unknown()).parse(JSON.parse(new TextDecoder().decode(file.bytes)));
+        expect(metadata).not.toHaveProperty("publisherPrincipalId");
+        expect(JSON.stringify(metadata)).not.toContain(staffMember.id);
+      }
       const mcpActorTokens = new Map<string, string>([...actorCookies].flatMap(([role, actor]) => actor.token === undefined ? [] : [[role, actor.token] as const]));
 
       const routeInventory = admissionRuntime.app.routes.map(({method, path}) => `${method} ${path}`);
@@ -1026,6 +1164,17 @@ describe.sequential("organization tenancy security boundary", () => {
       const orderedRoutes = [...routeInventory].toSorted((left, right) =>
         Number(left.endsWith("/session/logout")) - Number(right.endsWith("/session/logout"))
       );
+      const mustSucceedRoutePairs = [
+        ...["admin", "editor", "viewer"].flatMap((role) => [
+          [role, "GET /api/v1/members"], [role, "GET /api/v1/groups"],
+          [role, "GET /api/v1/artifacts/:artifactId"], [role, "GET /api/v1/artifacts/:artifactId/versions"],
+          [role, "GET /api/v1/artifacts/:artifactId/comments"], [role, "GET /api/v1/artifacts/:artifactId/comments/:threadId"],
+          [role, "GET /api/v1/artifacts/:artifactId/responses"], [role, "GET /api/v1/artifacts/:artifactId/state"],
+          [role, "GET /api/v1/agents"], [role, "GET /api/v1/agent-dispatches/:dispatchId"],
+          [role, "GET /api/v1/public/artifacts/:artifactId"], [role, "GET /api/v1/public/embed/artifacts/:artifactId/bootstrap"],
+        ] as const),
+        ["admin", "GET /api/v1/administration/public-links"] as const,
+      ] as const;
       // The generic walker bodies intentionally exercise both successful reads
       // and documented validation/authorization/not-found outcomes. No route
       // may fail with a server error, and each role must reach successful data.
@@ -1037,6 +1186,7 @@ describe.sequential("organization tenancy security boundary", () => {
         PATCH: [200, 204, 400, 401, 403, 404, 405, 409, 410, 422],
         DELETE: [200, 202, 204, 400, 401, 403, 404, 405, 409, 410, 422],
       } as const satisfies Readonly<Record<string, readonly number[]>>;
+      const expectedHttpMethod = z.enum(["DELETE", "GET", "HEAD", "PATCH", "POST", "PUT"]);
       const actorScans = await Promise.all([...actorCookies].map(async ([role, actor]) => {
         const routeResponses = await Promise.all(orderedRoutes.map(async (route) => {
             const [rawMethod, rawPath] = route.split(" ", 2);
@@ -1045,13 +1195,17 @@ describe.sequential("organization tenancy security boundary", () => {
             const readOnly = method === "GET" || method === "HEAD";
             const path = rawPath.replace(/:([A-Za-z][A-Za-z0-9_]*)/gu, (_match, name: string) => routeParam(name, readOnly)).replace(/\/\*/gu, "/route-walker");
             const url = new URL(path, "https://artifacts.example.com");
-            if (path.includes("artifact") || path.includes("project") || path.includes("agent-dispatches")) url.searchParams.set("projectId", staffProjectId);
+            if (!path.startsWith("/api/v1/public/") &&
+              (path.includes("artifact") || path.includes("project") || path.includes("agent-dispatches"))) {
+              url.searchParams.set("projectId", staffProjectId);
+            }
             if (path.includes("/compare")) {
               url.searchParams.set("fromVersionId", firstVersionId);
               url.searchParams.set("toVersionId", staffVersionId);
             }
             if (path.includes("/media") || path.includes("embed")) url.searchParams.set("path", "index.html");
-            const headers = new Headers({Cookie: actor.cookie});
+            const headers = new Headers();
+            if (!path.startsWith("/api/v1/public/")) headers.set("Cookie", actor.cookie);
             if (!readOnly) {
               headers.set("Content-Type", "application/json");
               headers.set("Origin", applicationOrigin);
@@ -1064,11 +1218,16 @@ describe.sequential("organization tenancy security boundary", () => {
             const body = await response.text();
             assertNoStaffIdentity(body, staffSecrets);
             // SAFETY: method is normalized from the live route inventory, and the table explicitly covers each registered HTTP verb.
-            const acceptedStatuses = expectedHttpStatuses[method as keyof typeof expectedHttpStatuses];
+            const acceptedStatuses = expectedHttpStatuses[expectedHttpMethod.parse(method)];
             expect(acceptedStatuses).toContain(response.status);
             return {route, status: response.status};
         }));
         expect(routeResponses).toHaveLength(orderedRoutes.length);
+        for (const [, requiredRoute] of mustSucceedRoutePairs.filter(([candidateRole]) => candidateRole === role)) {
+          const successfulRead = routeResponses.find(({route}) => route === requiredRoute);
+          expect(successfulRead?.status, `${role} must successfully read ${requiredRoute}`).toBeGreaterThanOrEqual(200);
+          expect(successfulRead?.status, `${role} must successfully read ${requiredRoute}`).toBeLessThan(300);
+        }
         expect(routeResponses.filter(({status}) => status >= 200 && status < 300).length, `${role} HTTP routes must include successful results`).toBeGreaterThanOrEqual(2);
         const agents = await admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/agents", {
           headers: {Cookie: actor.cookie},
@@ -1112,6 +1271,13 @@ describe.sequential("organization tenancy security boundary", () => {
           const responseBody = await response.text();
           assertNoStaffIdentity(responseBody, staffSecrets);
           expect(response.status, `${role} MCP tool ${tool.name}`).toBe(200);
+          const payload = response.headers.get("content-type")?.includes("text/event-stream")
+            ? responseBody.split("\n").find((line) => line.startsWith("data: "))?.slice(6) ?? "{}"
+            : responseBody;
+          const decoded = z.object({result: z.object({isError: z.boolean().optional()}).passthrough()}).passthrough().parse(JSON.parse(payload));
+          const mustSucceed = new Set(["artifact_get", "comment_list", "comment_get", "artifact_response_list", "artifact_state_list"]);
+          expect(mustSucceed.has(tool.name) ? decoded.result.isError : false,
+            `${role} MCP ${tool.name} must return a successful tool result: ${responseBody}`).toBe(false);
           return response.status;
         }));
         expect(toolResponses).toHaveLength(toolDefinitions.length);
@@ -1119,6 +1285,19 @@ describe.sequential("organization tenancy security boundary", () => {
         return {role, routes: routeResponses.length, tools: toolResponses.length};
       }));
       expect(actorScans).toHaveLength(3);
+
+      const makePrivate = await admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com/api/v1/administration/public-links/make-private", {
+          body: JSON.stringify({items: [{artifactId: staffArtifact.id, expectedCurrentVersionId: staffVersionId,
+            idempotencyKey: randomUUID(), projectId: staffProjectId}]}),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+            "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+          method: "POST",
+        },
+      ));
+      expect(makePrivate.status).toBe(200);
+      const requiredAdminMutationPair = ["admin", "POST /api/v1/administration/public-links/make-private", makePrivate.status] as const;
+      expect(requiredAdminMutationPair[2], `${requiredAdminMutationPair[0]} must successfully perform ${requiredAdminMutationPair[1]}`).toBe(200);
 
       const staffMcpRuntime = await createOrgRuntime(orgB.id, {
         admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),

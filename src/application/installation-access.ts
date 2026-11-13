@@ -999,8 +999,9 @@ function makeInstallationAccessService(
       } else {
         unchanged += 1;
       }
-      const stickyStaff = member?.staff === true || entry.staff === true;
-      if (member !== undefined && member.staff !== stickyStaff) {
+      const stickyStaff = dependencies.organizationDirectoryVisibility === true &&
+        (member?.staff === true || entry.staff === true);
+      if (dependencies.organizationDirectoryVisibility === true && member !== undefined && member.staff !== stickyStaff) {
         yield* dependencies.repository.setMemberStaff(dependencies.installationId, member.id, stickyStaff);
         clearAuthenticationCaches();
       }
@@ -1517,8 +1518,10 @@ function makeInstallationAccessService(
       installationId: key.installationId,
       kind: key.principalKind,
       membershipRole: boundMember?.role ?? membershipRoles.member,
-      staff: boundMember?.staff === true,
     };
+    if (dependencies.organizationDirectoryVisibility === true) {
+      Object.assign(principal, {staff: boundMember?.staff === true});
+    }
     // Human API keys are reloaded on every request so role changes take effect
     // immediately. Service key entries still use the short local cache.
     if (key.principalKind !== principalKinds.human) apiKeyCache?.set(
@@ -1575,7 +1578,9 @@ function makeInstallationAccessService(
     yield* requireAdministrator(principal, dependencies.installationId);
     if (dependencies.organizationDirectoryVisibility === true) {
       const target = yield* dependencies.repository.findMember(dependencies.installationId, memberId);
-      if (target?.staff === true) return yield* new IdentityNotFound({message: "The member does not exist."});
+      if (target?.staff === true && principal.membershipRole !== membershipRoles.owner) {
+        return yield* new AuthorizationDenied({message: "Only organization owners can deactivate staff members."});
+      }
     }
     if (principal.id === memberId) {
       return yield* Effect.fail(new IdentityConflict({
@@ -1704,10 +1709,6 @@ function makeInstallationAccessService(
     yield* requireAdministrator(principal, dependencies.installationId);
     if (dependencies.organizationDirectoryVisibility === true) {
       const key = yield* dependencies.repository.findApiKey(dependencies.installationId, keyId);
-      if (key !== null && principal.membershipRole !== membershipRoles.owner) {
-        const authorizer = key.authorizedByPrincipalId === null ? null : yield* dependencies.repository.findMember(dependencies.installationId, key.authorizedByPrincipalId);
-        if (authorizer?.staff === true) return yield* Effect.fail(new AuthorizationDenied({message: "API keys authorized by staff cannot be changed by tenant administrators."}));
-      }
       if (key !== null && key.principalKind === principalKinds.human) {
         const member = yield* dependencies.repository.findMember(dependencies.installationId, key.principalId);
         if ((member?.staff === true && principal.membershipRole !== membershipRoles.owner) || member !== null && member !== undefined && membershipRolePrecedence(member.role) > membershipRolePrecedence(principal.membershipRole)) {
@@ -1739,10 +1740,6 @@ function makeInstallationAccessService(
       return yield* Effect.fail(new IdentityNotFound({
         message: "The API key does not exist.",
       }));
-    }
-    if (dependencies.organizationDirectoryVisibility === true && principal.membershipRole !== membershipRoles.owner) {
-      const authorizer = previous.authorizedByPrincipalId === null ? null : yield* dependencies.repository.findMember(dependencies.installationId, previous.authorizedByPrincipalId);
-      if (authorizer?.staff === true) return yield* Effect.fail(new AuthorizationDenied({message: "API keys authorized by staff cannot be changed by tenant administrators."}));
     }
     if (previous.principalKind === principalKinds.human) {
       const member = yield* dependencies.repository.findMember(dependencies.installationId, previous.principalId);

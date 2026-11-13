@@ -133,6 +133,7 @@ export interface LocalRuntimeConfig {
   readonly observability?: boolean;
   readonly runtimeLifecycle?: RuntimeLifecycle;
   readonly installationId?: string;
+  readonly organizationSlug?: string;
   readonly serviceVersion?: string;
   readonly uploadUrlLifetimeMilliseconds?: number;
   readonly stagingCleanupPolicy?: StagingCleanupPolicy;
@@ -326,6 +327,7 @@ export async function createLocalRuntime(
       gitHistoryWorker = await startGitHistoryMirrorWorker({
         blobs,
         capability: applicationGitHistory,
+        includePublisherPrincipalId: config.organizationSlug === undefined || config.organizationSlug === "orvex",
         installationId,
         provider: gitHistoryProvider,
         store: repository,

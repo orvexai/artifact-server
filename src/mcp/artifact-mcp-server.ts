@@ -506,17 +506,24 @@ export function createArtifactMcpServer(
    * to their verified client ID.
    */
   function clientDisplayName(agentName?: string): string {
-    if (identity.agentClientId === null) return identity.principal.displayName;
+    const principalDisplayName = isTenantOrganization
+      ? tenantIdentityPresentation(identity.principal, {
+        displayName: identity.principal.displayName,
+        email: identity.principal.email ?? null,
+        principalId: identity.principal.id,
+      }).displayName
+      : identity.principal.displayName;
+    if (identity.agentClientId === null) return principalDisplayName;
     // A name the agent gives itself is display-only and always marked as an
     // agent acting for the principal, so it can never pass as their own words.
     if (agentName !== undefined) {
-      return `${agentName} (agent) for ${identity.principal.displayName}`;
+      return `${agentName} (agent) for ${principalDisplayName}`;
     }
     const clientName = identity.agentDisplayName?.trim();
     const actorName = clientName === undefined || clientName.length === 0
       ? `MCP client ${identity.agentClientId}`
       : clientName;
-    return `${actorName} for ${identity.principal.displayName}`;
+    return `${actorName} for ${principalDisplayName}`;
   }
 
   function commentPrincipal(agentName?: string): Principal {

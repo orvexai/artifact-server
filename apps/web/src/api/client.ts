@@ -175,7 +175,7 @@ const versionSchema = z.object({
   manifestDigest: z.string(),
   number: z.number(),
   projectId: z.string(),
-  publisherPrincipalId: z.string(),
+  publisherPrincipalId: z.string().nullable(),
   routingMode: z.enum(["static", "spa"]),
 });
 
@@ -351,7 +351,7 @@ export interface ArtifactAction {
   readonly createdAt: string;
   readonly id: string;
   readonly idempotencyKey: string;
-  readonly principalId: string;
+  readonly principalId: string | null;
   readonly projectId: string;
   readonly versionId: string;
 }
@@ -459,7 +459,7 @@ const actionSchema: z.ZodType<ArtifactAction> = z.object({
   createdAt: z.string(),
   id: z.string(),
   idempotencyKey: z.string(),
-  principalId: z.string(),
+  principalId: z.string().nullable(),
   projectId: z.string(),
   versionId: z.string(),
 });
@@ -513,7 +513,7 @@ const commentThreadStateSchema = z.enum(["open", "resolved"]);
 const commentAuthorSchema = z.object({
   authorizedByPrincipalId: z.string().nullable(),
   displayName: z.string(),
-  principalId: z.string(),
+  principalId: z.string().nullable(),
   principalKind: principalKindSchema,
 });
 
@@ -627,7 +627,7 @@ const registeredAgentSchema = z.object({
   /** Open slug, matching the server (`registeredAgentKindPattern`): nothing branches on it. */
   kind: z.string(),
   lastSeenAt: z.string(),
-  principalId: z.string(),
+  principalId: z.string().nullable(),
   workingDirectory: z.string(),
 });
 
@@ -727,7 +727,7 @@ const agentPresenceSchema = z.object({
   kind: z.string(),
   lastActivityAt: z.string().optional(),
   lastSeenAt: z.string(),
-  principalId: z.string(),
+  principalId: z.string().nullable(),
   workingDirectory: z.string(),
 });
 
@@ -755,7 +755,7 @@ const memberSchema = z.object({
 });
 
 const apiKeySchema = z.object({
-  authorizedByPrincipalId: z.string(),
+  authorizedByPrincipalId: z.string().nullable(),
   capabilities: z.array(capabilitySchema),
   createdAt: z.string(),
   expiresAt: z.string(),
@@ -763,7 +763,7 @@ const apiKeySchema = z.object({
   installationId: z.string(),
   name: z.string(),
   prefix: z.string(),
-  principalId: z.string(),
+  principalId: z.string().nullable(),
   principalKind: principalKindSchema,
   revokedAt: z.string().nullable(),
   rotatedFromId: z.string().nullable(),
