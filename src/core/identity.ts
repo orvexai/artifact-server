@@ -81,12 +81,36 @@ export interface Principal {
   readonly installationId: string;
   readonly kind: PrincipalKind;
   readonly membershipRole: MembershipRole;
+  /** Internal request context used to project tenant-visible identities by id. */
+  readonly tenantStaffPrincipalIds?: readonly string[] | undefined;
+  /** Persisted tenant admission marker for this human identity. */
+  readonly staff?: boolean | undefined;
   /** Directory group IDs carried by a constrained OIDC service identity. */
   readonly directoryGroupIds?: readonly string[] | undefined;
   /** Full path prefixes eligible for this configured project provisioner. */
   readonly provisionerGroupPrefixes?: readonly string[] | undefined;
   /** Marks an OIDC client-credentials principal with group-bound access. */
   readonly serviceAccountSource?: "oidc" | undefined;
+}
+
+/** Resolve staff status strictly by identity id, never by display text. */
+export function isTenantStaffIdentity(principal: Principal, principalId: string): boolean {
+  return principal.staff === true && principal.id === principalId ||
+    principal.tenantStaffPrincipalIds?.includes(principalId) === true;
+}
+
+/** Stable public presentation for an identity in a tenant organization. */
+export function tenantIdentityPresentation(
+  principal: Principal | undefined,
+  identity: {readonly principalId: string; readonly displayName: string; readonly email?: string | null; readonly staff?: boolean},
+) {
+  const isStaff = identity.staff === true || principal !== undefined && isTenantStaffIdentity(principal, identity.principalId);
+  return {
+    displayName: isStaff ? "Orvex Support" : identity.displayName,
+    email: isStaff || identity.email === undefined ? null : identity.email,
+    isStaff,
+    subject: isStaff ? null : identity.principalId,
+  };
 }
 
 /** Determine whether a principal has an explicit capability. */

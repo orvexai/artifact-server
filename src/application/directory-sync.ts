@@ -99,7 +99,6 @@ export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
   const rolesByUser = new Map<string, {
     role: MembershipRole;
     staffSelector: boolean;
-    regularSelector: boolean;
     readonly user: DirectoryUser;
   }>();
   for (const assignment of assignments) {
@@ -114,7 +113,6 @@ export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
         rolesByUser.set(user.id, {
           role: assignment.role,
           staffSelector: assignment.staff === true,
-          regularSelector: assignment.staff !== true,
           user,
         });
       } else if (membershipRolePrecedence(assignment.role) > membershipRolePrecedence(seen.role)) {
@@ -122,14 +120,13 @@ export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
       }
       if (seen !== undefined) {
         if (assignment.staff === true) seen.staffSelector = true;
-        else seen.regularSelector = true;
       }
     }
   }
   const desired = new Map<string, DirectoryMemberEntry>();
   let skipped = 0;
-  for (const {role, staffSelector, regularSelector, user} of rolesByUser.values()) {
-    const staff = staffSelector && !regularSelector;
+  for (const {role, staffSelector, user} of rolesByUser.values()) {
+    const staff = staffSelector;
     const email = user.enabled && user.emailVerified && user.email !== null
       ? normalizeMemberEmail(user.email)
       : null;
@@ -140,10 +137,13 @@ export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
     const previous = desired.get(email);
     // Two directory users sharing one address are one member; the stronger
     // role wins, as one person in both groups would.
-    if (previous === undefined || membershipRolePrecedence(role) > membershipRolePrecedence(previous.role)) {
+    if (previous === undefined) {
       desired.set(email, {displayName: displayName(user, email), email, role, staff});
-    } else if (previous.staff !== (previous.staff === true && staff)) {
-      desired.set(email, {...previous, staff: previous.staff === true && staff});
+    } else {
+      const strongest = membershipRolePrecedence(role) > membershipRolePrecedence(previous.role)
+        ? {displayName: displayName(user, email), role}
+        : {displayName: previous.displayName, role: previous.role};
+      desired.set(email, {...previous, ...strongest, staff: previous.staff === true || staff});
     }
   }
   if (desired.size === 0) {

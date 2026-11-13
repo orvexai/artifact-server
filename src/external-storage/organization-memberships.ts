@@ -1,4 +1,7 @@
 import type {ExternalIdentity} from "../core/installation-identity.js";
+import {membershipRolePrecedence} from "../core/group-role-policy.js";
+import {membershipRoles} from "../core/identity.js";
+import type {OrganizationRecord} from "./organization-registry.js";
 
 /** One verified Keycloak organization membership returned after sign-in. */
 export interface OrganizationMembership {
@@ -24,4 +27,27 @@ export function createOrganizationMembershipsAdapter(
   resolver?: OrganizationMembershipResolver,
 ): OrganizationMembershipResolver {
   return resolver ?? emptyOrganizationMembershipResolver;
+}
+
+/** Adapter point for verified Keycloak `organization` claims without directory synchronization. */
+export function createKeycloakOrganizationMembershipResolver(
+  findOrganization: (slug: string) => Promise<OrganizationRecord | null>,
+): OrganizationMembershipResolver {
+  return {
+    forIdentity: async (identity) => {
+      const claim = identity.organizations ?? {};
+      const results = await Promise.all(Object.entries(claim).map(async ([slug, membership]) => {
+        const organization = await findOrganization(slug);
+        if (organization === null || organization.status !== "active" || organization.admissionPolicy === null) return null;
+        const groups = new Set(membership.groups);
+        const roles = organization.admissionPolicy.seed
+          .filter(({selector}) => selector.startsWith("/") && groups.has(selector))
+          .map(({role}) => role)
+          .filter((role) => role !== membershipRoles.guest);
+        const role = roles.toSorted((left, right) => membershipRolePrecedence(right) - membershipRolePrecedence(left))[0];
+        return role === undefined ? null : {displayName: organization.displayName, role: String(role), slug} satisfies OrganizationMembership;
+      }));
+      return results.filter((value): value is OrganizationMembership => value !== null);
+    },
+  };
 }

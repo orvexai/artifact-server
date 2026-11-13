@@ -8,7 +8,7 @@ import {
 import {OrganizationRegistry, type OrganizationRecord} from
   "./organization-registry.js";
 import {z} from "zod";
-import {createOrganizationMembershipsAdapter} from "./organization-memberships.js";
+import {createKeycloakOrganizationMembershipResolver} from "./organization-memberships.js";
 import {PlatformSessions} from "./platform-sessions.js";
 
 const maximumCachedOrganizations = 16;
@@ -50,7 +50,7 @@ export async function createOrganizationRouter(
     const registry = new OrganizationRegistry(database);
     const platformSessions = new PlatformSessions(
       database,
-        createOrganizationMembershipsAdapter(config.organizationMemberships),
+        config.organizationMemberships ?? createKeycloakOrganizationMembershipResolver((slug) => registry.find(slug)),
     );
     await registry.ensureOrvex(config.installationId);
     const closeResources = async () => {
@@ -192,7 +192,9 @@ export async function createOrganizationRouter(
           const target = new URL(request.url);
           target.pathname = "/auth/login";
           target.search = "";
-          target.searchParams.set("returnTo", returnTo);
+          target.searchParams.set("returnTo", sourceUrl.pathname === "/auth/platform/login"
+            ? "/__artifact_platform_login?returnTo=%2F"
+            : returnTo);
           return entry.runtime.app.fetch(new Request(target, request));
         }
         if (sourceUrl.pathname === "/api/v1/platform/me/orgs" && request.method === "GET") {
@@ -223,7 +225,41 @@ export async function createOrganizationRouter(
           if (request.headers.get("sec-fetch-site") !== "same-origin") return notFound();
           const token = platformCookie(request);
           if (token !== null) await platformSessions.logout(token);
-          return new Response(null, {headers: {"Set-Cookie": "__Host-artifact_platform=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax"}, status: 204});
+          const cookies = request.headers.get("cookie") ?? "";
+          const values = new Map(cookies.split(";").flatMap((part) => {
+            const index = part.indexOf("=");
+            return index < 0 ? [] : [[part.slice(0, index).trim(), part.slice(index + 1).trim()] as const];
+          }));
+          const origin = config.applicationOrigin === undefined ? new URL(request.url).origin : new URL(config.applicationOrigin).origin;
+          const organizations = await registry.list();
+          await Promise.all(organizations.filter((organization) => organization.status === "active").map(async (organization) => {
+            const suffix = `-${organization.routeId}`;
+            const csrf = values.get(`__Host-artifact_csrf${suffix}`) ?? values.get(`artifact_csrf${suffix}`);
+            const hasSession = values.has(`__Host-artifact_session${suffix}`) || values.has(`artifact_session${suffix}`);
+            if (!hasSession) return;
+            if (csrf === undefined) throw new Error("An organization session cookie has no matching CSRF cookie.");
+            const headers = new Headers({
+              cookie: cookies,
+              origin,
+              "sec-fetch-mode": "same-origin",
+              "sec-fetch-site": "same-origin",
+              "x-csrf-token": csrf,
+            });
+            const entry = await runtimeFor(organization);
+            const target = new URL(request.url);
+            target.pathname = "/api/v1/session/logout";
+            const response = await Promise.resolve(entry.runtime.app.fetch(new Request(target, {headers, method: "POST"})));
+            if (!response.ok) throw new Error(`The ${organization.slug} application session could not be revoked.`);
+          }));
+          const logoutHeaders = new Headers();
+          logoutHeaders.append("Set-Cookie", "__Host-artifact_platform=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax");
+          for (const organization of organizations) {
+            const suffix = `-${organization.routeId}`;
+            for (const name of [`__Host-artifact_session${suffix}`, `__Host-artifact_csrf${suffix}`]) {
+              logoutHeaders.append("Set-Cookie", `${name}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure; SameSite=Lax`);
+            }
+          }
+          return new Response(null, {headers: logoutHeaders, status: 204});
         }
         const route = organizationRoute(sourceUrl.pathname) ??
           rootOAuthMetadataRoute(sourceUrl.pathname) ??

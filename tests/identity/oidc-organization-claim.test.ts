@@ -14,7 +14,7 @@ describe("Keycloak Organizations claim", () => {
       ok: true,
       value: {
         identityProvider: "google",
-        organizations: [{alias: "smoketest", id: orgId, role: "viewer"}],
+        organizations: [{alias: "smoketest", groups: [], id: orgId, role: "viewer"}],
       },
     });
   });
@@ -32,7 +32,7 @@ describe("Keycloak Organizations claim", () => {
       ok: true,
       value: {
         identityProvider: null,
-        organizations: [{alias: "team", id: orgId, role}],
+        organizations: [{alias: "team", groups, id: orgId, role}],
       },
     });
   });
@@ -72,7 +72,7 @@ describe("Keycloak Organizations claim", () => {
       ok: true,
       value: {
         identityProvider: null,
-        organizations: [{alias: "smoketest", id: orgId, role: "editor"}],
+        organizations: [{alias: "smoketest", groups: ["/editor"], id: orgId, role: "editor"}],
       },
     });
   });

@@ -39,7 +39,7 @@ export function ReviewSettings({
   const administrator = directHuman
     && isAdministratorRole(principal.membershipRole);
   const organizationBase = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
-  const tenantDirectory = organizationBase.startsWith("/o/") && !organizationBase.startsWith("/o/orvex/");
+  const tenantDirectory = organizationBase.startsWith("/o/") && organizationBase.replace(/\/+$/u, "") !== "/o/orvex";
   const memberDirectoryVisible = administrator || (tenantDirectory && directHuman && principal.membershipRole !== "guest");
   const reviewHref = readReturnToReview();
 
@@ -178,7 +178,7 @@ function SettingsContent({
   if (route.kind === "webmcp") return <WebmcpScreen />;
   if (route.kind === "groups") {
     const organizationBase = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
-    const tenantDirectory = organizationBase.startsWith("/o/") && !organizationBase.startsWith("/o/orvex/");
+    const tenantDirectory = organizationBase.startsWith("/o/") && organizationBase.replace(/\/+$/u, "") !== "/o/orvex";
     return <GroupsScreen canEdit={directHuman && (tenantDirectory
       ? principal.membershipRole === "owner"
       : isAdministratorRole(principal.membershipRole))} />;

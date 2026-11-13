@@ -50,6 +50,8 @@ const principalSchema = z.object({
   ])),
   email: z.string().nullable().optional(),
   directoryGroupIds: z.array(z.string()).optional(),
+  staff: z.boolean().optional(),
+  tenantStaffPrincipalIds: z.array(z.string()).optional(),
   provisionerGroupPrefixes: z.array(z.string()).optional(),
   serviceAccountSource: z.literal("oidc").optional(),
   serviceAccountClientId: z.string().min(1).optional(),

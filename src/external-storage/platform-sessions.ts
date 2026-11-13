@@ -16,12 +16,24 @@ const membershipsSchema = z.array(z.object({
 const externalIdentitySchema = z.object({
   displayName: z.string(), email: z.string().nullable(), emailVerified: z.boolean(),
   groups: z.array(z.string()).nullable(), provider: z.string(), subject: z.string(),
+  organizations: z.record(z.string(), z.object({id: z.string(), groups: z.array(z.string())})).optional(),
 }).strict();
+
+interface PlatformIdentitySnapshot {
+  readonly displayName: string;
+  readonly email: string | null;
+  readonly emailVerified: boolean;
+  readonly groups: readonly string[] | null;
+  readonly organizations?: ExternalIdentity["organizations"];
+  readonly provider: string;
+  readonly subject: string;
+}
 
 /** Shared, opaque browser sessions for the root platform surface. */
 export class PlatformSessions {
   readonly #database: PostgresDatabase;
   readonly #memberships: OrganizationMembershipResolver;
+  readonly #membershipCache = new Map<string, {readonly organizations: readonly OrganizationMembership[]; readonly expiresAt: number}>();
 
   constructor(database: PostgresDatabase, memberships: OrganizationMembershipResolver) {
     this.#database = database;
@@ -35,7 +47,6 @@ export class PlatformSessions {
     await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       yield* sql`DELETE FROM artifact_platform_sessions WHERE expires_at <= ${now.toISOString()}`;
-      yield* sql`DELETE FROM artifact_platform_sessions WHERE provider = ${identity.provider} AND subject = ${identity.subject}`;
       yield* sql`INSERT INTO artifact_platform_sessions
         (token_digest, organizations_json, last_org, identity_json, provider, subject, created_at, expires_at)
         VALUES (${digest(token)}, ${JSON.stringify(memberships)}::jsonb, NULL,
@@ -63,17 +74,30 @@ export class PlatformSessions {
       expiresAt: z.string(),
     }).safeParse(row);
     if (!parsed.success) return null;
-    const storedIdentity = parsed.data.identity;
-    const organizations = parseMemberships(await this.#memberships.forIdentity(storedIdentity));
-    await this.#database.run(Effect.gen(function*() {
-      const sql = yield* SqlClient;
-      yield* sql`UPDATE artifact_platform_sessions SET organizations_json = ${JSON.stringify(organizations)}::jsonb
-        WHERE token_digest = ${digest(token)} AND expires_at > ${new Date().toISOString()}`;
-    }));
+    const stored = parsed.data.identity;
+    const storedIdentity: ExternalIdentity = {
+      displayName: stored.displayName, email: stored.email, emailVerified: stored.emailVerified,
+      groups: stored.groups, provider: stored.provider, subject: stored.subject,
+    };
+    if (stored.organizations !== undefined) Object.assign(storedIdentity, {organizations: stored.organizations});
+    const cacheKey = digest(token);
+    const cached = this.#membershipCache.get(cacheKey);
+    let organizations: readonly OrganizationMembership[];
+    if (cached !== undefined && cached.expiresAt > Date.now()) organizations = cached.organizations;
+    else {
+      organizations = parseMemberships(await this.#memberships.forIdentity(storedIdentity));
+      this.#membershipCache.set(cacheKey, {organizations, expiresAt: Date.now() + 60_000});
+      await this.#database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        yield* sql`UPDATE artifact_platform_sessions SET organizations_json = ${JSON.stringify(organizations)}::jsonb
+          WHERE token_digest = ${cacheKey} AND expires_at > ${new Date().toISOString()}`;
+      }));
+    }
     return {organizations, lastOrg: parsed.data.lastOrg};
   }
 
   async logout(token: string): Promise<void> {
+    this.#membershipCache.delete(digest(token));
     await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       yield* sql`DELETE FROM artifact_platform_sessions WHERE token_digest = ${digest(token)}`;
@@ -81,6 +105,7 @@ export class PlatformSessions {
   }
 
   async sweepExpired(): Promise<void> {
+    for (const [key, value] of this.#membershipCache) if (value.expiresAt <= Date.now()) this.#membershipCache.delete(key);
     await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       yield* sql`DELETE FROM artifact_platform_sessions WHERE expires_at <= ${new Date().toISOString()}`;
@@ -113,8 +138,16 @@ function digest(token: string): string {
 }
 
 function identitySnapshot(identity: ExternalIdentity) {
-  return {displayName: identity.displayName, email: identity.email, emailVerified: identity.emailVerified,
-    groups: identity.groups, provider: identity.provider, subject: identity.subject};
+  const snapshot: PlatformIdentitySnapshot = {
+    displayName: identity.displayName,
+    email: identity.email,
+    emailVerified: identity.emailVerified,
+    groups: identity.groups,
+    provider: identity.provider,
+    subject: identity.subject,
+  };
+  if (identity.organizations !== undefined) Object.assign(snapshot, {organizations: identity.organizations});
+  return snapshot;
 }
 
 function parseMemberships(value: readonly OrganizationMembership[]): readonly OrganizationMembership[] {

@@ -556,7 +556,7 @@ const commentThreadDetailsSchema = z.object({
 });
 const artifactResponseSchema = z.object({
   artifactId: z.string(), authorDisplayName: z.string(), authorEmail: z.string().nullable(),
-  authorKind: z.enum(["member", "guest"]), authorSubject: z.string(), choice: z.string().nullable(),
+  authorKind: z.enum(["member", "guest"]), authorSubject: z.string().nullable().optional(), choice: z.string().nullable(),
   createdAt: z.string(), data: artifactResponseDataSchema.nullable(), externalQuestion: z.boolean(),
   guestSessionId: z.string().nullable(), id: z.string(), questionId: z.string(), versionId: z.string(),
 });
@@ -565,7 +565,7 @@ const artifactStateEntrySchema = z.object({
   key: z.string(),
   projectId: z.string(),
   updatedAt: z.string(),
-  updatedBy: z.object({displayName: z.string(), principalId: z.string()}).strict(),
+  updatedBy: z.object({displayName: z.string(), principalId: z.string().nullable()}).strict(),
   value: z.unknown(),
 }).strict();
 
@@ -1100,7 +1100,16 @@ export const api = {
   }),
   session: () => request(sessionSchema, "/api/v1/session"),
   logout: async () => {
-    await requestNoContent("/api/v1/session/logout", {
+    // The root platform endpoint revokes this browser's platform session and
+    // each organization session cookie present in the same cookie jar.
+    let platformLogoutCompleted = false;
+    try {
+      const response = await fetch("/api/v1/platform/session/logout", {credentials: "same-origin", method: "POST"});
+      platformLogoutCompleted = response.ok;
+    } catch {
+      // Standalone installations still use their organization logout route.
+    }
+    if (!platformLogoutCompleted) await requestNoContent("/api/v1/session/logout", {
       headers: mutationHeaders(),
       method: "POST",
     });

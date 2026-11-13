@@ -6,6 +6,11 @@ import {
   CreateBucketCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
+  PROTOCOL_VERSION_META_KEY,
+} from "@modelcontextprotocol/server";
 import {Effect, Redacted} from "effect";
 import {SqlClient} from "effect/unstable/sql/SqlClient";
 import {PostgresIdentityRepository} from "../../src/storage/postgres-identity-repository.js";
@@ -344,7 +349,10 @@ describe.sequential("organization tenancy security boundary", () => {
     const groupRoot = `/teams/${orgSlug}/`;
     const admissionPolicy = {
       groupRoots: [groupRoot],
-      seed: [{role: "administrator" as const, selector: `${groupRoot}admins`}],
+      seed: [
+        {role: "administrator" as const, selector: `${groupRoot}admins`},
+        {role: "member" as const, selector: `${groupRoot}support`, staff: true},
+      ],
     };
     const cliEnvironment = {
       ...process.env,
@@ -376,6 +384,7 @@ describe.sequential("organization tenancy security boundary", () => {
         seed: z.array(z.object({
           role: z.enum(["administrator", "guest", "member", "owner", "viewer"]),
           selector: z.string(),
+          staff: z.boolean().optional(),
         })),
       }).nullable(),
       displayName: z.string(),
@@ -539,6 +548,8 @@ describe.sequential("organization tenancy security boundary", () => {
       {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
     ]);
     expect(membershipReads).toBe(2);
+    expect(await sessions.find(token)).not.toBeNull();
+    expect(membershipReads).toBe(2);
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const cookie = `__Host-artifact_platform=${token}`;
     platformMemberships = [];
@@ -577,13 +588,13 @@ describe.sequential("organization tenancy security boundary", () => {
       {displayName: "Org B", role: "viewer", slug: orgB.slug},
       {displayName: orgC.displayName, role: "editor", slug: orgC.slug},
     ];
-    expect(await sessions.find(token)).toBeNull();
+    expect(await sessions.find(token)).not.toBeNull();
     const chooser = await fetch(`${baseUrl}/`, {
       headers: {Cookie: `__Host-artifact_platform=${multiOrgToken}`},
     });
     expect(chooser.status).toBe(200);
     expect(await chooser.text()).toContain("Choose an organization");
-    expect(await sessions.find(token)).toBeNull();
+    expect(await sessions.find(token)).not.toBeNull();
     const logout = await fetch(`${baseUrl}/api/v1/platform/session/logout`, {
       headers: {Cookie: `__Host-artifact_platform=${multiOrgToken}`, Origin: applicationOrigin, "Sec-Fetch-Site": "same-origin"}, method: "POST",
     });
@@ -654,6 +665,90 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(siblingRoot.status).toBe(403);
       const admitted = await loginWithGroups([`/teams/${orgB.slug}/admins`], "org-b-admin-user");
       expect(admitted.status).toBe(303);
+
+      const staffLogin = await loginWithGroups([`/teams/${orgB.slug}/support`], "tenant-support-user");
+      expect(staffLogin.status).toBe(303);
+      const staffCookies = staffLogin.headers.getSetCookie();
+      const staffCookieHeader = staffCookies.map((cookie) => cookie.split(";", 1)[0]).join("; ");
+      const csrfCookie = staffCookies.find((cookie) => cookie.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`));
+      if (csrfCookie === undefined) throw new Error("Staff login did not issue its CSRF cookie.");
+      const csrfToken = csrfCookie.split(";", 1)[0]?.split("=", 2)[1];
+      if (csrfToken === undefined) throw new Error("Staff login issued an invalid CSRF cookie.");
+
+      const artifactRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT id, current_version_id AS "versionId" FROM artifacts
+          WHERE installation_id = ${orgB.id} AND name = 'Org B artifact'`;
+      }));
+      const projectRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT id FROM projects WHERE installation_id = ${orgB.id} AND name = 'Org B project'`;
+      }));
+      const staffArtifact = z.object({id: z.string(), versionId: z.string()}).parse(artifactRows?.[0]);
+      const staffProjectId = z.object({id: z.string()}).parse(projectRows[0]).id;
+      const installVisibleProject = await admissionRuntime.app.fetch(appRequest(
+        `/api/v1/projects/${staffProjectId}/access`, apiTokenB, "PUT", {accessMode: "installation"},
+      ));
+      expect(installVisibleProject.status).toBe(200);
+      const staffMembers = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/members`, {headers: {Cookie: staffCookieHeader}},
+      ));
+      expect(staffMembers.status).toBe(200);
+      expect(await staffMembers.text()).not.toContain("tenant-support-user@example.test");
+      const createComment = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/versions/${staffArtifact.versionId}/comments?projectId=${staffProjectId}`,
+        {body: JSON.stringify({body: "Support authored comment"}), headers: {
+          Cookie: staffCookieHeader,
+          "Content-Type": "application/json",
+          "Idempotency-Key": randomUUID(),
+          Origin: applicationOrigin,
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
+          "X-CSRF-Token": csrfToken,
+        }, method: "POST"},
+      ));
+      expect(createComment.status).toBe(201);
+      expect(await createComment.text()).toContain("Orvex Support");
+
+      const staffMcpRuntime = await createOrgRuntime(orgB.id, {
+        admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
+        applicationOrigin: `${applicationOrigin}/o/${orgB.slug}`,
+        bootstrapApiToken: Redacted.make(apiTokenB),
+        cookieRouteId: orgB.routeId,
+        slug: orgB.slug,
+      }, config, database);
+      try {
+        const mcpCommentList = await staffMcpRuntime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
+          id: 1, jsonrpc: "2.0", method: "tools/call", params: {
+            name: "comment_list", arguments: {
+              artifactId: staffArtifact.id, cursor: null, dispatched: null, limit: 50,
+              projectId: staffProjectId, since: null, state: null, versionId: null,
+            },
+            _meta: {
+              [CLIENT_CAPABILITIES_META_KEY]: {},
+              [CLIENT_INFO_META_KEY]: {name: "artifact-server-test", version: "1"},
+              [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+            },
+          },
+        }, {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "comment_list", Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+        expect(mcpCommentList.status).toBe(200);
+        const mcpText = await mcpCommentList.text();
+        expect(mcpText).toContain("Orvex Support");
+        expect(mcpText).not.toContain("tenant-support-user@example.test");
+      } finally {
+        await staffMcpRuntime.close();
+      }
+      const orgSessionCookie = staffCookies.find((cookie) => cookie.startsWith(`__Host-artifact_session-${orgB.routeId}=`));
+      if (orgSessionCookie === undefined) throw new Error("Staff login did not issue its organization session cookie.");
+      const platformLogout = await fetch(`http://${router.hostname}:${router.port}/api/v1/platform/session/logout`, {
+        headers: {Cookie: staffCookieHeader, Origin: applicationOrigin, "Sec-Fetch-Site": "same-origin"},
+        method: "POST",
+      });
+      expect(platformLogout.status).toBe(204);
+      const endedOrgSession = await fetchWithHost(`http://${router.hostname}:${router.port}/o/${orgB.slug}/api/v1/session`, {
+        headers: {Cookie: orgSessionCookie.split(";", 1)[0] ?? "", Host: "artifacts.example.com"},
+      }, router.hostname, router.port);
+      expect(endedOrgSession.status).toBe(401);
     } finally {
       await admissionRuntime.close();
     }

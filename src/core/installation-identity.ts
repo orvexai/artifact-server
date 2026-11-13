@@ -39,6 +39,8 @@ export interface ExternalIdentity {
   readonly emailVerified: boolean;
   /** Issuer group names, or null when the provider did not report any. */
   readonly groups: readonly string[] | null;
+  /** Verified Keycloak Organization claim keyed by organization alias. */
+  readonly organizations?: Readonly<Record<string, {readonly id: string; readonly groups: readonly string[]}>>;
   readonly provider: string;
   readonly subject: string;
   /** Matching Keycloak org identity and mapped role, when routed by org. */

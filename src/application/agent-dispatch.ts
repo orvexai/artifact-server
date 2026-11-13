@@ -779,5 +779,6 @@ function dispatchSender(principal: Principal): CommentAuthor {
     displayName: principal.displayName,
     principalId: principal.id,
     principalKind: principal.kind,
+    staff: principal.staff === true,
   };
 }
