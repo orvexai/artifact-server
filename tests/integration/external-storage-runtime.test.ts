@@ -1228,6 +1228,14 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         installationId: scopedInstallation,
         role: "member",
       });
+      await repository.bindExternalIdentity({
+        boundAt: firstSyncAt,
+        email: "tenant-staff@example.test",
+        identityProvider: provider,
+        memberId: "tenant-staff-member",
+        provider,
+        subject: "tenant-staff-subject",
+      });
 
       const explicitBefore = (await repository.listGroupRoles(scopedInstallation))
         .find(({groupId}) => groupId === "smoketest");
@@ -1252,6 +1260,10 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       expect(membersAfterFirst).toContainEqual({
         email: "tenant-staff@example.test", role: "member", status: "active",
       });
+      expect(await repository.listStaffOnlyMemberIds(scopedInstallation, ["tenant-staff"]))
+        .toEqual(["tenant-staff-member"]);
+      expect(await repository.listStaffOnlyMemberIds(scopedInstallation, ["smoketest", "tenant-staff"]))
+        .toEqual(["tenant-staff-member"]);
       expect(firstRuleSync.roleChanged).toBe(1);
 
       const markerRows = await database.run(Effect.gen(function*() {

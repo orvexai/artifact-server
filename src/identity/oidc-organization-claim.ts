@@ -7,6 +7,7 @@ export type KeycloakOrganizationRole = "viewer" | "editor" | "owner";
 /** One organization membership read from a verified Keycloak token. */
 export interface KeycloakOrganizationMembership {
   readonly alias: string;
+  readonly groups: readonly string[];
   readonly id: string;
   readonly role: KeycloakOrganizationRole | null;
 }
@@ -71,7 +72,7 @@ export function parseKeycloakOrganizationClaims(
     const parsedMembership = organizationMembershipSchema.safeParse(rawMembership);
     if (!parsedMembership.success) continue;
     const role = mapKeycloakOrganizationGroups(parsedMembership.data.groups);
-    organizations.push({alias, id: parsedMembership.data.id, role});
+    organizations.push({alias, groups: parsedMembership.data.groups, id: parsedMembership.data.id, role});
   }
   return {
     ok: true,

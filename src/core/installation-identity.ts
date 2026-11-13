@@ -26,6 +26,8 @@ export interface InstallationMember {
   readonly id: string;
   readonly installationId: string;
   readonly role: MembershipRole;
+  /** True when the directory admitted this member through a staff selector. */
+  readonly staff?: boolean;
   readonly status: MemberStatus;
   readonly updatedAt: string;
 }
@@ -37,6 +39,8 @@ export interface ExternalIdentity {
   readonly emailVerified: boolean;
   /** Issuer group names, or null when the provider did not report any. */
   readonly groups: readonly string[] | null;
+  /** Verified Keycloak Organization claim keyed by organization alias. */
+  readonly organizations?: Readonly<Record<string, {readonly id: string; readonly groups: readonly string[]}>>;
   readonly provider: string;
   readonly subject: string;
   /** Matching Keycloak org identity and mapped role, when routed by org. */
@@ -93,6 +97,8 @@ export interface ManagedApiKey {
   readonly prefix: string;
   readonly principalId: string;
   readonly principalKind: PrincipalKind;
+  /** Present only in a tenant owner's staff-key listing. */
+  readonly staff?: boolean;
   readonly revokedAt: string | null;
   readonly rotatedFromId: string | null;
 }

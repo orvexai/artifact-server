@@ -6,6 +6,11 @@ import {
   CreateBucketCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
+  PROTOCOL_VERSION_META_KEY,
+} from "@modelcontextprotocol/server";
 import {Effect, Redacted} from "effect";
 import {SqlClient} from "effect/unstable/sql/SqlClient";
 import {PostgresIdentityRepository} from "../../src/storage/postgres-identity-repository.js";
@@ -19,6 +24,8 @@ import {
 } from
   "../../src/external-storage/create-external-storage-runtime.js";
 import type {GroupRolePolicy} from "../../src/core/group-role-policy.js";
+import {principalCapabilities} from "../../src/core/identity.js";
+import {staffMemberOpaqueId} from "../../src/application/installation-access.js";
 import {createOrganizationRouter} from
   "../../src/external-storage/create-organization-router.js";
 import {
@@ -31,6 +38,8 @@ import {
 } from "../../src/external-storage/organization-registry.js";
 import {findDisappearedOrganizations} from
   "../../src/external-storage/organization-registry.js";
+import {PlatformSessions} from
+  "../../src/external-storage/platform-sessions.js";
 import {startExternalStorageServer} from
   "../../src/external-storage/start-external-storage-server.js";
 import {
@@ -41,6 +50,14 @@ import {createOidcIdentityProvider} from
   "../../src/identity/oidc-identity-provider.js";
 import {WorkOsMcpBearerVerifier} from
   "../../src/identity/workos-mcp-bearer-verifier.js";
+import {defaultGitHistoryFileCopyBytes, defaultGitHistoryVersionCopyBytes} from
+  "../../src/git-history/git-history-capability.js";
+import type {NodeGitHistoryConfiguration} from
+  "../../src/git-history/node-git-history-configuration.js";
+import type {GitHistoryProviderHealthProbe} from
+  "../../src/git-history/git-history-provider-health.js";
+import {RecordingGitHistoryProvider} from "../support/git-history-provider.js";
+import {gitHistoryMetadataFiles} from "../../src/git-history/git-history-mirror.js";
 import type {ExternalMcpBearerVerifier} from
   "../../src/application/authentication.js";
 import type {
@@ -65,10 +82,11 @@ const crossOrgMatrix = [
   {surface: "hono", identifier: "GET /api/v1/projects/:projectId", coverage: "Org B project requested through Org A returns 404"},
   {surface: "hono", identifier: "GET /api/v1/artifacts/:artifactId", coverage: "Org B artifact requested through Org A returns 404"},
   {surface: "hono", identifier: "GET /api/v1/session", coverage: "Org A session cookie is ignored by Org B"},
+  {surface: "platform", identifier: "GET /api/v1/platform/me/orgs", coverage: "shared platform session lists only verified memberships"},
+  {surface: "platform", identifier: "POST /api/v1/platform/session/last-org", coverage: "last-org accepts only a current membership"},
+  {surface: "platform", identifier: "POST /api/v1/platform/session/logout", coverage: "logout deletes the shared platform session and expires its cookie"},
   {surface: "hono", identifier: "GET /auth/login", coverage: "org-scoped login handshake cookie"},
   {surface: "hono", identifier: "GET /auth/callback", coverage: "shared callback selects org from handshake cookie"},
-  {surface: "hono", identifier: "POST /api/v1/members/:memberId/reactivate", coverage: "admin-only per-org reactivation cannot cross installations"},
-  {surface: "mcp", identifier: "member_reactivate", coverage: "org-only admin reactivation tool rejects service principals"},
 ] as const;
 
 const pendingCrossOrgCases = [
@@ -189,7 +207,6 @@ const pendingCrossOrgCases = [
   "hono:POST /api/v1/embed/artifacts/:artifactId/binding",
   "hono:POST /api/v1/members",
   "hono:POST /api/v1/members/:memberId/deactivate",
-  "hono:POST /api/v1/members/:memberId/reactivate",
   "hono:POST /api/v1/projects",
   "hono:POST /api/v1/projects/:projectId/archive",
   "hono:POST /api/v1/projects/:projectId/artifacts/:artifactId/comments/clear",
@@ -251,7 +268,6 @@ const pendingCrossOrgCases = [
   "mcp:comment_update",
   "mcp:dispatch_inbox",
   "mcp:group_list",
-  "mcp:member_reactivate",
   "mcp:group_set_role",
   "mcp:project_archive",
   "mcp:project_create",
@@ -280,6 +296,9 @@ function assertCrossOrgMatrixComplete(
     ...registeredRoutes.map((route) =>
       `hono:${route.replaceAll(/\/o\/[^/]+/gu, "/o/:organization")}`,
     ),
+    "platform:GET /api/v1/platform/me/orgs",
+    "platform:POST /api/v1/platform/session/last-org",
+    "platform:POST /api/v1/platform/session/logout",
     ...registeredTools.map((tool) => `mcp:${tool}`),
   ]);
   expect(knownCaseSet.size).toBe(knownCases.length);
@@ -288,7 +307,7 @@ function assertCrossOrgMatrixComplete(
     expect(knownCaseSet.has(identifier)).toBe(true);
   }
   for (const identifier of knownCaseSet) {
-    expect(currentCases.has(identifier)).toBe(true);
+    if (!currentCases.has(identifier)) throw new Error(`Cross-org matrix case is no longer registered: ${identifier}`);
   }
 }
 describe.sequential("organization tenancy security boundary", () => {
@@ -305,6 +324,8 @@ describe.sequential("organization tenancy security boundary", () => {
   let oidc: Awaited<ReturnType<typeof startStubOidcProvider>>;
   let router: Awaited<ReturnType<typeof startExternalStorageServer>>;
   let orgB: Awaited<ReturnType<OrganizationRegistry["create"]>>;
+  let orgC: Awaited<ReturnType<OrganizationRegistry["create"]>>;
+  let platformMemberships: {displayName: string; role: string; slug: string}[];
   let config: ExternalStorageRuntimeConfig;
 
   beforeAll(async () => {
@@ -334,7 +355,13 @@ describe.sequential("organization tenancy security boundary", () => {
     const groupRoot = `/teams/${orgSlug}/`;
     const admissionPolicy = {
       groupRoots: [groupRoot],
-      seed: [{role: "administrator" as const, selector: `${groupRoot}admins`}],
+      seed: [
+        {role: "owner" as const, selector: `${groupRoot}owners`},
+        {role: "administrator" as const, selector: `${groupRoot}admins`},
+        {role: "member" as const, selector: `${groupRoot}editors`},
+        {role: "viewer" as const, selector: `${groupRoot}viewers`},
+        {role: "administrator" as const, selector: `${groupRoot}support`, staff: true},
+      ],
     };
     const cliEnvironment = {
       ...process.env,
@@ -366,6 +393,7 @@ describe.sequential("organization tenancy security boundary", () => {
         seed: z.array(z.object({
           role: z.enum(["administrator", "guest", "member", "owner", "viewer"]),
           selector: z.string(),
+          staff: z.boolean().optional(),
         })),
       }).nullable(),
       displayName: z.string(),
@@ -377,6 +405,11 @@ describe.sequential("organization tenancy security boundary", () => {
     })
       .parse(JSON.parse(createResult.stdout));
     if (orgB.slug !== orgSlug) throw new Error("org create CLI returned the wrong slug.");
+    orgC = await registry.create(`team-${randomUUID().slice(0, 8)}`, "Org C");
+    platformMemberships = [
+      {displayName: "Org B", role: "viewer", slug: orgB.slug},
+      {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
+    ];
     const listResult = spawnSync(process.execPath, [
       "--import", "tsx", "src/cli/main.ts", "org", "list",
     ], {cwd: process.cwd(), encoding: "utf8", env: cliEnvironment});
@@ -400,22 +433,35 @@ describe.sequential("organization tenancy security boundary", () => {
     testMcpVerifier = {
       forApplicationResources: () => testMcpVerifier,
       forOrganization: () => testMcpVerifier,
-      verify: () => Effect.succeed({
-        clientId: "orgvex-service",
-        expiresAt: Math.floor(Date.now() / 1_000) + 60,
-        provider: "test-oidc",
-        scopes: [],
-        subject: "service-account",
-      }),
-      resolveIdentity: () => Effect.succeed({
-        displayName: "service account",
-        email: null,
-        emailVerified: false,
-        groups: ["/orvex/admin"],
-        provider: "test-oidc",
-        serviceAccount: true,
-        subject: "service-account",
-      }),
+      verify: (credential) => {
+        const staffMailbox = Redacted.value(credential) === "tenant-staff-mailbox-token";
+        return Effect.succeed({
+          clientId: staffMailbox ? "tenant-staff-mailbox" : "orgvex-service",
+          expiresAt: Math.floor(Date.now() / 1_000) + 60,
+          provider: staffMailbox ? oidc.issuer : "test-oidc",
+          scopes: [],
+          subject: staffMailbox ? "tenant-staff-mailbox-subject" : "service-account",
+        });
+      },
+      resolveIdentity: (verified) => verified.subject === "tenant-staff-mailbox-subject"
+        ? Effect.succeed({
+          displayName: "Tenant support",
+          email: "tenant-support-user@example.test",
+          emailVerified: true,
+          groups: [`/teams/${orgB.slug}/support`],
+          provider: oidc.issuer,
+          serviceAccount: false,
+          subject: "tenant-staff-mailbox-subject",
+        })
+        : Effect.succeed({
+          displayName: "service account",
+          email: null,
+          emailVerified: false,
+          groups: ["/orvex/admin"],
+          provider: "test-oidc",
+          serviceAccount: true,
+          subject: "service-account",
+        }),
     };
     config = {
       apiToken: Redacted.make(apiTokenA),
@@ -429,6 +475,7 @@ describe.sequential("organization tenancy security boundary", () => {
       contentDomain: "content.example.net",
       databaseUrl: Redacted.make(databaseUrl),
       installationId,
+      organizationMemberships: {forIdentity: async () => platformMemberships},
       groupRolePolicy: {seed: [{role: "administrator", selector: "/orvex/admin"}]},
       externalMcpOAuthVerifier: testMcpVerifier,
       mcpOAuthResource: {
@@ -499,21 +546,290 @@ describe.sequential("organization tenancy security boundary", () => {
     await oidc?.stop();
   });
 
+  test("platform membership discovery and single-org landing stay scoped", async () => {
+    const identity = {
+      displayName: "Platform member",
+      email: null,
+      emailVerified: false,
+      groups: [],
+      provider: "test-oidc",
+      subject: "platform-member",
+    };
+    let membershipReads = 0;
+    let claimMemberships = [
+      {displayName: "Org B", role: "viewer", slug: orgB.slug},
+      {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
+    ];
+    const sessions = new PlatformSessions(database, {forIdentity: async () => {
+      membershipReads += 1;
+      return claimMemberships;
+    }});
+    let token = await sessions.issue(identity);
+    const refreshed = await sessions.find(token);
+    expect(refreshed?.organizations).toEqual([
+      {displayName: "Org B", role: "viewer", slug: orgB.slug},
+      {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
+    ]);
+    expect(membershipReads).toBe(1);
+    expect(await sessions.find(token)).not.toBeNull();
+    expect(membershipReads).toBe(1);
+    const priorToken = token;
+    claimMemberships = [
+      {displayName: "Org C", role: "editor", slug: orgC.slug},
+    ];
+    token = await sessions.issue(identity, priorToken);
+    expect(token).not.toBe(priorToken);
+    expect(await sessions.find(priorToken)).toBeNull();
+    expect((await sessions.find(token))?.organizations).toEqual(claimMemberships);
+    const sameSubjectToken = token;
+    token = await sessions.issue({...identity, subject: "different-subject"}, sameSubjectToken);
+    expect(token).not.toBe(sameSubjectToken);
+    expect(await sessions.find(sameSubjectToken)).toBeNull();
+    expect((await sessions.find(token))?.organizations).toEqual(claimMemberships);
+    const baseUrl = `http://${router.hostname}:${router.port}`;
+    const cookie = `__Host-artifact_platform=${token}`;
+    platformMemberships = [];
+    const orgs = await fetch(`${baseUrl}/api/v1/platform/me/orgs`, {headers: {Cookie: cookie}});
+    expect(orgs.status).toBe(200);
+    expect(await orgs.json()).toEqual([]);
+    const noOrgLanding = await fetch(`${baseUrl}/`, {headers: {Cookie: cookie}});
+    expect(await noOrgLanding.text()).toContain("You don't belong to any organization yet.");
+    platformMemberships = [
+      {displayName: "Org B", role: "viewer", slug: orgB.slug},
+      {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
+    ];
+    const memberOrgs = await fetch(`${baseUrl}/api/v1/platform/me/orgs`, {headers: {Cookie: cookie}});
+    expect(await memberOrgs.json()).toEqual([{displayName: "Org B", role: "viewer", slug: orgB.slug}]);
+    const memberLanding = await fetch(`${baseUrl}/`, {headers: {Cookie: cookie}, redirect: "manual"});
+    expect(memberLanding.status).toBe(302);
+    expect(memberLanding.headers.get("location")).toBe(`/o/${orgB.slug}/`);
+    const unknown = await fetch(`${baseUrl}/api/v1/platform/me/orgs`);
+    expect(unknown.status).toBe(404);
+    const lastOrg = await fetch(`${baseUrl}/api/v1/platform/session/last-org`, {
+      body: JSON.stringify({slug: orgC.slug}),
+      headers: {Cookie: cookie, "Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Site": "same-origin"},
+      method: "POST",
+    });
+    expect(lastOrg.status).toBe(404);
+
+    const platformLogin = await fetch(`${baseUrl}/`, {redirect: "manual"});
+    expect(platformLogin.headers.get("location")).toBe("/auth/platform/login?returnTo=%2F");
+
+    const multiOrgSessions = new PlatformSessions(database, {forIdentity: async () => [
+      {displayName: "Org B", role: "viewer", slug: orgB.slug},
+      {displayName: orgC.displayName, role: "editor", slug: orgC.slug},
+    ]});
+    const multiOrgToken = await multiOrgSessions.issue(identity);
+    platformMemberships = [
+      {displayName: "Org B", role: "viewer", slug: orgB.slug},
+      {displayName: orgC.displayName, role: "editor", slug: orgC.slug},
+    ];
+    expect(await sessions.find(token)).not.toBeNull();
+    const chooser = await fetch(`${baseUrl}/`, {
+      headers: {Cookie: `__Host-artifact_platform=${multiOrgToken}`},
+    });
+    expect(chooser.status).toBe(200);
+    expect(await chooser.text()).toContain("Choose an organization");
+    expect(await sessions.find(token)).not.toBeNull();
+    const logout = await fetch(`${baseUrl}/api/v1/platform/session/logout`, {
+      headers: {Cookie: `__Host-artifact_platform=${multiOrgToken}`, Origin: applicationOrigin, "Sec-Fetch-Site": "same-origin"}, method: "POST",
+    });
+    expect(logout.status).toBe(204);
+    expect(logout.headers.get("set-cookie")).toContain("SameSite=Lax");
+    expect(await multiOrgSessions.find(multiOrgToken)).toBeNull();
+
+    const runtime = await createOrgRuntime(orgB.id, {
+      applicationOrigin: new URL(`/o/${orgB.slug}`, applicationOrigin).toString(),
+      bootstrapApiToken: Redacted.make(apiTokenB),
+      cookieRouteId: orgB.routeId,
+      slug: orgB.slug,
+    }, config, database);
+    try {
+      const registeredRoutes = runtime.app.routes.map(({method, path}) => `${method} ${path}`);
+      const toolsResponse = await runtime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
+        id: 1,
+        jsonrpc: "2.0",
+        method: "tools/list",
+      }, {Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+      assertCrossOrgMatrixComplete(registeredRoutes, await mcpToolNames(toolsResponse));
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  test("Orvex under the tenancy router matches standalone projections and permissions", async () => {
+    const baseUrl = `http://${router.hostname}:${router.port}`;
+    const standalone = await createOrgRuntime(installationId, {
+      bootstrapApiToken: Redacted.make(apiTokenA),
+      cookieRouteId: "",
+    }, config, database);
+    const projectResponse = await standalone.app.fetch(appRequest(
+      "/api/v1/projects", apiTokenA, "POST", {name: `Orvex compatibility ${randomUUID()}`},
+    ));
+    expect(projectResponse.status).toBe(201);
+    const projectId = z.object({project: z.object({id: z.string()})})
+      .parse(await projectResponse.json()).project.id;
+    const artifactId = await publishOrgBArtifact(
+      (request) => standalone.app.fetch(request), apiTokenA, projectId, "orvex",
+    );
+    const versionRows = await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`SELECT current_version_id AS "versionId" FROM artifacts WHERE id = ${artifactId}`;
+    }));
+    const versionId = z.object({versionId: z.string()}).parse(versionRows[0]).versionId;
+    const commentResponse = await standalone.app.fetch(appRequest(
+      `/api/v1/artifacts/${artifactId}/versions/${versionId}/comments?projectId=${projectId}`,
+      apiTokenA,
+      "POST",
+      {body: "Orvex dispatch compatibility"},
+      {"Idempotency-Key": `orvex-compat-comment-${randomUUID()}`},
+    ));
+    expect(commentResponse.status).toBe(201);
+    const threadId = z.object({thread: z.object({id: z.string()})})
+      .parse(await commentResponse.json()).thread.id;
+    const agentResponse = await standalone.app.fetch(appRequest(
+      "/api/v1/agents", apiTokenA, "POST", {
+        displayName: "Orvex compatibility agent",
+        kind: "worker",
+        workingDirectory: "/tmp/orvex-compatibility",
+      },
+    ));
+    expect(agentResponse.status).toBe(200);
+    const agentId = z.object({agent: z.object({id: z.string()})})
+      .parse(await agentResponse.json()).agent.id;
+    const dispatchCreate = await standalone.app.fetch(appRequest(
+      "/api/v1/agent-dispatches", apiTokenA, "POST", {
+        agentId,
+        projectId,
+        threadIds: [threadId],
+      }, {"Idempotency-Key": `orvex-compat-dispatch-${randomUUID()}`},
+    ));
+    expect(dispatchCreate.status).toBe(201);
+    const compareRoute = async (path: string, method: "GET" | "POST" | "PUT", body?: JsonObject) => {
+      const standaloneResponse = await standalone.app.fetch(appRequest(path, apiTokenA, method, body));
+      const routedHeaders = new Headers({
+        Authorization: `Bearer ${apiTokenA}`,
+        Host: "artifacts.example.com",
+      });
+      if (body !== undefined) {
+        routedHeaders.set("Content-Type", "application/json");
+        routedHeaders.set("Origin", applicationOrigin);
+        routedHeaders.set("Sec-Fetch-Site", "same-origin");
+      }
+      const requestInit: RequestInit = {
+        headers: routedHeaders,
+        method,
+      };
+      if (body !== undefined) requestInit.body = JSON.stringify(body);
+      const routedResponse = await fetchWithHost(`${baseUrl}/o/orvex${path}`, requestInit, router.hostname, router.port);
+      const [standaloneBody, routedBody] = await Promise.all([
+        standaloneResponse.json(), routedResponse.json(),
+      ]);
+      expect(routedResponse.status).toBe(standaloneResponse.status);
+      expect(routedBody).toEqual(standaloneBody);
+      return {body: routedBody, status: routedResponse.status};
+    };
+    try {
+      const session = await compareRoute("/api/v1/session", "GET");
+      expect(session.status).toBe(200);
+      expect(session.body).not.toHaveProperty("principal.staff");
+      expect(session.body).not.toHaveProperty("principal.tenantStaffPrincipalIds");
+
+      const groupRole = await compareRoute("/api/v1/groups/not-a-real-group/role", "PUT", {role: "viewer"});
+      expect(groupRole.status).toBe(403);
+
+      const guestResponses = await compareRoute(`/api/v1/public/artifacts/${artifactId}/guest/responses`, "GET");
+      expect(guestResponses.status).toBe(404);
+      const guestResponsePost = await compareRoute(
+        `/api/v1/public/artifacts/${artifactId}/guest/responses`, "POST",
+        {choice: "yes", questionId: "orvex-compat-question", versionId},
+      );
+      expect(guestResponsePost.status).toBe(404);
+
+      const dispatches = await compareRoute(`/api/v1/agent-dispatches?projectId=${projectId}`, "GET");
+      expect(dispatches.status).toBe(200);
+      expect(JSON.stringify(dispatches.body)).toContain("sender");
+      expect(JSON.stringify(dispatches.body)).not.toContain('"email":null');
+      expect(JSON.stringify(dispatches.body)).not.toContain('"staff"');
+      expect(JSON.stringify(dispatches.body)).not.toContain("Orvex Support");
+      const dispatchId = z.object({dispatch: z.object({id: z.string()})})
+        .parse(await dispatchCreate.json()).dispatch.id;
+      const dispatch = await compareRoute(`/api/v1/agent-dispatches/${dispatchId}?projectId=${projectId}`, "GET");
+      expect(dispatch.status).toBe(200);
+      expect(JSON.stringify(dispatch.body)).not.toContain('"staff"');
+      expect(JSON.stringify(dispatch.body)).not.toContain('"email":null');
+      expect(JSON.stringify(dispatch.body)).not.toContain("Orvex Support");
+      const dispatchMcpBody: JsonObject = {
+        id: `orvex-dispatch-inbox-${randomUUID()}`,
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          _meta: {
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+            [CLIENT_INFO_META_KEY]: {name: "orvex-compatibility", version: "1"},
+            [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+          },
+          arguments: {agentName: agentId, operation: "list"},
+          name: "dispatch_inbox",
+        },
+      };
+      const mcpHeaders = {
+        Accept: "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "dispatch_inbox",
+        Origin: applicationOrigin,
+      };
+      const standaloneMcp = await standalone.app.fetch(appRequest("/mcp", apiTokenA, "POST", dispatchMcpBody, mcpHeaders));
+      const routedMcp = await fetchWithHost(`${baseUrl}/o/orvex/mcp`, {
+        body: JSON.stringify(dispatchMcpBody),
+        headers: {...mcpHeaders, Authorization: `Bearer ${apiTokenA}`, "Content-Type": "application/json", Host: "artifacts.example.com"},
+        method: "POST",
+      }, router.hostname, router.port);
+      expect(routedMcp.status).toBe(standaloneMcp.status);
+      expect(await routedMcp.json()).toEqual(await standaloneMcp.json());
+    } finally {
+      await standalone.close();
+    }
+  });
+
   test("isolates resources and runs the explicit route/tool completeness guard", async () => {
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const host = {Host: "artifacts.example.com"};
     expect(orgB.admissionPolicy).toMatchObject({groupRoots: [`/teams/${orgB.slug}/`]});
+    const gitHistoryProvider = new RecordingGitHistoryProvider();
+    const tenantGitHistory: NodeGitHistoryConfiguration = {
+      _tag: "CloudflareArtifactsRest",
+      apiToken: Redacted.make("org-tenancy-git-history-test-token"),
+      capability: {
+        limits: {
+          fileCopyBytes: defaultGitHistoryFileCopyBytes,
+          logicalCopiedBytes: 0,
+          logicalReservedBytes: 0,
+          storageBudgetBytes: null,
+          versionCopyBytes: defaultGitHistoryVersionCopyBytes,
+        },
+        provider: "cloudflare-artifacts",
+        providerState: "available",
+      },
+      identity: {accountId: "org-tenancy-test", namespace: "org-tenancy-test", provider: "cloudflare-artifacts"},
+      issues: [],
+    };
+    const gitHistoryHealthProbe: GitHistoryProviderHealthProbe = {
+      check: () => Effect.succeed({state: "available"}),
+    };
     const admissionRuntime = await createOrgRuntime(orgB.id, {
       admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
       applicationOrigin: `${applicationOrigin}/o/${orgB.slug}`,
       cookieRouteId: orgB.routeId,
       slug: orgB.slug,
-    }, config, database);
+    }, {...config, gitHistory: tenantGitHistory, gitHistoryHealthProbe, gitHistoryProvider}, database);
     try {
       const loginWithGroups = async (groups: readonly string[], subject: string) => {
         oidc.claims.email = `${subject}@example.test`;
         oidc.claims.emailVerified = true;
         oidc.claims.groups = groups;
+        oidc.claims.name = subject === "tenant-support-user" ? "Private Tenant Support Identity" : "Stub Administrator";
         oidc.claims.subject = subject;
         const login = await admissionRuntime.app.fetch(new Request(
           `https://artifacts.example.com/auth/login`,
@@ -543,6 +859,657 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(siblingRoot.status).toBe(403);
       const admitted = await loginWithGroups([`/teams/${orgB.slug}/admins`], "org-b-admin-user");
       expect(admitted.status).toBe(303);
+
+      const staffLogin = await loginWithGroups([`/teams/${orgB.slug}/support`], "tenant-support-user");
+      expect(staffLogin.status).toBe(303);
+      const staffCookies = staffLogin.headers.getSetCookie();
+      const staffCookieHeader = staffCookies.map((cookie) => cookie.split(";", 1)[0]).join("; ");
+      const csrfCookie = staffCookies.find((cookie) => cookie.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`));
+      if (csrfCookie === undefined) throw new Error("Staff login did not issue its CSRF cookie.");
+      const csrfToken = csrfCookie.split(";", 1)[0]?.split("=", 2)[1];
+      if (csrfToken === undefined) throw new Error("Staff login issued an invalid CSRF cookie.");
+
+      const staffProjectResponse = await admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/projects", {
+        body: JSON.stringify({name: "Staff authored project"}),
+        headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+          "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+        method: "POST",
+      }));
+      expect(staffProjectResponse.status).toBe(201);
+      const staffProjectId = z.object({project: z.object({id: z.string()})}).parse(await staffProjectResponse.json()).project.id;
+      const staffArtifactId = await publishOrgBArtifactWithSession(
+        (request) => admissionRuntime.app.fetch(request), staffCookieHeader, csrfToken,
+        staffProjectId, orgB.slug, "Staff authored artifact",
+      );
+      const artifactRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT current_version_id AS "versionId" FROM artifacts
+          WHERE installation_id = ${orgB.id} AND id = ${staffArtifactId}`;
+      }));
+      const staffArtifact = {id: staffArtifactId};
+      let staffVersionId = z.object({versionId: z.string()}).parse(artifactRows?.[0]).versionId;
+      const firstVersionId = staffVersionId;
+      await publishOrgBArtifactWithSession((request) => admissionRuntime.app.fetch(request),
+        staffCookieHeader, csrfToken, staffProjectId, orgB.slug, "Staff authored second version",
+        {artifactId: staffArtifact.id, expectedCurrentVersionId: firstVersionId});
+      const secondVersionRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT current_version_id AS "versionId" FROM artifacts
+          WHERE installation_id = ${orgB.id} AND id = ${staffArtifact.id}`;
+      }));
+      const secondVersionId = z.object({versionId: z.string()}).parse(secondVersionRows?.[0]).versionId;
+      const restored = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/restore?projectId=${staffProjectId}`,
+        {body: JSON.stringify({expectedCurrentVersionId: secondVersionId, versionId: firstVersionId}),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", "Idempotency-Key": randomUUID(),
+            Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+          method: "POST"},
+      ));
+      expect(restored.status).toBe(200);
+      staffVersionId = z.object({version: z.object({id: z.string()})}).parse(await restored.json()).version.id;
+      const installVisibleProject = await admissionRuntime.app.fetch(appRequest(
+        `/api/v1/projects/${staffProjectId}/access`, apiTokenB, "PUT", {accessMode: "installation"},
+      ));
+      expect(installVisibleProject.status).toBe(200);
+      const staffMembers = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/members`, {headers: {Cookie: staffCookieHeader}},
+      ));
+      expect(staffMembers.status).toBe(200);
+      expect(await staffMembers.text()).not.toContain("tenant-support-user@example.test");
+      const createComment = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/versions/${staffVersionId}/comments?projectId=${staffProjectId}`,
+        {body: JSON.stringify({body: "Support authored comment"}), headers: {
+          Cookie: staffCookieHeader,
+          "Content-Type": "application/json",
+          "Idempotency-Key": randomUUID(),
+          Origin: applicationOrigin,
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
+          "X-CSRF-Token": csrfToken,
+        }, method: "POST"},
+      ));
+      expect(createComment.status).toBe(201);
+      const staffThread = z.object({thread: z.object({id: z.string()})}).passthrough().parse(await createComment.json()).thread;
+      const createResponse = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/responses?projectId=${staffProjectId}`,
+        {body: JSON.stringify({choice: "approve", questionId: "staff-authored-question", versionId: staffVersionId}),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+            "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken}, method: "POST"},
+      ));
+      expect(createResponse.status).toBe(201);
+      const staffResponseId = z.object({id: z.string()}).passthrough().parse(await createResponse.json()).id;
+      const stateWrite = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/state/staff-authored?projectId=${staffProjectId}`,
+        {body: JSON.stringify({value: {privatePayload: "staff state fixture"}}),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+            "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken}, method: "PUT"},
+      ));
+      expect(stateWrite.status).toBe(200);
+
+      const staffAgentName = `staff-support-${randomUUID()}`;
+      const staffAgentResponse = await admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com/api/v1/agents", {
+          body: JSON.stringify({
+            agentSessionId: "private-agent-session",
+            connectionKey: "private-agent-connection-key",
+            displayName: staffAgentName,
+            kind: "mcp-mailbox",
+            workingDirectory: "/private/support/worktree",
+          }),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+            "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+          method: "POST",
+        },
+      ));
+      expect(staffAgentResponse.status).toBe(200);
+      const staffAgentId = z.object({agent: z.object({id: z.string()})})
+        .parse(await staffAgentResponse.json()).agent.id;
+      const staffDispatchResponse = await admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com/api/v1/agent-dispatches", {
+          body: JSON.stringify({agentId: staffAgentId, note: "Staff authored dispatch", projectId: staffProjectId, threadIds: [staffThread.id]}),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", "Idempotency-Key": randomUUID(),
+            Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+          method: "POST",
+        },
+      ));
+      expect(staffDispatchResponse.status).toBe(201);
+      const staffDispatchId = z.object({dispatch: z.object({id: z.string()})})
+        .parse(await staffDispatchResponse.json()).dispatch.id;
+      const guestInvitationResponse = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/guest-invitation?projectId=${staffProjectId}`,
+        {body: "{}", headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+          "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken}, method: "POST"},
+      ));
+      expect(guestInvitationResponse.status).toBe(201);
+      const guestInvitationUrl = z.object({url: z.url()}).parse(await guestInvitationResponse.json()).url;
+      const guestSecret = new URLSearchParams(new URL(guestInvitationUrl).hash.slice(1)).get("invite");
+      if (guestSecret === null) throw new Error("The tenant guest invitation did not include a link secret.");
+      const reservedGuestResponse = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/public/artifacts/${staffArtifact.id}/guest-session`,
+        {body: JSON.stringify({displayName: "օrvex սupport", secret: guestSecret}),
+          headers: {"Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Site": "same-origin"}, method: "POST"},
+      ));
+      expect(reservedGuestResponse.status).toBe(201);
+      expect(await reservedGuestResponse.clone().text()).toContain("Orvex Support (member)");
+      const tenantGuestSessions = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/guest-invitation/sessions?projectId=${staffProjectId}`,
+        {headers: {Cookie: staffCookieHeader}},
+      ));
+      expect(tenantGuestSessions.status).toBe(200);
+      expect(await tenantGuestSessions.text()).toContain("Orvex Support (member)");
+
+      const staffMemberRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT id, email, display_name AS "displayName" FROM installation_members
+          WHERE installation_id = ${orgB.id} AND email = 'tenant-support-user@example.test'`;
+      }));
+      const staffMember = z.object({displayName: z.string(), email: z.string(), id: z.string()}).parse(staffMemberRows[0]);
+
+      const callStaffMailbox = async (operation: "claim" | "list") => {
+        const response = await admissionRuntime.app.fetch(appRequest("/mcp", "tenant-staff-mailbox-token", "POST", {
+          id: `tenant-staff-mailbox-${operation}-${randomUUID()}`,
+          jsonrpc: "2.0",
+          method: "tools/call",
+          params: {
+            _meta: {
+              [CLIENT_CAPABILITIES_META_KEY]: {},
+              [CLIENT_INFO_META_KEY]: {name: "Support Reviewer", version: "1"},
+              [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+            },
+            arguments: {agentName: "Support Reviewer", operation},
+            name: "dispatch_inbox",
+          },
+        }, {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "dispatch_inbox",
+          Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+        expect(response.status).toBe(200);
+        const text = await response.text();
+        const payload = response.headers.get("content-type")?.includes("text/event-stream")
+          ? text.split("\n").find((line) => line.startsWith("data: "))?.slice(6) ?? "{}"
+          : text;
+        const decoded = z.object({result: z.object({isError: z.boolean().optional(), structuredContent: z.unknown().optional()})})
+          .parse(JSON.parse(payload));
+        expect(decoded.result.isError).not.toBe(true);
+        return z.object({agent: z.object({displayName: z.string(), id: z.string()}), claimed: z.unknown().nullable(),
+          inbox: z.array(z.object({agentDisplayName: z.string(), senderDisplayName: z.string(), id: z.string()})).nullable(),
+          operation: z.enum(["claim", "list"])}).parse(decoded.result.structuredContent);
+      };
+      const staffMailbox = await callStaffMailbox("list");
+      expect(staffMailbox.agent.displayName).toBe("Support Reviewer for Orvex Support");
+      const staffMailboxAgentId = staffMailbox.agent.id;
+      const mailboxThreadResponse = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/versions/${staffVersionId}/comments?projectId=${staffProjectId}`,
+        {body: JSON.stringify({body: "Staff-authored mailbox fixture."}), headers: {
+          Cookie: staffCookieHeader, "Content-Type": "application/json", "Idempotency-Key": randomUUID(),
+          Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken,
+        }, method: "POST"},
+      ));
+      expect(mailboxThreadResponse.status).toBe(201);
+      const mailboxThreadId = z.object({thread: z.object({id: z.string()})})
+        .parse(await mailboxThreadResponse.json()).thread.id;
+      const mailboxDispatchResponse = await admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com/api/v1/agent-dispatches", {
+          body: JSON.stringify({agentId: staffMailboxAgentId, note: "Mailbox staff projection", projectId: staffProjectId, threadIds: [mailboxThreadId]}),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", "Idempotency-Key": randomUUID(),
+            Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+          method: "POST",
+        },
+      ));
+      expect(mailboxDispatchResponse.status).toBe(201);
+      const listedStaffMailbox = await callStaffMailbox("list");
+      expect(listedStaffMailbox.inbox).toEqual([expect.objectContaining({
+        agentDisplayName: "Orvex Support", senderDisplayName: "Orvex Support",
+      })]);
+      const claimedStaffMailbox = await callStaffMailbox("claim");
+      expect(claimedStaffMailbox.agent.displayName).toBe("Support Reviewer for Orvex Support");
+      expect(claimedStaffMailbox.claimed).not.toBeNull();
+
+      const editorLogin = await loginWithGroups([`/teams/${orgB.slug}/editors`], "route-walker-editor-mutations");
+      expect(editorLogin.status).toBe(303);
+      const editorCookies = editorLogin.headers.getSetCookie();
+      const editorCookie = editorCookies.map((value) => value.split(";", 1)[0]).join("; ");
+      const editorCsrfCookie = editorCookies.find((value) => value.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`));
+      if (editorCsrfCookie === undefined) throw new Error("The editor mutation login did not issue a CSRF cookie.");
+      const editorCsrf = editorCsrfCookie.split(";", 1)[0]?.split("=", 2)[1];
+      if (editorCsrf === undefined) throw new Error("The editor mutation login issued an invalid CSRF cookie.");
+      const editorActor = {cookie: editorCookie, csrf: editorCsrf};
+      const editorComment = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/versions/${staffVersionId}/comments?projectId=${staffProjectId}`,
+        {body: JSON.stringify({body: "Tenant editor dispatches to the support mailbox."}), headers: {
+          Cookie: editorActor.cookie, "Content-Type": "application/json", "Idempotency-Key": randomUUID(),
+          Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": editorActor.csrf,
+        }, method: "POST"},
+      ));
+      expect(editorComment.status).toBe(201);
+      const editorThreadId = z.object({thread: z.object({id: z.string()})}).parse(await editorComment.json()).thread.id;
+      const editorDispatch = await admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com/api/v1/agent-dispatches", {
+          body: JSON.stringify({agentId: staffAgentId, note: "Tenant member handoff", projectId: staffProjectId, threadIds: [editorThreadId]}),
+          headers: {Cookie: editorActor.cookie, "Content-Type": "application/json", "Idempotency-Key": randomUUID(),
+            Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": editorActor.csrf},
+          method: "POST",
+        },
+      ));
+      expect(editorDispatch.status).toBe(201);
+      const editorDispatchBody = await editorDispatch.json();
+      expect(JSON.stringify(editorDispatchBody)).toContain("Orvex Support");
+      expect(JSON.stringify(editorDispatchBody)).not.toContain(staffMember.displayName);
+      const editorMutationHeaders = new Headers({Cookie: editorActor.cookie, "Content-Type": "application/json",
+        Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": editorActor.csrf});
+      const editorRestore = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/restore?projectId=${staffProjectId}`,
+        {body: JSON.stringify({expectedCurrentVersionId: staffVersionId, versionId: firstVersionId}), headers: new Headers([...editorMutationHeaders, ["Idempotency-Key", randomUUID()]]), method: "POST"},
+      ));
+      expect(editorRestore.status).toBe(200);
+      staffVersionId = z.object({version: z.object({id: z.string()})}).parse(await editorRestore.json()).version.id;
+      const editorTags = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/tags?projectId=${staffProjectId}`,
+        {body: JSON.stringify({expectedCurrentVersionId: staffVersionId, tags: ["walker-proof"]}), headers: new Headers([...editorMutationHeaders, ["Idempotency-Key", randomUUID()]]), method: "PATCH"},
+      ));
+      expect(editorTags.status).toBe(200);
+      staffVersionId = z.object({version: z.object({id: z.string()})}).parse(await editorTags.json()).version.id;
+      const editorReply = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/comments/${editorThreadId}/replies?projectId=${staffProjectId}`,
+        {body: JSON.stringify({body: "Reply from the tenant editor."}), headers: new Headers([...editorMutationHeaders, ["Idempotency-Key", randomUUID()]]), method: "POST"},
+      ));
+      expect(editorReply.status).toBe(201);
+      const editorResolve = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/comments/${editorThreadId}?projectId=${staffProjectId}`,
+        {body: JSON.stringify({state: "resolved"}), headers: editorMutationHeaders, method: "PATCH"},
+      ));
+      expect(editorResolve.status).toBe(200);
+      const editorAccess = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/access?projectId=${staffProjectId}`,
+        {body: JSON.stringify({accessSetting: "public_link", expectedCurrentVersionId: staffVersionId}), headers: new Headers([...editorMutationHeaders, ["Idempotency-Key", randomUUID()]]), method: "PATCH"},
+      ));
+      expect(editorAccess.status).toBe(200);
+      staffVersionId = z.object({version: z.object({id: z.string()})}).parse(await editorAccess.json()).version.id;
+      const publicEmbedBootstrap = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/public/embed/artifacts/${staffArtifact.id}/bootstrap?path=index.html`,
+      ));
+      expect(publicEmbedBootstrap.status).toBe(200);
+      const enableGitHistory = await admissionRuntime.app.fetch(appRequest(
+        `/api/v1/projects/${staffProjectId}/git-history`, apiTokenB, "PUT",
+        {confirmEstimate: true, enabled: true},
+      ));
+      expect(enableGitHistory.status).toBe(200);
+      await expect.poll(() => gitHistoryProvider.commitCalls, {timeout: 8_000}).toBeGreaterThan(0);
+      const requiredEditorMutationPairs = [
+        ["editor", "POST /api/v1/artifacts/:artifactId/restore", editorRestore.status],
+        ["editor", "PATCH /api/v1/artifacts/:artifactId/tags", editorTags.status],
+        ["editor", "POST /api/v1/artifacts/:artifactId/versions/:versionId/comments", editorComment.status],
+        ["editor", "POST /api/v1/artifacts/:artifactId/comments/:threadId/replies", editorReply.status],
+        ["editor", "PATCH /api/v1/artifacts/:artifactId/comments/:threadId", editorResolve.status],
+        ["editor", "PATCH /api/v1/artifacts/:artifactId/access", editorAccess.status],
+      ] as const;
+      for (const [role, operation, status] of requiredEditorMutationPairs) {
+        expect(status, `${role} must successfully perform ${operation} with the seeded resource`).toBeGreaterThanOrEqual(200);
+        expect(status, `${role} must successfully perform ${operation} with the seeded resource`).toBeLessThan(300);
+      }
+
+      type RouteWalkerActor = {readonly csrf: string; readonly cookie: string; readonly memberId: string; readonly token?: string};
+      const roleGroups = [["admin", "admins"], ["editor", "editors"], ["viewer", "viewers"]] as const;
+      const actorEntries = await roleGroups.reduce<Promise<Array<[string, RouteWalkerActor]>>>(
+        async (previous, [role, group]) => {
+          const entries = await previous;
+          const login = await loginWithGroups([`/teams/${orgB.slug}/${group}`], `route-walker-${role}`);
+          expect(login.status).toBe(303);
+          const cookieParts = login.headers.getSetCookie();
+          const cookieHeader = cookieParts.map((value) => value.split(";", 1)[0]).join("; ");
+          const actorCsrfCookie = cookieParts.find((value) => value.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`));
+          if (actorCsrfCookie === undefined) throw new Error(`${role} login did not issue a CSRF cookie.`);
+          const csrf = actorCsrfCookie.split(";", 1)[0]?.split("=", 2)[1];
+          if (csrf === undefined) throw new Error(`${role} login issued an invalid CSRF cookie.`);
+          const sessionResponse = await admissionRuntime.app.fetch(new Request(
+            "https://artifacts.example.com/api/v1/session", {headers: {Cookie: cookieHeader}},
+          ));
+          const sessionPrincipal = z.object({principal: z.object({id: z.string()}).passthrough()}).parse(await sessionResponse.json()).principal;
+          return [...entries, [role, {csrf, cookie: cookieHeader, memberId: sessionPrincipal.id}]];
+        },
+        Promise.resolve([]),
+      );
+      const actorCookies = new Map<string, RouteWalkerActor>(actorEntries);
+      const adminActor = actorCookies.get("admin");
+      if (adminActor === undefined) throw new Error("The route walker has no administrator session.");
+      const issuedActorKeys = await Promise.all([...actorCookies].map(async ([role, actor]) => {
+        const keyResponse = await admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/api-keys", {
+          body: JSON.stringify({
+            capabilities: [
+              principalCapabilities.connectAgents, principalCapabilities.createArtifact,
+              principalCapabilities.issueContentSession, principalCapabilities.manageAnyArtifact,
+              principalCapabilities.manageProjects, principalCapabilities.publishAnyArtifact,
+              principalCapabilities.readArtifacts, principalCapabilities.readArtifactResponses,
+              principalCapabilities.writeComments,
+            ],
+            expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+            memberId: actor.memberId,
+            name: `route-walker-${role}`,
+          }),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+            "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+          method: "POST",
+        }));
+        expect(keyResponse.status).toBe(201);
+        const token = z.object({token: z.string()}).parse(await keyResponse.json()).token;
+        return [role, {...actor, token}] as const;
+      }));
+      for (const [role, actor] of issuedActorKeys) actorCookies.set(role, actor);
+      const viewerWithKey = actorCookies.get("viewer");
+      if (viewerWithKey?.token === undefined) throw new Error("The route walker has no viewer API key.");
+      const viewerClone = await admissionRuntime.app.fetch(appRequest(
+        `/api/v1/projects/${staffProjectId}/artifacts/${staffArtifact.id}/history/clone-token`,
+        viewerWithKey.token, "POST", {ttlSeconds: 60},
+      ));
+      expect(viewerClone.status).toBe(201);
+      expect(await viewerClone.json()).toMatchObject({remote: `https://git.example.test/${staffArtifact.id}`});
+      const clonedCommitFiles = gitHistoryProvider.commitRequests.flatMap((request) =>
+        request.files.concat(gitHistoryMetadataFiles(request))
+      );
+      expect(clonedCommitFiles.length).toBeGreaterThan(0);
+      for (const file of clonedCommitFiles) {
+        const contents = new TextDecoder().decode(file.bytes);
+        expect(contents).not.toContain(staffMember.id);
+        expect(contents).not.toContain(staffMember.email);
+        expect(contents).not.toContain(staffMember.displayName);
+      }
+      const versionMetadataFiles = clonedCommitFiles
+        .filter(({path}) => path === ".artifactserver/version.json");
+      expect(versionMetadataFiles.length).toBeGreaterThan(0);
+      for (const file of versionMetadataFiles) {
+        const metadata = z.record(z.string(), z.unknown()).parse(JSON.parse(new TextDecoder().decode(file.bytes)));
+        expect(metadata).not.toHaveProperty("publisherPrincipalId");
+        expect(JSON.stringify(metadata)).not.toContain(staffMember.id);
+      }
+      const mcpActorTokens = new Map<string, string>([...actorCookies].flatMap(([role, actor]) => actor.token === undefined ? [] : [[role, actor.token] as const]));
+
+      const routeInventory = admissionRuntime.app.routes.map(({method, path}) => `${method} ${path}`);
+      const toolInventoryResponse = await admissionRuntime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
+        id: "route-walker-tools", jsonrpc: "2.0", method: "tools/list",
+      }, {Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+      const toolDefinitions = await mcpToolDefinitions(toolInventoryResponse);
+      const toolInventory = toolDefinitions.map(({name}) => name);
+      assertCrossOrgMatrixComplete(routeInventory, toolInventory);
+
+      const staffSecrets = [staffMember.displayName, staffMember.email, staffMember.id];
+      const routeParam = (name: string, readOnly: boolean): string => {
+        if (name === "memberId" && !readOnly) return staffMemberOpaqueId(orgB.id, apiTokenA, staffMember.id);
+        if (!readOnly) return `missing-${name}-${randomUUID()}`;
+        switch (name) {
+          case "artifactId": return staffArtifact.id;
+          case "projectId": return staffProjectId;
+          case "threadId": return staffThread.id;
+          case "responseId": return staffResponseId;
+          case "dispatchId": return staffDispatchId;
+          case "versionId": return staffVersionId;
+          default: return `missing-${name}`;
+        }
+      };
+      const orderedRoutes = [...routeInventory].toSorted((left, right) =>
+        Number(left.endsWith("/session/logout")) - Number(right.endsWith("/session/logout"))
+      );
+      const mustSucceedRoutePairs = [
+        ...["admin", "editor", "viewer"].flatMap((role) => [
+          [role, "GET /api/v1/members"], [role, "GET /api/v1/groups"],
+          [role, "GET /api/v1/artifacts/:artifactId"], [role, "GET /api/v1/artifacts/:artifactId/versions"],
+          [role, "GET /api/v1/artifacts/:artifactId/comments"], [role, "GET /api/v1/artifacts/:artifactId/comments/:threadId"],
+          [role, "GET /api/v1/artifacts/:artifactId/responses"], [role, "GET /api/v1/artifacts/:artifactId/state"],
+          [role, "GET /api/v1/agents"], [role, "GET /api/v1/agent-dispatches/:dispatchId"],
+          [role, "GET /api/v1/public/artifacts/:artifactId"], [role, "GET /api/v1/public/embed/artifacts/:artifactId/bootstrap"],
+        ] as const),
+        ["admin", "GET /api/v1/administration/public-links"] as const,
+      ] as const;
+      // The generic walker bodies intentionally exercise both successful reads
+      // and documented validation/authorization/not-found outcomes. No route
+      // may fail with a server error, and each role must reach successful data.
+      const expectedHttpStatuses = {
+        GET: [200, 204, 301, 302, 303, 307, 308, 400, 401, 403, 404, 405, 409, 410, 415, 422],
+        HEAD: [200, 204, 301, 302, 303, 307, 308, 400, 401, 403, 404, 405, 415, 422],
+        POST: [200, 201, 202, 204, 301, 302, 303, 307, 308, 400, 401, 403, 404, 405, 409, 410, 422],
+        PUT: [200, 201, 204, 400, 401, 403, 404, 405, 409, 410, 422],
+        PATCH: [200, 204, 400, 401, 403, 404, 405, 409, 410, 422],
+        DELETE: [200, 202, 204, 400, 401, 403, 404, 405, 409, 410, 422],
+      } as const satisfies Readonly<Record<string, readonly number[]>>;
+      const expectedHttpMethod = z.enum(["DELETE", "GET", "HEAD", "PATCH", "POST", "PUT"]);
+      const actorScans = await Promise.all([...actorCookies].map(async ([role, actor]) => {
+        const routeResponses = await Promise.all(orderedRoutes.map(async (route) => {
+            const [rawMethod, rawPath] = route.split(" ", 2);
+            if (rawMethod === undefined || rawPath === undefined) throw new Error(`Invalid route inventory entry: ${route}`);
+            const method = rawMethod === "ALL" ? "GET" : rawMethod;
+            const readOnly = method === "GET" || method === "HEAD";
+            const path = rawPath.replace(/:([A-Za-z][A-Za-z0-9_]*)/gu, (_match, name: string) => routeParam(name, readOnly)).replace(/\/\*/gu, "/route-walker");
+            const url = new URL(path, "https://artifacts.example.com");
+            if (!path.startsWith("/api/v1/public/") &&
+              (path.includes("artifact") || path.includes("project") || path.includes("agent-dispatches"))) {
+              url.searchParams.set("projectId", staffProjectId);
+            }
+            if (path.includes("/compare")) {
+              url.searchParams.set("fromVersionId", firstVersionId);
+              url.searchParams.set("toVersionId", staffVersionId);
+            }
+            if (path.includes("/media") || path.includes("embed")) url.searchParams.set("path", "index.html");
+            const headers = new Headers();
+            if (!path.startsWith("/api/v1/public/")) headers.set("Cookie", actor.cookie);
+            if (!readOnly) {
+              headers.set("Content-Type", "application/json");
+              headers.set("Origin", applicationOrigin);
+              headers.set("Sec-Fetch-Site", "same-origin");
+              headers.set("X-CSRF-Token", actor.csrf);
+            }
+            const requestInit: RequestInit = {headers, method};
+            if (!readOnly) requestInit.body = "{}";
+            const response = await admissionRuntime.app.fetch(new Request(url, requestInit));
+            const body = await response.text();
+            assertNoStaffIdentity(body, staffSecrets);
+            // SAFETY: method is normalized from the live route inventory, and the table explicitly covers each registered HTTP verb.
+            const acceptedStatuses = expectedHttpStatuses[expectedHttpMethod.parse(method)];
+            expect(acceptedStatuses).toContain(response.status);
+            return {route, status: response.status};
+        }));
+        expect(routeResponses).toHaveLength(orderedRoutes.length);
+        for (const [, requiredRoute] of mustSucceedRoutePairs.filter(([candidateRole]) => candidateRole === role)) {
+          const successfulRead = routeResponses.find(({route}) => route === requiredRoute);
+          expect(successfulRead?.status, `${role} must successfully read ${requiredRoute}`).toBeGreaterThanOrEqual(200);
+          expect(successfulRead?.status, `${role} must successfully read ${requiredRoute}`).toBeLessThan(300);
+        }
+        expect(routeResponses.filter(({status}) => status >= 200 && status < 300).length, `${role} HTTP routes must include successful results`).toBeGreaterThanOrEqual(2);
+        const agents = await admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/agents", {
+          headers: {Cookie: actor.cookie},
+        }));
+        expect(agents.status).toBe(200);
+        const listedAgents = z.object({items: z.array(z.object({
+          agentSessionId: z.string().nullable(), connectionKey: z.string().nullable(), displayName: z.string(),
+          id: z.string(), principalId: z.string().nullable(), workingDirectory: z.string().nullable(),
+        }).passthrough())}).parse(await agents.json()).items;
+        expect(listedAgents).toContainEqual(expect.objectContaining({
+          agentSessionId: null, connectionKey: null, displayName: "Orvex Support", id: staffAgentId,
+          principalId: null, workingDirectory: null,
+        }));
+        const dispatch = await admissionRuntime.app.fetch(new Request(
+          `https://artifacts.example.com/api/v1/agent-dispatches/${staffDispatchId}?projectId=${staffProjectId}`,
+          {headers: {Cookie: actor.cookie}},
+        ));
+        expect(dispatch.status).toBe(200);
+        const dispatchBody = await dispatch.text();
+        assertNoStaffIdentity(dispatchBody, staffSecrets);
+        expect(dispatchBody).toContain("Orvex Support");
+
+        const token = mcpActorTokens.get(role);
+        if (token === undefined) throw new Error(`The route walker has no ${role} MCP credential.`);
+        const toolResponses = await Promise.all(toolDefinitions.map(async (tool) => {
+          const argumentsValue = tool.name === "dispatch_inbox"
+            ? {agentName: staffAgentName, operation: "list"}
+            : tool.readOnly ? safeMcpReadArguments(tool.inputSchema, staffArtifact.id, staffProjectId, staffVersionId, staffThread.id)
+            : {};
+          const response = await admissionRuntime.app.fetch(appRequest("/mcp", token, "POST", {
+            id: `route-walker-${role}-${tool.name}`, jsonrpc: "2.0", method: "tools/call", params: {
+              _meta: {
+                [CLIENT_CAPABILITIES_META_KEY]: {},
+                [CLIENT_INFO_META_KEY]: {name: "tenant-route-walker", version: "1"},
+                [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+              },
+              arguments: argumentsValue,
+              name: tool.name,
+            },
+          }, {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": tool.name, Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+          const responseBody = await response.text();
+          assertNoStaffIdentity(responseBody, staffSecrets);
+          expect(response.status).toBe(200);
+          const payload = response.headers.get("content-type")?.includes("text/event-stream")
+            ? responseBody.split("\n").find((line) => line.startsWith("data: "))?.slice(6) ?? "{}"
+            : responseBody;
+          const decoded = z.object({result: z.object({isError: z.boolean().optional(), content: z.array(z.unknown()).optional(), structuredContent: z.unknown().optional()}).passthrough()}).passthrough().parse(JSON.parse(payload));
+          const mustSucceed = new Set(["artifact_get", "comment_list", "comment_get", "artifact_response_list", "artifact_state_list", "project_git_history_status"]);
+          expect(!mustSucceed.has(tool.name) || decoded.result.isError !== true).toBe(true);
+          expect(decoded.result.content !== undefined || decoded.result.structuredContent !== undefined,
+            `${role} MCP ${tool.name} must include a result payload: ${responseBody}`).toBe(true);
+          return response.status;
+        }));
+        expect(toolResponses).toHaveLength(toolDefinitions.length);
+        expect(toolResponses.filter((status) => status >= 200 && status < 300).length, `${role} MCP tools must include successful results`).toBeGreaterThanOrEqual(2);
+        return {role, routes: routeResponses.length, tools: toolResponses.length};
+      }));
+      expect(actorScans).toHaveLength(3);
+
+      const makePrivate = await admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com/api/v1/administration/public-links/make-private", {
+          body: JSON.stringify({items: [{artifactId: staffArtifact.id, expectedCurrentVersionId: staffVersionId,
+            idempotencyKey: randomUUID(), projectId: staffProjectId}]}),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+            "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+          method: "POST",
+        },
+      ));
+      expect(makePrivate.status).toBe(200);
+      const requiredAdminMutationPair = ["admin", "POST /api/v1/administration/public-links/make-private", makePrivate.status] as const;
+      expect(requiredAdminMutationPair[2], `${requiredAdminMutationPair[0]} must successfully perform ${requiredAdminMutationPair[1]}`).toBe(200);
+
+      const staffMcpRuntime = await createOrgRuntime(orgB.id, {
+        admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
+        applicationOrigin: `${applicationOrigin}/o/${orgB.slug}`,
+        bootstrapApiToken: Redacted.make(apiTokenB),
+        cookieRouteId: orgB.routeId,
+        slug: orgB.slug,
+      }, config, database);
+      try {
+        const mcpCommentList = await staffMcpRuntime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
+          id: 1, jsonrpc: "2.0", method: "tools/call", params: {
+            name: "comment_get", arguments: {artifactId: staffArtifact.id, projectId: staffProjectId, threadId: staffThread.id},
+            _meta: {
+              [CLIENT_CAPABILITIES_META_KEY]: {},
+              [CLIENT_INFO_META_KEY]: {name: "artifact-server-test", version: "1"},
+              [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+            },
+          },
+        }, {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "comment_get", Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+        expect(mcpCommentList.status).toBe(200);
+        const mcpText = await mcpCommentList.text();
+        expect(mcpText).toContain("Orvex Support");
+        expect(mcpText).not.toContain("tenant-support-user@example.test");
+      } finally {
+        await staffMcpRuntime.close();
+      }
+      const ownerLogin = await loginWithGroups([`/teams/${orgB.slug}/owners`], "tenant-owner-user");
+      expect(ownerLogin.status).toBe(303);
+      const ownerCookies = ownerLogin.headers.getSetCookie();
+      const ownerCookieHeader = ownerCookies.map((cookie) => cookie.split(";", 1)[0]).join("; ");
+      const ownerCsrfCookie = ownerCookies.find((cookie) => cookie.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`));
+      const ownerCsrf = ownerCsrfCookie?.split(";", 1)[0]?.split("=", 2)[1];
+      if (ownerCsrf === undefined) throw new Error("Owner login did not issue a CSRF token.");
+      const ownerMembersResponse = await admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/members", {
+        headers: {Cookie: ownerCookieHeader},
+      }));
+      expect(ownerMembersResponse.status).toBe(200);
+      const ownerMembers = z.object({members: z.array(z.object({id: z.string(), displayName: z.string(), status: z.string().optional()}).passthrough())})
+        .parse(await ownerMembersResponse.json()).members;
+      const staffSectionRow = ownerMembers.find(({displayName}) => displayName === "Orvex Support");
+      if (staffSectionRow === undefined) throw new Error("Owner directory omitted the staff section.");
+      expect(staffSectionRow.id).toMatch(/^staff_[A-Za-z0-9_-]{22}$/u);
+      expect(staffSectionRow.status).toBe("active");
+      expect(JSON.stringify(ownerMembers)).not.toContain(staffMember.id);
+      expect(JSON.stringify(ownerMembers)).not.toContain(staffMember.email);
+      const adminCookieHeader = admitted.headers.getSetCookie().map((cookie) => cookie.split(";", 1)[0]).join("; ");
+      const adminCsrfCookie = admitted.headers.getSetCookie().find((cookie) => cookie.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`));
+      const adminCsrf = adminCsrfCookie?.split(";", 1)[0]?.split("=", 2)[1];
+      if (adminCsrf === undefined) throw new Error("Administrator login did not issue a CSRF token.");
+      const hiddenStaffAttempt = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/members/${staffMember.id}/deactivate`,
+        {body: "{}", headers: {Cookie: adminCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": adminCsrf}, method: "POST"},
+      ));
+      const missingMemberAttempt = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/members/missing-${randomUUID()}/deactivate`,
+        {body: "{}", headers: {Cookie: adminCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": adminCsrf}, method: "POST"},
+      ));
+      expect(hiddenStaffAttempt.status).toBe(404);
+      expect(missingMemberAttempt.status).toBe(404);
+      const walkerAdmin = actorCookies.get("admin");
+      const walkerEditor = actorCookies.get("editor");
+      if (walkerAdmin === undefined || walkerEditor === undefined) throw new Error("Route walker did not retain its admin and editor identities.");
+      const ordinaryMemberDeactivation = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/members/${walkerEditor.memberId}/deactivate`,
+        {body: "{}", headers: {Cookie: walkerAdmin.cookie, "Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": walkerAdmin.csrf}, method: "POST"},
+      ));
+      expect(ordinaryMemberDeactivation.status).toBe(200);
+      expect(await ordinaryMemberDeactivation.json()).toMatchObject({member: {id: walkerEditor.memberId, status: "inactive"}});
+      const ownerDeactivateStaff = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/members/${staffSectionRow.id}/deactivate`,
+        {body: "{}", headers: {Cookie: ownerCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": ownerCsrf}, method: "POST"},
+      ));
+      expect(ownerDeactivateStaff.status).toBe(200);
+      const ownerDeactivateBody = await ownerDeactivateStaff.text();
+      assertNoStaffIdentity(ownerDeactivateBody, staffSecrets);
+      expect(JSON.parse(ownerDeactivateBody)).toMatchObject({member: {id: staffSectionRow.id, status: "inactive"}});
+      expect(ownerDeactivateBody).not.toContain(staffMember.displayName);
+      expect(ownerDeactivateBody).not.toContain(staffMember.email);
+      expect(ownerDeactivateBody).not.toContain(staffMember.id);
+      const deactivatedStaff = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT staff, manual_deactivation FROM installation_members
+          WHERE installation_id = ${orgB.id} AND id = ${staffMember.id}`;
+      }));
+      expect(deactivatedStaff[0]).toMatchObject({staff: true, manual_deactivation: true});
+      expect((await loginWithGroups([`/teams/${orgB.slug}/support`], "tenant-support-user")).status).toBe(403);
+      const memberCliEnvironment = {
+        ...process.env,
+        ARTIFACT_SERVER_DATABASE_URL: databaseUrl,
+        ARTIFACT_SERVER_INSTALLATION_ID: installationId,
+      };
+      const clearStaff = spawnSync(process.execPath, ["--import", "tsx", "src/cli/main.ts", "member", "clear-staff", orgB.slug, staffMember.email, "--yes"], {
+        cwd: process.cwd(), encoding: "utf8", env: memberCliEnvironment,
+      });
+      expect(clearStaff.status).toBe(0);
+      const clearAudit = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        const members = yield* sql`SELECT staff FROM installation_members WHERE installation_id = ${orgB.id} AND id = ${staffMember.id}`;
+        const audits = yield* sql`SELECT COUNT(*)::integer AS count FROM installation_member_staff_audit
+          WHERE installation_id = ${orgB.id} AND member_id = ${staffMember.id} AND action = 'clear_staff'`;
+        return {audits, members};
+      }));
+      expect(clearAudit.members[0]).toMatchObject({staff: false});
+      expect(clearAudit.audits[0]?.["count"]).toBe(1);
+      const repeatedClearStaff = spawnSync(process.execPath, ["--import", "tsx", "src/cli/main.ts", "member", "clear-staff", orgB.slug, staffMember.email, "--yes"], {
+        cwd: process.cwd(), encoding: "utf8", env: memberCliEnvironment,
+      });
+      expect(repeatedClearStaff.status).toBe(0);
+      const repeatedAudit = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_member_staff_audit
+          WHERE installation_id = ${orgB.id} AND member_id = ${staffMember.id} AND action = 'clear_staff'`;
+      }));
+      expect(repeatedAudit[0]?.["count"]).toBe(1);
+      const orgSessionCookie = staffCookies.find((cookie) => cookie.startsWith(`__Host-artifact_session-${orgB.routeId}=`));
+      if (orgSessionCookie === undefined) throw new Error("Staff login did not issue its organization session cookie.");
+      const platformLogout = await fetch(`http://${router.hostname}:${router.port}/api/v1/platform/session/logout`, {
+        headers: {Cookie: staffCookieHeader, Origin: applicationOrigin, "Sec-Fetch-Site": "same-origin"},
+        method: "POST",
+      });
+      expect(platformLogout.status).toBe(204);
+      const endedOrgSession = await fetchWithHost(`http://${router.hostname}:${router.port}/o/${orgB.slug}/api/v1/session`, {
+        headers: {Cookie: orgSessionCookie.split(";", 1)[0] ?? "", Host: "artifacts.example.com"},
+      }, router.hostname, router.port);
+      expect(endedOrgSession.status).toBe(401);
     } finally {
       await admissionRuntime.close();
     }
@@ -1366,6 +2333,56 @@ describe.sequential("organization tenancy security boundary", () => {
       await expect(runtimeA.syncOrganizationMembers(failingDirectory, organizationA))
         .rejects.toThrow("Keycloak organization member read failed");
       expect(await registry.find(aliasA)).toMatchObject({status: "active"});
+      const staffOwnerLogin = await roleLogin("owner-a@example.test", "owner-a", ["/owner"]);
+      expect(staffOwnerLogin.status).toBe(303);
+      const staffOwnerCookies = staffOwnerLogin.headers.getSetCookie();
+      const staffOwnerCookie = staffOwnerCookies.map((value) => value.split(";", 1)[0]).join("; ");
+      const staffOwnerCsrfPair = staffOwnerCookie.split("; ").find((pair) =>
+        pair.slice(0, pair.indexOf("=")).toLowerCase().includes("csrf"),
+      );
+      const staffOwnerCsrf = staffOwnerCsrfPair?.slice(staffOwnerCsrfPair.indexOf("=") + 1);
+      if (staffOwnerCsrf === undefined) throw new Error("The staff owner session has no CSRF token.");
+      const staffMember = await new PostgresIdentityRepository(database, orgA.id).admitMember({
+        createdAt: new Date().toISOString(),
+        displayName: "staff-a",
+        email: "staff-a@example.test",
+        id: `member_${randomUUID()}`,
+        installationId: orgA.id,
+        role: "member",
+        staff: true,
+      });
+      const staffHandle = staffMemberOpaqueId(orgA.id, apiTokenA, staffMember.id);
+      const staffHeaders = {
+        Cookie: staffOwnerCookie, Host: "artifacts.example.com", Origin: "https://artifacts.example.com",
+        "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json",
+        "X-CSRF-Token": staffOwnerCsrf,
+      };
+      const admitAttempt = async (email: string) => fetch(`${baseUrl}/o/${aliasA}/api/v1/members`, {
+        method: "POST",
+        headers: staffHeaders,
+        body: JSON.stringify({displayName: "New member", email, role: "member"}),
+      });
+      const staffAdmissionAttempt = await admitAttempt(staffMember.email);
+      const newAddressAdmissionAttempt = await admitAttempt(`not-admittable-${randomUUID()}@example.test`);
+      expect(staffAdmissionAttempt.status).toBe(409);
+      expect(newAddressAdmissionAttempt.status).toBe(409);
+      const staffAdmissionBody = await staffAdmissionAttempt.json();
+      expect(staffAdmissionBody).toEqual(await newAddressAdmissionAttempt.json());
+      expect(staffAdmissionBody).toEqual({error: {code: "IDENTITY_CONFLICT", message: "Members are managed by your identity provider."}});
+      const staffDeactivate = await fetch(`${baseUrl}/o/${aliasA}/api/v1/members/${staffHandle}/deactivate`, {
+        method: "POST", headers: staffHeaders, body: "{}",
+      });
+      expect(staffDeactivate.status).toBe(200);
+      const staffDeactivateBody = await staffDeactivate.text();
+      assertNoStaffIdentity(staffDeactivateBody, ["staff-a", "staff-a@example.test", staffMember.id]);
+      expect(JSON.parse(staffDeactivateBody)).toEqual({member: {id: staffHandle, status: "inactive"}});
+      const staffReactivate = await fetch(`${baseUrl}/o/${aliasA}/api/v1/members/${staffHandle}/reactivate`, {
+        method: "POST", headers: staffHeaders, body: "{}",
+      });
+      expect(staffReactivate.status).toBe(200);
+      const staffReactivateBody = await staffReactivate.text();
+      assertNoStaffIdentity(staffReactivateBody, ["staff-a", "staff-a@example.test", staffMember.id]);
+      expect(JSON.parse(staffReactivateBody)).toEqual({member: {id: staffHandle, status: "inactive"}});
     } finally {
       await Promise.all([runtimeA.close(), runtimeB.close()]);
     }
@@ -1508,13 +2525,59 @@ async function publishOrgBArtifact(
     .parse(await commit.json()).artifact.id;
 }
 
+async function publishOrgBArtifactWithSession(
+  appFetch: (request: Request) => Response | Promise<Response>,
+  cookie: string,
+  csrf: string,
+  projectId: string,
+  orgSlug: string,
+  name: string,
+  existing?: {readonly artifactId: string; readonly expectedCurrentVersionId: string},
+): Promise<string> {
+  const content = new TextEncoder().encode(`<!doctype html><title>${name}</title>`);
+  const digest = createHash("sha256").update(content).digest("hex");
+  const headers = {Cookie: cookie, "Content-Type": "application/json", Origin: applicationOrigin,
+    "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrf};
+  const uploadResponse = await appFetch(new Request(`${applicationOrigin}/api/v1/uploads`, {
+    body: JSON.stringify({entryPath: "index.html", files: [{mediaType: "text/html; charset=utf-8",
+      path: "index.html", sha256: digest, size: content.byteLength}], projectId}),
+    headers, method: "POST",
+  }));
+  expect(uploadResponse.status).toBe(201);
+  const upload = z.object({commitUrl: z.url(), files: z.array(z.object({uploadUrl: z.url()}))})
+    .parse(await uploadResponse.json());
+  const planned = upload.files[0];
+  if (planned === undefined) throw new Error("Session upload plan is missing its file.");
+  const appPath = (url: URL) => url.pathname.replace(`/o/${orgSlug}`, "");
+  const putUrl = new URL(planned.uploadUrl);
+  const put = await appFetch(new Request(`${applicationOrigin}${appPath(putUrl)}${putUrl.search}`, {
+    body: content,
+    headers: {Cookie: cookie, Host: "artifacts.example.com", Origin: applicationOrigin,
+      "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrf},
+    method: "PUT",
+  }));
+  expect(put.status).toBe(200);
+  const commitUrl = new URL(upload.commitUrl);
+  const commit = await appFetch(new Request(`${applicationOrigin}${appPath(commitUrl)}${commitUrl.search}`, {
+    body: JSON.stringify({target: existing === undefined
+      ? {accessSetting: "account_required", kind: "new_artifact", name, tags: []}
+      : {kind: "new_version", artifactId: existing.artifactId,
+        expectedCurrentVersionId: existing.expectedCurrentVersionId}}),
+    headers: {...headers, "Idempotency-Key": randomUUID()}, method: "POST",
+  }));
+  expect(commit.status).toBe(201);
+  return z.object({artifact: z.object({id: z.string()})}).parse(await commit.json()).artifact.id;
+}
+
 function runtimeAdmissionPolicy(
   policy: OrganizationAdmissionPolicy | null,
 ): GroupRolePolicy | null {
   if (policy === null) return null;
   const groupRolePolicy = {
     groupRoots: policy.groupRoots,
-    seed: policy.seed,
+    seed: policy.seed.map(({role, selector, staff}) =>
+      staff === undefined ? {role, selector} : {role, selector, staff}
+    ),
   };
   if (policy.guestGroupPrefixes === undefined) return groupRolePolicy;
   return {...groupRolePolicy, guestGroupPrefixes: policy.guestGroupPrefixes};
@@ -1553,13 +2616,73 @@ function routedLoginHandshakeCookie(response: Response): string {
   return cookie.split(";", 1)[0] ?? "";
 }
 
-async function mcpToolNames(response: Response): Promise<string[]> {
+interface McpToolDefinition {
+  readonly inputSchema: McpInputSchema;
+  readonly name: string;
+  readonly readOnly: boolean;
+}
+
+interface McpInputSchema {
+  readonly properties?: Readonly<Record<string, McpInputProperty>>;
+}
+
+interface McpInputProperty {
+  readonly anyOf?: readonly {readonly type?: string | undefined}[] | undefined;
+  readonly enum?: readonly string[] | undefined;
+  readonly type?: string | readonly string[] | undefined;
+}
+
+interface McpArgumentMap {
+  readonly [name: string]: JsonValue;
+}
+
+async function mcpToolDefinitions(response: Response): Promise<McpToolDefinition[]> {
   const body = await response.text();
   const payload = response.headers.get("content-type")?.includes("text/event-stream")
     ? body.split("\n").find((line) => line.startsWith("data: "))?.slice(6) ?? "{}"
     : body;
-  return z.object({result: z.object({tools: z.array(z.object({name: z.string()}))})})
-    .parse(JSON.parse(payload)).result.tools.map(({name}) => name);
+  const propertySchema = z.object({
+    anyOf: z.array(z.object({type: z.string().optional()}).passthrough()).optional(),
+    enum: z.array(z.string()).optional(),
+    type: z.union([z.string(), z.array(z.string())]).optional(),
+  }).passthrough();
+  const tools = z.object({result: z.object({tools: z.array(z.object({
+    annotations: z.object({readOnlyHint: z.boolean().optional()}).passthrough().optional(),
+    inputSchema: z.object({properties: z.record(z.string(), propertySchema).optional()}).passthrough(),
+    name: z.string(),
+  }).passthrough())})}).parse(JSON.parse(payload)).result.tools;
+  return tools.map(({annotations, inputSchema, name}) => ({
+    inputSchema: {...inputSchema, properties: inputSchema.properties ?? {}},
+    name,
+    readOnly: annotations?.readOnlyHint === true,
+  }));
+}
+
+async function mcpToolNames(response: Response): Promise<string[]> {
+  return (await mcpToolDefinitions(response)).map(({name}) => name);
+}
+
+function safeMcpReadArguments(inputSchema: McpInputSchema, artifactId: string, projectId: string, versionId: string, threadId: string): McpArgumentMap {
+  const argumentsValue: McpArgumentMap = {};
+  for (const [name, property] of Object.entries(inputSchema.properties ?? {})) {
+    if (property.enum !== undefined && property.enum.length > 0) {
+      Object.assign(argumentsValue, {[name]: property.enum[0]});
+    } else if (name === "artifactId") Object.assign(argumentsValue, {[name]: artifactId});
+    else if (name === "projectId") Object.assign(argumentsValue, {[name]: projectId});
+    else if (name === "versionId") Object.assign(argumentsValue, {[name]: versionId});
+    else if (name === "threadId") Object.assign(argumentsValue, {[name]: threadId});
+    else if (property.anyOf?.some(({type}) => type === "null")) Object.assign(argumentsValue, {[name]: null});
+    else if (property.type === "integer" || property.type === "number") Object.assign(argumentsValue, {[name]: 1});
+    else if (property.type === "boolean") Object.assign(argumentsValue, {[name]: false});
+    else if (property.type === "array") Object.assign(argumentsValue, {[name]: []});
+    else if (property.type === "object") Object.assign(argumentsValue, {[name]: {}});
+    else if (property.type === "string") Object.assign(argumentsValue, {[name]: "route-walker"});
+  }
+  return argumentsValue;
+}
+
+function assertNoStaffIdentity(responseBody: string, staffSecrets: readonly string[]): void {
+  for (const secret of staffSecrets) expect(responseBody).not.toContain(secret);
 }
 
 function fetchWithHost(

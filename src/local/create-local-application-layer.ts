@@ -149,6 +149,7 @@ import type {
 /** Concrete Node adapters reused by the Effect application layer. */
 export interface ApplicationAdapters {
   readonly apiToken: Redacted.Redacted | null;
+  readonly staffHandleSecret?: Redacted.Redacted;
   readonly blobs: BlobStore;
   readonly bootstrapAdministratorEmail: string | null;
   readonly clock: Clock;
@@ -168,6 +169,7 @@ export interface ApplicationAdapters {
   readonly ids: IdGenerator;
   readonly identityRepository: IdentityRepository;
   readonly installationId: string;
+  readonly organizationDirectoryVisibility?: boolean | undefined;
   readonly interactiveIdentityProvider: InteractiveIdentityProvider | null;
   readonly uploadUrlLifetimeMilliseconds?: number;
   /** Live optional-provider state used to guard project enablement. */
@@ -653,6 +655,7 @@ export function createApplicationLayer(
     clock,
     ids: adapters.ids,
     installationId: adapters.installationId,
+    organizationDirectoryVisibility: adapters.organizationDirectoryVisibility === true,
     repository: {
       cancelDispatch: (command) => dispatchEffect(
         "cancelAgentDispatch",
@@ -673,6 +676,10 @@ export function createApplicationLayer(
       findAgent: (installationId, agentId) => dispatchEffect(
         "findRegisteredAgent",
         () => dispatchStore.findAgent(installationId, agentId),
+      ),
+      findAgentsByIds: (installationId, agentIds) => dispatchEffect(
+        "findRegisteredAgent",
+        () => dispatchStore.findAgentsByIds(installationId, agentIds),
       ),
       findDispatch: (installationId, dispatchId, now) => dispatchEffect(
         "findAgentDispatch",
@@ -732,6 +739,7 @@ export function createApplicationLayer(
 
   const contentDependencies: ContentAccessDependencies = {
     clock,
+    organizationDirectoryVisibility: adapters.organizationDirectoryVisibility,
     repository: {
       reserveGuestBootstrap: (guestId, at) => Effect.tryPromise({try: () => adapters.repository.reserveGuestBootstrap(guestId, at), catch: (cause) => repositoryFailure("reserveGuestBootstrap", cause)}),
       createContentBootstrap: (command) =>
@@ -832,6 +840,8 @@ export function createApplicationLayer(
       sessionId: () => `session_${randomUUID()}`,
     },
     installationId: adapters.installationId,
+    staffHandleSecret: adapters.staffHandleSecret ?? Redacted.make(""),
+    organizationDirectoryVisibility: adapters.organizationDirectoryVisibility,
     localBootstrapCredential: adapters.localBootstrapCredential,
     localLoginAttemptLifetimeMilliseconds: 60 * 1_000,
     protectBootstrapAdministrator: adapters.protectBootstrapAdministrator,
@@ -920,6 +930,10 @@ export function createApplicationLayer(
         "listMembers",
         () => identityRepository.listMembers(installationId),
       ),
+      listStaffOnlyMemberIds: (installationId, staffGroupIds) => identityEffect(
+        "listMembers",
+        () => identityRepository.listStaffOnlyMemberIds?.(installationId, staffGroupIds) ?? Promise.resolve([]),
+      ),
       applyDirectoryGroups: (installationId, snapshot) => identityEffect(
         "applyDirectoryGroups",
         () => identityRepository.applyDirectoryGroups(installationId, snapshot),
@@ -1005,6 +1019,10 @@ export function createApplicationLayer(
             recomputeFromCurrentGroups,
           ),
         ),
+      setMemberStaff: (installationId, memberId, staff) => identityEffectWithNotFound(
+        "setMemberRole",
+        () => identityRepository.setMemberStaff(installationId, memberId, staff),
+      ),
     },
     secrets: {
       digest: digestIdentitySecret,
@@ -1033,6 +1051,25 @@ export function createApplicationLayer(
           "reactivateMember",
           () => identityRepository.reactivateMember?.(installationId, memberId) ??
             Promise.reject(new Error("Organization member reactivation is unavailable.")),
+        ),
+    });
+  }
+  if (identityRepository.isMemberManuallyDeactivated !== undefined) {
+    Object.assign(installationAccessDependencies.repository, {
+      isMemberManuallyDeactivated: (installationId: string, email: string) =>
+        identityEffect(
+          "isMemberManuallyDeactivated",
+          () => identityRepository.isMemberManuallyDeactivated?.(installationId, email) ??
+            Promise.resolve(false),
+        ),
+    });
+  }
+  if (identityRepository.listManuallyDeactivatedMemberEmails !== undefined) {
+    Object.assign(installationAccessDependencies.repository, {
+      listManuallyDeactivatedMemberEmails: (installationId: string, emails: readonly string[]) =>
+        identityEffect(
+          "listManuallyDeactivatedMemberEmails",
+          () => identityRepository.listManuallyDeactivatedMemberEmails?.(installationId, emails) ?? Promise.resolve([]),
         ),
     });
   }
@@ -1334,6 +1371,7 @@ export function createApplicationLayer(
   const guestReviewLayer = GuestReviewService.layer({
     clock,
     ids: adapters.ids,
+    organizationDirectoryVisibility: adapters.organizationDirectoryVisibility === true,
     repository: {
       createGuestInvitation: (invitation) => Effect.tryPromise({try: () => adapters.repository.createGuestInvitation(invitation), catch: (cause) => repositoryFailure("createGuestInvitation", cause)}),
       findGuestInvitation: (projectId, artifactId) => Effect.tryPromise({try: () => adapters.repository.findGuestInvitation(projectId, artifactId), catch: (cause) => repositoryFailure("findGuestInvitation", cause)}),

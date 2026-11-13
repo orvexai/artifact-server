@@ -26,6 +26,7 @@ export interface AdmitMemberRecord {
   readonly id: string;
   readonly installationId: string;
   readonly role: InstallationMember["role"];
+  readonly staff?: boolean;
 }
 
 /** Values persisted when binding one external identity to a member. */
@@ -172,6 +173,11 @@ export interface IdentityRepository {
     accessMode: ProjectAccessMode,
   ): Promise<void>;
   listMembers(installationId: string): Promise<readonly InstallationMember[]>;
+  /** Member ids whose only mirrored directory memberships are staff groups. */
+  listStaffOnlyMemberIds?(
+    installationId: string,
+    staffGroupIds: readonly string[],
+  ): Promise<readonly string[]>;
   revokeApiKey(
     installationId: string,
     keyId: string,
@@ -228,6 +234,9 @@ export interface IdentityRepository {
     readonly skipped: number;
     readonly unchanged: number;
   }>;
+  setMemberStaff(installationId: string, memberId: string, staff: boolean): Promise<void>;
+  isMemberManuallyDeactivated?(installationId: string, email: string): Promise<boolean>;
+  listManuallyDeactivatedMemberEmails?(installationId: string, emails: readonly string[]): Promise<readonly string[]>;
 }
 
 /** Atomic first-key operation required by private-team composition roots. */

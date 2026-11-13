@@ -5,6 +5,8 @@ export interface GroupRoleSeedEntry {
   readonly role: MembershipRole;
   /** A group's exact name, or its full path when it starts with "/". */
   readonly selector: string;
+  /** Marks this admission group as Orvex staff for tenant-facing masking. */
+  readonly staff?: boolean;
 }
 
 /**
@@ -18,6 +20,23 @@ export interface GroupRolePolicy {
   readonly groupRoots?: readonly string[];
   /** Full-path prefixes whose newly mirrored directory groups receive guest. */
   readonly guestGroupPrefixes?: readonly string[];
+}
+
+/** Staff selectors are exact names or exact full paths, matching admission semantics. */
+export function groupRoleSeedMarksStaff(
+  group: {readonly name: string; readonly path: string},
+  seed: readonly GroupRoleSeedEntry[],
+): boolean {
+  return seed.some((entry) => entry.staff === true &&
+    (entry.selector.startsWith("/") ? entry.selector === group.path : entry.selector === group.name));
+}
+
+/** Group-role edits stay with direct installation owners. */
+export function groupRoleEditAllowed(
+  role: MembershipRole,
+  directHuman: boolean,
+): boolean {
+  return directHuman && role === "owner";
 }
 
 /** Who stored a role that came from the configured seed rather than a person. */
@@ -40,6 +59,8 @@ export interface GroupRoleAssignment {
   readonly nameUnique: boolean;
   readonly path: string;
   readonly role: MembershipRole;
+  /** Set by the application adapter from the configured staff selector. */
+  readonly staff?: boolean;
   /** Present for a guest role row created from the configured path rule. */
   readonly source?: "rule";
 }

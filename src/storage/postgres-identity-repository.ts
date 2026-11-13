@@ -87,6 +87,7 @@ const memberRowSchema = z.object({
   id: z.string(),
   installationId: z.string(),
   role: membershipRoleSchema,
+  staff: z.boolean().default(false),
   status: memberStatusSchema,
   updatedAt: z.string(),
 });
@@ -404,11 +405,6 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     return this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql.withTransaction(Effect.gen(function*() {
-        if (entries.length === 0) {
-          return yield* Effect.fail(new IdentityConflict({
-            message: "Directory sync refuses an empty organization snapshot.",
-          }));
-        }
         yield* sql`SELECT pg_advisory_xact_lock(
           hashtextextended(${`artifact-server:directory-groups:${installationId}`}, 0)
         )`;
@@ -422,6 +418,11 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         if (installationRows[0]?.status !== "active") {
           return yield* Effect.fail(new IdentityConflict({
             message: "Directory sync cannot update a suspended organization installation.",
+          }));
+        }
+        if (entries.length === 0) {
+          return yield* Effect.fail(new IdentityConflict({
+            message: "Directory sync refuses an empty organization snapshot.",
           }));
         }
         const rows = yield* sql.unsafe<object>(
@@ -976,11 +977,11 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
       await this.#database.run(Effect.gen({self: this}, function*() {
         const sql = yield* SqlClient;
         yield* sql`INSERT INTO installation_members (
-          installation_id, id, email, display_name, role, status,
+          installation_id, id, email, display_name, role, staff, status,
           created_at, updated_at
         ) VALUES (
           ${command.installationId}, ${command.id}, ${command.email},
-          ${command.displayName}, ${command.role}, ${memberStatuses.active},
+          ${command.displayName}, ${command.role}, ${command.staff ?? false}, ${memberStatuses.active},
           ${command.createdAt}, ${command.createdAt}
         )`;
       }));
@@ -1008,6 +1009,50 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     }));
   }
 
+  async setMemberStaff(installationId: string, memberId: string, staff: boolean): Promise<void> {
+    this.#assertInstallationScope(installationId);
+    const changed = await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.unsafe<object>(`UPDATE installation_members SET staff = $3 WHERE installation_id = $1 AND id = $2 RETURNING id`, [installationId, memberId, staff]);
+    }));
+    if (changed.length === 0) throw new IdentityNotFound({message: "The member does not exist."});
+  }
+
+  async listStaffOnlyMemberIds(
+    installationId: string,
+    staffGroupIds: readonly string[],
+  ): Promise<readonly string[]> {
+    this.#assertInstallationScope(installationId);
+    if (staffGroupIds.length === 0) return [];
+    const first = staffGroupIds.map((_, index) => `$${index + 2}`).join(", ");
+    const second = staffGroupIds.map((_, index) => `$${staffGroupIds.length + index + 2}`).join(", ");
+    const rows = await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.unsafe<object>(`SELECT DISTINCT identity.member_id AS "memberId"
+        FROM directory_group_members staff_member
+        JOIN external_identities identity
+          ON identity.installation_id = staff_member.installation_id
+          AND identity.provider = staff_member.provider
+          AND identity.subject = staff_member.subject
+        JOIN installation_members member
+          ON member.installation_id = identity.installation_id
+          AND member.id = identity.member_id
+        WHERE member.installation_id = $1
+          AND staff_member.group_id IN (${first})
+          AND NOT EXISTS (
+            SELECT 1 FROM directory_group_members other_member
+            JOIN external_identities other_identity
+              ON other_identity.installation_id = other_member.installation_id
+              AND other_identity.provider = other_member.provider
+              AND other_identity.subject = other_member.subject
+            WHERE other_identity.member_id = identity.member_id
+              AND other_member.installation_id = identity.installation_id
+              AND other_member.group_id NOT IN (${second})
+          )`, [installationId, ...staffGroupIds, ...staffGroupIds]);
+    }));
+    return z.array(z.object({memberId: z.string()})).parse(rows).map(({memberId}) => memberId);
+  }
+
   async findMember(
     installationId: string,
     memberId: string,
@@ -1030,6 +1075,28 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     }));
   }
 
+  async isMemberManuallyDeactivated(installationId: string, email: string): Promise<boolean> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`SELECT manual_deactivation AS "manualDeactivation"
+        FROM installation_members WHERE installation_id = ${installationId} AND email = ${email}`;
+      return rows.length > 0 && rows[0]?.["manualDeactivation"] === true;
+    }));
+  }
+
+  async listManuallyDeactivatedMemberEmails(installationId: string, emails: readonly string[]): Promise<readonly string[]> {
+    this.#assertInstallationScope(installationId);
+    if (emails.length === 0) return [];
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`SELECT email FROM installation_members
+        WHERE installation_id = ${installationId} AND manual_deactivation = TRUE
+          AND email = ANY(${emails}::text[])`;
+      return rows.map((row) => z.object({email: z.string()}).parse(row).email);
+    }));
+  }
+
   async findActiveMemberByExternalIdentity(
     installationId: string,
     provider: string,
@@ -1041,7 +1108,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
       const rows = yield* sql.unsafe<object>(
         `SELECT member.id, member.installation_id AS "installationId",
           member.email, member.display_name AS "displayName", member.role,
-          member.status, member.created_at AS "createdAt",
+          member.staff, member.status, member.created_at AS "createdAt",
           member.updated_at AS "updatedAt"
          FROM external_identities AS external
          JOIN installation_members AS member
@@ -1168,7 +1235,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
            WHERE installation_id = $1 AND id = $2 AND manual_deactivation = TRUE
              AND suspended_by_org_at IS NULL
            RETURNING id, installation_id AS "installationId", email,
-             display_name AS "displayName", role, status,
+             display_name AS "displayName", role, staff, status,
              created_at AS "createdAt", updated_at AS "updatedAt"`,
           [installationId, memberId],
         );
@@ -1252,7 +1319,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
            SET role = $1, status = $2, updated_at = $3
            WHERE installation_id = $4 AND id = $5
            RETURNING id, installation_id AS "installationId", email,
-             display_name AS "displayName", role, status,
+             display_name AS "displayName", role, staff, status,
              created_at AS "createdAt", updated_at AS "updatedAt"`,
           [effectiveRole, memberStatuses.active, updatedAt, installationId, memberId],
         );
@@ -1265,7 +1332,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
               `UPDATE installation_members SET role = $1, status = $2, updated_at = $3
                WHERE installation_id = $4 AND id = $5
                RETURNING id, installation_id AS "installationId", email,
-                 display_name AS "displayName", role, status,
+                 display_name AS "displayName", role, staff, status,
                  created_at AS "createdAt", updated_at AS "updatedAt"`,
               [originalMember?.role, originalMember?.status, updatedAt, installationId, memberId]);
           }
@@ -1616,7 +1683,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
 
 function memberSelect(suffix: string): string {
   return `SELECT id, installation_id AS "installationId", email,
-    display_name AS "displayName", role, status,
+    display_name AS "displayName", role, staff, status,
     created_at AS "createdAt", updated_at AS "updatedAt"
     FROM installation_members ${suffix}`;
 }

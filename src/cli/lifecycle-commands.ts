@@ -2,7 +2,8 @@ import path from "node:path";
 
 import {oidcIdentityProviderName} from "../core/project-access.js";
 import {type Command, Option} from "commander";
-import {Redacted} from "effect";
+import {Effect, Redacted} from "effect";
+import {SqlClient} from "effect/unstable/sql/SqlClient";
 
 import {
   createExternalStorageRuntime,
@@ -118,6 +119,7 @@ export function configureLifecycleCommands(
   configureIntegrity(program);
   configureMaintenance(program);
   configureOrganizations(program);
+  configureMembers(program);
   configureExternalStorageStart(program, options.build.productVersion);
 }
 
@@ -393,6 +395,46 @@ function configureOrganizations(program: Command): void {
         }
       } finally {
         await configuration.objectStorage.close?.();
+      }
+    });
+}
+
+function configureMembers(program: Command): void {
+  program.command("member")
+    .description("Operator-only organization member maintenance.")
+    .command("clear-staff")
+    .description("Clear a member's sticky staff marker and record the operator action.")
+    .argument("<org>", "organization slug")
+    .argument("<email>", "exact member email")
+    .requiredOption("--yes", "confirm clearing this sticky staff marker")
+    .action(async (org: string, email: string) => {
+      const configuration = await runCliEffect(parseExternalMigrationConfiguration(process.env));
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-member-clear-staff:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        const result = await database.run(Effect.gen(function*() {
+          const sql = yield* SqlClient;
+          return yield* sql.withTransaction(Effect.gen(function*() {
+            const organizations = yield* sql`SELECT id FROM artifact_installations WHERE slug = ${org}`;
+            if (organizations.length !== 1) throw new Error("Organization does not exist.");
+            const installationId = String(organizations[0]?.["id"]);
+            const members = yield* sql`SELECT id, email FROM installation_members WHERE installation_id = ${installationId} AND lower(email) = lower(${email})`;
+            if (members.length !== 1) throw new Error("Member does not exist or email is ambiguous.");
+            const memberId = String(members[0]?.["id"]);
+            const memberEmail = String(members[0]?.["email"]);
+            const changed = yield* sql`UPDATE installation_members SET staff = FALSE WHERE installation_id = ${installationId} AND id = ${memberId} AND staff IS TRUE RETURNING id`;
+            if (changed.length > 0) {
+              yield* sql`INSERT INTO installation_member_staff_audit (installation_id, member_id, member_email, actor, action, created_at) VALUES (${installationId}, ${memberId}, ${memberEmail}, 'operator_cli', 'clear_staff', ${new Date().toISOString()})`;
+            }
+            return {installationId, memberEmail};
+          }));
+        }));
+        console.log(JSON.stringify({action: "clear_staff", ...result}));
+      } finally {
+        await database.close();
       }
     });
 }

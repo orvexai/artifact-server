@@ -93,6 +93,10 @@ export interface AgentDispatchPersistence {
     installationId: string,
     agentId: string,
   ) => Effect.Effect<RegisteredAgentRecord | null, AgentDispatchRepositoryFailure>;
+  readonly findAgentsByIds: (
+    installationId: string,
+    agentIds: readonly string[],
+  ) => Effect.Effect<readonly RegisteredAgentRecord[], AgentDispatchRepositoryFailure>;
   readonly findDispatch: (
     installationId: string,
     dispatchId: string,
@@ -131,6 +135,7 @@ export interface AgentDispatchDependencies {
   readonly clock: ApplicationClock;
   readonly ids: IdGenerator;
   readonly installationId: string;
+  readonly organizationDirectoryVisibility?: boolean | undefined;
   readonly repository: AgentDispatchPersistence;
 }
 
@@ -549,9 +554,13 @@ function makeAgentDispatchService(
         readTime,
       );
       const readMilliseconds = Date.parse(readTime);
-      return agents.map((presence) =>
-        connectedAgent(presence, readMilliseconds)
-      );
+      return agents.map((presence) => {
+        const connected = connectedAgent(presence, readMilliseconds);
+        return dependencies.organizationDirectoryVisibility === true &&
+            command.principal.tenantStaffPrincipalIds?.includes(connected.agent.principalId) === true
+          ? Object.assign({}, connected, {agent: Object.assign({}, connected.agent, {displayName: "Orvex Support"})})
+          : connected;
+      });
     },
   );
 
@@ -599,7 +608,13 @@ function makeAgentDispatchService(
         });
       }
       return yield* dependencies.repository.createDispatch({
-        agentDisplayName: agent.displayName,
+        // Dispatch history stores a display-name snapshot. Capture the tenant
+        // privacy projection here so deleting or changing the agent row cannot
+        // make a staff-owned agent attributable later.
+        agentDisplayName: dependencies.organizationDirectoryVisibility === true &&
+            command.principal.tenantStaffPrincipalIds?.includes(agent.principalId) === true
+          ? "Orvex Support"
+          : agent.displayName,
         agentId: agent.id,
         createdAt: yield* now(),
         id: dependencies.ids.agentDispatchId(),
@@ -607,7 +622,7 @@ function makeAgentDispatchService(
         installationId: dependencies.installationId,
         note,
         projectId: project.id,
-        sender: dispatchSender(command.principal),
+        sender: dispatchSender(command.principal, dependencies.organizationDirectoryVisibility === true),
         threadIds,
       });
     },
@@ -690,7 +705,7 @@ function makeAgentDispatchService(
       );
       yield* authorization.requireArtifactRead(command.principal);
       const limit = yield* requirePageSize(command.limit);
-      return yield* dependencies.repository.listDispatches({
+      const page = yield* dependencies.repository.listDispatches({
         agentId: command.agentId,
         cursor: command.cursor,
         installationId: dependencies.installationId,
@@ -699,6 +714,18 @@ function makeAgentDispatchService(
         projectId: project.id,
         state: command.state,
       });
+      if (dependencies.organizationDirectoryVisibility !== true) return page;
+      const agents = yield* dependencies.repository.findAgentsByIds(
+        dependencies.installationId,
+        [...new Set(page.items.map(({agentId}) => agentId))],
+      );
+      const staffAgentIds = new Set(agents.filter(({principalId}) =>
+        command.principal.tenantStaffPrincipalIds?.includes(principalId) === true,
+      ).map(({id}) => id));
+      const items = page.items.map((dispatch) => staffAgentIds.has(dispatch.agentId)
+        ? {...dispatch, agentDisplayName: "Orvex Support"}
+        : dispatch);
+      return {...page, items};
     },
   );
 
@@ -712,11 +739,16 @@ function makeAgentDispatchService(
         command.projectId,
       );
       yield* authorization.requireArtifactRead(command.principal);
-      return yield* requireProjectDispatch(
+      const dispatch = yield* requireProjectDispatch(
         project.id,
         command.dispatchId,
         yield* now(),
       );
+      if (dependencies.organizationDirectoryVisibility !== true) return dispatch;
+      const agent = yield* dependencies.repository.findAgent(dependencies.installationId, dispatch.agentId);
+      return agent !== null && command.principal.tenantStaffPrincipalIds?.includes(agent.principalId) === true
+        ? {...dispatch, agentDisplayName: "Orvex Support"}
+        : dispatch;
     },
   );
 
@@ -770,14 +802,19 @@ function connectedAgent(
   return {activeDispatchId, activity, agent, beacon, connected, lastActivityAt};
 }
 
-function dispatchSender(principal: Principal): CommentAuthor {
-  return {
+function dispatchSender(principal: Principal, tenant: boolean): CommentAuthor {
+  const isStaff = tenant && (principal.staff === true ||
+    principal.tenantStaffPrincipalIds?.includes(principal.id) === true ||
+    principal.authorizedByPrincipalId !== null && principal.tenantStaffPrincipalIds?.includes(principal.authorizedByPrincipalId) === true);
+  const sender: CommentAuthor = {
     actor: principal.actorClientId === null || principal.actorClientId === undefined
       ? null
       : {clientId: principal.actorClientId, kind: "mcp-client"},
-    authorizedByPrincipalId: principal.authorizedByPrincipalId,
-    displayName: principal.displayName,
+    authorizedByPrincipalId: isStaff ? null : principal.authorizedByPrincipalId,
+    displayName: isStaff ? "Orvex Support" : principal.displayName,
     principalId: principal.id,
     principalKind: principal.kind,
   };
+  if (!tenant) return sender;
+  return {...sender, staff: principal.staff === true};
 }

@@ -69,9 +69,12 @@ import {
 } from "../core/model.js";
 import {
   isAdministratorRole,
+  isReservedTenantIdentityName,
   membershipRoles,
   principalCapabilities,
   principalKinds,
+  tenantIdentityPresentation,
+  tenantVisiblePrincipalId,
   type Principal,
 } from "../core/identity.js";
 import {provisionerToolAllowList} from "./provisioner-tools.js";
@@ -160,7 +163,7 @@ const versionRecordSchema = z.object({
   id: z.string(),
   manifestDigest: z.string(),
   number: z.number().int().positive(),
-  publisherPrincipalId: z.string().optional(),
+  publisherPrincipalId: z.string().nullable().optional(),
   projectId: z.string(),
   routingMode: z.enum(["static", "spa"]),
 }).strict();
@@ -262,7 +265,7 @@ const artifactStateEntrySchema = z.object({
   key: artifactStateKeySchema,
   projectId: z.string(),
   updatedAt: z.string(),
-  updatedBy: z.object({displayName: z.string(), principalId: z.string().optional()}).strict(),
+  updatedBy: z.object({displayName: z.string(), principalId: z.string().nullable().optional()}).strict(),
   value: z.unknown(),
 }).strict();
 const commentPathSchema = z.string().min(1).max(1_024);
@@ -287,7 +290,7 @@ const commentAuthorSchema = z.object({
   }).strict().nullable(),
   authorizedByPrincipalId: z.string().nullable(),
   displayName: z.string(),
-  principalId: z.string().optional(),
+  principalId: z.string().nullable().optional(),
   principalKind: z.enum([principalKinds.human, principalKinds.service]),
 }).strict();
 const commentThreadSchema = z.object({
@@ -308,7 +311,7 @@ const commentThreadSchema = z.object({
 }).strict();
 const artifactResponseSchema = z.object({
   artifactId: z.string(), authorDisplayName: z.string(), authorEmail: z.string().nullable(),
-  authorKind: z.enum(["member", "guest"]), authorSubject: z.string().optional(), choice: z.string().nullable(),
+  authorKind: z.enum(["member", "guest"]), authorSubject: z.string().nullable().optional(), choice: z.string().nullable(),
   createdAt: z.string(), data: z.unknown().nullable(), externalQuestion: z.boolean(),
   guestSessionId: z.string().nullable(), id: z.string(), questionId: z.string(), versionId: z.string(),
 }).strict();
@@ -368,9 +371,11 @@ const mailboxAgentSchema = z.object({
   kind: z.string(),
 }).strict();
 const mailboxInboxItemSchema = z.object({
+  agentDisplayName: z.string(),
   createdAt: z.string(),
   id: z.string(),
   note: z.string().nullable(),
+  senderDisplayName: z.string(),
   threadCount: z.number().int().positive(),
 }).strict();
 const mailboxClaimSchema = z.object({
@@ -447,6 +452,7 @@ export interface ArtifactMcpServerDependencies {
   readonly organizationTenancy?: boolean;
   readonly mode: "local" | "remote";
   readonly requestId: string;
+  readonly organizationSlug?: string;
 }
 
 function runMcpApplicationEffect<A, E>(
@@ -493,6 +499,7 @@ export function createArtifactMcpServer(
   );
   const isProvisioner = identity.principal.serviceAccountSource === "oidc" &&
     identity.principal.capabilities.includes(principalCapabilities.provisionProjects);
+  const isTenantOrganization = dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex";
 
   /**
    * Keep the verified OAuth client as the durable actor and use the MCP
@@ -501,17 +508,24 @@ export function createArtifactMcpServer(
    * to their verified client ID.
    */
   function clientDisplayName(agentName?: string): string {
-    if (identity.agentClientId === null) return identity.principal.displayName;
+    const principalDisplayName = isTenantOrganization
+      ? tenantIdentityPresentation(identity.principal, {
+        displayName: identity.principal.displayName,
+        email: identity.principal.email ?? null,
+        principalId: identity.principal.id,
+      }).displayName
+      : identity.principal.displayName;
+    if (identity.agentClientId === null) return principalDisplayName;
     // A name the agent gives itself is display-only and always marked as an
     // agent acting for the principal, so it can never pass as their own words.
     if (agentName !== undefined) {
-      return `${agentName} (agent) for ${identity.principal.displayName}`;
+      return `${agentName} (agent) for ${principalDisplayName}`;
     }
     const clientName = identity.agentDisplayName?.trim();
     const actorName = clientName === undefined || clientName.length === 0
       ? `MCP client ${identity.agentClientId}`
       : clientName;
-    return `${actorName} for ${identity.principal.displayName}`;
+    return `${actorName} for ${principalDisplayName}`;
   }
 
   function commentPrincipal(agentName?: string): Principal {
@@ -546,14 +560,15 @@ export function createArtifactMcpServer(
     // A schemaless tool keeps its original callback on purpose: the SDK
     // invokes such a tool with a single context argument, which the
     // two-argument nudge wrapper below cannot forward. None exist today.
-    if (nudgeFreeTools.has(name) || config.inputSchema === undefined) {
+    if (config.inputSchema === undefined) {
       return;
     }
     const execute = registered.executor;
     registered.update({
       callback: async (toolArguments, context) => {
-        const result = await execute(toolArguments, context);
+        let result = await execute(toolArguments, context);
         if (!isCallToolResult(result) || result.isError === true) return result;
+        if (nudgeFreeTools.has(name)) return result;
         // The call's arguments are parsed here, at the protocol boundary; only
         // the thread a progress echo may name travels further.
         const nudge = await deriveNudge(progressEchoThread(
@@ -1354,7 +1369,7 @@ export function createArtifactMcpServer(
           id: z.string(),
           manifestDigest: z.string(),
           number: z.number().int().positive(),
-          publisherPrincipalId: z.string().optional(),
+          publisherPrincipalId: z.string().nullable().optional(),
         }).strict()),
       }).strict(),
       annotations: readOnlyAnnotations,
@@ -2009,7 +2024,7 @@ export function createArtifactMcpServer(
         })),
       );
       const isGuest = identity.principal.kind === "human" && identity.principal.membershipRole === "guest";
-      return {entries: isGuest ? entries.map(guestStateEntryProjection) : entries};
+      return {entries: entries.map((entry) => tenantStateEntryProjection(entry, identity.principal, isGuest, isTenantOrganization))};
     }),
   );
 
@@ -2037,7 +2052,7 @@ export function createArtifactMcpServer(
         })),
       );
       const isGuest = identity.principal.kind === "human" && identity.principal.membershipRole === "guest";
-      return {entry: entry === null || !isGuest ? entry : guestStateEntryProjection(entry)};
+      return {entry: entry === null ? null : tenantStateEntryProjection(entry, identity.principal, isGuest, isTenantOrganization)};
     }),
   );
 
@@ -2056,7 +2071,7 @@ export function createArtifactMcpServer(
       annotations: idempotentWriteAnnotations,
     },
     async ({artifactId, key, projectId, value}) => toolResult(async () => ({
-      entry: await runMcpApplicationEffect(
+      entry: tenantStateEntryProjection(await runMcpApplicationEffect(
         dependencies,
         ArtifactCommentService.use((comments) => comments.setState({
           artifactId,
@@ -2065,7 +2080,7 @@ export function createArtifactMcpServer(
           projectId,
           value,
         })),
-      ),
+      ), identity.principal, false, isTenantOrganization),
     })),
   );
 
@@ -2122,7 +2137,11 @@ export function createArtifactMcpServer(
           items: page.items.map((response) => artifactResponseProjection(
             response,
             identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest,
-            identity.principal.kind === "human" && identity.principal.membershipRole !== membershipRoles.guest,
+            isTenantOrganization
+              ? identity.principal.kind === "human" && (identity.principal.membershipRole === membershipRoles.member || identity.principal.membershipRole === membershipRoles.owner)
+              : identity.principal.kind === "human" && identity.principal.membershipRole !== membershipRoles.guest,
+            identity.principal,
+            isTenantOrganization,
           )),
           nextCursor: page.nextCursor,
         };
@@ -2172,7 +2191,7 @@ export function createArtifactMcpServer(
           ),
         );
         return {
-          items: page.items.map((thread) => commentThreadProjection(thread, identity.principal.kind === "human" && identity.principal.membershipRole === "guest")),
+          items: page.items.map((thread) => commentThreadProjection(thread, identity.principal.kind === "human" && identity.principal.membershipRole === "guest", identity.principal, isTenantOrganization)),
           nextCursor: encodePageCursor(page.nextCursor),
         };
       }),
@@ -2208,8 +2227,8 @@ export function createArtifactMcpServer(
         ),
       );
       return {
-        replies: details.replies.map((reply) => commentReplyProjection(reply, identity.principal.kind === "human" && identity.principal.membershipRole === "guest")),
-        thread: commentThreadProjection(details.thread, identity.principal.kind === "human" && identity.principal.membershipRole === "guest"),
+        replies: details.replies.map((reply) => commentReplyProjection(reply, identity.principal.kind === "human" && identity.principal.membershipRole === "guest", identity.principal, isTenantOrganization)),
+        thread: commentThreadProjection(details.thread, identity.principal.kind === "human" && identity.principal.membershipRole === "guest", identity.principal, isTenantOrganization),
       };
     }),
   );
@@ -2263,7 +2282,7 @@ export function createArtifactMcpServer(
       );
       return {
         replayed: creation.replayed,
-        thread: commentThreadProjection(creation.thread, identity.principal.kind === "human" && identity.principal.membershipRole === "guest"),
+        thread: commentThreadProjection(creation.thread, identity.principal.kind === "human" && identity.principal.membershipRole === "guest", identity.principal, isTenantOrganization),
       };
     }),
   );
@@ -2303,7 +2322,7 @@ export function createArtifactMcpServer(
             })
           ),
         );
-        return {replayed: creation.replayed, reply: commentReplyProjection(creation.reply, identity.principal.kind === "human" && identity.principal.membershipRole === "guest")};
+        return {replayed: creation.replayed, reply: commentReplyProjection(creation.reply, identity.principal.kind === "human" && identity.principal.membershipRole === "guest", identity.principal, isTenantOrganization)};
       }),
   );
 
@@ -2337,7 +2356,7 @@ export function createArtifactMcpServer(
             threadId,
           })
         ),
-      ), identity.principal.kind === "human" && identity.principal.membershipRole === "guest"),
+      ), identity.principal.kind === "human" && identity.principal.membershipRole === "guest", identity.principal, isTenantOrganization),
     })),
   );
 
@@ -2387,7 +2406,7 @@ export function createArtifactMcpServer(
               comments.updateReply({...target, body, replyId})
             ),
           );
-          return {reply: commentReplyProjection(reply, identity.principal.kind === "human" && identity.principal.membershipRole === "guest"), thread: null};
+          return {reply: commentReplyProjection(reply, identity.principal.kind === "human" && identity.principal.membershipRole === "guest", identity.principal, isTenantOrganization), thread: null};
         }
         const thread = await runMcpApplicationEffect(
           dependencies,
@@ -2399,7 +2418,7 @@ export function createArtifactMcpServer(
             ))
           ),
         );
-        return {reply: null, thread: commentThreadProjection(thread, identity.principal.kind === "human" && identity.principal.membershipRole === "guest")};
+        return {reply: null, thread: commentThreadProjection(thread, identity.principal.kind === "human" && identity.principal.membershipRole === "guest", identity.principal, isTenantOrganization)};
       }),
   );
 
@@ -2551,9 +2570,15 @@ export function createArtifactMcpServer(
           : (left.createdAt < right.createdAt ? -1 : 1)
       )
       .map((dispatch) => ({
+        agentDisplayName: isTenantOrganization
+          ? tenantIdentityPresentation(identity.principal, {displayName: dispatch.agentDisplayName, principalId: identity.principal.id, staff: identity.principal.staff === true}).displayName
+          : dispatch.agentDisplayName,
         createdAt: dispatch.createdAt,
         id: dispatch.id,
         note: dispatch.note,
+        senderDisplayName: isTenantOrganization
+          ? tenantIdentityPresentation(identity.principal, dispatch.sender).displayName
+          : dispatch.sender.displayName,
         threadCount: dispatch.threadIds.length,
       }));
   };
@@ -2672,7 +2697,9 @@ export function createArtifactMcpServer(
       bundle: {
         items,
         note: dispatch.note,
-        senderDisplayName: dispatch.sender.displayName,
+        senderDisplayName: isTenantOrganization
+          ? tenantIdentityPresentation(identity.principal, dispatch.sender).displayName
+          : dispatch.sender.displayName,
       },
       threads,
     };
@@ -2745,7 +2772,7 @@ export function createArtifactMcpServer(
         case "list": {
           const agent = await registerMailboxAgent(input.agentName);
           return {
-            agent: mailboxAgentProjection(agent),
+            agent: mailboxAgentProjection(agent, isTenantOrganization, identity.principal),
             claimed: null,
             inbox: await listMailboxInbox(agent.id),
             operation: "list",
@@ -2766,7 +2793,7 @@ export function createArtifactMcpServer(
           );
           if (dispatch === null) {
             return {
-              agent: mailboxAgentProjection(agent),
+              agent: mailboxAgentProjection(agent, isTenantOrganization, identity.principal),
               claimed: null,
               inbox: null,
               operation: "claim",
@@ -2781,7 +2808,7 @@ export function createArtifactMcpServer(
             throw cause;
           }
           return {
-            agent: mailboxAgentProjection(agent),
+            agent: mailboxAgentProjection(agent, isTenantOrganization, identity.principal),
             claimed: {
               dispatchId: dispatch.id,
               message: renderBundleMessage(assembled.bundle, "mailbox"),
@@ -2808,7 +2835,7 @@ export function createArtifactMcpServer(
             ),
           );
           return {
-            agent: mailboxAgentProjection(agent),
+            agent: mailboxAgentProjection(agent, isTenantOrganization, identity.principal),
             claimed: null,
             inbox: null,
             operation: "delivered",
@@ -2829,7 +2856,7 @@ export function createArtifactMcpServer(
             ),
           );
           return {
-            agent: mailboxAgentProjection(agent),
+            agent: mailboxAgentProjection(agent, isTenantOrganization, identity.principal),
             claimed: null,
             inbox: null,
             operation: "failed",
@@ -3126,10 +3153,19 @@ function requiredMailboxClientId(agentClientId: string | null): string {
   return agentClientId;
 }
 
-function mailboxAgentProjection(agent: RegisteredAgentRecord) {
+function mailboxAgentProjection(
+  agent: RegisteredAgentRecord,
+  tenant = false,
+  principal?: Principal,
+) {
+  const staffOwner = tenant && (agent.principalId === principal?.id && principal.staff === true ||
+    principal?.tenantStaffPrincipalIds?.includes(agent.principalId) === true);
+  const displayName = staffOwner
+    ? `${agent.displayName.split(" for ", 1)[0]} for Orvex Support`
+    : tenant && isReservedTenantIdentityName(agent.displayName) ? "Orvex Support (member)" : agent.displayName;
   return {
     capabilities: agent.capabilities,
-    displayName: agent.displayName,
+    displayName,
     id: agent.id,
     kind: agent.kind,
   };
@@ -3199,31 +3235,41 @@ function guestVersionRecord(version: ArtifactVersion["version"], isGuest: boolea
   return visibleVersion;
 }
 
-function commentThreadProjection(thread: CommentThreadRecord, isGuest = false) {
+function commentThreadProjection(thread: CommentThreadRecord, isGuest = false, principal?: Principal, tenant = false) {
   return {
     anchor: thread.anchor ?? null,
     artifactId: thread.artifactId,
-    author: commentAuthorProjection(thread.author, isGuest),
-    body: thread.body,
-    createdAt: thread.createdAt,
-    id: thread.id,
-    path: thread.path,
-    projectId: thread.projectId,
-    replyCount: thread.replyCount,
-    resolvedAt: thread.resolvedAt,
-    resolvedBy: thread.resolvedBy === null ? null : commentAuthorProjection(thread.resolvedBy, isGuest),
-    state: thread.state,
-    updatedAt: thread.updatedAt,
-    versionId: thread.versionId,
+    author: commentAuthorProjection(thread.author, isGuest, principal, tenant),
+    body: thread.body, createdAt: thread.createdAt, id: thread.id, path: thread.path,
+    projectId: thread.projectId, replyCount: thread.replyCount, resolvedAt: thread.resolvedAt,
+    resolvedBy: thread.resolvedBy === null ? null : commentAuthorProjection(thread.resolvedBy, isGuest, principal, tenant),
+    state: thread.state, updatedAt: thread.updatedAt, versionId: thread.versionId,
   };
 }
 
-function artifactResponseProjection(response: ArtifactResponseRecord, isGuest: boolean, canSeeEmails: boolean) {
-  const {authorSubject, ...visibleResponse} = response;
-  const projected = Object.assign({}, visibleResponse, {authorEmail: canSeeEmails ? response.authorEmail : null});
-  if (isGuest) projected.authorDisplayName = response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName;
-  else Object.assign(projected, {authorSubject});
-  return projected;
+function artifactResponseProjection(response: ArtifactResponseRecord, isGuest: boolean, canSeeEmails: boolean, principal?: Principal, tenant = false) {
+  const author = tenant ? tenantIdentityPresentation(principal, {displayName: response.authorDisplayName, email: response.authorEmail, principalId: response.authorSubject}) : null;
+  const guest = isGuest;
+  return {
+    ...response,
+    authorDisplayName: author?.displayName ?? (isGuest && response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName),
+    authorEmail: guest || author?.isStaff === true || tenant && !canSeeEmails ? null : author?.email ?? response.authorEmail,
+    authorSubject: tenant ? null : guest ? undefined : response.authorSubject,
+  };
+}
+
+function tenantStateEntryProjection(entry: ArtifactStateEntry, principal: Principal, isGuest: boolean, tenant: boolean) {
+  if (isGuest) {
+    const projected = guestStateEntryProjection(entry);
+    if (!tenant) return projected;
+    const actor = tenantIdentityPresentation(principal, entry.updatedBy);
+    return {...projected, updatedBy: {...projected.updatedBy, displayName: actor.displayName}};
+  }
+  if (tenant) {
+    const actor = tenantIdentityPresentation(principal, entry.updatedBy);
+    return {...entry, updatedBy: {displayName: actor.displayName, principalId: tenantVisiblePrincipalId(principal, entry.updatedBy.principalId)}};
+  }
+  return entry;
 }
 
 function guestStateEntryProjection(entry: ArtifactStateEntry) {
@@ -3234,14 +3280,24 @@ function guestStateEntryProjection(entry: ArtifactStateEntry) {
   }};
 }
 
-function commentAuthorProjection(author: CommentAuthor, isGuest: boolean): Omit<CommentAuthor, "principalId"> | CommentAuthor {
-  if (!isGuest) return author;
-  const {principalId: _principalId, ...visibleAuthor} = author;
-  return {...visibleAuthor, displayName: author.displayName.includes("@") ? "Team member" : author.displayName};
+function commentAuthorProjection(author: CommentAuthor, isGuest: boolean, principal?: Principal, tenant = false) {
+  if (isGuest) {
+    const {principalId: _principalId, staff: _staff, ...visibleAuthor} = author;
+    const staff = tenant && (author.staff === true || principal?.tenantStaffPrincipalIds?.includes(author.principalId) === true);
+    const displayName = tenant ? tenantIdentityPresentation(undefined, author).displayName : author.displayName;
+    const authorizedByPrincipalId = visibleAuthor.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, visibleAuthor.authorizedByPrincipalId);
+    return {...visibleAuthor, authorizedByPrincipalId: staff ? null : authorizedByPrincipalId, displayName: staff ? "Orvex Support" : displayName.includes("@") ? "Team member" : displayName};
+  }
+  const {staff: _staff, ...visibleAuthor} = author;
+  if (tenant) {
+    const publicIdentity = tenantIdentityPresentation(principal, author);
+    return {...visibleAuthor, displayName: publicIdentity.displayName, principalId: tenantVisiblePrincipalId(principal, author.principalId), authorizedByPrincipalId: visibleAuthor.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, visibleAuthor.authorizedByPrincipalId)};
+  }
+  return visibleAuthor;
 }
 
-function commentReplyProjection(reply: CommentReplyRecord, isGuest: boolean) {
-  return {...reply, author: commentAuthorProjection(reply.author, isGuest)};
+function commentReplyProjection(reply: CommentReplyRecord, isGuest: boolean, principal?: Principal, tenant = false) {
+  return {...reply, author: commentAuthorProjection(reply.author, isGuest, principal, tenant)};
 }
 
 function commentThreadEdit(
@@ -3354,6 +3410,7 @@ function successResult<Value extends object>(value: Value, summary?: string) {
     structuredContent: value,
   };
 }
+
 
 function publicationSummary(published: {
   readonly artifact: {readonly name: string};

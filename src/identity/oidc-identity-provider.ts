@@ -224,27 +224,28 @@ export class OidcIdentityProvider implements InteractiveIdentityProvider {
         ),
       );
       let organizationMembership: NonNullable<ExternalIdentity["organizationMembership"]> | null = null;
-      let identityProvider: string | null = null;
-      if (this.#organization !== null) {
-        const organizationClaim = payload["organization"];
-        const identityProviderClaim = payload["identity_provider"];
-        const parsedOrganizationClaim = organizationClaim === undefined
+      const organizationClaim = payload["organization"];
+      const identityProviderClaim = payload["identity_provider"];
+      const parsedOrganizationClaim = organizationClaim === undefined
           ? undefined
           : z.json().safeParse(organizationClaim);
-        const parsedIdentityProviderClaim = identityProviderClaim === undefined
+      const parsedIdentityProviderClaim = identityProviderClaim === undefined
           ? undefined
           : z.json().safeParse(identityProviderClaim);
-        if (parsedOrganizationClaim !== undefined && !parsedOrganizationClaim.success) {
-          return yield* providerFailure();
-        }
-        if (parsedIdentityProviderClaim !== undefined && !parsedIdentityProviderClaim.success) {
-          return yield* providerFailure();
-        }
-        const parsed = parseKeycloakOrganizationClaims(
-          parsedOrganizationClaim?.data,
-          parsedIdentityProviderClaim?.data,
-        );
-        if (!parsed.ok) return yield* providerFailure();
+      if (parsedOrganizationClaim !== undefined && !parsedOrganizationClaim.success) {
+        return yield* providerFailure();
+      }
+      if (parsedIdentityProviderClaim !== undefined && !parsedIdentityProviderClaim.success) {
+        return yield* providerFailure();
+      }
+      const parsed = parseKeycloakOrganizationClaims(
+        parsedOrganizationClaim?.data,
+        parsedIdentityProviderClaim?.data,
+      );
+      if (!parsed.ok) return yield* providerFailure();
+      const organizations = Object.fromEntries(parsed.value.organizations.map(({alias, groups: organizationGroups, id}) => [alias, {groups: organizationGroups, id}]));
+      const identityProvider = parsed.value.identityProvider;
+      if (this.#organization !== null) {
         const selected = parsed.value.organizations.find((entry) =>
           entry.alias === this.#organization?.alias && entry.id === this.#organization?.id,
         );
@@ -259,7 +260,6 @@ export class OidcIdentityProvider implements InteractiveIdentityProvider {
           ? membershipRoles.viewer
           : null,
         };
-        identityProvider = parsed.value.identityProvider;
       }
       const identity: ExternalIdentity = {
         displayName: displayName(claims.data),
@@ -269,9 +269,7 @@ export class OidcIdentityProvider implements InteractiveIdentityProvider {
         provider: oidcIdentityProviderName(this.#issuer),
         subject: claims.data.sub,
       };
-      if (this.#organization !== null) {
-        Object.assign(identity, {organizationMembership, identityProvider});
-      }
+      Object.assign(identity, {organizations, organizationMembership, identityProvider});
       return identity;
     },
   );
