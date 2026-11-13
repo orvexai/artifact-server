@@ -50,6 +50,8 @@ const principalSchema = z.object({
   ])),
   email: z.string().nullable().optional(),
   directoryGroupIds: z.array(z.string()).optional(),
+  staff: z.boolean().optional(),
+  tenantStaffPrincipalIds: z.array(z.string()).optional(),
   provisionerGroupPrefixes: z.array(z.string()).optional(),
   serviceAccountSource: z.literal("oidc").optional(),
   serviceAccountClientId: z.string().min(1).optional(),
@@ -71,11 +73,14 @@ export interface McpHttpAdapterDependencies {
   readonly applicationOrigin: string | null;
   readonly applicationRuntime: ApplicationRuntime;
   readonly contentDomain: string;
+  readonly contentTokenPrefix?: string | undefined;
   readonly gitHistory: GitHistoryCapabilityReader;
   readonly linkedArtifacts?: boolean;
   readonly mode: ArtifactMcpServerDependencies["mode"];
+  readonly organizationTenancy?: boolean;
   /** The OAuth protected resource in force for this request, if any. */
   readonly oauthResource: () => string | null;
+  readonly organizationSlug?: string;
 }
 
 /** Stateless MCP HTTP adapter mounted by every Artifact Server deployment. */
@@ -104,16 +109,18 @@ export function createMcpHttpAdapter(
           ...principal,
           actorClientId: agentClientId,
         };
-      const serverDependencies: ArtifactMcpServerDependencies = {
+      const serverDependencies = Object.assign({
         applicationOrigin: dependencies.applicationOrigin
           ?? requestOrigin(context.requestInfo),
         applicationRuntime: dependencies.applicationRuntime,
         contentDomain: dependencies.contentDomain,
+        contentTokenPrefix: dependencies.contentTokenPrefix,
         gitHistory: dependencies.gitHistory.read(),
         linkedArtifacts: dependencies.linkedArtifacts === true,
         mode: dependencies.mode,
+        organizationTenancy: dependencies.organizationTenancy === true,
         requestId: requestIdFrom(context.requestInfo),
-      };
+      }, dependencies.organizationSlug === undefined ? {} : {organizationSlug: dependencies.organizationSlug});
       return createArtifactMcpServer(
         serverDependencies,
         {agentClientId, agentDisplayName, principal: attributedPrincipal},

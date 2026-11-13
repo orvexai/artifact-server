@@ -34,4 +34,6 @@ export interface ObjectStorageProvider {
 export interface ObjectStorageProviderFactory {
   readonly kind: ObjectStorageProviderKind;
   create(installationId: string): ObjectStorageProvider;
+  /** Close process-wide SDK resources shared by installation adapters. */
+  close?(): Promise<void>;
 }

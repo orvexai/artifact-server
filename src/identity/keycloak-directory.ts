@@ -8,6 +8,8 @@ import {
   type MemberDirectory,
 } from "../application/directory-sync.js";
 import type {DirectoryGroupRecord} from "../core/directory-groups.js";
+import {mapKeycloakOrganizationGroups, type KeycloakOrganizationRole} from
+  "./oidc-organization-claim.js";
 import {loadOidcAuthorizationServer} from "./oidc-oauth-metadata.js";
 import {isLocalOidcIssuer, normalizeOidcEndpoint} from "./oidc-issuer.js";
 
@@ -20,6 +22,7 @@ const maximumGroups = 10_000;
 const requestTimeoutMilliseconds = 10_000;
 /** Reuse one admin token this long; Keycloak's default lifetime is 5 minutes. */
 const tokenReuseMilliseconds = 30_000;
+const organizationRolePrecedence = {viewer: 0, editor: 1, owner: 2} as const;
 /** Attempts per request; only a timeout, network fault or HTTP 5xx is retried. */
 const requestAttempts = 3;
 const retryBaseDelayMilliseconds = 500;
@@ -46,10 +49,53 @@ const userList = Schema.Array(Schema.Struct({
   lastName: Schema.optionalKey(Schema.String),
   username: Schema.String,
 }));
+const organizationList = Schema.Array(Schema.Struct({
+  alias: Schema.NonEmptyString,
+  enabled: Schema.optionalKey(Schema.Boolean),
+  id: Schema.NonEmptyString,
+  name: Schema.NonEmptyString,
+}));
+const organizationGroupList = Schema.Array(Schema.Struct({
+  id: Schema.NonEmptyString,
+  path: Schema.String,
+}));
 const decodeTokenResponse = Schema.decodeUnknownEffect(tokenResponse);
 const decodeGroupList = Schema.decodeUnknownEffect(groupList);
 const decodeGroupTree = Schema.decodeUnknownEffect(groupTree);
 const decodeUserList = Schema.decodeUnknownEffect(userList);
+const decodeOrganizationList = Schema.decodeUnknownEffect(organizationList);
+const decodeOrganizationGroupList = Schema.decodeUnknownEffect(organizationGroupList);
+const decodeGroupByPath = Schema.decodeUnknownEffect(Schema.Struct({
+  id: Schema.NonEmptyString,
+  path: Schema.String,
+}));
+
+export interface DirectoryOrganization {
+  readonly alias: string;
+  readonly enabled?: boolean;
+  readonly id: string;
+  readonly name: string;
+}
+
+export interface DirectoryOrganizationMember extends DirectoryUser {
+  readonly role: KeycloakOrganizationRole | null;
+}
+
+/** Keycloak Organizations API used by per-org admission and directory sync. */
+export interface OrganizationDirectory {
+  readonly listOrganizations: () => Effect.Effect<readonly DirectoryOrganization[], DirectoryUnavailable>;
+  readonly listOrganizationMembers: (
+    organization: DirectoryOrganization,
+  ) => Effect.Effect<readonly DirectoryOrganizationMember[], DirectoryUnavailable>;
+  /**
+   * Keycloak user ids that are members of the realm group at one full path or
+   * of any subgroup beneath it. Org sync uses it to mark staff groups.
+   */
+  readonly listGroupMemberIdsByPath: (
+    path: string,
+    options?: {readonly allowMissing?: boolean},
+  ) => Effect.Effect<readonly string[] | null, DirectoryUnavailable>;
+}
 
 /**
  * Derive the Keycloak admin REST base for one realm issuer, or null when the
@@ -140,7 +186,7 @@ export interface KeycloakDirectoryConfig {
  * client-credentials token. The client needs only realm-management
  * view-users and query-groups.
  */
-export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
+export class KeycloakDirectory implements GroupDirectory, MemberDirectory, OrganizationDirectory {
   readonly #adminBaseUrl: string;
   readonly #clientId: string;
   readonly #clientSecret: Redacted.Redacted;
@@ -186,6 +232,196 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
     },
   );
 
+  readonly listOrganizations = Effect.fn("KeycloakDirectory.listOrganizations")(
+    function*(this: KeycloakDirectory) {
+      const token = yield* this.#accessToken();
+      const organizations: DirectoryOrganization[] = [];
+      for (let page = 0; page < maximumPagesPerGroup; page += 1) {
+        const url = new URL(`${this.#adminBaseUrl}/organizations`);
+        url.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+        url.searchParams.set("max", String(keycloakDirectoryPageSize));
+        const body = yield* this.#adminGet(token, url, "The Keycloak organization listing");
+        const listed = yield* decodeOrganizationList(body).pipe(
+          Effect.mapError(() => unavailable("The Keycloak organization listing returned an invalid list.")),
+        );
+        organizations.push(...listed.map((organization) => ({
+          ...organization,
+          enabled: organization.enabled ?? true,
+        })));
+        if (organizations.length > maximumGroups) {
+          return yield* unavailable("Keycloak lists more organizations than one sync reads.");
+        }
+        if (listed.length < keycloakDirectoryPageSize) return organizations;
+      }
+      return yield* unavailable("The Keycloak organization listing has too many pages.");
+    },
+  );
+
+  readonly listOrganizationMembers = Effect.fn("KeycloakDirectory.listOrganizationMembers")(
+    function*(this: KeycloakDirectory, organization: DirectoryOrganization, retry = 0): Effect.fn.Return<
+      readonly DirectoryOrganizationMember[],
+      DirectoryUnavailable
+    > {
+      const token = yield* this.#accessToken();
+      const roleByUserId = new Map<string, KeycloakOrganizationRole>();
+      const roleGroupMemberIds = new Map<string, string[]>();
+      const groups: {id: string; path: string}[] = [];
+      for (let page = 0; page < maximumPagesPerGroup; page += 1) {
+        const url = new URL(
+          `${this.#adminBaseUrl}/organizations/${encodeURIComponent(organization.id)}/groups`,
+        );
+        url.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+        url.searchParams.set("max", String(keycloakDirectoryPageSize));
+        const body = yield* this.#adminGet(token, url, `The Keycloak groups of ${organization.alias}`);
+        const listed = yield* decodeOrganizationGroupList(body).pipe(
+          Effect.mapError(() => unavailable(`The Keycloak groups of ${organization.alias} returned an invalid list.`)),
+        );
+        groups.push(...listed);
+        if (groups.length > maximumGroups) {
+          return yield* unavailable(`Keycloak lists too many groups for ${organization.alias}.`);
+        }
+        if (listed.length < keycloakDirectoryPageSize) break;
+        if (page === maximumPagesPerGroup - 1) {
+          return yield* unavailable(`The Keycloak groups of ${organization.alias} have too many pages.`);
+        }
+      }
+      const roleGroups = groups.flatMap((group) => {
+        const role = mapKeycloakOrganizationGroups([group.path]);
+        return role === null ? [] : [{...group, role}];
+      });
+      for (const group of roleGroups) {
+        const groupMemberIds: string[] = [];
+        for (let page = 0; page < maximumPagesPerGroup; page += 1) {
+          const url = new URL(
+            `${this.#adminBaseUrl}/organizations/${encodeURIComponent(organization.id)}` +
+              `/groups/${encodeURIComponent(group.id)}/members`,
+          );
+          url.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+          url.searchParams.set("max", String(keycloakDirectoryPageSize));
+          const body = yield* this.#adminGet(token, url,
+            `The Keycloak members of ${group.path} in ${organization.alias}`);
+          const listed = yield* decodeUserList(body).pipe(
+            Effect.mapError(() => unavailable(`The Keycloak members of ${group.path} in ${organization.alias} returned an invalid list.`)),
+          );
+          for (const member of listed) {
+            groupMemberIds.push(member.id);
+            const current = roleByUserId.get(member.id);
+            if (current === undefined ||
+              organizationRolePrecedence[group.role] > organizationRolePrecedence[current]) {
+              roleByUserId.set(member.id, group.role);
+            }
+          }
+          if (listed.length < keycloakDirectoryPageSize) break;
+          if (page === maximumPagesPerGroup - 1) {
+            return yield* unavailable(`The Keycloak members of ${group.path} in ${organization.alias} have too many pages.`);
+          }
+        }
+        roleGroupMemberIds.set(group.id, groupMemberIds.toSorted());
+      }
+      const members: DirectoryOrganizationMember[] = [];
+      const seenMemberIds = new Set<string>();
+      const memberIds: string[] = [];
+      let memberCount = 0;
+      for (let page = 0; page < maximumPagesPerGroup; page += 1) {
+        const url = new URL(
+          `${this.#adminBaseUrl}/organizations/${encodeURIComponent(organization.id)}/members`,
+        );
+        url.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+        url.searchParams.set("max", String(keycloakDirectoryPageSize));
+        const body = yield* this.#adminGet(token, url, `The Keycloak members of ${organization.alias}`);
+        const listed = yield* decodeUserList(body).pipe(
+          Effect.mapError(() => unavailable(`The Keycloak members of ${organization.alias} returned an invalid list.`)),
+        );
+        memberCount += listed.length;
+        if (memberCount > maximumGroups * keycloakDirectoryPageSize) {
+          return yield* unavailable(`The Keycloak organization ${organization.alias} has too many members.`);
+        }
+        for (const member of listed) {
+          memberIds.push(member.id);
+          seenMemberIds.add(member.id);
+          if (member.enabled !== true) continue;
+          members.push({
+            email: member.email ?? null,
+            emailVerified: member.emailVerified === true,
+            enabled: true,
+            firstName: member.firstName ?? null,
+            id: member.id,
+            lastName: member.lastName ?? null,
+            role: roleByUserId.get(member.id) ?? "viewer",
+            username: member.username,
+          });
+        }
+        if (members.length > maximumGroups * keycloakDirectoryPageSize) {
+          return yield* unavailable(`The Keycloak organization ${organization.alias} has too many members.`);
+        }
+        if (listed.length < keycloakDirectoryPageSize) {
+          if ([...roleByUserId.keys()].some((id) => !seenMemberIds.has(id))) {
+            return yield* unavailable(`Keycloak returned a role-group member missing from organization ${organization.alias}.`);
+          }
+          break;
+        }
+        if (page === maximumPagesPerGroup - 1) {
+          return yield* unavailable(`The Keycloak organization ${organization.alias} has too many member pages.`);
+        }
+      }
+      // Keycloak's members endpoint has no total-count header. Re-page it once
+      // after the snapshot and compare complete sorted ID sets, including each
+      // role group, so page-boundary drift cannot hide behind an unchanged count.
+      const verificationMemberIds: string[] = [];
+      for (let page = 0; page < maximumPagesPerGroup; page += 1) {
+        const url = new URL(
+          `${this.#adminBaseUrl}/organizations/${encodeURIComponent(organization.id)}/members`,
+        );
+        url.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+        url.searchParams.set("max", String(keycloakDirectoryPageSize));
+        const body = yield* this.#adminGet(token, url,
+          `The Keycloak member verification for ${organization.alias}`);
+        const listed = yield* decodeUserList(body).pipe(
+          Effect.mapError(() => unavailable(`The Keycloak member verification for ${organization.alias} returned an invalid list.`)),
+        );
+        verificationMemberIds.push(...listed.map((member) => member.id));
+        if (listed.length < keycloakDirectoryPageSize) break;
+        if (page === maximumPagesPerGroup - 1) {
+          return yield* unavailable(`The Keycloak organization ${organization.alias} has too many verification pages.`);
+        }
+      }
+      let roleGroupsDrifted = false;
+      for (const group of roleGroups) {
+        const verificationIds: string[] = [];
+        for (let page = 0; page < maximumPagesPerGroup; page += 1) {
+          const url = new URL(
+            `${this.#adminBaseUrl}/organizations/${encodeURIComponent(organization.id)}` +
+              `/groups/${encodeURIComponent(group.id)}/members`,
+          );
+          url.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+          url.searchParams.set("max", String(keycloakDirectoryPageSize));
+          const body = yield* this.#adminGet(token, url,
+            `The Keycloak verification members of ${group.path} in ${organization.alias}`);
+          const listed = yield* decodeUserList(body).pipe(
+            Effect.mapError(() => unavailable(`The Keycloak verification members of ${group.path} in ${organization.alias} returned an invalid list.`)),
+          );
+          verificationIds.push(...listed.map((member) => member.id));
+          if (listed.length < keycloakDirectoryPageSize) break;
+          if (page === maximumPagesPerGroup - 1) {
+            return yield* unavailable(`The Keycloak role group ${group.path} in ${organization.alias} has too many verification pages.`);
+          }
+        }
+        const expectedIds = roleGroupMemberIds.get(group.id) ?? [];
+        if (JSON.stringify(verificationIds.toSorted()) !== JSON.stringify(expectedIds)) {
+          roleGroupsDrifted = true;
+        }
+      }
+      const drifted = verificationMemberIds.length !== memberCount ||
+        JSON.stringify(verificationMemberIds.toSorted()) !== JSON.stringify(memberIds.toSorted()) ||
+        roleGroupsDrifted;
+      if (drifted) {
+        if (retry === 0) return yield* this.listOrganizationMembers(organization, 1);
+        return yield* unavailable(`The Keycloak organization ${organization.alias} membership changed during both sync attempts.`);
+      }
+      return members;
+    },
+  );
+
   /**
    * List every group in the realm, subgroups included, by walking Keycloak's
    * paged top-level listing and each group's children.
@@ -228,6 +464,73 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
         }
       }
       return groups;
+    },
+  );
+
+  /**
+   * Read the members of the realm group at one full path and of every
+   * subgroup beneath it. A missing
+   * group fails the pass: a staff selector that cannot be resolved must never
+   * silently admit staff unmasked.
+   */
+  readonly listGroupMemberIdsByPath = Effect.fn("KeycloakDirectory.listGroupMemberIdsByPath")(
+    function*(this: KeycloakDirectory, path: string, options?: {readonly allowMissing?: boolean}): Effect.fn.Return<
+      readonly string[] | null,
+      DirectoryUnavailable
+    > {
+      const segments = path.split("/").filter((segment) => segment !== "");
+      if (!path.startsWith("/") || segments.length === 0) {
+        return yield* unavailable(`The staff group selector ${path} is not a full group path.`);
+      }
+      const token = yield* this.#accessToken();
+      const url = new URL(
+        `${this.#adminBaseUrl}/group-by-path/${segments.map((segment) => encodeURIComponent(segment)).join("/")}`,
+      );
+      const body = yield* this.#adminGet(token, url, `The Keycloak staff group ${path}`, true);
+      if (body === null) {
+        // A per-organization ({slug}) staff group that does not exist yet has
+        // no members; any other missing staff group fails closed.
+        if (options?.allowMissing === true) return null;
+        return yield* unavailable(`The Keycloak staff group ${path} does not exist.`);
+      }
+      const group = yield* decodeGroupByPath(body).pipe(
+        Effect.mapError(() => unavailable(`The Keycloak staff group ${path} returned an invalid group.`)),
+      );
+      if (group.path !== path) {
+        return yield* unavailable(`The Keycloak staff group ${path} resolved to a different path.`);
+      }
+      // A staff group covers its subgroups: collect every descendant group
+      // through Keycloak's paged children listing, then read each one's members.
+      const groupIds = [group.id];
+      const pending = [group.id];
+      for (let parentId = pending.shift(); parentId !== undefined; parentId = pending.shift()) {
+        for (let page = 0; ; page += 1) {
+          if (page >= maximumPagesPerGroup) {
+            return yield* unavailable(`The subgroups of staff group ${path} have too many pages.`);
+          }
+          const childrenUrl = new URL(`${this.#adminBaseUrl}/groups/${encodeURIComponent(parentId)}/children`);
+          childrenUrl.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+          childrenUrl.searchParams.set("max", String(keycloakDirectoryPageSize));
+          childrenUrl.searchParams.set("briefRepresentation", "true");
+          const childrenBody = yield* this.#adminGet(token, childrenUrl, `The subgroups of staff group ${path}`);
+          const children = yield* decodeGroupTree(childrenBody).pipe(
+            Effect.mapError(() => unavailable(`The subgroups of staff group ${path} returned an invalid list.`)),
+          );
+          for (const child of children) {
+            groupIds.push(child.id);
+            if (groupIds.length > maximumGroups) {
+              return yield* unavailable(`Staff group ${path} has more subgroups than one sync reads.`);
+            }
+            if (child.subGroupCount !== 0) pending.push(child.id);
+          }
+          if (children.length < keycloakDirectoryPageSize) break;
+        }
+      }
+      const ids = new Set<string>();
+      for (const groupId of groupIds) {
+        for (const user of yield* this.#groupMembers(token, path, groupId)) ids.add(user.id);
+      }
+      return [...ids];
     },
   );
 
@@ -343,6 +646,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
     token: Redacted.Redacted,
     url: URL,
     subject: string,
+    notFoundAsNull = false,
   ): Effect.Effect<Schema.Json, DirectoryUnavailable> {
     return this.#request(url.toString(), {
       headers: {
@@ -350,7 +654,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
         Authorization: `Bearer ${Redacted.value(token)}`,
       },
       method: "GET",
-    }, subject);
+    }, subject, notFoundAsNull);
   }
 
   /**
@@ -362,9 +666,10 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
     url: string,
     init: RequestInit,
     subject: string,
+    notFoundAsNull = false,
   ): Effect.Effect<Schema.Json, DirectoryUnavailable> {
     const attempt = (number: number): Effect.Effect<Schema.Json, DirectoryUnavailable> =>
-      this.#requestOnce(url, init, subject).pipe(
+      this.#requestOnce(url, init, subject, notFoundAsNull).pipe(
         Effect.catch((failure) =>
           failure.retryable && number < requestAttempts
             ? Effect.sleep(this.#retryBaseDelayMilliseconds * 2 ** (number - 1)).pipe(
@@ -380,6 +685,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
     url: string,
     init: RequestInit,
     subject: string,
+    notFoundAsNull = false,
   ): Effect.Effect<Schema.Json, {readonly message: string; readonly retryable: boolean}> {
     return Effect.tryPromise({
       try: async (signal) => {
@@ -392,6 +698,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory {
             AbortSignal.timeout(requestTimeoutMilliseconds),
           ]),
         });
+        if (response.status === 404 && notFoundAsNull) return null;
         if (response.status !== 200) {
           throw new HttpStatusFailure(
             `${subject} returned HTTP ${response.status}.`,

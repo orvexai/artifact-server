@@ -162,6 +162,7 @@ export async function startOidcHostedAuthentication(
 ): Promise<StartedOidcHostedAuthentication> {
   const issuer = requireOidcIssuer(config.issuer, "ARTIFACT_SERVER_OIDC_ISSUER");
   const mcpResource = new URL("/mcp", config.applicationOrigin).toString();
+  const apiResource = config.apiResource ?? new URL("/api", config.applicationOrigin).toString();
   const groupRoles = config.groupRoles ?? null;
   let discoveryOptions: RetryingDiscoveryOptions<OidcHostedAuthentication> = {
     attempt: () => createOidcHostedAuthentication({...config, issuer}),
@@ -189,6 +190,7 @@ export async function startOidcHostedAuthentication(
   const now = options.now ?? Date.now;
   return {
     discoveredOAuth: {
+      apiResource,
       current: () => discoveredOAuthState(discovery.current(), now),
       mcpResource,
       refresh: async () => discoveredOAuthState(await discovery.refresh(), now),
@@ -250,6 +252,7 @@ class DiscoveredOidcBearerVerifier implements ExternalMcpBearerVerifier {
     hosted: OidcHostedAuthentication,
   ) => ExternalMcpBearerVerifier;
   readonly #unconfiguredMessage: string;
+  readonly #selected = new WeakMap<OidcHostedAuthentication, ExternalMcpBearerVerifier>();
 
   constructor(
     discovery: RetryingDiscovery<OidcHostedAuthentication>,
@@ -260,6 +263,30 @@ class DiscoveredOidcBearerVerifier implements ExternalMcpBearerVerifier {
     this.#select = select;
     this.#unconfiguredMessage = unconfiguredMessage;
   }
+
+  readonly forApplicationResources = (resources: {
+    readonly apiResource: string;
+    readonly mcpResource: string;
+  }): DiscoveredOidcBearerVerifier => new DiscoveredOidcBearerVerifier(
+    this.#discovery,
+    (hosted) => {
+      const verifier = this.#select(hosted);
+      return verifier.forApplicationResources?.(resources) ?? verifier;
+    },
+    this.#unconfiguredMessage,
+  );
+
+  readonly forOrganization = (organization: {
+    readonly alias: string;
+    readonly id: string;
+  }): DiscoveredOidcBearerVerifier => new DiscoveredOidcBearerVerifier(
+    this.#discovery,
+    (hosted) => {
+      const verifier = this.#select(hosted);
+      return verifier.forOrganization?.(organization) ?? verifier;
+    },
+    this.#unconfiguredMessage,
+  );
 
   readonly verify = (
     credential: Redacted.Redacted,
@@ -300,7 +327,12 @@ class DiscoveredOidcBearerVerifier implements ExternalMcpBearerVerifier {
     AuthenticationRequired | IdentityProviderFailure
   > {
     if (state.status === "ready") {
-      return Effect.succeed(this.#select(state.value));
+      let verifier = this.#selected.get(state.value);
+      if (verifier === undefined) {
+        verifier = this.#select(state.value);
+        this.#selected.set(state.value, verifier);
+      }
+      return Effect.succeed(verifier);
     }
     if (state.status === "misconfigured") {
       return Effect.fail(new AuthenticationRequired({

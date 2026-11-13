@@ -95,7 +95,7 @@ const versionSchema = Schema.Struct({
   id: Schema.String,
   manifestDigest: Schema.String,
   number: positiveIntegerSchema,
-  publisherPrincipalId: Schema.String,
+  publisherPrincipalId: Schema.NullOr(Schema.String),
   projectId: Schema.String,
   routingMode: Schema.Literals(["static", "spa"]),
 });

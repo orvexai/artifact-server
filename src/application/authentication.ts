@@ -40,6 +40,15 @@ export interface VerifiedExternalMcpBearer {
 
 /** External MCP token verification and first-use identity resolution. */
 export interface ExternalMcpBearerVerifier {
+  /** Rebind OIDC resources when one process serves multiple application bases. */
+  readonly forApplicationResources?: (resources: {
+    readonly apiResource: string;
+    readonly mcpResource: string;
+  }) => ExternalMcpBearerVerifier;
+  readonly forOrganization?: (organization: {
+    readonly alias: string;
+    readonly id: string;
+  }) => ExternalMcpBearerVerifier;
   /** The credential travels along so a provider can read the profile it carries. */
   readonly resolveIdentity: (
     verified: VerifiedExternalMcpBearer,

@@ -8,6 +8,7 @@ import {
   createExternalStorageRuntime,
   type ExternalStorageRuntimeConfig,
 } from "./create-external-storage-runtime.js";
+import {createOrganizationRouter} from "./create-organization-router.js";
 import {createGracefulHttpShutdown} from
   "../lifecycle/graceful-http-shutdown.js";
 import {createRuntimeLifecycle} from "../lifecycle/runtime-readiness.js";
@@ -22,6 +23,7 @@ const serverAddressSchema = z.object({
 /** External-storage server settings for one process. */
 export interface ExternalStorageServerConfig extends ExternalStorageRuntimeConfig {
   readonly hostname: string;
+  readonly organizationTenancy?: boolean;
   readonly port: number;
   readonly readinessWithdrawalMilliseconds?: number;
   readonly shutdownDeadlineMilliseconds?: number;
@@ -44,12 +46,16 @@ export async function startExternalStorageServer(
     );
   }
   const lifecycle = config.runtimeLifecycle ?? createRuntimeLifecycle();
-  const runtime = await createExternalStorageRuntime({
+  const runtimeConfig = {
     ...config,
     runtimeLifecycle: lifecycle,
-  });
+  };
+  const runtime = config.organizationTenancy === true
+    ? await createOrganizationRouter(runtimeConfig)
+    : await createExternalStorageRuntime(runtimeConfig);
   const server = createServer(
-    getRequestListener(withNodeResponseCompression(runtime.app.fetch), {
+    getRequestListener(withNodeResponseCompression((request) =>
+      "app" in runtime ? runtime.app.fetch(request) : runtime.fetch(request)), {
       hostname: config.hostname,
     }),
   );

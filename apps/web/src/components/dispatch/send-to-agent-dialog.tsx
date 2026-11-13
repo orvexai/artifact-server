@@ -426,9 +426,11 @@ export function SendToAgentControl({
                     <PresenceGlyph kind={agent.kind} ring={presenceRing(agent)} />
                     <span className="min-w-0">
                       <strong className="block truncate text-sm">{agent.displayName}</strong>
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {agent.workingDirectory}
-                      </span>
+                      {agent.workingDirectory === null ? null : (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {agent.workingDirectory}
+                        </span>
+                      )}
                     </span>
                   </button>
                 ))}
@@ -502,9 +504,11 @@ export function SendToAgentControl({
                       <span className="block font-heading text-sm font-semibold">
                         {agent.displayName}
                       </span>
-                      <span className="block font-mono text-xs break-all text-muted-foreground">
-                        {agent.workingDirectory}
-                      </span>
+                      {agent.workingDirectory === null ? null : (
+                        <span className="block font-mono text-xs break-all text-muted-foreground">
+                          {agent.workingDirectory}
+                        </span>
+                      )}
                       <span className="block text-xs text-muted-foreground">
                         {agent.connected
                           ? "Connected"

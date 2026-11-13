@@ -108,6 +108,7 @@ export interface IntegrityReport {
 export class IntegrityCheckError extends Schema.TaggedError<IntegrityCheckError>()(
   "IntegrityCheckError",
   {
+    detail: Schema.optional(Schema.String),
     message: Schema.String,
     provider: Schema.Literals([
       ...objectStorageProviderKinds,
@@ -154,8 +155,9 @@ export async function checkExternalStorageIntegrity(
       maxConnections: 1,
       url: configuration.databaseUrl,
     });
-  } catch {
+  } catch (error) {
     throw new IntegrityCheckError({
+      detail: error instanceof Error ? error.message : String(error),
       message: "Postgres could not be inspected.",
       provider: "postgres",
     });
@@ -165,9 +167,10 @@ export async function checkExternalStorageIntegrity(
     objectStorage = configuration.objectStorage.create(
       configuration.installationId,
     );
-  } catch {
-    await database.close();
+  } catch (error) {
+    await Promise.all([configuration.objectStorage.close?.(), database.close()]);
     throw new IntegrityCheckError({
+      detail: error instanceof Error ? error.message : String(error),
       message: "Object storage could not be inspected.",
       provider: configuration.objectStorage.kind,
     });
@@ -175,14 +178,16 @@ export async function checkExternalStorageIntegrity(
   try {
     const catalog = await database.health().then(() => database.run(
       readExternalCatalog(configuration.installationId),
-    )).catch(() => {
+    )).catch((error) => {
       throw new IntegrityCheckError({
+        detail: error instanceof Error ? error.message : String(error),
         message: "Postgres could not be inspected.",
         provider: "postgres",
       });
     });
-    await objectStorage.readiness(AbortSignal.timeout(3_000)).catch(() => {
+    await objectStorage.readiness(AbortSignal.timeout(3_000)).catch((error) => {
       throw new IntegrityCheckError({
+        detail: error instanceof Error ? error.message : String(error),
         message: "Object storage could not be inspected.",
         provider: objectStorage.kind,
       });
@@ -193,11 +198,15 @@ export async function checkExternalStorageIntegrity(
   } catch (error) {
     if (error instanceof IntegrityCheckError) throw error;
     throw new IntegrityCheckError({
+      detail: error instanceof Error ? error.message : String(error),
       message: "The external providers could not be inspected.",
-      provider: "postgres",
+      provider: objectStorage.kind,
     });
   } finally {
-    await Promise.all([objectStorage.close(), database.close()]);
+    await Promise.all([
+      objectStorage.close(),
+      database.close(),
+    ]);
   }
 }
 

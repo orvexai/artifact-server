@@ -1,3 +1,5 @@
+import {confusableSkeleton} from "./confusables.js";
+
 /** Principal kinds recognized by Artifact Server policy. */
 export const principalKinds = {
   human: "human",
@@ -81,12 +83,101 @@ export interface Principal {
   readonly installationId: string;
   readonly kind: PrincipalKind;
   readonly membershipRole: MembershipRole;
+  /** Internal request context used to project tenant-visible identities by id. */
+  readonly tenantStaffPrincipalIds?: readonly string[] | undefined;
+  /** Persisted tenant privacy marker; once true it means this identity has ever been staff. */
+  readonly staff?: boolean | undefined;
   /** Directory group IDs carried by a constrained OIDC service identity. */
   readonly directoryGroupIds?: readonly string[] | undefined;
   /** Full path prefixes eligible for this configured project provisioner. */
   readonly provisionerGroupPrefixes?: readonly string[] | undefined;
   /** Marks an OIDC client-credentials principal with group-bound access. */
   readonly serviceAccountSource?: "oidc" | undefined;
+}
+
+/** Resolve staff status strictly by identity id, never by display text. */
+export function isTenantStaffIdentity(principal: Principal, principalId: string): boolean {
+  return principal.staff === true && principal.id === principalId ||
+    principal.tenantStaffPrincipalIds?.includes(principalId) === true;
+}
+
+/** Hide tenant staff IDs wherever a typed public projection exposes attribution. */
+export function tenantVisiblePrincipalId(principal: Principal | undefined, principalId: string | null): string | null {
+  if (principalId === null || principal?.tenantStaffPrincipalIds === undefined) return principalId;
+  return isTenantStaffIdentity(principal, principalId) ? null : principalId;
+}
+
+/** Compare reserved tenant identity labels after compatibility and confusable folding. */
+export function isReservedTenantIdentityName(value: string): boolean {
+  const folded = tenantIdentityNameFold(value);
+  const tokens = folded.split(/[\p{P}\p{S}\p{Z}]+/u).filter(Boolean);
+  const wholeName = folded.replace(/[\p{P}\p{S}\p{Z}]/gu, "");
+  // OrvexHelp is intentionally allowed: the reserved prefix is the exact
+  // OrvexSupport brand token, rather than any name beginning with "Orvex".
+  return tokens.some((token) => token === "orvex" || token.startsWith("orvexsupport")) ||
+    editDistanceAtMostOne(wholeName, "orvexsupport");
+}
+
+function tenantIdentityNameFold(value: string): string {
+  const normalized = value.replace(/[™℠]/gu, "").normalize("NFKD")
+    .replace(/[\p{M}\p{Default_Ignorable_Code_Point}]/gu, "")
+    .replace(/[ᴏ]/gu, "o")
+    .replace(/[ʀ]/gu, "r")
+    .replace(/[ᴠ]/gu, "v")
+    .replace(/[ᴇ]/gu, "e")
+    .replace(/[ᴘ]/gu, "p")
+    .replace(/[ѕ]/gu, "s")
+    .replace(/[ʋ]/gu, "v")
+    .replace(/€/gu, "e");
+  return confusableSkeleton(normalized)
+    .toLowerCase()
+    .replace(/[01]/gu, (character) => character === "0" ? "o" : "l")
+    .replace(/[3]/gu, "e")
+    .replace(/[4]/gu, "a")
+    .replace(/[5$]/gu, "s")
+    .replace(/[7]/gu, "t")
+    .replace(/@/gu, "a")
+    .replace(/€/gu, "e")
+    .replace(/i/gu, "l");
+}
+
+function editDistanceAtMostOne(left: string, right: string): boolean {
+  if (Math.abs(left.length - right.length) > 1) return false;
+  let leftIndex = 0;
+  let rightIndex = 0;
+  let edits = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    if (left[leftIndex] === right[rightIndex]) {
+      leftIndex++;
+      rightIndex++;
+    } else if (++edits > 1) return false;
+    else if (left.length > right.length) leftIndex++;
+    else if (right.length > left.length) rightIndex++;
+    else { leftIndex++; rightIndex++; }
+  }
+  return edits + Number(leftIndex < left.length || rightIndex < right.length) <= 1;
+}
+
+/** Apply the tenant author projection to a version at the application boundary. */
+export function tenantVersionRecord<T extends {readonly publisherPrincipalId: string | null}>(
+  principal: Principal | undefined,
+  version: T,
+): Omit<T, "publisherPrincipalId"> & {readonly publisherPrincipalId: string | null} {
+  return {...version, publisherPrincipalId: principal === undefined ? null : tenantVisiblePrincipalId(principal, version.publisherPrincipalId)};
+}
+
+/** Stable public presentation for an identity in a tenant organization. */
+export function tenantIdentityPresentation(
+  principal: Principal | undefined,
+  identity: {readonly principalId: string; readonly displayName: string; readonly email?: string | null; readonly staff?: boolean},
+) {
+  const isStaff = identity.staff === true || principal !== undefined && isTenantStaffIdentity(principal, identity.principalId);
+  return {
+    displayName: isStaff ? "Orvex Support" : isReservedTenantIdentityName(identity.displayName) ? "Orvex Support (member)" : identity.displayName,
+    email: isStaff || identity.email === undefined ? null : identity.email,
+    isStaff,
+    subject: isStaff ? null : identity.principalId,
+  };
 }
 
 /** Determine whether a principal has an explicit capability. */

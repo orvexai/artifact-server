@@ -21,6 +21,20 @@ configuration:
   requestLogSampleRate: 0.01
   readinessWithdrawalMilliseconds: 1000
   shutdownDeadlineMilliseconds: 10000
+  # Per-organization workspaces under /o/<slug>/ (ARTIFACT_SERVER_ORG_TENANCY).
+  # "off" keeps the single-installation layout. Switching to "on" forces every
+  # browser to sign in again and 308-redirects legacy /api, /mcp and /review
+  # paths to /o/orvex/. See docs/deployment.md before enabling.
+  organizationTenancy: "off"
+  # Platform-wide Orvex staff (ARTIFACT_SERVER_ORG_STAFF_GROUPS): exact Keycloak
+  # group paths, for example ["/Administrators", "/Platform Team"]. Segments may
+  # contain internal spaces but not leading or trailing ones. "{slug}" expands
+  # to each organization's slug, e.g. "/TenantWorkspaces/{slug}/{slug}-staff".
+  # Each path also covers its subgroups. Members are shown only as
+  # "Orvex Support" in every non-Orvex organization.
+  # Required when organizationTenancy is "on"; the server refuses to start
+  # tenancy without it.
+  organizationStaffGroups: []
   s3:
     bucket: ""
     region: ""

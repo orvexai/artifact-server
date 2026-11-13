@@ -7,10 +7,11 @@ import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
 
 import {loadEmbedOrigins} from "../../src/cli/embed-configuration.js";
+import {validateEmbedOrigins} from "../../src/http/embed-origins.js";
 import {loadOidcConfiguration} from "../../src/cli/oidc-configuration.js";
 import {membershipRoles, principalCapabilities, principalKinds} from "../../src/core/identity.js";
 import {createTestInstallation, issueLocalBrowserLogin, removeTestInstallation, startTestServer, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
-import {publishNew} from "../support/publishing.js";
+import {commitStagedUpload, createStagedUpload, publishNew, uploadStagedFile} from "../support/publishing.js";
 
 function signBinding(secret: string, claims: {
   readonly artifactId: string;
@@ -20,11 +21,24 @@ function signBinding(secret: string, claims: {
   readonly questionId: string;
   readonly versionId: string;
 }): string {
-  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+  const payload = Buffer.from(JSON.stringify(claims))
+    .toString("base64url");
   const signature = createHmac("sha256", secret)
     .update("artifact-embed-v1." + payload).digest("base64url");
   return payload + "." + signature;
 }
+
+describe("embed origin hostname validation", () => {
+  test.each(["https://tenant.example,evil.test", "https://tenant.example;evil.test"])(
+    "rejects URL host delimiters in %s",
+    (origin) => expect(() => validateEmbedOrigins([origin])).toThrow(/Invalid/u),
+  );
+
+  test.each(["https://xn--bcher-kva.example", "http://[::1]"])(
+    "accepts the supported hostname form %s",
+    (origin) => expect(() => validateEmbedOrigins([origin])).not.toThrow(),
+  );
+});
 
 describe("artifact embeds", () => {
   type JsonValue = string | number | boolean | null | readonly JsonValue[] | {[key: string]: JsonValue};
@@ -127,7 +141,31 @@ describe("artifact embeds", () => {
     return fetch(server.baseUrl + route, {headers, method, body: JSON.stringify(body)});
   }
 
-  test("is disabled with no configured embedding origins", async () => {
+  test("keeps flag-off staged upload and commit working with no embed origins", async () => {
+    const file = {
+      bytes: new TextEncoder().encode("<!doctype html><title>Flag off upload</title>"),
+      mediaType: "text/html; charset=utf-8",
+      path: "index.html",
+    };
+    const upload = await createStagedUpload(server, installation, file.path, [file], projectId);
+    expect(upload.response.status).toBe(201);
+    const stagedFile = upload.body.files[0];
+    if (stagedFile === undefined) throw new Error("The flag-off upload plan did not include its file.");
+    const uploadUrl = new URL(stagedFile.uploadUrl);
+    expect(uploadUrl.origin).toBe(server.baseUrl);
+    expect(uploadUrl.pathname).toMatch(/^\/api\/v1\/uploads\/upl_[^/]+\/files\//u);
+    expect(uploadUrl.pathname).not.toContain("/api/v1/uploads/api/v1/uploads/");
+    const uploaded = await uploadStagedFile(installation, stagedFile, file.bytes);
+    expect(uploaded.status).toBe(200);
+    const committed = await commitStagedUpload(
+      installation,
+      upload.body,
+      "embed-flag-off-staged-upload",
+      {artifactId, expectedCurrentVersionId: versionId, kind: "new_version"},
+    );
+    expect(committed.response.status).toBe(201);
+    expect(committed.body.version.contentToken).toMatch(/^[A-Za-z0-9_-]{16,100}$/u);
+
     const disabled = await startTestServer(installation, {webAssetsRoot});
     try {
       expect((await fetch(disabled.baseUrl + "/embed/artifacts/" + artifactId + "?path=index.html")).status).toBe(404);

@@ -175,7 +175,7 @@ const versionSchema = z.object({
   manifestDigest: z.string(),
   number: z.number(),
   projectId: z.string(),
-  publisherPrincipalId: z.string(),
+  publisherPrincipalId: z.string().nullable(),
   routingMode: z.enum(["static", "spa"]),
 });
 
@@ -351,7 +351,7 @@ export interface ArtifactAction {
   readonly createdAt: string;
   readonly id: string;
   readonly idempotencyKey: string;
-  readonly principalId: string;
+  readonly principalId: string | null;
   readonly projectId: string;
   readonly versionId: string;
 }
@@ -459,7 +459,7 @@ const actionSchema: z.ZodType<ArtifactAction> = z.object({
   createdAt: z.string(),
   id: z.string(),
   idempotencyKey: z.string(),
-  principalId: z.string(),
+  principalId: z.string().nullable(),
   projectId: z.string(),
   versionId: z.string(),
 });
@@ -513,7 +513,7 @@ const commentThreadStateSchema = z.enum(["open", "resolved"]);
 const commentAuthorSchema = z.object({
   authorizedByPrincipalId: z.string().nullable(),
   displayName: z.string(),
-  principalId: z.string(),
+  principalId: z.string().nullable(),
   principalKind: principalKindSchema,
 });
 
@@ -556,7 +556,7 @@ const commentThreadDetailsSchema = z.object({
 });
 const artifactResponseSchema = z.object({
   artifactId: z.string(), authorDisplayName: z.string(), authorEmail: z.string().nullable(),
-  authorKind: z.enum(["member", "guest"]), authorSubject: z.string(), choice: z.string().nullable(),
+  authorKind: z.enum(["member", "guest"]), authorSubject: z.string().nullable().optional(), choice: z.string().nullable(),
   createdAt: z.string(), data: artifactResponseDataSchema.nullable(), externalQuestion: z.boolean(),
   guestSessionId: z.string().nullable(), id: z.string(), questionId: z.string(), versionId: z.string(),
 });
@@ -565,7 +565,7 @@ const artifactStateEntrySchema = z.object({
   key: z.string(),
   projectId: z.string(),
   updatedAt: z.string(),
-  updatedBy: z.object({displayName: z.string(), principalId: z.string()}).strict(),
+  updatedBy: z.object({displayName: z.string(), principalId: z.string().nullable()}).strict(),
   value: z.unknown(),
 }).strict();
 
@@ -620,15 +620,17 @@ const registeredAgentSchema = z.object({
   agentSessionId: z.string().nullable(),
   /** Derived from the agent's own claim polling; the poll is the heartbeat. */
   connected: z.boolean(),
-  connectionKey: z.string(),
+  /** Null for an Orvex staff agent shown inside a tenant organization. */
+  connectionKey: z.string().nullable(),
   createdAt: z.string(),
   displayName: z.string(),
   id: z.string(),
   /** Open slug, matching the server (`registeredAgentKindPattern`): nothing branches on it. */
   kind: z.string(),
   lastSeenAt: z.string(),
-  principalId: z.string(),
-  workingDirectory: z.string(),
+  principalId: z.string().nullable(),
+  /** Null for an Orvex staff agent shown inside a tenant organization. */
+  workingDirectory: z.string().nullable(),
 });
 
 const agentDispatchStateSchema = z.enum([
@@ -719,7 +721,8 @@ const agentPresenceSchema = z.object({
   }).optional(),
   /** Derived from the agent's own claim polling; the poll is the heartbeat. */
   connected: z.boolean(),
-  connectionKey: z.string(),
+  /** Null for an Orvex staff agent shown inside a tenant organization. */
+  connectionKey: z.string().nullable(),
   createdAt: z.string(),
   displayName: z.string(),
   id: z.string(),
@@ -727,8 +730,9 @@ const agentPresenceSchema = z.object({
   kind: z.string(),
   lastActivityAt: z.string().optional(),
   lastSeenAt: z.string(),
-  principalId: z.string(),
-  workingDirectory: z.string(),
+  principalId: z.string().nullable(),
+  /** Null for an Orvex staff agent shown inside a tenant organization. */
+  workingDirectory: z.string().nullable(),
 });
 
 export type AgentActivity = z.infer<typeof agentActivitySchema>;
@@ -743,19 +747,24 @@ const commentClearResultSchema = z.object({
 
 export type CommentClearResult = z.infer<typeof commentClearResultSchema>;
 
+/**
+ * One member row. A tenant organization masks Orvex staff rows to an opaque
+ * handle, "Orvex Support" and status, so every other field is optional.
+ */
 const memberSchema = z.object({
-  createdAt: z.string(),
+  createdAt: z.string().optional(),
   displayName: z.string(),
-  email: z.string(),
+  email: z.string().optional(),
   id: z.string(),
-  installationId: z.string(),
-  role: membershipRoleSchema,
+  installationId: z.string().optional(),
+  role: membershipRoleSchema.optional(),
+  staff: z.boolean().optional(),
   status: z.enum(["active", "inactive"]),
-  updatedAt: z.string(),
+  updatedAt: z.string().optional(),
 });
 
 const apiKeySchema = z.object({
-  authorizedByPrincipalId: z.string(),
+  authorizedByPrincipalId: z.string().nullable(),
   capabilities: z.array(capabilitySchema),
   createdAt: z.string(),
   expiresAt: z.string(),
@@ -763,7 +772,7 @@ const apiKeySchema = z.object({
   installationId: z.string(),
   name: z.string(),
   prefix: z.string(),
-  principalId: z.string(),
+  principalId: z.string().nullable(),
   principalKind: principalKindSchema,
   revokedAt: z.string().nullable(),
   rotatedFromId: z.string().nullable(),
@@ -777,13 +786,20 @@ const directoryGroupSchema = z.object({
   memberCount: z.number().int().nonnegative(),
   name: z.string(),
   path: z.string(),
-  role: membershipRoleSchema.nullable(),
+  role: membershipRoleSchema.nullable().optional(),
   source: z.literal("rule").optional(),
   syncedAt: z.string(),
 });
 
 /** One Keycloak group copied by directory sync. */
 export type DirectoryGroup = z.infer<typeof directoryGroupSchema>;
+
+const platformOrganizationSchema = z.object({
+  displayName: z.string(),
+  role: z.string(),
+  slug: z.string(),
+});
+export type PlatformOrganization = z.infer<typeof platformOrganizationSchema>;
 export type ManagedApiKey = z.infer<typeof apiKeySchema>;
 
 const issuedKeySchema = z.object({
@@ -806,11 +822,12 @@ export class ApiError extends Error {
 }
 
 function readCsrfToken(): string {
+  const suffix = document.querySelector<HTMLMetaElement>('meta[name="as-cookie-suffix"]')?.content ?? "";
   for (const candidate of document.cookie.split(";")) {
     const [rawName, ...rawValue] = candidate.trim().split("=");
     if (
-      rawName === "artifact_csrf"
-      || rawName === "__Host-artifact_csrf"
+      rawName === `artifact_csrf${suffix}`
+      || rawName === `__Host-artifact_csrf${suffix}`
     ) {
       return decodeURIComponent(rawValue.join("="));
     }
@@ -820,6 +837,13 @@ function readCsrfToken(): string {
     "Your browser session cannot authorize changes. Sign in again.",
     403,
   );
+}
+
+function organizationPath(path: string): string {
+  const basePath = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
+  return basePath.length > 0 && path.startsWith("/") && !path.startsWith(`${basePath}/`)
+    ? `${basePath}${path}`
+    : path;
 }
 
 async function parseFailure(response: Response): Promise<ApiError> {
@@ -861,7 +885,8 @@ function guestMutationHeaders(idempotencyKey?: string): Headers {
   let csrfToken: string | null = null;
   for (const candidate of document.cookie.split(";")) {
     const [rawName, ...rawValue] = candidate.trim().split("=");
-    if (rawName === "artifact_guest_csrf" || rawName === "__Host-artifact_guest_csrf") {
+    const suffix = document.querySelector<HTMLMetaElement>('meta[name="as-cookie-suffix"]')?.content ?? "";
+    if (rawName === `artifact_guest_csrf${suffix}` || rawName === `__Host-artifact_guest_csrf${suffix}`) {
       csrfToken = decodeURIComponent(rawValue.join("="));
       break;
     }
@@ -877,7 +902,7 @@ async function request<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(organizationPath(path), {
     ...init,
     credentials: "same-origin",
   });
@@ -902,14 +927,14 @@ async function request<T>(
 }
 
 async function requestText(path: string): Promise<string> {
-  const response = await fetch(path, { credentials: "same-origin" });
+  const response = await fetch(organizationPath(path), { credentials: "same-origin" });
   notifySessionExpiry(response);
   if (!response.ok) throw await parseFailure(response);
   return await response.text();
 }
 
 async function requestHead(path: string): Promise<void> {
-  const response = await fetch(path, {
+  const response = await fetch(organizationPath(path), {
     credentials: "same-origin",
     method: "HEAD",
   });
@@ -918,7 +943,7 @@ async function requestHead(path: string): Promise<void> {
 }
 
 async function requestNoContent(path: string, init: RequestInit): Promise<void> {
-  const response = await fetch(path, {
+  const response = await fetch(organizationPath(path), {
     ...init,
     credentials: "same-origin",
   });
@@ -988,6 +1013,20 @@ const guestCreatedReplySchema = z.object({replayed: z.boolean(), reply: guestCom
 export type GuestCommentThread = z.infer<typeof guestCommentThreadSchema>;
 
 export const api = {
+  platformOrganizations: async (): Promise<readonly PlatformOrganization[]> => {
+    const response = await fetch("/api/v1/platform/me/orgs", {credentials: "same-origin"});
+    if (!response.ok) return [];
+    const parsed = z.array(platformOrganizationSchema).safeParse(await response.json());
+    return parsed.success ? parsed.data : [];
+  },
+  setLastOrganization: async (slug: string): Promise<void> => {
+    await fetch("/api/v1/platform/session/last-org", {
+      body: JSON.stringify({slug}),
+      credentials: "same-origin",
+      headers: {"Content-Type": "application/json"},
+      method: "POST",
+    });
+  },
   embedBootstrap: (artifactId: string, path: string, versionId?: string) => {
     const query = new URLSearchParams({path});
     if (versionId !== undefined) query.set("version", versionId);
@@ -1070,7 +1109,16 @@ export const api = {
   }),
   session: () => request(sessionSchema, "/api/v1/session"),
   logout: async () => {
-    await requestNoContent("/api/v1/session/logout", {
+    // The root platform endpoint revokes this browser's platform session and
+    // each organization session cookie present in the same cookie jar.
+    let platformLogoutCompleted = false;
+    try {
+      const response = await fetch("/api/v1/platform/session/logout", {credentials: "same-origin", method: "POST"});
+      platformLogoutCompleted = response.ok;
+    } catch {
+      // Standalone installations still use their organization logout route.
+    }
+    if (!platformLogoutCompleted) await requestNoContent("/api/v1/session/logout", {
       headers: mutationHeaders(),
       method: "POST",
     });

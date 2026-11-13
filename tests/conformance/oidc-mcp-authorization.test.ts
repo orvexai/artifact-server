@@ -22,6 +22,8 @@ import {z} from "zod";
 
 import {createOidcHostedAuthentication} from
   "../../src/identity/oidc-hosted-authentication.js";
+import {startOidcHostedAuthentication} from
+  "../../src/identity/oidc-hosted-authentication.js";
 import {OidcMcpBearerVerifier} from
   "../../src/identity/oidc-mcp-bearer-verifier.js";
 import {loadOidcAuthorizationServer} from
@@ -91,6 +93,47 @@ describe("generic OIDC MCP authorization", () => {
     await server.stop();
     await provider.close();
     await removeTestInstallation(installation);
+  });
+
+  test("flag-off HTTP routes and MCP tools omit organization member reactivation", async () => {
+    const http = await fetch(`${server.baseUrl}/api/v1/members/member-example/reactivate`, {
+      body: "{}",
+      headers: {
+        Authorization: `Bearer ${installation.apiToken}`,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(http.status).toBe(404);
+
+    const tools = await fetch(`${server.baseUrl}/mcp`, {
+      body: JSON.stringify({
+        id: 9,
+        jsonrpc: "2.0",
+        method: "tools/list",
+        params: {
+          _meta: {
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+            [CLIENT_INFO_META_KEY]: {name: "artifact-server-test", version: "1"},
+            [PROTOCOL_VERSION_META_KEY]: protocolVersion,
+          },
+        },
+      }),
+      headers: {
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${installation.apiToken}`,
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": protocolVersion,
+        "Mcp-Method": "tools/list",
+      },
+      method: "POST",
+    });
+    const payload = await tools.text();
+    expect(tools.status).toBe(200);
+    const message = payload.split("\n").find((line) => line.startsWith("data: "))?.slice(6) ?? payload;
+    const listed = z.object({result: z.object({tools: z.array(z.object({name: z.string()}))})})
+      .parse(JSON.parse(message));
+    expect(listed.result.tools.map(({name}) => name)).not.toContain("member_reactivate");
   });
 
   test("discovery accepts one realm-path issuer and refuses a weaker contract", async () => {
@@ -166,6 +209,142 @@ describe("generic OIDC MCP authorization", () => {
       },
       profile: false,
     }))).rejects.toThrow("configured API resource");
+  });
+
+  test("Orvex keeps its legacy audience while other organizations rebind it", async () => {
+    const apiResource = "https://artifacts.example.test/o/acme/api";
+    const mcpResource = "https://artifacts.example.test/o/acme/mcp";
+    const legacyApiResource = "https://artifacts.example.test/api";
+    const orvexVerifier = new OidcMcpBearerVerifier({
+      audience: resource,
+      provisionerAudience: legacyApiResource,
+      issuer,
+      jwksUri: `${issuer}/protocol/openid-connect/certs`,
+      serviceClients: ["tenant-cli"],
+      provisionerClients: ["tenant-cli"],
+    });
+    const orvexToken = await issueToken({
+      audience: legacyApiResource,
+      extraClaims: {
+        azp: "tenant-cli",
+        preferred_username: "service-account-tenant-cli",
+      },
+      profile: false,
+    });
+    await expect(verifiedSubject(orvexVerifier, orvexToken)).resolves.toBe(subject);
+
+    const verifier = orvexVerifier.forApplicationResources({apiResource, mcpResource});
+    const provisionerToken = await issueToken({
+      audience: apiResource,
+      extraClaims: {
+        azp: "tenant-cli",
+        preferred_username: "service-account-tenant-cli",
+      },
+      profile: false,
+    });
+    await expect(verifiedSubject(verifier, provisionerToken))
+      .resolves.toBe(subject);
+
+    const oldAudienceToken = await issueToken({
+      audience: legacyApiResource,
+      extraClaims: {
+        azp: "tenant-cli",
+        preferred_username: "service-account-tenant-cli",
+      },
+      profile: false,
+    });
+    await expect(verifiedSubject(verifier, oldAudienceToken))
+      .rejects.toThrow("another resource");
+  });
+
+  test("organization OAuth admission is checked from every current access token", async () => {
+    const alias = "smoketest";
+    const id = "1f91f545-13d4-448f-839c-485274165908";
+    const verifier = new OidcMcpBearerVerifier({
+      audience: resource,
+      issuer,
+      jwksUri: `${issuer}/protocol/openid-connect/certs`,
+    }).forOrganization({alias, id});
+    const tokenFor = (groups: readonly string[] | undefined, organizationId = id) =>
+      issueToken({
+        extraClaims: {
+          organization: {[alias]: {id: organizationId, groups}},
+        },
+      });
+    const resolve = async (token: string) => {
+      const verified = await Effect.runPromise(verifier.verify(Redacted.make(token)));
+      return Effect.runPromise(verifier.resolveIdentity(verified, Redacted.make(token)));
+    };
+
+    const owner = await resolve(await tokenFor(["/owner"]));
+    expect(owner.organizationMembership?.role).toBe("owner");
+    const editorAfterDemotion = await resolve(await tokenFor(["/editor"]));
+    expect(editorAfterDemotion.organizationMembership?.role).toBe("member");
+    const removed = await tokenFor(undefined);
+    await expect(resolve(removed)).rejects.toThrow("not admitted to this organization");
+    const replacedOrganization = await tokenFor(["/owner"], crypto.randomUUID());
+    await expect(resolve(replacedOrganization)).rejects.toThrow("not admitted to this organization");
+  });
+
+  test("memoizes the org-rebound verifier and its JWKS set", async () => {
+    const hosted = await startOidcHostedAuthentication({
+      applicationOrigin: "https://staging.artifactserver.test",
+      clientId: "artifact-server",
+      clientSecret: null,
+      issuer,
+      scopes: "openid email profile",
+    });
+    try {
+      const verifier = hosted.externalMcpOAuthVerifier.forApplicationResources?.({
+        apiResource: "https://staging.artifactserver.test/o/acme/api",
+        mcpResource: "https://staging.artifactserver.test/o/acme/mcp",
+      });
+      if (verifier === undefined) throw new Error("OIDC verifier cannot be rebound.");
+      const token = await issueToken({
+        audience: "https://staging.artifactserver.test/o/acme/mcp",
+      });
+      await expect(verifiedSubject(verifier, token)).resolves.toBe(subject);
+      await expect(verifiedSubject(verifier, token)).resolves.toBe(subject);
+      expect(provider.keySetRequests()).toBe(1);
+    } finally {
+      hosted.close();
+    }
+  });
+
+  test("the discovered hosted verifier composes application resources and organization admission", async () => {
+    const alias = "hosted-org";
+    const id = crypto.randomUUID();
+    const mcpResource = "https://staging.artifactserver.test/o/hosted-org/mcp";
+    const hosted = await startOidcHostedAuthentication({
+      applicationOrigin: "https://staging.artifactserver.test",
+      clientId: "artifact-server",
+      clientSecret: null,
+      issuer,
+      scopes: "openid email profile",
+    });
+    try {
+      const applicationScoped = hosted.externalMcpOAuthVerifier.forApplicationResources?.({
+        apiResource: "https://staging.artifactserver.test/o/hosted-org/api",
+        mcpResource,
+      });
+      const verifier = applicationScoped?.forOrganization?.({alias, id});
+      if (verifier === undefined) {
+        throw new Error("The discovered hosted verifier cannot bind an organization.");
+      }
+      const token = await issueToken({
+        audience: mcpResource,
+        extraClaims: {
+          organization: {[alias]: {id, groups: ["/editor"]}},
+        },
+      });
+      const credential = Redacted.make(token);
+      const verified = await Effect.runPromise(verifier.verify(credential));
+      const identity = await Effect.runPromise(verifier.resolveIdentity(verified, credential));
+      expect(identity.organizationMembership).toMatchObject({alias, id, role: "member"});
+      expect(provider.keySetRequests()).toBe(1);
+    } finally {
+      hosted.close();
+    }
   });
 
   test("a human token using a provisioner azp is refused and never falls back to userinfo", async () => {
@@ -715,9 +894,10 @@ describe("generic OIDC MCP authorization", () => {
       expect(admitted).toMatchObject({role: "member", status: "active"});
 
       // Promotion and demotion follow the groups of each presented token.
-      expect((await mcpDiscovery(await issueToken({
+      const promotedResponse = await mcpDiscovery(await issueToken({
         groups: [memberGroup, administratorGroup],
-      }))).status).toBe(200);
+      }));
+      expect(promotedResponse.status).toBe(200);
       expect(members(installation)).toEqual([
         {...admitted, role: "administrator"},
       ]);
@@ -805,7 +985,7 @@ describe("generic OIDC MCP authorization", () => {
     /** `null` leaves the claim out. */
     readonly emailVerified?: boolean | null;
     readonly expiresAt?: number;
-    readonly extraClaims?: Readonly<Record<string, number | string>>;
+    readonly extraClaims?: Readonly<JWTPayload>;
     /** The `groups` claim, malformed shapes included; left out unless given. */
     readonly groups?: readonly (number | string)[] | string;
     readonly idToken?: boolean;
@@ -955,6 +1135,7 @@ interface ProviderBoundary {
   setKeysStatus(status: number): void;
   setUserInfoGroups(groups: readonly string[] | null): void;
   setUserInfoStatus(status: number): void;
+  keySetRequests(): number;
   userInfoRequests(): number;
 }
 
@@ -963,6 +1144,7 @@ async function startProviderBoundary(options: {
 }): Promise<ProviderBoundary> {
   let keysStatus = 200;
   let userInfoGroups: readonly string[] | null = null;
+  let keySetRequestCount = 0;
   let userInfoRequestCount = 0;
   let userInfoStatus = 200;
   let issuer = "";
@@ -973,6 +1155,7 @@ async function startProviderBoundary(options: {
       return;
     }
     if (request.url === `${realmPath}/protocol/openid-connect/certs`) {
+      keySetRequestCount += 1;
       if (keysStatus !== 200) {
         response.statusCode = keysStatus;
         response.end();
@@ -1032,6 +1215,7 @@ async function startProviderBoundary(options: {
     setUserInfoStatus: (status) => {
       userInfoStatus = status;
     },
+    keySetRequests: () => keySetRequestCount,
     userInfoRequests: () => userInfoRequestCount,
   };
 }

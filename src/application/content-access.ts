@@ -15,7 +15,7 @@ import {
   GuestRateLimitExceeded,
   VersionNotFound,
 } from "../core/errors.js";
-import type { Principal } from "../core/identity.js";
+import {tenantVersionRecord, type Principal} from "../core/identity.js";
 import {
   accessSettings,
   type ContentBootstrapRecord,
@@ -46,8 +46,12 @@ const contentSessionLifetimeMilliseconds = 15 * 60 * 1_000;
 export const previewLeaseTokenPrefix = "review-";
 
 /** Return whether a content-host token represents a Review preview lease. */
-export function isPreviewLeaseToken(token: string): boolean {
-  return token.startsWith(previewLeaseTokenPrefix);
+export function isPreviewLeaseToken(token: string, contentTokenPrefix?: string): boolean {
+  const hasScopedPrefix = contentTokenPrefix !== undefined && token.startsWith(contentTokenPrefix);
+  const scopedToken = hasScopedPrefix
+    ? token.slice(contentTokenPrefix.length)
+    : token;
+  return new RegExp(`^review-[a-f0-9]{${hasScopedPrefix ? 46 : 56}}$`, "u").test(scopedToken);
 }
 
 /** Secret material generated for private-content authorization. */
@@ -60,6 +64,7 @@ export interface IssuedContentSecret {
 export interface ContentSecretProvider {
   readonly digest: (token: Redacted.Redacted) => string;
   readonly issue: () => IssuedContentSecret;
+  readonly tokenPrefix?: string;
 }
 
 /** Repository capabilities required by content access policy. */
@@ -105,6 +110,7 @@ export type VersionContentFallback = "entry" | "none";
 /** Dependencies used to construct private and public content access. */
 export interface ContentAccessDependencies {
   readonly clock: ApplicationClock;
+  readonly organizationDirectoryVisibility?: boolean | undefined;
   readonly repository: ContentAccessRepository;
   readonly secrets: ContentSecretProvider;
 }
@@ -273,7 +279,7 @@ function makeContentAccessService(
         new VersionNotFound({message: "The saved version does not exist on this artifact."}),
       );
     }
-    return {artifact: current.artifact, project, target};
+    return {artifact: current.artifact, project, target: tenantVersionRecord(command.principal, target)};
   });
 
   const issueContentBootstrap = Effect.fn(
@@ -350,7 +356,7 @@ function makeContentAccessService(
     // discriminator gives the lease 224 bits of entropy and a valid label on
     // every deployment without case-folding secret material in DNS.
     const token = Redacted.make(
-      `${previewLeaseTokenPrefix}${issued.digest.slice(0, 56)}`,
+      `${dependencies.secrets.tokenPrefix ?? ""}${previewLeaseTokenPrefix}${issued.digest.slice(0, dependencies.secrets.tokenPrefix === undefined ? 56 : 46)}`,
       {label: "preview-lease-token"},
     );
     const expiresAt = DateTime.formatIso(
@@ -477,7 +483,9 @@ function makeContentAccessService(
     if (version === null) {
       return yield* Effect.fail(new VersionNotFound({message: "The requested route does not exist."}));
     }
-    return {artifact: current.artifact, version};
+    return {artifact: current.artifact, version: dependencies.organizationDirectoryVisibility === true
+      ? {...version, version: tenantVersionRecord(undefined, version.version)}
+      : version};
   });
 
   return ContentAccessService.of({
