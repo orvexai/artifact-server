@@ -3,9 +3,12 @@ import {
   CLIENT_INFO_META_KEY,
   PROTOCOL_VERSION_META_KEY,
 } from "@modelcontextprotocol/server";
+import {Effect, Redacted} from "effect";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
 
+import {AuthenticationRequired} from "../../src/core/errors.js";
+import type {Principal} from "../../src/core/identity.js";
 import {ApiClient, signInAdministrator} from "../support/agent-dispatch.js";
 import {
   createTestInstallation,
@@ -18,6 +21,7 @@ import {publishNew} from "../support/publishing.js";
 
 const mcpVersion = "2026-07-28";
 const rpcSchema = z.object({result: z.object({structuredContent: z.unknown()}).passthrough()}).passthrough();
+const mcpPrincipals = new Map<string, Principal>();
 
 describe("organization tenancy flag-off compatibility", () => {
   let installation: TestInstallation;
@@ -25,7 +29,13 @@ describe("organization tenancy flag-off compatibility", () => {
 
   beforeEach(async () => {
     installation = await createTestInstallation();
-    server = await startTestServer(installation);
+    mcpPrincipals.clear();
+    server = await startTestServer(installation, {externalMcpBearerVerifier: {verify: (credential) => {
+      const principal = mcpPrincipals.get(Redacted.value(credential));
+      return principal === undefined
+        ? Effect.fail(new AuthenticationRequired({message: "The test MCP principal was not configured."}))
+        : Effect.succeed(principal);
+    }}});
   });
 
   afterEach(async () => {
@@ -39,6 +49,19 @@ describe("organization tenancy flag-off compatibility", () => {
     expect(sessionResponse.status).toBe(200);
     const session = z.object({principal: z.record(z.string(), z.unknown())}).parse(await sessionResponse.json());
     const administratorId = z.string().parse(session.principal["id"]);
+    const installationId = z.string().parse(session.principal["installationId"]);
+    const viewerPrincipal: Principal = {
+      authorizedByPrincipalId: null,
+      capabilities: ["artifact:read", "artifact:responses:read"],
+      displayName: "Flag off viewer",
+      id: administratorId,
+      installationId,
+      kind: "human",
+      membershipRole: "viewer",
+    };
+    const guestPrincipal: Principal = {...viewerPrincipal, displayName: "Flag off guest", membershipRole: "guest"};
+    mcpPrincipals.set("flag-off-viewer", viewerPrincipal);
+    mcpPrincipals.set("flag-off-guest", guestPrincipal);
     expect(session.principal).not.toHaveProperty("staff");
     expect(session.principal).not.toHaveProperty("tenantStaffPrincipalIds");
 
@@ -166,6 +189,29 @@ describe("organization tenancy flag-off compatibility", () => {
     // SAFETY: artifact_response_list's structured content is the paged response with an items array.
     const mcpPayload = rpcSchema.parse(await mcp.json()).result.structuredContent as {items: Array<{authorEmail: string | null}>};
     expect(mcpPayload.items[0]?.authorEmail).toBe("administrator@example.test");
+    const readResponsesMcp = async (credential: string, id: string) => fetch(`${server.baseUrl}/mcp`, {
+      body: JSON.stringify({id, jsonrpc: "2.0", method: "tools/call", params: {
+        _meta: {
+          [CLIENT_CAPABILITIES_META_KEY]: {},
+          [CLIENT_INFO_META_KEY]: {name: "flag-off-regression", version: "1"},
+          [PROTOCOL_VERSION_META_KEY]: mcpVersion,
+        },
+        arguments: {artifactId: published.artifact.id, projectId: published.artifact.projectId, questionId: "flag-off-q"},
+        name: "artifact_response_list",
+      }}),
+      headers: {Accept: "application/json, text/event-stream", Authorization: `Bearer ${credential}`, "Content-Type": "application/json", "Mcp-Method": "tools/call", "Mcp-Name": "artifact_response_list", "MCP-Protocol-Version": mcpVersion},
+      method: "POST",
+    });
+    const viewerMcp = await readResponsesMcp("flag-off-viewer", "flag-off-viewer-response-list");
+    expect(viewerMcp.status).toBe(200);
+    // SAFETY: artifact_response_list's structured content is the paged response with an items array.
+    const viewerMcpPayload = rpcSchema.parse(await viewerMcp.json()).result.structuredContent as {items: Array<{authorEmail: string | null}>};
+    expect(viewerMcpPayload.items[0]?.authorEmail).toBe("administrator@example.test");
+    const guestMcp = await readResponsesMcp("flag-off-guest", "flag-off-guest-response-list");
+    expect(guestMcp.status).toBe(200);
+    const guestMcpBody = z.object({result: z.object({isError: z.boolean().optional()}).passthrough()}).passthrough().parse(await guestMcp.json());
+    expect(guestMcpBody.result.isError).toBe(true);
+    expect(JSON.stringify(guestMcpBody)).not.toContain("administrator@example.test");
     const serviceMcp = await fetch(`${server.baseUrl}/mcp`, {
       body: JSON.stringify({id: "flag-off-service-response-list", jsonrpc: "2.0", method: "tools/call", params: {
         _meta: {

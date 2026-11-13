@@ -24,6 +24,8 @@ import {
 } from
   "../../src/external-storage/create-external-storage-runtime.js";
 import type {GroupRolePolicy} from "../../src/core/group-role-policy.js";
+import {principalCapabilities, type Principal} from "../../src/core/identity.js";
+import type {BearerCredentialVerifier} from "../../src/application/authentication.js";
 import {createOrganizationRouter} from
   "../../src/external-storage/create-organization-router.js";
 import {
@@ -347,6 +349,8 @@ describe.sequential("organization tenancy security boundary", () => {
       groupRoots: [groupRoot],
       seed: [
         {role: "administrator" as const, selector: `${groupRoot}admins`},
+        {role: "member" as const, selector: `${groupRoot}editors`},
+        {role: "viewer" as const, selector: `${groupRoot}viewers`},
         {role: "member" as const, selector: `${groupRoot}support`, staff: true},
       ],
     };
@@ -631,16 +635,156 @@ describe.sequential("organization tenancy security boundary", () => {
     }
   });
 
+  test("Orvex under the tenancy router matches standalone projections and permissions", async () => {
+    const baseUrl = `http://${router.hostname}:${router.port}`;
+    const standalone = await createOrgRuntime(installationId, {
+      bootstrapApiToken: Redacted.make(apiTokenA),
+      cookieRouteId: "",
+    }, config, database);
+    const projectResponse = await standalone.app.fetch(appRequest(
+      "/api/v1/projects", apiTokenA, "POST", {name: `Orvex compatibility ${randomUUID()}`},
+    ));
+    expect(projectResponse.status).toBe(201);
+    const projectId = z.object({project: z.object({id: z.string()})})
+      .parse(await projectResponse.json()).project.id;
+    const artifactId = await publishOrgBArtifact(
+      (request) => standalone.app.fetch(request), apiTokenA, projectId, "orvex",
+    );
+    const versionRows = await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`SELECT current_version_id AS "versionId" FROM artifacts WHERE id = ${artifactId}`;
+    }));
+    const versionId = z.object({versionId: z.string()}).parse(versionRows[0]).versionId;
+    const commentResponse = await standalone.app.fetch(appRequest(
+      `/api/v1/artifacts/${artifactId}/versions/${versionId}/comments?projectId=${projectId}`,
+      apiTokenA,
+      "POST",
+      {body: "Orvex dispatch compatibility"},
+      {"Idempotency-Key": `orvex-compat-comment-${randomUUID()}`},
+    ));
+    expect(commentResponse.status).toBe(201);
+    const threadId = z.object({thread: z.object({id: z.string()})})
+      .parse(await commentResponse.json()).thread.id;
+    const agentResponse = await standalone.app.fetch(appRequest(
+      "/api/v1/agents", apiTokenA, "POST", {
+        displayName: "Orvex compatibility agent",
+        kind: "worker",
+        workingDirectory: "/tmp/orvex-compatibility",
+      },
+    ));
+    expect(agentResponse.status).toBe(200);
+    const agentId = z.object({agent: z.object({id: z.string()})})
+      .parse(await agentResponse.json()).agent.id;
+    const dispatchCreate = await standalone.app.fetch(appRequest(
+      "/api/v1/agent-dispatches", apiTokenA, "POST", {
+        agentId,
+        projectId,
+        threadIds: [threadId],
+      }, {"Idempotency-Key": `orvex-compat-dispatch-${randomUUID()}`},
+    ));
+    expect(dispatchCreate.status).toBe(201);
+    const compareRoute = async (path: string, method: "GET" | "POST" | "PUT", body?: JsonObject) => {
+      const standaloneResponse = await standalone.app.fetch(appRequest(path, apiTokenA, method, body));
+      const routedHeaders = new Headers({
+        Authorization: `Bearer ${apiTokenA}`,
+        Host: "artifacts.example.com",
+      });
+      if (body !== undefined) {
+        routedHeaders.set("Content-Type", "application/json");
+        routedHeaders.set("Origin", applicationOrigin);
+        routedHeaders.set("Sec-Fetch-Site", "same-origin");
+      }
+      const requestInit: RequestInit = {
+        headers: routedHeaders,
+        method,
+      };
+      if (body !== undefined) requestInit.body = JSON.stringify(body);
+      const routedResponse = await fetchWithHost(`${baseUrl}/o/orvex${path}`, requestInit, router.hostname, router.port);
+      const [standaloneBody, routedBody] = await Promise.all([
+        standaloneResponse.json(), routedResponse.json(),
+      ]);
+      expect(routedResponse.status).toBe(standaloneResponse.status);
+      expect(routedBody).toEqual(standaloneBody);
+      return {body: routedBody, status: routedResponse.status};
+    };
+    try {
+      const session = await compareRoute("/api/v1/session", "GET");
+      expect(session.status).toBe(200);
+      expect(session.body).not.toHaveProperty("principal.staff");
+      expect(session.body).not.toHaveProperty("principal.tenantStaffPrincipalIds");
+
+      const groupRole = await compareRoute("/api/v1/groups/not-a-real-group/role", "PUT", {role: "viewer"});
+      expect(groupRole.status).toBe(403);
+
+      const guestResponses = await compareRoute(`/api/v1/public/artifacts/${artifactId}/guest/responses`, "GET");
+      expect(guestResponses.status).toBe(404);
+      const guestResponsePost = await compareRoute(
+        `/api/v1/public/artifacts/${artifactId}/guest/responses`, "POST",
+        {choice: "yes", questionId: "orvex-compat-question", versionId},
+      );
+      expect(guestResponsePost.status).toBe(404);
+
+      const dispatches = await compareRoute(`/api/v1/agent-dispatches?projectId=${projectId}`, "GET");
+      expect(dispatches.status).toBe(200);
+      expect(JSON.stringify(dispatches.body)).toContain("sender");
+      expect(JSON.stringify(dispatches.body)).not.toContain('"email":null');
+      expect(JSON.stringify(dispatches.body)).not.toContain("Orvex Support");
+      const dispatchMcpBody: JsonObject = {
+        id: `orvex-dispatch-inbox-${randomUUID()}`,
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          _meta: {
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+            [CLIENT_INFO_META_KEY]: {name: "orvex-compatibility", version: "1"},
+            [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+          },
+          arguments: {agentName: agentId, operation: "list"},
+          name: "dispatch_inbox",
+        },
+      };
+      const mcpHeaders = {
+        Accept: "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "dispatch_inbox",
+        Origin: applicationOrigin,
+      };
+      const standaloneMcp = await standalone.app.fetch(appRequest("/mcp", apiTokenA, "POST", dispatchMcpBody, mcpHeaders));
+      const routedMcp = await fetchWithHost(`${baseUrl}/o/orvex/mcp`, {
+        body: JSON.stringify(dispatchMcpBody),
+        headers: {...mcpHeaders, Authorization: `Bearer ${apiTokenA}`, "Content-Type": "application/json", Host: "artifacts.example.com"},
+        method: "POST",
+      }, router.hostname, router.port);
+      expect(routedMcp.status).toBe(standaloneMcp.status);
+      expect(await routedMcp.json()).toEqual(await standaloneMcp.json());
+    } finally {
+      await standalone.close();
+    }
+  });
+
   test("isolates resources and runs the explicit route/tool completeness guard", async () => {
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const host = {Host: "artifacts.example.com"};
     expect(orgB.admissionPolicy).toMatchObject({groupRoots: [`/teams/${orgB.slug}/`]});
+    const mcpPrincipals = new Map<string, Principal>();
+    const routeWalkerMcpVerifier: BearerCredentialVerifier = {
+      verify: (credential) => Effect.succeed(mcpPrincipals.get(Redacted.value(credential)) ?? {
+        authorizedByPrincipalId: null,
+        capabilities: [],
+        displayName: "Unknown route-walker test principal",
+        id: "unknown-route-walker-principal",
+        installationId: orgB.id,
+        kind: "human",
+        membershipRole: "guest",
+      }),
+    };
     const admissionRuntime = await createOrgRuntime(orgB.id, {
       admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
       applicationOrigin: `${applicationOrigin}/o/${orgB.slug}`,
       cookieRouteId: orgB.routeId,
       slug: orgB.slug,
-    }, config, database);
+    }, {...config, externalMcpBearerVerifier: routeWalkerMcpVerifier}, database);
     try {
       const loginWithGroups = async (groups: readonly string[], subject: string) => {
         oidc.claims.email = `${subject}@example.test`;
@@ -718,7 +862,129 @@ describe.sequential("organization tenancy security boundary", () => {
         }, method: "POST"},
       ));
       expect(createComment.status).toBe(201);
-      expect(await createComment.text()).toContain("Orvex Support");
+      const staffThread = z.object({thread: z.object({id: z.string()})}).passthrough().parse(await createComment.json()).thread;
+
+      const staffMemberRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT id, email FROM installation_members
+          WHERE installation_id = ${orgB.id} AND email = 'tenant-support-user@example.test'`;
+      }));
+      const staffMember = z.object({email: z.string(), id: z.string()}).parse(staffMemberRows[0]);
+
+      type RouteWalkerActor = {readonly csrf: string; readonly cookie: string; readonly memberId: string};
+      const roleGroups = [["admin", "admins"], ["editor", "editors"], ["viewer", "viewers"]] as const;
+      const actorEntries = await roleGroups.reduce<Promise<Array<[string, RouteWalkerActor]>>>(
+        async (previous, [role, group]) => {
+          const entries = await previous;
+          const login = await loginWithGroups([`/teams/${orgB.slug}/${group}`], `route-walker-${role}`);
+          expect(login.status).toBe(303);
+          const cookieParts = login.headers.getSetCookie();
+          const cookieHeader = cookieParts.map((value) => value.split(";", 1)[0]).join("; ");
+          const actorCsrfCookie = cookieParts.find((value) => value.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`));
+          if (actorCsrfCookie === undefined) throw new Error(`${role} login did not issue a CSRF cookie.`);
+          const csrf = actorCsrfCookie.split(";", 1)[0]?.split("=", 2)[1];
+          if (csrf === undefined) throw new Error(`${role} login issued an invalid CSRF cookie.`);
+          const sessionResponse = await admissionRuntime.app.fetch(new Request(
+            "https://artifacts.example.com/api/v1/session", {headers: {Cookie: cookieHeader}},
+          ));
+          const sessionPrincipal = z.object({principal: z.object({id: z.string()}).passthrough()}).parse(await sessionResponse.json()).principal;
+          return [...entries, [role, {csrf, cookie: cookieHeader, memberId: sessionPrincipal.id}]];
+        },
+        Promise.resolve([]),
+      );
+      const actorCookies = new Map<string, RouteWalkerActor>(actorEntries);
+      const mcpActorTokens = new Map<string, string>([...actorCookies].map(([role, actor]) => {
+        const token = `route-walker-mcp-${role}`;
+        mcpPrincipals.set(token, {
+          authorizedByPrincipalId: null,
+          capabilities: Object.values(principalCapabilities),
+          displayName: `Route walker ${role}`,
+          id: actor.memberId,
+          installationId: orgB.id,
+          kind: "human",
+          membershipRole: role === "viewer" ? "viewer" : role === "editor" ? "member" : "administrator",
+          staff: false,
+          tenantStaffPrincipalIds: [staffMember.id],
+        });
+        return [role, token] as const;
+      }));
+
+      const adminActor = actorCookies.get("admin");
+      if (adminActor === undefined) throw new Error("The route walker has no administrator session.");
+
+      const routeInventory = admissionRuntime.app.routes.map(({method, path}) => `${method} ${path}`);
+      const toolInventoryResponse = await admissionRuntime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
+        id: "route-walker-tools", jsonrpc: "2.0", method: "tools/list",
+      }, {Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+      const toolDefinitions = await mcpToolDefinitions(toolInventoryResponse);
+      const toolInventory = toolDefinitions.map(({name}) => name);
+      assertCrossOrgMatrixComplete(routeInventory, toolInventory);
+
+      const staffSecrets = [staffMember.email, staffMember.id];
+      const routeParam = (name: string, readOnly: boolean): string => {
+        if (!readOnly) return `missing-${name}-${randomUUID()}`;
+        switch (name) {
+          case "artifactId": return staffArtifact.id;
+          case "projectId": return staffProjectId;
+          case "threadId": return staffThread.id;
+          case "versionId": return staffArtifact.versionId;
+          default: return `missing-${name}`;
+        }
+      };
+      const orderedRoutes = [...routeInventory].toSorted((left, right) =>
+        Number(left.endsWith("/session/logout")) - Number(right.endsWith("/session/logout"))
+      );
+      const actorScans = await Promise.all([...actorCookies].map(async ([role, actor]) => {
+        const routeResponses = await Promise.all(orderedRoutes.map(async (route) => {
+            const [rawMethod, rawPath] = route.split(" ", 2);
+            if (rawMethod === undefined || rawPath === undefined) throw new Error(`Invalid route inventory entry: ${route}`);
+            const method = rawMethod === "ALL" ? "GET" : rawMethod;
+            const readOnly = method === "GET" || method === "HEAD";
+            const path = rawPath.replace(/:([A-Za-z][A-Za-z0-9_]*)/gu, (_match, name: string) => routeParam(name, readOnly)).replace(/\/\*/gu, "/route-walker");
+            const url = new URL(path, "https://artifacts.example.com");
+            if (path.includes("artifact") || path.includes("project")) url.searchParams.set("projectId", staffProjectId);
+            const headers = new Headers({Cookie: actor.cookie});
+            if (!readOnly) {
+              headers.set("Content-Type", "application/json");
+              headers.set("Origin", applicationOrigin);
+              headers.set("Sec-Fetch-Site", "same-origin");
+              headers.set("X-CSRF-Token", actor.csrf);
+            }
+            const requestInit: RequestInit = {headers, method};
+            if (!readOnly) requestInit.body = "{}";
+            const response = await admissionRuntime.app.fetch(new Request(url, requestInit));
+            const body = await response.text();
+            assertNoStaffIdentity(body, staffSecrets);
+            return {route, status: response.status};
+        }));
+        expect(routeResponses).toHaveLength(orderedRoutes.length);
+
+        const token = mcpActorTokens.get(role);
+        if (token === undefined) throw new Error(`The route walker has no ${role} MCP credential.`);
+        const toolResponses = await Promise.all(toolDefinitions.map(async (tool) => {
+          const argumentsValue = tool.name === "dispatch_inbox"
+            ? {agentName: "route-walker", operation: "list"}
+            : tool.readOnly ? safeMcpReadArguments(tool.inputSchema, staffArtifact.id, staffProjectId, staffArtifact.versionId, staffThread.id)
+            : {};
+          const response = await admissionRuntime.app.fetch(appRequest("/mcp", token, "POST", {
+            id: `route-walker-${role}-${tool.name}`, jsonrpc: "2.0", method: "tools/call", params: {
+              _meta: {
+                [CLIENT_CAPABILITIES_META_KEY]: {},
+                [CLIENT_INFO_META_KEY]: {name: "tenant-route-walker", version: "1"},
+                [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+              },
+              arguments: argumentsValue,
+              name: tool.name,
+            },
+          }, {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": tool.name, Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+          const responseBody = await response.text();
+          assertNoStaffIdentity(responseBody, staffSecrets);
+          return response.status;
+        }));
+        expect(toolResponses).toHaveLength(toolDefinitions.length);
+        return {role, routes: routeResponses.length, tools: toolResponses.length};
+      }));
+      expect(actorScans).toHaveLength(3);
 
       const staffMcpRuntime = await createOrgRuntime(orgB.id, {
         admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
@@ -1771,13 +2037,73 @@ function routedLoginHandshakeCookie(response: Response): string {
   return cookie.split(";", 1)[0] ?? "";
 }
 
-async function mcpToolNames(response: Response): Promise<string[]> {
+interface McpToolDefinition {
+  readonly inputSchema: McpInputSchema;
+  readonly name: string;
+  readonly readOnly: boolean;
+}
+
+interface McpInputSchema {
+  readonly properties?: Readonly<Record<string, McpInputProperty>>;
+}
+
+interface McpInputProperty {
+  readonly anyOf?: readonly {readonly type?: string | undefined}[] | undefined;
+  readonly enum?: readonly string[] | undefined;
+  readonly type?: string | readonly string[] | undefined;
+}
+
+interface McpArgumentMap {
+  readonly [name: string]: JsonValue;
+}
+
+async function mcpToolDefinitions(response: Response): Promise<McpToolDefinition[]> {
   const body = await response.text();
   const payload = response.headers.get("content-type")?.includes("text/event-stream")
     ? body.split("\n").find((line) => line.startsWith("data: "))?.slice(6) ?? "{}"
     : body;
-  return z.object({result: z.object({tools: z.array(z.object({name: z.string()}))})})
-    .parse(JSON.parse(payload)).result.tools.map(({name}) => name);
+  const propertySchema = z.object({
+    anyOf: z.array(z.object({type: z.string().optional()}).passthrough()).optional(),
+    enum: z.array(z.string()).optional(),
+    type: z.union([z.string(), z.array(z.string())]).optional(),
+  }).passthrough();
+  const tools = z.object({result: z.object({tools: z.array(z.object({
+    annotations: z.object({readOnlyHint: z.boolean().optional()}).passthrough().optional(),
+    inputSchema: z.object({properties: z.record(z.string(), propertySchema).optional()}).passthrough(),
+    name: z.string(),
+  }).passthrough())})}).parse(JSON.parse(payload)).result.tools;
+  return tools.map(({annotations, inputSchema, name}) => ({
+    inputSchema: {...inputSchema, properties: inputSchema.properties ?? {}},
+    name,
+    readOnly: annotations?.readOnlyHint === true,
+  }));
+}
+
+async function mcpToolNames(response: Response): Promise<string[]> {
+  return (await mcpToolDefinitions(response)).map(({name}) => name);
+}
+
+function safeMcpReadArguments(inputSchema: McpInputSchema, artifactId: string, projectId: string, versionId: string, threadId: string): McpArgumentMap {
+  const argumentsValue: McpArgumentMap = {};
+  for (const [name, property] of Object.entries(inputSchema.properties ?? {})) {
+    if (property.enum !== undefined && property.enum.length > 0) {
+      Object.assign(argumentsValue, {[name]: property.enum[0]});
+    } else if (name === "artifactId") Object.assign(argumentsValue, {[name]: artifactId});
+    else if (name === "projectId") Object.assign(argumentsValue, {[name]: projectId});
+    else if (name === "versionId") Object.assign(argumentsValue, {[name]: versionId});
+    else if (name === "threadId") Object.assign(argumentsValue, {[name]: threadId});
+    else if (property.anyOf?.some(({type}) => type === "null")) Object.assign(argumentsValue, {[name]: null});
+    else if (property.type === "integer" || property.type === "number") Object.assign(argumentsValue, {[name]: 1});
+    else if (property.type === "boolean") Object.assign(argumentsValue, {[name]: false});
+    else if (property.type === "array") Object.assign(argumentsValue, {[name]: []});
+    else if (property.type === "object") Object.assign(argumentsValue, {[name]: {}});
+    else if (property.type === "string") Object.assign(argumentsValue, {[name]: "route-walker"});
+  }
+  return argumentsValue;
+}
+
+function assertNoStaffIdentity(responseBody: string, staffSecrets: readonly string[]): void {
+  for (const secret of staffSecrets) expect(responseBody).not.toContain(secret);
 }
 
 function fetchWithHost(
