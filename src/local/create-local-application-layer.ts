@@ -149,6 +149,7 @@ import type {
 /** Concrete Node adapters reused by the Effect application layer. */
 export interface ApplicationAdapters {
   readonly apiToken: Redacted.Redacted | null;
+  readonly staffHandleSecret?: Redacted.Redacted;
   readonly blobs: BlobStore;
   readonly bootstrapAdministratorEmail: string | null;
   readonly clock: Clock;
@@ -839,6 +840,7 @@ export function createApplicationLayer(
       sessionId: () => `session_${randomUUID()}`,
     },
     installationId: adapters.installationId,
+    staffHandleSecret: adapters.staffHandleSecret ?? Redacted.make(""),
     organizationDirectoryVisibility: adapters.organizationDirectoryVisibility,
     localBootstrapCredential: adapters.localBootstrapCredential,
     localLoginAttemptLifetimeMilliseconds: 60 * 1_000,
@@ -1059,6 +1061,15 @@ export function createApplicationLayer(
           "isMemberManuallyDeactivated",
           () => identityRepository.isMemberManuallyDeactivated?.(installationId, email) ??
             Promise.resolve(false),
+        ),
+    });
+  }
+  if (identityRepository.listManuallyDeactivatedMemberEmails !== undefined) {
+    Object.assign(installationAccessDependencies.repository, {
+      listManuallyDeactivatedMemberEmails: (installationId: string, emails: readonly string[]) =>
+        identityEffect(
+          "listManuallyDeactivatedMemberEmails",
+          () => identityRepository.listManuallyDeactivatedMemberEmails?.(installationId, emails) ?? Promise.resolve([]),
         ),
     });
   }

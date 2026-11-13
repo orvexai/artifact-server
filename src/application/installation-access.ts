@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 import {
   type ProjectAccess,
@@ -202,6 +202,10 @@ export interface InstallationIdentityRepository {
     installationId: string,
     email: string,
   ) => Effect.Effect<boolean, IdentityRepositoryFailure>;
+  readonly listManuallyDeactivatedMemberEmails?: (
+    installationId: string,
+    emails: readonly string[],
+  ) => Effect.Effect<readonly string[], IdentityRepositoryFailure>;
   readonly findActiveMemberByExternalIdentity: (
     installationId: string,
     provider: string,
@@ -295,6 +299,8 @@ export interface InstallationAccessDependencies {
    */
   readonly groupRolePolicy?: GroupRolePolicy | null;
   readonly organizationAdmission?: {readonly alias: string; readonly id: string};
+  /** Server secret used to make owner-only staff handles unguessable. */
+  readonly staffHandleSecret?: Redacted.Redacted;
   readonly ids: IdentityIdProvider;
   readonly installationId: string;
   /** Let non-guest tenant members read their org-scoped directory. */
@@ -429,7 +435,8 @@ export interface InstallationAccessOperations {
     AuthorizationDenied | IdentityRepositoryFailure
   >;
   readonly listStaffOnlyMemberIds: () => Effect.Effect<readonly string[], IdentityRepositoryFailure>;
-  readonly listStaffOnlyMembers: () => Effect.Effect<readonly Pick<InstallationMember, "id" | "displayName" | "email">[], IdentityRepositoryFailure>;
+  readonly listStaffOnlyMembers: () => Effect.Effect<readonly Pick<InstallationMember, "id" | "displayName" | "email" | "status">[], IdentityRepositoryFailure>;
+  readonly staffMemberHandle: (memberId: string) => Effect.Effect<string>;
   readonly issueLocalBrowserLogin: (
     credential: Redacted.Redacted,
   ) => Effect.Effect<
@@ -911,8 +918,11 @@ function makeInstallationAccessService(
       }));
     }
     const desired = new Map<string, DirectoryMemberEntry>();
+    const manuallyDeactivated = dependencies.organizationDirectoryVisibility === true && dependencies.repository.listManuallyDeactivatedMemberEmails !== undefined
+      ? new Set(yield* dependencies.repository.listManuallyDeactivatedMemberEmails(dependencies.installationId, entries.map(({email}) => email)))
+      : null;
     for (const entry of entries) {
-      if (dependencies.organizationDirectoryVisibility === true && dependencies.repository.isMemberManuallyDeactivated !== undefined &&
+      if (manuallyDeactivated?.has(entry.email) === true || manuallyDeactivated === null && dependencies.organizationDirectoryVisibility === true && dependencies.repository.isMemberManuallyDeactivated !== undefined &&
         (yield* dependencies.repository.isMemberManuallyDeactivated(dependencies.installationId, entry.email))) continue;
       if (normalizeMemberEmail(entry.email) !== entry.email) {
         return yield* Effect.fail(new IdentityConflict({
@@ -1568,7 +1578,7 @@ function makeInstallationAccessService(
       yield* requireAdministrator(principal, dependencies.installationId);
     }
     const members = yield* dependencies.repository.listMembers(dependencies.installationId);
-    if (dependencies.organizationDirectoryVisibility !== true || groupRolePolicy === null) return members;
+    if (dependencies.organizationDirectoryVisibility !== true) return members;
     return members.filter((member) => member.staff !== true);
   });
 
@@ -1579,34 +1589,47 @@ function makeInstallationAccessService(
   const listStaffOnlyMembers = Effect.fn("InstallationAccessService.listStaffOnlyMembers")(function*() {
     if (dependencies.organizationDirectoryVisibility !== true) return [];
     const members = yield* dependencies.repository.listMembers(dependencies.installationId);
-    return members.filter(({staff}) => staff === true).map(({id}) => ({id: staffMemberOpaqueId(id), displayName: "Orvex Support", email: ""}));
+    return members.filter(({staff}) => staff === true).map(({id, status}) => ({id: createStaffMemberHandle(id), displayName: "Orvex Support", email: "", status}));
   });
+
+  const memberIdKey = () => {
+    const key = Redacted.value(dependencies.staffHandleSecret ?? Redacted.make(""));
+    if (key === "") throw new Error("Staff handles require the server key.");
+    return key;
+  };
+  const createStaffMemberHandle = (memberId: string) => staffMemberOpaqueId(dependencies.installationId, memberIdKey(), memberId);
+  const staffMemberHandle = (memberId: string) => Effect.sync(() => createStaffMemberHandle(memberId));
 
   const deactivateMember = Effect.fn(
     "InstallationAccessService.deactivateMember",
   )(function*(principal: Principal, memberId: string) {
-    if (dependencies.organizationDirectoryVisibility === true && principal.membershipRole !== membershipRoles.owner) {
-      return yield* new IdentityNotFound({message: "Member does not exist."});
-    }
-    yield* requireAdministrator(principal, dependencies.installationId);
     let targetMemberId = memberId;
+    let target: InstallationMember | null = null;
     if (dependencies.organizationDirectoryVisibility === true) {
       const members = yield* dependencies.repository.listMembers(dependencies.installationId);
-      const staffTarget = members.find(({id, staff}) => staff === true && staffMemberOpaqueId(id) === memberId);
+      const staffTarget = members.find(({id, staff}) => staff === true && createStaffMemberHandle(id) === memberId);
       if (staffTarget !== undefined) {
         targetMemberId = staffTarget.id;
+        target = staffTarget;
+      } else {
+        target = yield* dependencies.repository.findMember(dependencies.installationId, memberId);
+      }
+      if (target === null) return yield* new IdentityNotFound({message: "Member does not exist."});
+      if (target.staff === true && principal.membershipRole !== membershipRoles.owner) {
+        return yield* new IdentityNotFound({message: "Member does not exist."});
       }
     }
+    yield* requireAdministrator(principal, dependencies.installationId);
     if (principal.id === targetMemberId) {
       return yield* Effect.fail(new IdentityConflict({
         message: "An administrator cannot deactivate their current member.",
       }));
     }
     if (dependencies.protectBootstrapAdministrator) {
-      const member = yield* dependencies.repository.findMember(
+      const member = target ?? (yield* dependencies.repository.findMember(
         dependencies.installationId,
         targetMemberId,
-      );
+      ));
       const bootstrapAdministratorEmail = dependencies.bootstrapAdministratorEmail === null
         ? null
         : yield* normalizeEmail(dependencies.bootstrapAdministratorEmail);
@@ -1629,6 +1652,17 @@ function makeInstallationAccessService(
   const reactivateMember = Effect.fn(
     "InstallationAccessService.reactivateMember",
   )(function*(principal: Principal, memberId: string) {
+    let targetMemberId = memberId;
+    if (dependencies.organizationDirectoryVisibility === true) {
+      const members = yield* dependencies.repository.listMembers(dependencies.installationId);
+      const staffTarget = members.find(({id, staff}) => staff === true && createStaffMemberHandle(id) === memberId);
+      const target = staffTarget ?? (yield* dependencies.repository.findMember(dependencies.installationId, memberId));
+      if (target === null) return yield* new IdentityNotFound({message: "Member does not exist."});
+      if (target.staff === true) {
+        if (principal.membershipRole !== membershipRoles.owner) return yield* new IdentityNotFound({message: "Member does not exist."});
+        targetMemberId = target.id;
+      }
+    }
     yield* requireAdministrator(principal, dependencies.installationId);
     if (dependencies.organizationAdmission === undefined ||
       dependencies.repository.reactivateMember === undefined) {
@@ -1638,7 +1672,7 @@ function makeInstallationAccessService(
     }
     const member = yield* dependencies.repository.reactivateMember(
       dependencies.installationId,
-      memberId,
+      targetMemberId,
     );
     clearAuthenticationCaches();
     return member;
@@ -1823,6 +1857,7 @@ function makeInstallationAccessService(
     listMembers,
     listStaffOnlyMemberIds,
     listStaffOnlyMembers,
+    staffMemberHandle,
     loginWithLocalBrowserToken,
     reconcileDirectoryMembers,
     applyDirectoryGroups,
@@ -1965,6 +2000,6 @@ export function digestIdentitySecret(value: string): string {
 }
 
 /** Stable, non-reversible public handles for staff rows shown to tenant owners. */
-export function staffMemberOpaqueId(memberId: string): string {
-  return `staff_${createHash("sha256").update(memberId).digest("base64url").slice(0, 22)}`;
+export function staffMemberOpaqueId(installationId: string, serverKey: string, memberId: string): string {
+  return `staff_${createHmac("sha256", serverKey).update(installationId).update("\0").update(memberId).digest("base64url").slice(0, 22)}`;
 }

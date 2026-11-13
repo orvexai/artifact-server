@@ -1680,7 +1680,7 @@ export function createHttpApp(
         if (principal.membershipRole !== membershipRoles.owner) return context.json({members: projectedMembers});
         const staffMembers = await runHttpApplicationEffect(context, dependencies,
           InstallationAccessService.use((access) => access.listStaffOnlyMembers()));
-        return context.json({members: [...projectedMembers, ...staffMembers.map(({id}) => ({id, displayName: "Orvex Support"}))]});
+        return context.json({members: [...projectedMembers, ...staffMembers.map(({id, status}) => ({id, displayName: "Orvex Support", status}))]});
       }
       return context.json({members: members.map(({email: _email, role: _role, staff: _staff, ...visible}) => Object.assign({}, visible, {
         displayName: isReservedTenantIdentityName(visible.displayName) ? "Orvex Support (member)" : visible.displayName,
@@ -1707,6 +1707,7 @@ export function createHttpApp(
   });
 
   app.post("/api/v1/members/:memberId/deactivate", async (context) => {
+    const tenantOrganization = dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex";
     const member = await runHttpApplicationEffect(
       context,
       dependencies,
@@ -1717,11 +1718,18 @@ export function createHttpApp(
         )
       ),
     );
+    if (tenantOrganization) {
+      const id = member.staff === true
+        ? await runHttpApplicationEffect(context, dependencies, InstallationAccessService.use((access) => access.staffMemberHandle(member.id)))
+        : member.id;
+      return context.json({member: {id, status: member.status}});
+    }
     return context.json({member});
   });
 
   if (dependencies.organizationAdmission !== undefined) {
     app.post("/api/v1/members/:memberId/reactivate", async (context) => {
+      const tenantOrganization = dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex";
       const member = await runHttpApplicationEffect(
         context,
         dependencies,
@@ -1730,6 +1738,12 @@ export function createHttpApp(
             ?? Effect.fail(new AuthorizationDenied({message: "Member reactivation is unavailable."}))
         ),
       );
+      if (tenantOrganization) {
+        const id = member.staff === true
+          ? await runHttpApplicationEffect(context, dependencies, InstallationAccessService.use((access) => access.staffMemberHandle(member.id)))
+          : member.id;
+        return context.json({member: {id, status: member.status}});
+      }
       return context.json({member});
     });
   }

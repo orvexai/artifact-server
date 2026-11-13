@@ -252,6 +252,7 @@ export async function createLocalRuntime(
     ),
   );
   let applicationAdapters: Parameters<typeof createLocalApplicationLayer>[0] = {
+    staffHandleSecret: apiToken,
     apiToken: config.browserAccess.mode === browserAccessModes.localOwner
       ? apiToken
       : null,

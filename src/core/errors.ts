@@ -502,6 +502,7 @@ export class IdentityRepositoryFailure extends Schema.TaggedError<IdentityReposi
       "findApiKey",
       "findApplicationSession",
       "isMemberManuallyDeactivated",
+      "listManuallyDeactivatedMemberEmails",
       "findProjectAccess",
       "hasMembers",
       "listApiKeys",

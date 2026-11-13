@@ -8,6 +8,7 @@ import type {ArtifactResponseRecord} from "../../src/core/model.js";
 import {createKeycloakOrganizationMembershipResolver} from "../../src/external-storage/organization-memberships.js";
 import {gitHistoryMetadataFiles, gitHistoryVersionMetadata} from "../../src/git-history/git-history-mirror.js";
 import {unicodeConfusablesVersion} from "../../src/core/confusables.js";
+import {staffMemberOpaqueId} from "../../src/application/installation-access.js";
 
 describe("tenant identity projection", () => {
   const principal: Principal = {
@@ -67,11 +68,31 @@ describe("tenant identity projection", () => {
     }
   });
 
+  test("reserved-name matching avoids substring false positives and folds euro", () => {
+    for (const name of ["Cortex Bot", "Convex", "Vortex", "Forex Team", "Torvex Ltd"]) {
+      expect(isReservedTenantIdentityName(name)).toBe(false);
+    }
+    for (const name of ["Orvex 5upport", "$upport", "Orv3x", "0rv3x 5upp0r7", "Orv€x"]) {
+      expect(isReservedTenantIdentityName(name)).toBe(true);
+    }
+  });
+
   test("vendors the pinned Unicode 17 UTS #39 confusables table", () => {
     const bytes = readFileSync(new URL("../../src/core/unicode/confusables.txt", import.meta.url));
     expect(unicodeConfusablesVersion).toBe("17.0.0");
     expect(createHash("sha256").update(bytes).digest("hex"))
       .toBe("091c7f82fc39ef208faf8f94d29c244de99254675e09de163160c810d13ef22a");
+    const generated = readFileSync(new URL("../../src/core/unicode/confusables-data.json", import.meta.url));
+    expect(createHash("sha256").update(generated).digest("hex"))
+      .toBe("c5172e647efd550afb93b49d9e4d7afdabef59794be136cc921010674fc41383");
+  });
+
+  test("staff handles are installation-scoped HMACs rather than offline member hashes", () => {
+    const handle = staffMemberOpaqueId("install-a", "server-key", "member-1");
+    expect(handle).toMatch(/^staff_[A-Za-z0-9_-]{22}$/u);
+    expect(staffMemberOpaqueId("install-a", "server-key", "member-1")).toBe(handle);
+    expect(staffMemberOpaqueId("install-b", "server-key", "member-1")).not.toBe(handle);
+    expect(staffMemberOpaqueId("install-a", "other-key", "member-1")).not.toBe(handle);
   });
 
   test("tenant attribution projection masks staff ids while preserving other principals", () => {

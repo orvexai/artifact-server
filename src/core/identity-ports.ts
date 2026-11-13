@@ -236,6 +236,7 @@ export interface IdentityRepository {
   }>;
   setMemberStaff(installationId: string, memberId: string, staff: boolean): Promise<void>;
   isMemberManuallyDeactivated?(installationId: string, email: string): Promise<boolean>;
+  listManuallyDeactivatedMemberEmails?(installationId: string, emails: readonly string[]): Promise<readonly string[]>;
 }
 
 /** Atomic first-key operation required by private-team composition roots. */

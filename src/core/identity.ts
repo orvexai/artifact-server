@@ -109,29 +109,22 @@ export function tenantVisiblePrincipalId(principal: Principal | undefined, princ
 
 /** Compare reserved tenant identity labels after compatibility and confusable folding. */
 export function isReservedTenantIdentityName(value: string): boolean {
-  const normalized = value.normalize("NFKD").replace(/[ʀ]/gu, "r").replace(/[ᴇ]/gu, "e").replace(/[ᴘ]/gu, "p");
+  const normalized = value.normalize("NFKD").replace(/€/gu, "e").replace(/[ʀ]/gu, "r").replace(/[ᴇ]/gu, "e").replace(/[ᴘ]/gu, "p");
   const skeletonValue = confusableSkeleton(normalized).toLowerCase()
     .replace(/\u028b/gu, "v")
     .replace(/[01]/gu, (character) => character === "0" ? "o" : "l")
     .replace(/[3]/gu, "e").replace(/[4]/gu, "a").replace(/[5$]/gu, "s")
-    .replace(/[7]/gu, "t").replace(/@/gu, "a").replace(/i/gu, "l")
+    .replace(/[7]/gu, "t").replace(/@/gu, "a").replace(/€/gu, "e").replace(/i/gu, "l")
     .replace(/[\p{M}\p{P}\p{S}\p{Z}\p{Default_Ignorable_Code_Point}]/gu, "");
-  const tokens = skeletonValue.split(/[^a-z0-9]+/u).filter(Boolean);
-  return skeletonValue.includes("orvexsupport") ||
-    tokens.some((token) => closeReservedToken(token, "orvex")) ||
+  const tokens = confusableSkeleton(normalized).toLowerCase()
+    .replace(/[01]/gu, (character) => character === "0" ? "o" : "l")
+    .replace(/[3]/gu, "e").replace(/[4]/gu, "a").replace(/[5$]/gu, "s")
+    .replace(/[7]/gu, "t").replace(/@/gu, "a").replace(/€/gu, "e").replace(/i/gu, "l")
+    .replace(/[\p{M}\p{P}\p{S}\p{Z}\p{Default_Ignorable_Code_Point}]/gu, " ")
+    .split(/\s+/u).filter(Boolean);
+  return editDistanceAtMostOne(skeletonValue, "orvexsupport") ||
+    tokens.includes("orvex") ||
     /(?:^|\s)\$upport(?:$|\s)/iu.test(normalized);
-}
-
-function closeReservedToken(value: string, token: string): boolean {
-  if (value.includes(token)) return true;
-  const characters = Array.from(value);
-  return characters.some((_character, index) => {
-    for (const length of [token.length - 1, token.length, token.length + 1]) {
-      const candidate = characters.slice(index, index + length).join("");
-      if (editDistanceAtMostOne(candidate, token)) return true;
-    }
-    return false;
-  });
 }
 
 function editDistanceAtMostOne(left: string, right: string): boolean {

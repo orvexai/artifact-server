@@ -2570,12 +2570,14 @@ export function createArtifactMcpServer(
           : (left.createdAt < right.createdAt ? -1 : 1)
       )
       .map((dispatch) => ({
-        agentDisplayName: dispatch.agentDisplayName,
+        agentDisplayName: isTenantOrganization
+          ? tenantIdentityPresentation(identity.principal, {displayName: dispatch.agentDisplayName, principalId: identity.principal.id, staff: identity.principal.staff === true}).displayName
+          : dispatch.agentDisplayName,
         createdAt: dispatch.createdAt,
         id: dispatch.id,
         note: dispatch.note,
-        senderDisplayName: isTenantOrganization && (dispatch.sender.staff === true || identity.principal.tenantStaffPrincipalIds?.includes(dispatch.sender.principalId) === true)
-          ? "Orvex Support"
+        senderDisplayName: isTenantOrganization
+          ? tenantIdentityPresentation(identity.principal, dispatch.sender).displayName
           : dispatch.sender.displayName,
         threadCount: dispatch.threadIds.length,
       }));

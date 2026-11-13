@@ -304,6 +304,7 @@ export async function createOrgRuntime(
     const {blobs, staging} = connectedObjectStorage;
     const applicationAdapters: Parameters<typeof createApplicationLayer>[0] = {
       apiToken: null,
+      staffHandleSecret: config.apiToken,
       blobs,
       bootstrapAdministratorEmail: orgConfig.bootstrapAdministratorEmail === undefined
         ? config.bootstrapAdministratorEmail

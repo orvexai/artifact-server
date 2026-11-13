@@ -25,6 +25,7 @@ import {
   "../../src/external-storage/create-external-storage-runtime.js";
 import type {GroupRolePolicy} from "../../src/core/group-role-policy.js";
 import {principalCapabilities} from "../../src/core/identity.js";
+import {staffMemberOpaqueId} from "../../src/application/installation-access.js";
 import {createOrganizationRouter} from
   "../../src/external-storage/create-organization-router.js";
 import {
@@ -1230,6 +1231,7 @@ describe.sequential("organization tenancy security boundary", () => {
 
       const staffSecrets = [staffMember.displayName, staffMember.email, staffMember.id];
       const routeParam = (name: string, readOnly: boolean): string => {
+        if (name === "memberId" && !readOnly) return staffMemberOpaqueId(orgB.id, apiTokenA, staffMember.id);
         if (!readOnly) return `missing-${name}-${randomUUID()}`;
         switch (name) {
           case "artifactId": return staffArtifact.id;
@@ -1416,11 +1418,12 @@ describe.sequential("organization tenancy security boundary", () => {
         headers: {Cookie: ownerCookieHeader},
       }));
       expect(ownerMembersResponse.status).toBe(200);
-      const ownerMembers = z.object({members: z.array(z.object({id: z.string(), displayName: z.string()}).passthrough())})
+      const ownerMembers = z.object({members: z.array(z.object({id: z.string(), displayName: z.string(), status: z.string().optional()}).passthrough())})
         .parse(await ownerMembersResponse.json()).members;
       const staffSectionRow = ownerMembers.find(({displayName}) => displayName === "Orvex Support");
       if (staffSectionRow === undefined) throw new Error("Owner directory omitted the staff section.");
       expect(staffSectionRow.id).toMatch(/^staff_[A-Za-z0-9_-]{22}$/u);
+      expect(staffSectionRow.status).toBe("active");
       expect(JSON.stringify(ownerMembers)).not.toContain(staffMember.id);
       expect(JSON.stringify(ownerMembers)).not.toContain(staffMember.email);
       const adminCookieHeader = admitted.headers.getSetCookie().map((cookie) => cookie.split(";", 1)[0]).join("; ");
@@ -1439,12 +1442,28 @@ describe.sequential("organization tenancy security boundary", () => {
       ));
       expect(hiddenStaffAttempt.status).toBe(404);
       expect(missingMemberAttempt.status).toBe(404);
+      const walkerAdmin = actorCookies.get("admin");
+      const walkerEditor = actorCookies.get("editor");
+      if (walkerAdmin === undefined || walkerEditor === undefined) throw new Error("Route walker did not retain its admin and editor identities.");
+      const ordinaryMemberDeactivation = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/members/${walkerEditor.memberId}/deactivate`,
+        {body: "{}", headers: {Cookie: walkerAdmin.cookie, "Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": walkerAdmin.csrf}, method: "POST"},
+      ));
+      expect(ordinaryMemberDeactivation.status).toBe(200);
+      expect(await ordinaryMemberDeactivation.json()).toMatchObject({member: {id: walkerEditor.memberId, status: "inactive"}});
       const ownerDeactivateStaff = await admissionRuntime.app.fetch(new Request(
         `https://artifacts.example.com/api/v1/members/${staffSectionRow.id}/deactivate`,
         {body: "{}", headers: {Cookie: ownerCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Mode": "cors",
           "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": ownerCsrf}, method: "POST"},
       ));
       expect(ownerDeactivateStaff.status).toBe(200);
+      const ownerDeactivateBody = await ownerDeactivateStaff.text();
+      assertNoStaffIdentity(ownerDeactivateBody, staffSecrets);
+      expect(JSON.parse(ownerDeactivateBody)).toMatchObject({member: {id: staffSectionRow.id, status: "inactive"}});
+      expect(ownerDeactivateBody).not.toContain(staffMember.displayName);
+      expect(ownerDeactivateBody).not.toContain(staffMember.email);
+      expect(ownerDeactivateBody).not.toContain(staffMember.id);
       const deactivatedStaff = await database.run(Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT staff, manual_deactivation FROM installation_members
