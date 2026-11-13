@@ -183,7 +183,16 @@ function SettingsContent({
       ? principal.membershipRole === "owner"
       : isAdministratorRole(principal.membershipRole))} />;
   }
-  if (route.kind === "members" && memberDirectoryVisible) return <MembersScreen canManage={administrator} showEmails={principal.membershipRole === "member" || principal.membershipRole === "owner"} showRoles={administrator} />;
+  if (route.kind === "members" && memberDirectoryVisible) {
+    return (
+      <MembersScreen
+        canAdmit={!tenantDirectory}
+        canManage={administrator}
+        showEmails={principal.membershipRole === "member" || principal.membershipRole === "owner"}
+        showRoles={administrator}
+      />
+    );
+  }
   if (!administrator) return <AdministratorPermissionRequired />;
   switch (route.kind) {
     case "members":

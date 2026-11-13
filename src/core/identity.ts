@@ -119,7 +119,7 @@ export function isReservedTenantIdentityName(value: string): boolean {
 }
 
 function tenantIdentityNameFold(value: string): string {
-  const normalized = value.replace(/™/gu, "").normalize("NFKD")
+  const normalized = value.replace(/[™℠]/gu, "").normalize("NFKD")
     .replace(/[\p{M}\p{Default_Ignorable_Code_Point}]/gu, "")
     .replace(/[ᴏ]/gu, "o")
     .replace(/[ʀ]/gu, "r")

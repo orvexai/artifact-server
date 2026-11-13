@@ -1556,7 +1556,9 @@ function makeInstallationAccessService(
     if (dependencies.organizationDirectoryVisibility === true) {
       // Keycloak owns tenant membership; refusing every manual admit keeps a
       // staff address indistinguishable from any other unadmittable address.
-      return yield* Effect.fail(new IdentityConflict({message: "Cannot admit this address."}));
+      return yield* Effect.fail(new IdentityConflict({
+        message: "Members are managed by your identity provider.",
+      }));
     }
     const displayName = yield* requireText(command.displayName, "display name");
     const email = yield* normalizeEmail(command.email);
@@ -1603,7 +1605,7 @@ function makeInstallationAccessService(
   };
   const createStaffMemberHandle = (memberId: string) => staffMemberOpaqueId(dependencies.installationId, memberIdKey(), memberId);
   const projectMemberMutation = (member: InstallationMember, wasStaff: boolean): InstallationMember =>
-    dependencies.organizationDirectoryVisibility === true && wasStaff
+    dependencies.organizationDirectoryVisibility === true && (wasStaff || member.staff === true)
       ? {...member, id: createStaffMemberHandle(member.id), displayName: "Orvex Support", email: "", staff: true}
       : member;
 

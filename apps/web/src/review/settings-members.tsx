@@ -18,7 +18,12 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { formatTimestamp } from "@/lib/presentation";
 
 /** Administrator-only installation member lifecycle surface. */
-export function MembersScreen({canManage, showEmails, showRoles}: {readonly canManage: boolean; readonly showEmails: boolean; readonly showRoles: boolean}) {
+export function MembersScreen({canAdmit, canManage, showEmails, showRoles}: {
+  readonly canAdmit: boolean;
+  readonly canManage: boolean;
+  readonly showEmails: boolean;
+  readonly showRoles: boolean;
+}) {
   const [members, setMembers] = useState<readonly InstallationMember[]>([]);
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(true);
@@ -75,7 +80,7 @@ export function MembersScreen({canManage, showEmails, showRoles}: {readonly canM
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
-        actions={!canManage ? undefined : (
+        actions={!canManage || !canAdmit ? undefined : (
           <Dialog>
             <DialogTrigger render={<Button type="button" />}>Admit member</DialogTrigger>
             <DialogContent>
@@ -139,7 +144,9 @@ export function MembersScreen({canManage, showEmails, showRoles}: {readonly canM
             </DialogContent>
           </Dialog>
         )}
-        description="One installation has one closed member group. There is no public sign-up or project-specific membership."
+        description={canAdmit
+          ? "One installation has one closed member group. There is no public sign-up or project-specific membership."
+          : "Organization membership is managed by your identity provider."}
         eyebrow="Administration"
         title="Members"
       />

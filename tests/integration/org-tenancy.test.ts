@@ -2368,7 +2368,7 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(newAddressAdmissionAttempt.status).toBe(409);
       const staffAdmissionBody = await staffAdmissionAttempt.json();
       expect(staffAdmissionBody).toEqual(await newAddressAdmissionAttempt.json());
-      expect(staffAdmissionBody).toEqual({error: {code: "IDENTITY_CONFLICT", message: "Cannot admit this address."}});
+      expect(staffAdmissionBody).toEqual({error: {code: "IDENTITY_CONFLICT", message: "Members are managed by your identity provider."}});
       const staffDeactivate = await fetch(`${baseUrl}/o/${aliasA}/api/v1/members/${staffHandle}/deactivate`, {
         method: "POST", headers: staffHeaders, body: "{}",
       });

@@ -50,6 +50,28 @@ describe("organization tenancy flag-off compatibility", () => {
     const session = z.object({principal: z.record(z.string(), z.unknown())}).parse(await sessionResponse.json());
     const administratorId = z.string().parse(session.principal["id"]);
     const installationId = z.string().parse(session.principal["installationId"]);
+    const memberMutationHeaders = {
+      Cookie: cookies.header,
+      Origin: server.baseUrl,
+      "Content-Type": "application/json",
+      "Sec-Fetch-Site": "same-origin",
+      "X-CSRF-Token": cookies.csrf,
+    };
+    const admittedResponse = await fetch(`${server.baseUrl}/api/v1/members`, {
+      body: JSON.stringify({displayName: "Standalone member", email: "standalone-member@example.test", role: "member"}),
+      headers: memberMutationHeaders,
+      method: "POST",
+    });
+    expect(admittedResponse.status).toBe(201);
+    const admitted = z.object({member: z.object({id: z.string(), status: z.string()}).passthrough()}).parse(await admittedResponse.json()).member;
+    expect(admitted).not.toHaveProperty("staff");
+    const deactivatedResponse = await fetch(`${server.baseUrl}/api/v1/members/${admitted.id}/deactivate`, {
+      headers: memberMutationHeaders,
+      method: "POST",
+    });
+    expect(deactivatedResponse.status).toBe(200);
+    const deactivated = z.object({member: z.record(z.string(), z.unknown())}).parse(await deactivatedResponse.json()).member;
+    expect(deactivated).not.toHaveProperty("staff");
     const viewerPrincipal: Principal = {
       authorizedByPrincipalId: null,
       capabilities: ["artifact:read", "artifact:responses:read"],

@@ -71,7 +71,7 @@ describe("tenant identity projection", () => {
   test("reserved-name folding catches variants without reserving unrelated names", () => {
     for (const name of [
       "Orvéx Support Team", "Orʋex", "OrvexSupport Team", "Orvexsupport staff",
-      "Orvex™ Support Desk", "Orvex\u00adSupport", "Orvex\u200bSupport",
+      "Orvex™ Support Desk", "Orvex℠ Support Desk", "Orvex\u00adSupport", "Orvex\u200bSupport",
       "Orvex 5upport", "Orv3x", "0rv3x 5upp0r7", "or\u2c9fvexsupport",
       "orvex suppo\u2ca3t", "Orv€x",
     ]) {

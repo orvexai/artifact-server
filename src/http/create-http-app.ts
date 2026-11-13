@@ -1703,7 +1703,7 @@ export function createHttpApp(
         })
       ),
     );
-    return context.json({member}, 201);
+    return context.json({member: memberWithoutStaffFlag(member)}, 201);
   });
 
   app.post("/api/v1/members/:memberId/deactivate", async (context) => {
@@ -1721,7 +1721,7 @@ export function createHttpApp(
     if (tenantOrganization) {
       return context.json({member: {id: member.id, status: member.status}});
     }
-    return context.json({member});
+    return context.json({member: memberWithoutStaffFlag(member)});
   });
 
   if (dependencies.organizationAdmission !== undefined) {
@@ -1738,7 +1738,7 @@ export function createHttpApp(
       if (tenantOrganization) {
         return context.json({member: {id: member.id, status: member.status}});
       }
-      return context.json({member});
+      return context.json({member: memberWithoutStaffFlag(member)});
     });
   }
 
@@ -3601,6 +3601,11 @@ export function projectHttpTenantResponse<T extends ArtifactResponseRecord>(resp
 
 function projectHttpTenantResponses<T extends {readonly items: readonly ArtifactResponseRecord[]}>(page: T, principal: Principal) {
   return {...page, items: page.items.map((item) => projectHttpTenantResponse(item, principal))};
+}
+
+function memberWithoutStaffFlag<T extends {readonly staff?: boolean}>(member: T): Omit<T, "staff"> {
+  const {staff: _staff, ...visible} = member;
+  return visible;
 }
 
 /** Project tenant-visible directory fields for one membership role. */
