@@ -243,7 +243,7 @@ export class OidcIdentityProvider implements InteractiveIdentityProvider {
         parsedIdentityProviderClaim?.data,
       );
       if (!parsed.ok) return yield* providerFailure();
-      const organizations = Object.fromEntries(parsed.value.organizations.map(({alias, groups, id}) => [alias, {groups, id}]));
+      const organizations = Object.fromEntries(parsed.value.organizations.map(({alias, groups: organizationGroups, id}) => [alias, {groups: organizationGroups, id}]));
       const identityProvider = parsed.value.identityProvider;
       if (this.#organization !== null) {
         const selected = parsed.value.organizations.find((entry) =>

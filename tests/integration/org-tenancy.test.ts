@@ -77,8 +77,6 @@ const crossOrgMatrix = [
   {surface: "platform", identifier: "POST /api/v1/platform/session/logout", coverage: "logout deletes the shared platform session and expires its cookie"},
   {surface: "hono", identifier: "GET /auth/login", coverage: "org-scoped login handshake cookie"},
   {surface: "hono", identifier: "GET /auth/callback", coverage: "shared callback selects org from handshake cookie"},
-  {surface: "hono", identifier: "POST /api/v1/members/:memberId/reactivate", coverage: "admin-only per-org reactivation cannot cross installations"},
-  {surface: "mcp", identifier: "member_reactivate", coverage: "org-only admin reactivation tool rejects service principals"},
 ] as const;
 
 const pendingCrossOrgCases = [
@@ -199,7 +197,6 @@ const pendingCrossOrgCases = [
   "hono:POST /api/v1/embed/artifacts/:artifactId/binding",
   "hono:POST /api/v1/members",
   "hono:POST /api/v1/members/:memberId/deactivate",
-  "hono:POST /api/v1/members/:memberId/reactivate",
   "hono:POST /api/v1/projects",
   "hono:POST /api/v1/projects/:projectId/archive",
   "hono:POST /api/v1/projects/:projectId/artifacts/:artifactId/comments/clear",
@@ -261,7 +258,6 @@ const pendingCrossOrgCases = [
   "mcp:comment_update",
   "mcp:dispatch_inbox",
   "mcp:group_list",
-  "mcp:member_reactivate",
   "mcp:group_set_role",
   "mcp:project_archive",
   "mcp:project_create",
@@ -301,7 +297,7 @@ function assertCrossOrgMatrixComplete(
     expect(knownCaseSet.has(identifier)).toBe(true);
   }
   for (const identifier of knownCaseSet) {
-    expect(currentCases.has(identifier)).toBe(true);
+    if (!currentCases.has(identifier)) throw new Error(`Cross-org matrix case is no longer registered: ${identifier}`);
   }
 }
 describe.sequential("organization tenancy security boundary", () => {
