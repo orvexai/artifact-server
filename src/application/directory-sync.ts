@@ -169,13 +169,25 @@ export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
   return report;
 });
 
-/** Sync one Keycloak Organization into only the current installation. */
-export const syncOrganizationDirectoryMembers = Effect.fn(
-  "syncOrganizationDirectoryMembers",
+/** One Keycloak organization's desired member entries, before reconciliation. */
+export interface OrganizationDirectorySnapshot {
+  readonly desired: readonly DirectoryMemberEntry[];
+  readonly directoryUsers: number;
+  readonly skipped: number;
+}
+
+/**
+ * Read one Keycloak organization's members into desired entries. Staff are
+ * marked from the org's admission-policy staff selectors, exactly as
+ * interactive login marks them, so a synced staff member is masked from
+ * tenant member lists before they ever sign in.
+ */
+export const readOrganizationDirectorySnapshot = Effect.fn(
+  "readOrganizationDirectorySnapshot",
 )(function*(
   directory: OrganizationDirectory,
   organization: DirectoryOrganization,
-  maximumDeactivations: number,
+  staffSelectors: readonly string[] = [],
 ) {
   const members = yield* directory.listOrganizationMembers(organization);
   if (members.length === 0) {
@@ -183,6 +195,17 @@ export const syncOrganizationDirectoryMembers = Effect.fn(
       kind: "emptied",
       reason: "Keycloak organization has no enabled members.",
     } as const;
+  }
+  const staffUserIds = new Set<string>();
+  if (staffSelectors.length > 0) {
+    if (directory.listGroupMemberIdsByPath === undefined) {
+      return yield* new DirectoryUnavailable({
+        message: `Keycloak organization ${organization.alias} has staff selectors but the directory cannot read group members; nothing was changed.`,
+      });
+    }
+    for (const selector of staffSelectors) {
+      for (const id of yield* directory.listGroupMemberIdsByPath(selector)) staffUserIds.add(id);
+    }
   }
   const desired = new Map<string, DirectoryMemberEntry>();
   let skipped = 0;
@@ -199,14 +222,15 @@ export const syncOrganizationDirectoryMembers = Effect.fn(
       : user.role === "editor"
       ? "member"
       : "viewer";
-    const entry: DirectoryMemberEntry = {
-      displayName: displayName(user, email),
-      email,
-      role,
-    };
     const previous = desired.get(email);
+    const staff = staffUserIds.has(user.id) || previous?.staff === true;
+    const entry: DirectoryMemberEntry = staff
+      ? {displayName: displayName(user, email), email, role, staff: true}
+      : {displayName: displayName(user, email), email, role};
     if (previous === undefined || membershipRolePrecedence(role) > membershipRolePrecedence(previous.role)) {
       desired.set(email, entry);
+    } else if (staff && previous.staff !== true) {
+      desired.set(email, {...previous, staff: true});
     }
   }
   if (desired.size === 0) {
@@ -214,18 +238,36 @@ export const syncOrganizationDirectoryMembers = Effect.fn(
       message: `Keycloak organization ${organization.alias} has no eligible members; nothing was changed.`,
     });
   }
+  return {
+    desired: [...desired.values()],
+    directoryUsers: members.length,
+    skipped,
+  } satisfies OrganizationDirectorySnapshot;
+});
+
+/** Sync one Keycloak Organization into only the current installation. */
+export const syncOrganizationDirectoryMembers = Effect.fn(
+  "syncOrganizationDirectoryMembers",
+)(function*(
+  directory: OrganizationDirectory,
+  organization: DirectoryOrganization,
+  maximumDeactivations: number,
+  staffSelectors: readonly string[] = [],
+) {
+  const snapshot = yield* readOrganizationDirectorySnapshot(directory, organization, staffSelectors);
+  if (snapshot.kind === "emptied") return {kind: snapshot.kind, reason: snapshot.reason} as const;
   const reconciliation = yield* InstallationAccessService.use((access) =>
-    access.reconcileDirectoryMembers([...desired.values()], maximumDeactivations)
+    access.reconcileDirectoryMembers(snapshot.desired, maximumDeactivations)
   );
   return {
     groups: 1,
-    directoryUsers: members.length,
+    directoryUsers: snapshot.directoryUsers,
     admitted: reconciliation.admitted,
     reactivated: reconciliation.reactivated,
     roleChanged: reconciliation.roleChanged,
     deactivated: reconciliation.deactivated,
     unchanged: reconciliation.unchanged,
-    skipped,
+    skipped: snapshot.skipped,
   } satisfies DirectorySyncReport;
 });
 

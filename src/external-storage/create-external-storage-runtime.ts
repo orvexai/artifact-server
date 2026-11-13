@@ -8,6 +8,7 @@ import type {
 import type {InteractiveIdentityProvider} from "../application/interactive-login.js";
 import type {ExternalIdentity} from "../core/installation-identity.js";
 import type {OrganizationMembershipResolver} from "./organization-memberships.js";
+import type {OrganizationAdmissionPolicy} from "./organization-registry.js";
 import type {Clock} from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
 import type {
@@ -535,7 +536,12 @@ export async function createOrgRuntime(
       isGroupRoleSeedApplied: () => runIsGroupRoleSeedApplied(readyRuntime),
       syncDirectory: (directory) => runDirectorySyncPass(readyRuntime, directory),
       syncOrganizationMembers: (directory, organization) =>
-        runOrganizationDirectorySyncPass(readyRuntime, directory, organization),
+        runOrganizationDirectorySyncPass(
+          readyRuntime,
+          directory,
+          organization,
+          organizationStaffSelectors(isOrvex ? null : groupRolePolicy),
+        ),
       syncDirectoryGroups: (directory, syncedAt, provider, recomputeRoles) =>
         runDirectoryGroupSyncPass(readyRuntime, directory, syncedAt, provider, recomputeRoles),
       close: async () => {
@@ -555,6 +561,30 @@ export async function createOrgRuntime(
     }
     throw cause;
   }
+}
+
+/** Full-path staff selectors, the same ones tenant login uses to mark staff. */
+export function organizationStaffSelectors(policy: GroupRolePolicy | null): readonly string[] {
+  if (policy === null) return [];
+  return [...new Set(policy.seed.flatMap(({selector, staff}) =>
+    staff === true && selector.startsWith("/") ? [selector] : []
+  ))];
+}
+
+/** The runtime admission policy for one registered organization record. */
+export function organizationRuntimeAdmissionPolicy(
+  admissionPolicy: OrganizationAdmissionPolicy | null,
+): GroupRolePolicy | null {
+  if (admissionPolicy === null) return null;
+  const policy = {
+    groupRoots: admissionPolicy.groupRoots,
+    seed: admissionPolicy.seed.map(({role, selector, staff}) =>
+      staff === undefined ? {role, selector} : {role, selector, staff}
+    ),
+  } satisfies GroupRolePolicy;
+  return admissionPolicy.guestGroupPrefixes === undefined
+    ? policy
+    : {...policy, guestGroupPrefixes: admissionPolicy.guestGroupPrefixes};
 }
 
 function organizationIdentityProvider(

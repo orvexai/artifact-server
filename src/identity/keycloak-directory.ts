@@ -65,6 +65,10 @@ const decodeGroupTree = Schema.decodeUnknownEffect(groupTree);
 const decodeUserList = Schema.decodeUnknownEffect(userList);
 const decodeOrganizationList = Schema.decodeUnknownEffect(organizationList);
 const decodeOrganizationGroupList = Schema.decodeUnknownEffect(organizationGroupList);
+const decodeGroupByPath = Schema.decodeUnknownEffect(Schema.Struct({
+  id: Schema.NonEmptyString,
+  path: Schema.String,
+}));
 
 export interface DirectoryOrganization {
   readonly alias: string;
@@ -83,6 +87,13 @@ export interface OrganizationDirectory {
   readonly listOrganizationMembers: (
     organization: DirectoryOrganization,
   ) => Effect.Effect<readonly DirectoryOrganizationMember[], DirectoryUnavailable>;
+  /**
+   * Keycloak user ids that are direct members of the realm group at one full
+   * path. Org sync uses it to mark admission-policy staff selectors.
+   */
+  readonly listGroupMemberIdsByPath?: (
+    path: string,
+  ) => Effect.Effect<readonly string[], DirectoryUnavailable>;
 }
 
 /**
@@ -452,6 +463,33 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
         }
       }
       return groups;
+    },
+  );
+
+  /**
+   * Read the direct members of the realm group at one full path. A missing
+   * group fails the pass: a staff selector that cannot be resolved must never
+   * silently admit staff unmasked.
+   */
+  readonly listGroupMemberIdsByPath = Effect.fn("KeycloakDirectory.listGroupMemberIdsByPath")(
+    function*(this: KeycloakDirectory, path: string) {
+      const segments = path.split("/").filter((segment) => segment !== "");
+      if (!path.startsWith("/") || segments.length === 0) {
+        return yield* unavailable(`The staff group selector ${path} is not a full group path.`);
+      }
+      const token = yield* this.#accessToken();
+      const url = new URL(
+        `${this.#adminBaseUrl}/group-by-path/${segments.map((segment) => encodeURIComponent(segment)).join("/")}`,
+      );
+      const body = yield* this.#adminGet(token, url, `The Keycloak staff group ${path}`);
+      const group = yield* decodeGroupByPath(body).pipe(
+        Effect.mapError(() => unavailable(`The Keycloak staff group ${path} returned an invalid group.`)),
+      );
+      if (group.path !== path) {
+        return yield* unavailable(`The Keycloak staff group ${path} resolved to a different path.`);
+      }
+      const users = yield* this.#groupMembers(token, path, group.id);
+      return users.map(({id}) => id);
     },
   );
 

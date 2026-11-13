@@ -388,6 +388,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
       readonly email: string;
       readonly id: string;
       readonly role: MembershipRole;
+      readonly staff?: boolean;
     }[],
     updatedAt: string,
     maximumDeactivations: number,
@@ -427,7 +428,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         }
         const rows = yield* sql.unsafe<object>(
           `SELECT id, installation_id AS "installationId", email,
-             display_name AS "displayName", role, status,
+             display_name AS "displayName", role, staff, status,
              created_at AS "createdAt", updated_at AS "updatedAt",
              manual_deactivation AS "manualDeactivation"
            FROM installation_members WHERE installation_id = $1 FOR UPDATE`,
@@ -473,12 +474,13 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
           const member = byEmail.get(entry.email);
           if (member === undefined) {
             yield* sql`INSERT INTO installation_members (
-              id, installation_id, email, display_name, role, status, created_at, updated_at
+              id, installation_id, email, display_name, role, staff, status, created_at, updated_at
             ) VALUES (
               ${entry.id}, ${installationId}, ${entry.email}, ${entry.displayName},
-              ${entry.role}, ${memberStatuses.active}, ${updatedAt}, ${updatedAt}
+              ${entry.role}, ${entry.staff === true}, ${memberStatuses.active}, ${updatedAt}, ${updatedAt}
             )`;
             admitted += 1;
+            continue;
           } else if (member.status !== memberStatuses.active && member.manualDeactivation) {
             unchanged += 1;
           } else if (member.status !== memberStatuses.active) {
@@ -493,6 +495,13 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
             roleChanged += 1;
           } else {
             unchanged += 1;
+          }
+          // The staff privacy marker is sticky, matching interactive login:
+          // sync sets it from the staff selectors and never clears it, so
+          // content a staff member authored never becomes attributable.
+          if (entry.staff === true && !member.staff) {
+            yield* sql`UPDATE installation_members SET staff = TRUE
+              WHERE installation_id = ${installationId} AND id = ${member.id}`;
           }
         }
         for (const member of removals) {
