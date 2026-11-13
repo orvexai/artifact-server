@@ -990,6 +990,25 @@ const addOrganizationAdmissionPolicy = Effect.gen(function*() {
     ADD COLUMN admission_policy JSONB`);
 });
 
+const addOrgTenancyIdentityFields = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE installation_members
+    ADD COLUMN IF NOT EXISTS manual_deactivation BOOLEAN NOT NULL DEFAULT FALSE`);
+  yield* sql.unsafe(`ALTER TABLE installation_members
+    ADD COLUMN IF NOT EXISTS suspended_by_org_at TIMESTAMPTZ`);
+  yield* sql.unsafe(`ALTER TABLE installation_members
+    ADD COLUMN IF NOT EXISTS pre_suspend_status TEXT`);
+  yield* sql.unsafe(`ALTER TABLE installation_members
+    ADD COLUMN IF NOT EXISTS pre_suspend_manual_deactivation BOOLEAN`);
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN keycloak_organization_id TEXT`);
+  yield* sql.unsafe(`CREATE UNIQUE INDEX artifact_installations_keycloak_org_unique
+    ON artifact_installations (keycloak_organization_id)
+    WHERE keycloak_organization_id IS NOT NULL`);
+  yield* sql.unsafe(`ALTER TABLE external_identities
+    ADD COLUMN identity_provider TEXT`);
+});
+
 const addOrganizationEmbedOrigins = Effect.gen(function*() {
   const sql = yield* SqlClient;
   yield* sql.unsafe(`ALTER TABLE artifact_installations

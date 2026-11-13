@@ -295,7 +295,8 @@ export class OrganizationRegistry {
           WHERE id = ${existing.id}
           RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
             status, admission_policy AS "admissionPolicy",
-            keycloak_organization_id AS "keycloakId"`;
+            keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins",
+            registry_version::text AS "registryVersion"`;
       }));
       return {kind: "synced", organization: organizationSchema.parse(rows[0])};
     }
@@ -337,7 +338,8 @@ export class OrganizationRegistry {
         SET keycloak_organization_id = ${keycloakId}
         WHERE id = ${existing.id} AND (keycloak_organization_id IS NULL OR keycloak_organization_id = ${keycloakId})
         RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
-          status, admission_policy AS "admissionPolicy", keycloak_organization_id AS "keycloakId"`;
+          status, admission_policy AS "admissionPolicy", keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins",
+            registry_version::text AS "registryVersion"`;
     }));
     return organizationSchema.parse(rows[0]);
   }
@@ -375,7 +377,8 @@ export class OrganizationRegistry {
           WHERE id = ${organization.id}
           RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
             status, admission_policy AS "admissionPolicy",
-            keycloak_organization_id AS "keycloakId"`;
+            keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins",
+            registry_version::text AS "registryVersion"`;
       }));
     }));
     if (rows[0] === undefined) throw new Error(`Organization '${slug}' disappeared while being suspended.`);
@@ -406,7 +409,8 @@ export class OrganizationRegistry {
           WHERE id = ${organization.id}
           RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
             status, admission_policy AS "admissionPolicy",
-            keycloak_organization_id AS "keycloakId"`;
+            keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins",
+            registry_version::text AS "registryVersion"`;
       }));
     }));
     if (rows[0] === undefined) throw new Error(`Organization '${slug}' disappeared while being resumed.`);
