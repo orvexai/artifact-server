@@ -82,7 +82,7 @@
         "organizationStaffGroups": {
           "type": "array",
           "uniqueItems": true,
-          "items": {"type": "string", "pattern": "^(/[^/\\s,]+)+$"}
+          "items": {"type": "string", "pattern": "^(/[^/,\\s](?:[^/,]*[^/,\\s])?)+$"}
         },
         "s3": {
           "type": "object",

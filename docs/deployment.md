@@ -47,7 +47,10 @@ the cleanup CronJob and the directory-sync CronJob. Before you switch it on:
   in-app organization switcher appears only with more than one.
 - **Name the Orvex staff groups.** Set `ARTIFACT_SERVER_ORG_STAFF_GROUPS` to
   the comma-separated exact Keycloak group paths of Orvex staff, for example
-  `/Administrators,/Developers` (Helm: `configuration.organizationStaffGroups:
+  `/Administrators,/Platform Team,/Orvex AI Developers`. Each segment may
+  contain internal spaces but no leading or trailing whitespace, commas or
+  empty segments; spaces around the commas are trimmed (Helm:
+  `configuration.organizationStaffGroups:
   ["/Administrators", "/Developers"]`). Members of these groups who belong to
   any non-Orvex organization are stored as staff at sign-in and by
   `org sync`, and tenants see them only as "Orvex Support". This applies to

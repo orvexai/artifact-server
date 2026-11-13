@@ -27,7 +27,8 @@ configuration:
   # paths to /o/orvex/. See docs/deployment.md before enabling.
   organizationTenancy: "off"
   # Platform-wide Orvex staff (ARTIFACT_SERVER_ORG_STAFF_GROUPS): exact Keycloak
-  # group paths, for example ["/Administrators", "/Developers"]. "{slug}" expands
+  # group paths, for example ["/Administrators", "/Platform Team"]. Segments may
+  # contain internal spaces but not leading or trailing ones. "{slug}" expands
   # to each organization's slug, e.g. "/TenantWorkspaces/{slug}/{slug}-staff".
   # Each path also covers its subgroups. Members are shown only as
   # "Orvex Support" in every non-Orvex organization.

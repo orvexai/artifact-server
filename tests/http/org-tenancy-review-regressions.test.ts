@@ -16,6 +16,7 @@ import {
 } from "../../src/external-storage/create-external-storage-runtime.js";
 import {
   expandOrganizationStaffGroups,
+  isExactStaffGroupPath,
   parseOrganizationStaffGroups,
   requireOrganizationStaffGroups,
 } from "../../src/external-storage/organization-staff-groups.js";
@@ -238,7 +239,7 @@ describe("H1: platform-wide staff groups (ARTIFACT_SERVER_ORG_STAFF_GROUPS)", ()
     expect(result.success.desired.at(0)?.staff).toBe(true);
     expect(() => parseOrganizationStaffGroups("/Tenant/{org}")).toThrow("exact group paths");
     expect(() => parseOrganizationStaffGroups("/Tenant/{slug")).toThrow("exact group paths");
-    expect(() => expandOrganizationStaffGroups(["/Tenant/{slug}"], "bad slug")).toThrow("not an exact group path");
+    expect(() => expandOrganizationStaffGroups(["/Tenant/{slug}"], "bad/")).toThrow("not an exact group path");
   });
 });
 
@@ -296,6 +297,23 @@ describe("tenant login staff decision", () => {
       seed: [{role: "administrator", selector: "/teams/acme/support", staff: true}],
     })).toBe(true);
     expect(staffPathCovers("/Developers", "/Developers/x")).toBe(true);
+  });
+
+  test("group paths may contain internal spaces but no edge whitespace or empty segments", () => {
+    expect(parseOrganizationStaffGroups(" /Platform Team , /Orvex AI Developers ,/TenantWorkspaces/{slug}/{slug}-staff"))
+      .toEqual(["/Platform Team", "/Orvex AI Developers", "/TenantWorkspaces/{slug}/{slug}-staff"]);
+    expect(isExactStaffGroupPath("/Platform Team")).toBe(true);
+    expect(isExactStaffGroupPath("/Orvex AI Developers")).toBe(true);
+    for (const rejected of ["/ Lead", "/Trail ", "/a//b", "/Trail /x", "/a,b", "/"]) {
+      expect({accepted: isExactStaffGroupPath(rejected), rejected}).toEqual({accepted: false, rejected});
+    }
+    // Spaces next to the separating commas are trimmed; inside an entry they are refused.
+    expect(() => parseOrganizationStaffGroups("/ Lead")).toThrow("exact group paths");
+    expect(() => parseOrganizationStaffGroups("/a//b")).toThrow("exact group paths");
+    expect(() => parseOrganizationStaffGroups("/Trail /x")).toThrow("exact group paths");
+    expect(expandOrganizationStaffGroups(["/Tenant Spaces/{slug}/{slug} staff"], "acme"))
+      .toEqual(["/Tenant Spaces/acme/acme staff"]);
+    expect(tenantLoginIsStaff({groups: ["/Platform Team/On Call"], seed: [], staffGroups: ["/Platform Team"]})).toBe(true);
   });
 
   test("tenancy without a staff definition fails closed, and entries must be exact paths", () => {

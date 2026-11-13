@@ -4,7 +4,17 @@ export const organizationStaffGroupsVariable = "ARTIFACT_SERVER_ORG_STAFF_GROUPS
 /** Placeholder expanded to each organization's slug. */
 export const organizationSlugPlaceholder = "{slug}";
 
-const staffGroupPathPattern = /^(?:\/[^/\s,{}]+)+$/u;
+/**
+ * One exact group path: every segment is non-empty, may contain internal
+ * spaces (as in `/Platform Team`), and has no leading or trailing whitespace,
+ * commas or braces. Shared by the parser and the `{slug}` expansion check.
+ */
+const staffGroupPathPattern = /^(?:\/[^/,{}\s](?:[^/,{}]*[^/,{}\s])?)+$/u;
+
+/** Whether a value is an exact staff group path under the rule above. */
+export function isExactStaffGroupPath(value: string): boolean {
+  return staffGroupPathPattern.test(value);
+}
 
 /**
  * Parse the platform-wide staff definition: comma-separated exact Keycloak
@@ -17,7 +27,7 @@ export function parseOrganizationStaffGroups(value: string | undefined): readonl
   for (const group of groups) {
     // `{slug}` is the only placeholder; it must still form an exact path.
     if (!staffGroupPathPattern.test(group.replaceAll(organizationSlugPlaceholder, "slug"))) {
-      throw new Error(`${organizationStaffGroupsVariable} entries must be exact group paths such as /Developers; got ${JSON.stringify(group)}.`);
+      throw new Error(`${organizationStaffGroupsVariable} entries must be exact group paths such as /Developers or /Platform Team; got ${JSON.stringify(group)}.`);
     }
   }
   return [...new Set(groups)];
