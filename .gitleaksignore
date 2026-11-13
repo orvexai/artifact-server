@@ -28,3 +28,5 @@ f68874e3cf0e5becc95734f176f3438b93ed6044:tests/browser/drf-001-draft-durability.
 966a36f370b0f689f663e5f769d218cf3631ef88:tests/conformance/ndg-001-queued-work-nudge.test.ts:generic-api-key:68
 966a36f370b0f689f663e5f769d218cf3631ef88:tests/conformance/ndg-001-queued-work-nudge.test.ts:generic-api-key:148
 966a36f370b0f689f663e5f769d218cf3631ef88:tests/conformance/ndg-002-nudge-isolation.test.ts:generic-api-key:71
+# Test idempotency key, not a secret.
+c81ef0faf55974898ffadde8858b550d4dfd206d:tests/conformance/guest-review.test.ts:generic-api-key:123
