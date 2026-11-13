@@ -21,7 +21,7 @@ env:
 jobs:
   gitleaks:
     name: Gitleaks
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 15
     steps:
       - name: Checkout repository history
@@ -76,7 +76,7 @@ jobs:
 
   zizmor:
     name: zizmor
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -111,7 +111,7 @@ jobs:
             'on: issues' \
             'jobs:' \
             '  test:' \
-            '    runs-on: ubuntu-latest' \
+            '    runs-on: public-dind-runners' \
             '    steps:' \
             "      - run: echo \"$unsafe_expression\"" \
             | zizmor --offline --persona regular --strict-collection --format=json --no-progress --color=never - \
