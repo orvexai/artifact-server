@@ -373,22 +373,25 @@ function configureOrganizations(program: Command): void {
     .argument("<slug>", "registered Artifact Server organization slug")
     .action(async (slug: string) => {
       const configuration = await parseExternalConfiguration();
-      const database = await openExternalStorageDatabase(externalMaintenanceConfig(configuration));
       try {
-        const resumed = await new OrganizationRegistry(database).resume(slug);
-        console.log(JSON.stringify(resumed, null, 2));
+        const database = await openExternalStorageDatabase(externalMaintenanceConfig(configuration));
+        try {
+          const resumed = await new OrganizationRegistry(database).resume(slug);
+          console.log(JSON.stringify(resumed, null, 2));
+        } finally {
+          await database.close();
+        }
+        try {
+          printOrganizationSyncReport(await syncKeycloakOrganizations(configuration, slug, false));
+        } catch (error) {
+          console.error(JSON.stringify({
+            alias: slug,
+            error: error instanceof Error ? error.message : String(error),
+            operation: "member-sync-after-resume",
+          }, null, 2));
+          process.exitCode = 2;
+        }
       } finally {
-        await database.close();
-      }
-      try {
-        printOrganizationSyncReport(await syncKeycloakOrganizations(configuration, slug));
-      } catch (error) {
-        console.error(JSON.stringify({
-          alias: slug,
-          error: error instanceof Error ? error.message : String(error),
-          operation: "member-sync-after-resume",
-        }, null, 2));
-        process.exitCode = 2;
         await configuration.objectStorage.close?.();
       }
     });
@@ -411,6 +414,7 @@ function printOrganizationSyncReport(report: OrganizationSyncReport): void {
 async function syncKeycloakOrganizations(
   configuration: ExternalStorageRuntimeConfiguration,
   onlyAlias?: string,
+  closeObjectStorage = true,
 ): Promise<OrganizationSyncReport> {
   if (configuration.deploymentMode !== "external-storage") {
     throw new Error("Keycloak organization sync requires external-storage mode.");
@@ -511,7 +515,11 @@ async function syncKeycloakOrganizations(
     const disappeared = findDisappearedOrganizations(before, keycloakOrganizations);
     return {discovered, disappeared, skipped, emptied, errors, memberSync};
   } finally {
-    await Promise.all([configuration.objectStorage.close?.(), database.close()]);
+    if (closeObjectStorage) {
+      await Promise.all([configuration.objectStorage.close?.(), database.close()]);
+    } else {
+      await database.close();
+    }
   }
 }
 

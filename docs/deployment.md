@@ -54,9 +54,11 @@ the Keycloak membership first; when suspension is intended, run
 revokes their sessions and human API keys, and suspends its route. Suspension
 is reversible only with `artifact-server org resume <slug>`, which restores
 members to their prior active/inactive and manual-deactivation state, then
-immediately reads the current Keycloak membership and roles. Resume does not
-restore browser sessions or API keys revoked by suspension; affected members
-must sign in again and any required API keys must be reissued.
+immediately reads the current Keycloak membership and roles. If that sync
+fails, the organization remains resumed with members at their restored
+statuses; investigate the reported error and rerun `artifact-server org sync`.
+Resume does not restore browser sessions or API keys revoked by suspension;
+affected members must sign in again and any required API keys must be reissued.
 Artifact Server administrator deactivations are sticky; only a
 Keycloak-driven deactivation is automatically reversed when the member returns.
 
