@@ -369,21 +369,27 @@ function configureOrganizations(program: Command): void {
       }
     });
   organization.command("resume")
-    .description("Resume an organization suspended with org suspend.")
+    .description("Resume an organization and immediately sync its Keycloak members.")
     .argument("<slug>", "registered Artifact Server organization slug")
     .action(async (slug: string) => {
-      const configuration = await runCliEffect(
-        parseExternalMigrationConfiguration(process.env),
-      );
-      const database = await PostgresDatabase.inspect({
-        applicationName: `artifact-server-org-resume:${configuration.installationId}`,
-        maxConnections: 1,
-        url: configuration.databaseUrl,
-      });
+      const configuration = await parseExternalConfiguration();
+      const database = await openExternalStorageDatabase(externalMaintenanceConfig(configuration));
       try {
-        console.log(JSON.stringify(await new OrganizationRegistry(database).resume(slug), null, 2));
+        const resumed = await new OrganizationRegistry(database).resume(slug);
+        console.log(JSON.stringify(resumed, null, 2));
       } finally {
         await database.close();
+      }
+      try {
+        printOrganizationSyncReport(await syncKeycloakOrganizations(configuration, slug));
+      } catch (error) {
+        console.error(JSON.stringify({
+          alias: slug,
+          error: error instanceof Error ? error.message : String(error),
+          operation: "member-sync-after-resume",
+        }, null, 2));
+        process.exitCode = 2;
+        await configuration.objectStorage.close?.();
       }
     });
 }
@@ -404,6 +410,7 @@ function printOrganizationSyncReport(report: OrganizationSyncReport): void {
 
 async function syncKeycloakOrganizations(
   configuration: ExternalStorageRuntimeConfiguration,
+  onlyAlias?: string,
 ): Promise<OrganizationSyncReport> {
   if (configuration.deploymentMode !== "external-storage") {
     throw new Error("Keycloak organization sync requires external-storage mode.");
@@ -441,10 +448,15 @@ async function syncKeycloakOrganizations(
     const emptied: {alias: string; reason: string}[] = [];
     const errors: {alias: string; error: string}[] = [];
     const memberSync: {alias: string; report: unknown}[] = [];
+    let foundRequestedAlias = false;
     for (const keycloakOrganization of keycloakOrganizations) {
+      if (onlyAlias !== undefined && keycloakOrganization.alias !== onlyAlias) continue;
+      if (keycloakOrganization.alias === onlyAlias) foundRequestedAlias = true;
       try {
         if (keycloakOrganization.enabled === false) {
-          skipped.push({alias: keycloakOrganization.alias, reason: "Keycloak organization is disabled."});
+          const reason = "Keycloak organization is disabled.";
+          if (keycloakOrganization.alias === onlyAlias) errors.push({alias: onlyAlias, error: reason});
+          else skipped.push({alias: keycloakOrganization.alias, reason});
           continue;
         }
         // Keep each tenant operation sequential: the per-org catch below
@@ -492,6 +504,9 @@ async function syncKeycloakOrganizations(
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+    if (onlyAlias !== undefined && !foundRequestedAlias) {
+      errors.push({alias: onlyAlias, error: "The organization is not present in the current Keycloak organization listing."});
     }
     const disappeared = findDisappearedOrganizations(before, keycloakOrganizations);
     return {discovered, disappeared, skipped, emptied, errors, memberSync};

@@ -1155,7 +1155,6 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
   async reactivateMember(
     installationId: string,
     memberId: string,
-    updatedAt: string,
   ): Promise<InstallationMember> {
     this.#assertInstallationScope(installationId);
     return this.#database.run(Effect.gen(function*() {
@@ -1165,13 +1164,13 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
           hashtextextended(${`artifact-server:member-policy:${installationId}`}, 0)
         )`;
         const rows = yield* sql.unsafe<object>(
-          `UPDATE installation_members SET status = 'active', manual_deactivation = FALSE,
-             updated_at = $3
-           WHERE installation_id = $1 AND id = $2 AND suspended_by_org_at IS NULL
+          `UPDATE installation_members SET manual_deactivation = FALSE
+           WHERE installation_id = $1 AND id = $2 AND manual_deactivation = TRUE
+             AND suspended_by_org_at IS NULL
            RETURNING id, installation_id AS "installationId", email,
              display_name AS "displayName", role, status,
              created_at AS "createdAt", updated_at AS "updatedAt"`,
-          [installationId, memberId, updatedAt],
+          [installationId, memberId],
         );
         if (rows[0] !== undefined) return memberRowSchema.parse(rows[0]);
         const existing = yield* sql.unsafe<{id: string}>(
@@ -1179,7 +1178,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
           [installationId, memberId],
         );
         if (existing.length === 0) return yield* new IdentityNotFound({message: "The member does not exist."});
-        return yield* new IdentityConflict({message: "A member suspended with the organization can only be restored by org resume."});
+        return yield* new IdentityConflict({message: "Only a manually deactivated organization member can be reactivated; sync-deactivated or organization-suspended members are not eligible."});
       }));
     }));
   }

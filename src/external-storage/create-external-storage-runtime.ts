@@ -414,6 +414,16 @@ export async function createOrgRuntime(
         organizationCookieSuffix: `-${orgConfig.cookieRouteId}`,
       };
     }
+    if (!isOrvex && orgConfig.keycloakOrganizationId !== null &&
+      orgConfig.keycloakOrganizationId !== undefined && orgConfig.slug !== undefined) {
+      configuredAppDependencies = {
+        ...configuredAppDependencies,
+        organizationAdmission: {
+          alias: orgConfig.slug,
+          id: orgConfig.keycloakOrganizationId,
+        },
+      };
+    }
     if (config.embedOrigins !== undefined) {
       configuredAppDependencies = {...configuredAppDependencies, embedOrigins: config.embedOrigins};
     }

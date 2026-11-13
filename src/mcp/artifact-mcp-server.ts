@@ -444,6 +444,7 @@ export interface ArtifactMcpServerDependencies {
   readonly gitHistory: GitHistoryCapability;
   /** Advertises the local linked-artifact capability in discovery. */
   readonly linkedArtifacts?: boolean;
+  readonly organizationTenancy?: boolean;
   readonly mode: "local" | "remote";
   readonly requestId: string;
 }
@@ -724,7 +725,7 @@ export function createArtifactMcpServer(
       "Artifact Server publishes actual files through an upload plan. It does not accept inline HTML, CSS, JavaScript, or base64 content."),
   );
 
-  registerNudgedTool(
+  if (dependencies.organizationTenancy === true) registerNudgedTool(
     "member_reactivate",
     {
       title: "Reactivate organization member",

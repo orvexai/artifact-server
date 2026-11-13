@@ -187,7 +187,6 @@ export interface InstallationIdentityRepository {
   readonly reactivateMember?: (
     installationId: string,
     memberId: string,
-    updatedAt: string,
   ) => Effect.Effect<InstallationMember,
     IdentityConflict | IdentityNotFound | IdentityRepositoryFailure>;
   readonly findActiveMemberByEmail: (
@@ -1521,7 +1520,6 @@ function makeInstallationAccessService(
     const member = yield* dependencies.repository.reactivateMember(
       dependencies.installationId,
       memberId,
-      dependencies.clock.now().toISOString(),
     );
     clearAuthenticationCaches();
     return member;

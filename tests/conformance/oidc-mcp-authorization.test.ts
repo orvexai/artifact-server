@@ -95,6 +95,47 @@ describe("generic OIDC MCP authorization", () => {
     await removeTestInstallation(installation);
   });
 
+  test("flag-off HTTP routes and MCP tools omit organization member reactivation", async () => {
+    const http = await fetch(`${server.baseUrl}/api/v1/members/member-example/reactivate`, {
+      body: "{}",
+      headers: {
+        Authorization: `Bearer ${installation.apiToken}`,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    });
+    expect(http.status).toBe(404);
+
+    const tools = await fetch(`${server.baseUrl}/mcp`, {
+      body: JSON.stringify({
+        id: 9,
+        jsonrpc: "2.0",
+        method: "tools/list",
+        params: {
+          _meta: {
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+            [CLIENT_INFO_META_KEY]: {name: "artifact-server-test", version: "1"},
+            [PROTOCOL_VERSION_META_KEY]: protocolVersion,
+          },
+        },
+      }),
+      headers: {
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${installation.apiToken}`,
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": protocolVersion,
+        "Mcp-Method": "tools/list",
+      },
+      method: "POST",
+    });
+    const payload = await tools.text();
+    expect(tools.status).toBe(200);
+    const message = payload.split("\n").find((line) => line.startsWith("data: "))?.slice(6) ?? payload;
+    const listed = z.object({result: z.object({tools: z.array(z.object({name: z.string()}))})})
+      .parse(JSON.parse(message));
+    expect(listed.result.tools.map(({name}) => name)).not.toContain("member_reactivate");
+  });
+
   test("discovery accepts one realm-path issuer and refuses a weaker contract", async () => {
     expect.hasAssertions();
     const authorizationServer = await loadOidcAuthorizationServer(issuer);

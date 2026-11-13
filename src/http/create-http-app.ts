@@ -556,6 +556,8 @@ export interface HttpAppDependencies {
   readonly contentDomain: string;
   /** Suffix scoped to one configured organization on the shared app host. */
   readonly organizationCookieSuffix?: string;
+  /** Keycloak organization bound to this installation for token admission. */
+  readonly organizationAdmission?: {readonly alias: string; readonly id: string};
   readonly embedOrigins?: readonly string[];
   readonly embedBindingSecret?: Redacted.Redacted | undefined;
   readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
@@ -678,6 +680,7 @@ export function createHttpApp(
     applicationOrigin: dependencies.trustedApplicationOrigin,
     applicationRuntime: dependencies.applicationRuntime,
     contentDomain: dependencies.contentDomain,
+    organizationTenancy: dependencies.organizationAdmission !== undefined,
     gitHistory,
     linkedArtifacts: dependencies.linkedArtifacts === true,
     mode: dependencies.trustedApplicationOrigin === null ? "local" : "remote",
@@ -1676,17 +1679,19 @@ export function createHttpApp(
     return context.json({member});
   });
 
-  app.post("/api/v1/members/:memberId/reactivate", async (context) => {
-    const member = await runHttpApplicationEffect(
-      context,
-      dependencies,
-      InstallationAccessService.use((access) =>
-        access.reactivateMember?.(context.get("principal"), context.req.param("memberId"))
-          ?? Effect.fail(new AuthorizationDenied({message: "Member reactivation is unavailable."}))
-      ),
-    );
-    return context.json({member});
-  });
+  if (dependencies.organizationAdmission !== undefined) {
+    app.post("/api/v1/members/:memberId/reactivate", async (context) => {
+      const member = await runHttpApplicationEffect(
+        context,
+        dependencies,
+        InstallationAccessService.use((access) =>
+          access.reactivateMember?.(context.get("principal"), context.req.param("memberId"))
+            ?? Effect.fail(new AuthorizationDenied({message: "Member reactivation is unavailable."}))
+        ),
+      );
+      return context.json({member});
+    });
+  }
 
   app.get("/api/v1/api-keys", async (context) => {
     const apiKeys = await runHttpApplicationEffect(

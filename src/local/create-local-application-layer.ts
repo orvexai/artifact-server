@@ -1028,10 +1028,10 @@ export function createApplicationLayer(
   }
   if (identityRepository.reactivateMember !== undefined) {
     Object.assign(installationAccessDependencies.repository, {
-      reactivateMember: (installationId: string, memberId: string, updatedAt: string) =>
+      reactivateMember: (installationId: string, memberId: string) =>
         identityEffectWithConflictOrNotFound(
           "reactivateMember",
-          () => identityRepository.reactivateMember?.(installationId, memberId, updatedAt) ??
+          () => identityRepository.reactivateMember?.(installationId, memberId) ??
             Promise.reject(new Error("Organization member reactivation is unavailable.")),
         ),
     });
