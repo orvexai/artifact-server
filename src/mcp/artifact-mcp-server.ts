@@ -69,10 +69,12 @@ import {
 } from "../core/model.js";
 import {
   isAdministratorRole,
+  isReservedTenantIdentityName,
   membershipRoles,
   principalCapabilities,
   principalKinds,
   tenantIdentityPresentation,
+  tenantVisiblePrincipalId,
   type Principal,
 } from "../core/identity.js";
 import {provisionerToolAllowList} from "./provisioner-tools.js";
@@ -161,7 +163,7 @@ const versionRecordSchema = z.object({
   id: z.string(),
   manifestDigest: z.string(),
   number: z.number().int().positive(),
-  publisherPrincipalId: z.string().optional(),
+  publisherPrincipalId: z.string().nullable().optional(),
   projectId: z.string(),
   routingMode: z.enum(["static", "spa"]),
 }).strict();
@@ -1358,7 +1360,7 @@ export function createArtifactMcpServer(
           id: z.string(),
           manifestDigest: z.string(),
           number: z.number().int().positive(),
-          publisherPrincipalId: z.string().optional(),
+          publisherPrincipalId: z.string().nullable().optional(),
         }).strict()),
       }).strict(),
       annotations: readOnlyAnnotations,
@@ -1388,7 +1390,7 @@ export function createArtifactMcpServer(
           manifestDigest: version.manifestDigest,
           number: version.number,
         }, identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest
-          ? {} : {publisherPrincipalId: version.publisherPrincipalId})),
+          ? {} : {publisherPrincipalId: isTenantOrganization ? tenantVisiblePrincipalId(identity.principal, version.publisherPrincipalId) : version.publisherPrincipalId})),
       };
     }),
   );
@@ -2126,9 +2128,9 @@ export function createArtifactMcpServer(
           items: page.items.map((response) => artifactResponseProjection(
             response,
             identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest,
-            identity.principal.kind === "human" && (isTenantOrganization
-              ? identity.principal.membershipRole === membershipRoles.member || identity.principal.membershipRole === membershipRoles.owner
-              : identity.principal.membershipRole !== membershipRoles.guest),
+            isTenantOrganization
+              ? identity.principal.kind === "human" && (identity.principal.membershipRole === membershipRoles.member || identity.principal.membershipRole === membershipRoles.owner)
+              : identity.principal.kind === "human" && identity.principal.membershipRole !== membershipRoles.guest,
             identity.principal,
             isTenantOrganization,
           )),
@@ -2755,7 +2757,7 @@ export function createArtifactMcpServer(
         case "list": {
           const agent = await registerMailboxAgent(input.agentName);
           return {
-            agent: mailboxAgentProjection(agent),
+            agent: mailboxAgentProjection(agent, isTenantOrganization),
             claimed: null,
             inbox: await listMailboxInbox(agent.id),
             operation: "list",
@@ -2776,7 +2778,7 @@ export function createArtifactMcpServer(
           );
           if (dispatch === null) {
             return {
-              agent: mailboxAgentProjection(agent),
+              agent: mailboxAgentProjection(agent, isTenantOrganization),
               claimed: null,
               inbox: null,
               operation: "claim",
@@ -2791,7 +2793,7 @@ export function createArtifactMcpServer(
             throw cause;
           }
           return {
-            agent: mailboxAgentProjection(agent),
+            agent: mailboxAgentProjection(agent, isTenantOrganization),
             claimed: {
               dispatchId: dispatch.id,
               message: renderBundleMessage(assembled.bundle, "mailbox"),
@@ -2818,7 +2820,7 @@ export function createArtifactMcpServer(
             ),
           );
           return {
-            agent: mailboxAgentProjection(agent),
+            agent: mailboxAgentProjection(agent, isTenantOrganization),
             claimed: null,
             inbox: null,
             operation: "delivered",
@@ -2839,7 +2841,7 @@ export function createArtifactMcpServer(
             ),
           );
           return {
-            agent: mailboxAgentProjection(agent),
+            agent: mailboxAgentProjection(agent, isTenantOrganization),
             claimed: null,
             inbox: null,
             operation: "failed",
@@ -3136,10 +3138,10 @@ function requiredMailboxClientId(agentClientId: string | null): string {
   return agentClientId;
 }
 
-function mailboxAgentProjection(agent: RegisteredAgentRecord) {
+function mailboxAgentProjection(agent: RegisteredAgentRecord, tenant = false) {
   return {
     capabilities: agent.capabilities,
-    displayName: agent.displayName,
+    displayName: tenant && isReservedTenantIdentityName(agent.displayName) ? "Orvex Support (member)" : agent.displayName,
     id: agent.id,
     kind: agent.kind,
   };
@@ -3233,10 +3235,15 @@ function artifactResponseProjection(response: ArtifactResponseRecord, isGuest: b
 }
 
 function tenantStateEntryProjection(entry: ArtifactStateEntry, principal: Principal, isGuest: boolean, tenant: boolean) {
-  if (isGuest) return guestStateEntryProjection(entry);
+  if (isGuest) {
+    const projected = guestStateEntryProjection(entry);
+    if (!tenant) return projected;
+    const actor = tenantIdentityPresentation(principal, entry.updatedBy);
+    return {...projected, updatedBy: {...projected.updatedBy, displayName: actor.displayName}};
+  }
   if (tenant) {
     const actor = tenantIdentityPresentation(principal, entry.updatedBy);
-    if (actor.isStaff) return {...entry, updatedBy: {displayName: actor.displayName, principalId: null}};
+    return {...entry, updatedBy: {displayName: actor.displayName, principalId: tenantVisiblePrincipalId(principal, entry.updatedBy.principalId)}};
   }
   return entry;
 }
@@ -3253,16 +3260,14 @@ function commentAuthorProjection(author: CommentAuthor, isGuest: boolean, princi
   if (isGuest) {
     const {principalId: _principalId, staff: _staff, ...visibleAuthor} = author;
     const staff = tenant && (author.staff === true || principal?.tenantStaffPrincipalIds?.includes(author.principalId) === true);
-    const authorizedByStaff = tenant && visibleAuthor.authorizedByPrincipalId !== null && principal?.tenantStaffPrincipalIds?.includes(visibleAuthor.authorizedByPrincipalId) === true;
     const displayName = tenant ? tenantIdentityPresentation(undefined, author).displayName : author.displayName;
-    return {...visibleAuthor, authorizedByPrincipalId: staff || authorizedByStaff ? null : visibleAuthor.authorizedByPrincipalId, displayName: staff ? "Orvex Support" : displayName.includes("@") ? "Team member" : displayName};
+    const authorizedByPrincipalId = visibleAuthor.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, visibleAuthor.authorizedByPrincipalId);
+    return {...visibleAuthor, authorizedByPrincipalId: staff ? null : authorizedByPrincipalId, displayName: staff ? "Orvex Support" : displayName.includes("@") ? "Team member" : displayName};
   }
   const {staff: _staff, ...visibleAuthor} = author;
   if (tenant) {
     const publicIdentity = tenantIdentityPresentation(principal, author);
-    const authorizedByStaff = visibleAuthor.authorizedByPrincipalId !== null && principal?.tenantStaffPrincipalIds?.includes(visibleAuthor.authorizedByPrincipalId) === true;
-    if (publicIdentity.isStaff) return {...visibleAuthor, displayName: publicIdentity.displayName, principalId: null, authorizedByPrincipalId: null};
-    if (authorizedByStaff) return {...visibleAuthor, authorizedByPrincipalId: null};
+    return {...visibleAuthor, displayName: publicIdentity.displayName, principalId: tenantVisiblePrincipalId(principal, author.principalId), authorizedByPrincipalId: visibleAuthor.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, visibleAuthor.authorizedByPrincipalId)};
   }
   return visibleAuthor;
 }

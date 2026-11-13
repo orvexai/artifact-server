@@ -40,6 +40,7 @@ export function createKeycloakOrganizationMembershipResolver(
       const results = await Promise.all(Object.entries(claim).map(async ([slug, membership]) => {
         const organization = await findOrganization(slug);
         if (organization === null || organization.status !== "active" || organization.admissionPolicy === null) return null;
+        if (organization.keycloakId !== membership.id) return null;
         if (isManuallyDeactivated !== undefined && await isManuallyDeactivated(organization, identity)) return null;
         const groups = new Set(membership.groups);
         const roles = organization.admissionPolicy.seed

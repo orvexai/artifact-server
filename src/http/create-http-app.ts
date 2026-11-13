@@ -95,7 +95,8 @@ import {
   isAdministratorRole,
   membershipRoles,
   principalCapabilities,
-  isTenantStaffIdentity,
+  isReservedTenantIdentityName,
+  tenantVisiblePrincipalId,
   tenantIdentityPresentation,
   type Principal,
 } from "../core/identity.js";
@@ -1541,12 +1542,6 @@ export function createHttpApp(
         InstallationAccessService.use((access) => access.completeExternalIdentity(returnTo.identity)),
       );
       setApplicationSessionCookies(context, dependencies, completed);
-      if (dependencies.issuePlatformSession !== undefined) {
-        const platformToken = await dependencies.issuePlatformSession(returnTo.identity, getCookie(context, "__Host-artifact_platform"));
-        setCookie(context, "__Host-artifact_platform", platformToken, {
-          httpOnly: true, maxAge: 60 * 60, path: "/", sameSite: "Lax", secure: true,
-        });
-      }
       context.header("Cache-Control", "private, no-store");
       context.header("Referrer-Policy", "no-referrer");
       clearLoginHandshakeCookie(context, dependencies);
@@ -1680,7 +1675,9 @@ export function createHttpApp(
     );
     if (tenantOrganization) {
       if (principal.kind === "human") return context.json({members: projectTenantMembers(members, principal.membershipRole)});
-      return context.json({members: members.map(({email: _email, role: _role, staff: _staff, ...visible}) => visible)});
+      return context.json({members: members.map(({email: _email, role: _role, staff: _staff, ...visible}) => Object.assign({}, visible, {
+        displayName: isReservedTenantIdentityName(visible.displayName) ? "Orvex Support (member)" : visible.displayName,
+      }))});
     }
     return context.json({members: members.map(({staff: _staff, ...visible}) => visible)});
   });
@@ -1738,7 +1735,11 @@ export function createHttpApp(
         access.listApiKeys(context.get("principal"))
       ),
     );
-    return context.json({apiKeys});
+    const principal = context.get("principal");
+    return context.json({apiKeys: principal.tenantStaffPrincipalIds === undefined ? apiKeys : apiKeys.map((key) => Object.assign({}, key, {
+      principalId: tenantVisiblePrincipalId(principal, key.principalId),
+      authorizedByPrincipalId: key.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, key.authorizedByPrincipalId),
+    }))});
   });
 
   app.post("/api/v1/api-keys", boundedJsonBody, async (context) => {
@@ -1764,7 +1765,11 @@ export function createHttpApp(
         access.issueApiKey(issueCommand)
       ),
     );
-    return context.json(issued, 201);
+    const principal = context.get("principal");
+    return context.json(principal.tenantStaffPrincipalIds === undefined ? issued : Object.assign({}, issued, {apiKey: Object.assign({}, issued.apiKey, {
+      principalId: tenantVisiblePrincipalId(principal, issued.apiKey.principalId),
+      authorizedByPrincipalId: issued.apiKey.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, issued.apiKey.authorizedByPrincipalId),
+    })}), 201);
   });
 
   app.post("/api/v1/api-keys/:keyId/revoke", async (context) => {
@@ -1778,7 +1783,11 @@ export function createHttpApp(
         )
       ),
     );
-    return context.json({apiKey});
+    const principal = context.get("principal");
+    return context.json({apiKey: principal.tenantStaffPrincipalIds === undefined ? apiKey : Object.assign({}, apiKey, {
+      principalId: tenantVisiblePrincipalId(principal, apiKey.principalId),
+      authorizedByPrincipalId: apiKey.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, apiKey.authorizedByPrincipalId),
+    })});
   });
 
   app.post("/api/v1/api-keys/:keyId/rotate", async (context) => {
@@ -1792,7 +1801,11 @@ export function createHttpApp(
         )
       ),
     );
-    return context.json(issued, 201);
+    const principal = context.get("principal");
+    return context.json(principal.tenantStaffPrincipalIds === undefined ? issued : Object.assign({}, issued, {apiKey: Object.assign({}, issued.apiKey, {
+      principalId: tenantVisiblePrincipalId(principal, issued.apiKey.principalId),
+      authorizedByPrincipalId: issued.apiKey.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, issued.apiKey.authorizedByPrincipalId),
+    })}), 201);
   });
 
   app.get("/api/v1/administration/public-links", async (context) => {
@@ -2168,7 +2181,8 @@ export function createHttpApp(
     const principal = context.get("principal");
     const projectedEvents = principal.tenantStaffPrincipalIds === undefined ? events : events.map((event) => {
       const actor = tenantIdentityPresentation(principal, {displayName: event.actorDisplayName, principalId: event.principalId});
-      return actor.isStaff ? Object.assign({}, event, {actorDisplayName: actor.displayName, principalId: null}) : event;
+      const authorizedByPrincipalId = event.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, event.authorizedByPrincipalId);
+      return Object.assign({}, event, {actorDisplayName: actor.displayName, principalId: tenantVisiblePrincipalId(principal, event.principalId), authorizedByPrincipalId});
     });
     return context.json({events: projectedEvents});
   });
@@ -2364,6 +2378,7 @@ export function createHttpApp(
       dependencies.contentDomain,
       read.details,
       context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest,
+      context.get("principal"),
     );
     if (read.binding === null) return context.json(response);
     const live = liveLink(requestUrl, dependencies, read.details.artifact.id);
@@ -2394,6 +2409,7 @@ export function createHttpApp(
         dependencies.contentDomain,
         version,
         context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest,
+        context.get("principal"),
       )),
     });
   });
@@ -2413,7 +2429,7 @@ export function createHttpApp(
         })
       ),
     );
-    return context.json(artifactActionPageResponse(page));
+    return context.json(artifactActionPageResponse(page, context.get("principal")));
   });
 
   app.get(
@@ -2436,6 +2452,7 @@ export function createHttpApp(
         dependencies.contentDomain,
         saved,
         context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest,
+        context.get("principal"),
       ));
     },
   );
@@ -3515,24 +3532,21 @@ export function createHttpApp(
 }
 
 async function projectGuestResponse<Value extends ArtifactResponseRecord>(context: Context<HttpEnvironment>, dependencies: HttpAppDependencies, response: Value) {
-  const projected = guestResponseProjection(response);
-  if (dependencies.organizationSlug === undefined || dependencies.organizationSlug === "orvex") return projected;
+  if (dependencies.organizationSlug === undefined || dependencies.organizationSlug === "orvex") return response;
   const ids = new Set(await runHttpApplicationEffect(context, dependencies, InstallationAccessService.use((access) => access.listStaffOnlyMemberIds())));
   const author = tenantIdentityPresentation(undefined, {displayName: response.authorDisplayName, email: response.authorEmail, principalId: response.authorSubject, staff: ids.has(response.authorSubject)});
-  return {...projected, authorDisplayName: author.displayName};
+  return {...response, authorDisplayName: author.displayName, authorEmail: null, authorSubject: undefined};
 }
 
 async function projectGuestResponses<Value extends {readonly items: readonly ArtifactResponseRecord[]}>(context: Context<HttpEnvironment>, dependencies: HttpAppDependencies, page: Value) {
-  const projected = {...page, items: page.items.map(guestResponseProjection)};
-  if (dependencies.organizationSlug === undefined || dependencies.organizationSlug === "orvex") return projected;
+  if (dependencies.organizationSlug === undefined || dependencies.organizationSlug === "orvex") return page;
   const ids = new Set(await runHttpApplicationEffect(context, dependencies, InstallationAccessService.use((access) => access.listStaffOnlyMemberIds())));
   return {...page, items: page.items.map((response) => {
     const author = tenantIdentityPresentation(undefined, {
       displayName: response.authorDisplayName, email: response.authorEmail,
       principalId: response.authorSubject, staff: ids.has(response.authorSubject),
     });
-    const guest = guestResponseProjection(response);
-    return {...guest, authorDisplayName: author.displayName};
+    return {...response, authorDisplayName: author.displayName, authorEmail: null, authorSubject: undefined};
   })};
 }
 
@@ -3541,13 +3555,19 @@ function guestResponseProjection<T extends ArtifactResponseRecord>(response: T):
 }
 
 function projectTenantStateIdentity(entry: ArtifactStateEntry, principal: Principal, isGuest: boolean) {
-  if (isGuest) return guestStateEntryProjection(entry);
-  const staff = principal.tenantStaffPrincipalIds !== undefined && isTenantStaffIdentity(principal, entry.updatedBy.principalId);
-  return staff ? {...entry, updatedBy: {displayName: "Orvex Support", principalId: null}} : entry;
+  if (isGuest) {
+    const projected = guestStateEntryProjection(entry);
+    if (principal.tenantStaffPrincipalIds === undefined) return projected;
+    const actor = tenantIdentityPresentation(principal, entry.updatedBy);
+    return {...projected, updatedBy: {...projected.updatedBy, displayName: actor.displayName}};
+  }
+  if (principal.tenantStaffPrincipalIds === undefined) return entry;
+  const actor = tenantIdentityPresentation(principal, {...entry.updatedBy, principalId: entry.updatedBy.principalId});
+  return {...entry, updatedBy: {displayName: actor.displayName, principalId: tenantVisiblePrincipalId(principal, entry.updatedBy.principalId)}};
 }
 
 export function projectHttpTenantResponse<T extends ArtifactResponseRecord>(response: T, principal: Principal): T | (Omit<T, "authorEmail" | "authorSubject"> & {readonly authorEmail: string | null; readonly authorSubject?: undefined}) {
-  if (principal.membershipRole === membershipRoles.guest) {
+  if (principal.kind === "human" && principal.membershipRole === membershipRoles.guest) {
     const projected = guestResponseProjection(response);
     if (principal.tenantStaffPrincipalIds === undefined) return projected;
     const author = tenantIdentityPresentation(principal, {displayName: response.authorDisplayName, email: response.authorEmail, principalId: response.authorSubject});
@@ -3576,17 +3596,18 @@ export function projectTenantMembers(
   if (role === membershipRoles.guest) return [];
   const maySeeEmails = role === membershipRoles.member || role === membershipRoles.owner;
   return members.filter((member) => member.staff !== true).map((member) => {
+    const displayName = isReservedTenantIdentityName(member.displayName) ? "Orvex Support (member)" : member.displayName;
     if (role === membershipRoles.owner || role === membershipRoles.administrator) {
       const {staff: _staff, ...visible} = member;
-      return visible;
+      return Object.assign({}, visible, {displayName});
     }
     if (maySeeEmails) {
       const {role: _role, staff: _staff, ...visible} = member;
-      return visible;
+      return Object.assign({}, visible, {displayName});
     }
     const {email, role: _role, staff: _staff, ...visible} = member;
     void email;
-    return visible;
+    return Object.assign({}, visible, {displayName});
   });
 }
 
@@ -4166,10 +4187,11 @@ function artifactDetailsResponse(
   contentDomain: string,
   details: ArtifactDetails,
   isGuest = false,
+  principal?: Principal,
 ) {
   return {
     artifact: details.artifact,
-    current: artifactVersionResponse(requestUrl, contentDomain, details.current, isGuest),
+    current: artifactVersionResponse(requestUrl, contentDomain, details.current, isGuest, principal),
     links: {
       artifact: artifactBrowserUrl(requestUrl, details.artifact.id),
       management: new URL(
@@ -4266,7 +4288,7 @@ function registeredAgentResponse(agent: RegisteredAgentRecord, principal?: Princ
     capabilities: agent.capabilities,
     connectionKey: agent.connectionKey,
     createdAt: agent.createdAt,
-    displayName: agent.displayName,
+    displayName: principal?.tenantStaffPrincipalIds === undefined || !isReservedTenantIdentityName(agent.displayName) ? agent.displayName : "Orvex Support (member)",
     id: agent.id,
     kind: agent.kind,
     lastSeenAt: agent.lastSeenAt,
@@ -4294,16 +4316,20 @@ function agentDispatchPageResponse(page: AgentDispatchPage, principal?: Principa
 }
 
 function agentDispatchResponse(dispatch: AgentDispatchRecord, principal?: Principal) {
-  const senderPublic = tenantIdentityPresentation(principal, dispatch.sender);
   const {staff: _staff, ...sender} = dispatch.sender;
-  const authorizedByStaff = dispatch.sender.authorizedByPrincipalId !== null &&
-    principal?.tenantStaffPrincipalIds?.includes(dispatch.sender.authorizedByPrincipalId) === true;
-  const publicSender = {...sender, displayName: senderPublic.displayName, email: senderPublic.email, principalId: senderPublic.subject};
-  if (authorizedByStaff) Object.assign(publicSender, {authorizedByPrincipalId: null});
+  const isTenant = principal?.tenantStaffPrincipalIds !== undefined;
+  const senderPublic = isTenant ? tenantIdentityPresentation(principal, dispatch.sender) : null;
+  const publicSender = isTenant && senderPublic !== null ? Object.assign({}, sender, {
+    displayName: senderPublic.displayName,
+    email: senderPublic.email,
+    principalId: senderPublic.subject,
+    authorizedByPrincipalId: sender.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, sender.authorizedByPrincipalId),
+  }) : sender;
   return {
     sender: publicSender,
     addressedAt: dispatch.addressedAt,
-    agentDisplayName: dispatch.agentDisplayName,
+    agentDisplayName: isTenant && isReservedTenantIdentityName(dispatch.agentDisplayName)
+      ? "Orvex Support (member)" : dispatch.agentDisplayName,
     agentId: dispatch.agentId,
     canceledAt: dispatch.canceledAt,
     claimedAt: dispatch.claimedAt,
@@ -4421,18 +4447,18 @@ function commentAuthorResponse(author: CommentAuthor, isGuest: boolean, principa
   if (isGuest) {
     const {principalId: _principalId, staff: _staff, ...visible} = author;
     const staff = principal?.tenantStaffPrincipalIds !== undefined && (author.staff === true || principal.tenantStaffPrincipalIds.includes(author.principalId));
-    const authorizedByStaff = author.authorizedByPrincipalId !== null && principal?.tenantStaffPrincipalIds?.includes(author.authorizedByPrincipalId) === true;
     const displayName = principal?.tenantStaffPrincipalIds === undefined ? visible.displayName : tenantIdentityPresentation(principal, author).displayName;
     const projected = {...visible, displayName: staff ? "Orvex Support" : displayName.includes("@") ? "Team member" : displayName};
-    if (staff || authorizedByStaff) Object.assign(projected, {authorizedByPrincipalId: null});
+    if (staff) Object.assign(projected, {authorizedByPrincipalId: null});
+    else if (principal?.tenantStaffPrincipalIds !== undefined && author.authorizedByPrincipalId !== null) {
+      Object.assign(projected, {authorizedByPrincipalId: tenantVisiblePrincipalId(principal, author.authorizedByPrincipalId)});
+    }
     return projected;
   }
   const {staff: _staff, ...visible} = author;
   if (principal?.tenantStaffPrincipalIds !== undefined) {
     const publicIdentity = tenantIdentityPresentation(principal, author);
-    const authorizedByStaff = author.authorizedByPrincipalId !== null && principal.tenantStaffPrincipalIds.includes(author.authorizedByPrincipalId);
-    if (publicIdentity.isStaff) return {...visible, displayName: publicIdentity.displayName, principalId: null, authorizedByPrincipalId: null};
-    if (authorizedByStaff) return {...visible, authorizedByPrincipalId: null};
+    return {...visible, displayName: publicIdentity.displayName, principalId: tenantVisiblePrincipalId(principal, author.principalId), authorizedByPrincipalId: author.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, author.authorizedByPrincipalId)};
   }
   return visible;
 }
@@ -4502,9 +4528,12 @@ function updateCommentThreadCommand(
   return command;
 }
 
-function artifactActionPageResponse(page: ArtifactActionPage) {
+function artifactActionPageResponse(page: ArtifactActionPage, principal?: Principal) {
   return {
-    actions: page.items,
+    actions: principal?.tenantStaffPrincipalIds === undefined ? page.items : page.items.map((action) => Object.assign({}, action, {
+      principalId: tenantVisiblePrincipalId(principal, action.principalId),
+      authorizedByPrincipalId: action.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, action.authorizedByPrincipalId),
+    })),
     nextCursor: encodePageCursor(page.nextCursor),
   };
 }
@@ -4553,6 +4582,7 @@ function artifactVersionResponse(
   contentDomain: string,
   saved: ArtifactVersion,
   isGuest = false,
+  principal?: Principal,
 ) {
   return {
     manifest: {
@@ -4561,7 +4591,7 @@ function artifactVersionResponse(
       entryPath: saved.manifest.entryPath,
       routingMode: saved.manifest.routingMode,
     },
-    ...versionResponse(requestUrl, contentDomain, saved.version, isGuest),
+    ...versionResponse(requestUrl, contentDomain, saved.version, isGuest, principal),
   };
 }
 
@@ -4570,8 +4600,12 @@ function versionResponse(
   contentDomain: string,
   version: VersionRecord,
   isGuest = false,
+  principal?: Principal,
 ) {
   const {publisherPrincipalId: _publisherPrincipalId, ...guestVersion} = version;
+  const visibleVersion = principal?.tenantStaffPrincipalIds === undefined
+    ? version
+    : {...version, publisherPrincipalId: tenantVisiblePrincipalId(principal, version.publisherPrincipalId)};
   return {
     links: {
       review: artifactReviewUrl(
@@ -4586,7 +4620,7 @@ function versionResponse(
         version.contentToken,
       ),
     },
-    version: isGuest ? guestVersion : version,
+    version: isGuest ? guestVersion : visibleVersion,
   };
 }
 

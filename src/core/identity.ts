@@ -99,15 +99,36 @@ export function isTenantStaffIdentity(principal: Principal, principalId: string)
     principal.tenantStaffPrincipalIds?.includes(principalId) === true;
 }
 
+/** Hide tenant staff IDs wherever a typed public projection exposes attribution. */
+export function tenantVisiblePrincipalId(principal: Principal | undefined, principalId: string | null): string | null {
+  if (principalId === null || principal?.tenantStaffPrincipalIds === undefined) return principalId;
+  return isTenantStaffIdentity(principal, principalId) ? null : principalId;
+}
+
+const reservedNameConfusables = new Map(Object.entries({
+  "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "@": "a", "$": "s",
+  "а": "a", "е": "e", "і": "i", "ο": "o", "о": "o", "р": "p", "с": "c", "τ": "t", "т": "t", "х": "x", "у": "y", "ѕ": "s", "ӏ": "l",
+  "α": "a", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "ρ": "p", "σ": "s", "υ": "u", "χ": "x",
+}));
+
+/** Compare reserved tenant identity labels after compatibility and confusable folding. */
+export function isReservedTenantIdentityName(value: string): boolean {
+  const normalized = value.normalize("NFKC")
+    .replace(/[\p{Default_Ignorable_Code_Point}\p{Cc}]/gu, "")
+    .toLowerCase()
+    .replace(/[0134578@$аеіοорсτтхуѕӏαεικνρσυχ]/gu, (character) => reservedNameConfusables.get(character) ?? character)
+    .replace(/\s/gu, "");
+  return normalized === "orvexsupport";
+}
+
 /** Stable public presentation for an identity in a tenant organization. */
 export function tenantIdentityPresentation(
   principal: Principal | undefined,
   identity: {readonly principalId: string; readonly displayName: string; readonly email?: string | null; readonly staff?: boolean},
 ) {
   const isStaff = identity.staff === true || principal !== undefined && isTenantStaffIdentity(principal, identity.principalId);
-  const normalizedDisplayName = identity.displayName.replace(/\s/gu, "").toLowerCase();
   return {
-    displayName: isStaff ? "Orvex Support" : normalizedDisplayName === "orvexsupport" ? "Orvex Support (member)" : identity.displayName,
+    displayName: isStaff ? "Orvex Support" : isReservedTenantIdentityName(identity.displayName) ? "Orvex Support (member)" : identity.displayName,
     email: isStaff || identity.email === undefined ? null : identity.email,
     isStaff,
     subject: isStaff ? null : identity.principalId,

@@ -530,22 +530,36 @@ describe.sequential("organization tenancy security boundary", () => {
       subject: "platform-member",
     };
     let membershipReads = 0;
-    const sessions = new PlatformSessions(database, {forIdentity: async () => {
-      membershipReads += 1;
-      return [
+    let claimMemberships = [
       {displayName: "Org B", role: "viewer", slug: orgB.slug},
       {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
-      ];
+    ];
+    const sessions = new PlatformSessions(database, {forIdentity: async () => {
+      membershipReads += 1;
+      return claimMemberships;
     }});
-    const token = await sessions.issue(identity);
+    let token = await sessions.issue(identity);
     const refreshed = await sessions.find(token);
     expect(refreshed?.organizations).toEqual([
       {displayName: "Org B", role: "viewer", slug: orgB.slug},
       {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
     ]);
-    expect(membershipReads).toBe(2);
+    expect(membershipReads).toBe(1);
     expect(await sessions.find(token)).not.toBeNull();
-    expect(membershipReads).toBe(2);
+    expect(membershipReads).toBe(1);
+    const priorToken = token;
+    claimMemberships = [
+      {displayName: "Org C", role: "editor", slug: orgC.slug},
+    ];
+    token = await sessions.issue(identity, priorToken);
+    expect(token).not.toBe(priorToken);
+    expect(await sessions.find(priorToken)).toBeNull();
+    expect((await sessions.find(token))?.organizations.map(({slug}) => slug).toSorted()).toEqual([orgB.slug, orgC.slug, "not-a-member"].toSorted());
+    const sameSubjectToken = token;
+    token = await sessions.issue({...identity, subject: "different-subject"}, sameSubjectToken);
+    expect(token).not.toBe(sameSubjectToken);
+    expect(await sessions.find(sameSubjectToken)).toBeNull();
+    expect((await sessions.find(token))?.organizations).toEqual(claimMemberships);
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const cookie = `__Host-artifact_platform=${token}`;
     platformMemberships = [];

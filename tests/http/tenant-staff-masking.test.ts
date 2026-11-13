@@ -1,8 +1,9 @@
 import {describe, expect, test} from "vitest";
 
-import {tenantIdentityPresentation, type Principal} from "../../src/core/identity.js";
+import {isReservedTenantIdentityName, tenantIdentityPresentation, tenantVisiblePrincipalId, type Principal} from "../../src/core/identity.js";
 import {projectHttpTenantResponse, projectTenantMembers} from "../../src/http/create-http-app.js";
 import type {ArtifactResponseRecord} from "../../src/core/model.js";
+import {createKeycloakOrganizationMembershipResolver} from "../../src/external-storage/organization-memberships.js";
 
 describe("tenant identity projection", () => {
   const principal: Principal = {
@@ -27,6 +28,35 @@ describe("tenant identity projection", () => {
     expect(tenantIdentityPresentation(principal, {
       displayName: "  ORVEX   SUPPORT ", email: "member@example.test", principalId: "member-id",
     })).toEqual({displayName: "Orvex Support (member)", email: "member@example.test", isStaff: false, subject: "member-id"});
+  });
+
+  test("reserved tenant identity folding catches invisible characters and common confusables", () => {
+    for (const value of ["Orvex\u200d Support", "Orvex\u00ad Support", "0rvex Support"]) {
+      expect(isReservedTenantIdentityName(value)).toBe(true);
+      expect(tenantIdentityPresentation(principal, {displayName: value, principalId: "member-id"}).displayName)
+        .toBe("Orvex Support (member)");
+    }
+  });
+
+  test("tenant attribution projection masks staff ids while preserving other principals", () => {
+    expect(["principalId", "authorizedByPrincipalId", "publisherPrincipalId", "updatedByPrincipalId"]
+      .map(() => tenantVisiblePrincipalId(principal, "staff-id"))).toEqual([null, null, null, null]);
+    expect(tenantVisiblePrincipalId(principal, "member-id")).toBe("member-id");
+  });
+
+  test("platform memberships require the claim organization id to match the registry", async () => {
+    const organization = {
+      admissionPolicy: {groupRoots: ["/teams/acme/"], seed: [{role: "viewer" as const, selector: "/teams/acme/reviewers"}]},
+      displayName: "Acme", id: "installation-id", keycloakId: "keycloak-org-id", routeId: "route1234", slug: "acme", status: "active" as const,
+    };
+    const resolver = createKeycloakOrganizationMembershipResolver(async () => organization);
+    const identity = {
+      displayName: "member", email: null, emailVerified: false, groups: null, provider: "oidc", subject: "member-subject",
+      organizations: {acme: {id: "wrong-id", groups: ["/teams/acme/reviewers"]}},
+    };
+    expect(await resolver.forIdentity(identity)).toEqual([]);
+    expect(await resolver.forIdentity({...identity, organizations: {acme: {id: "keycloak-org-id", groups: ["/teams/acme/reviewers"]}}}))
+      .toEqual([{displayName: "Acme", role: "viewer", slug: "acme"}]);
   });
 
   test("tenant directory projection hides staff and applies role visibility", () => {

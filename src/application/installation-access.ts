@@ -58,6 +58,7 @@ import {
   isHumanAdministrator,
   membershipRoles,
   membershipRoleAtLeast,
+  isReservedTenantIdentityName,
   principalCapabilities,
   principalKinds,
   type MembershipRole,
@@ -1000,6 +1001,7 @@ function makeInstallationAccessService(
       }
       if (member !== undefined && member.staff !== (entry.staff === true)) {
         yield* dependencies.repository.setMemberStaff(dependencies.installationId, member.id, entry.staff === true);
+        clearAuthenticationCaches();
       }
     }
     let deactivated = 0;
@@ -1322,10 +1324,11 @@ function makeInstallationAccessService(
       Object.assign(binding, {identityProvider: identity.identityProvider});
     }
     yield* dependencies.repository.bindExternalIdentity(binding);
-    if (dependencies.organizationDirectoryVisibility === true && groupRolePolicy !== null &&
-      identity.groups !== null && identity.groups.length > 0 && identity.groups.every((group) => group.startsWith("/"))) {
-      const staff = identity.groups !== null && groupRolePolicy.seed.some(({selector, staff: isStaff}) =>
-        isStaff === true && selector.startsWith("/") && identity.groups?.includes(selector) === true
+    if (dependencies.organizationDirectoryVisibility === true && groupRolePolicy !== null) {
+      const fullPathGroups = (identity.groups ?? []).filter((group) => group.startsWith("/"));
+      if (fullPathGroups.length === 0) yield* Effect.logWarning("Tenant login carried no full-path groups; clearing stored staff status.");
+      const staff = fullPathGroups.length > 0 && groupRolePolicy.seed.some(({selector, staff: isStaff}) =>
+        isStaff === true && selector.startsWith("/") && fullPathGroups.includes(selector)
       );
       if (member.staff !== staff) {
         yield* dependencies.repository.setMemberStaff(dependencies.installationId, member.id, staff).pipe(
@@ -1627,7 +1630,7 @@ function makeInstallationAccessService(
       dependencies.clock.now(),
     );
     const name = yield* requireText(command.name, "API key name");
-    if (dependencies.organizationDirectoryVisibility === true && name.replace(/\s/gu, "").toLowerCase() === "orvexsupport") {
+    if (dependencies.organizationDirectoryVisibility === true && isReservedTenantIdentityName(name)) {
       return yield* Effect.fail(new AuthorizationDenied({message: "This API key name is reserved."}));
     }
     const id = dependencies.ids.apiKeyId();
@@ -1697,6 +1700,10 @@ function makeInstallationAccessService(
     yield* requireAdministrator(principal, dependencies.installationId);
     if (dependencies.organizationDirectoryVisibility === true) {
       const key = yield* dependencies.repository.findApiKey(dependencies.installationId, keyId);
+      if (key !== null && principal.membershipRole !== membershipRoles.owner) {
+        const authorizer = key.authorizedByPrincipalId === null ? null : yield* dependencies.repository.findMember(dependencies.installationId, key.authorizedByPrincipalId);
+        if (authorizer?.staff === true) return yield* Effect.fail(new AuthorizationDenied({message: "API keys authorized by staff cannot be changed by tenant administrators."}));
+      }
       if (key !== null && key.principalKind === principalKinds.human) {
         const member = yield* dependencies.repository.findMember(dependencies.installationId, key.principalId);
         if ((member?.staff === true && principal.membershipRole !== membershipRoles.owner) || member !== null && member !== undefined && membershipRolePrecedence(member.role) > membershipRolePrecedence(principal.membershipRole)) {
@@ -1728,6 +1735,10 @@ function makeInstallationAccessService(
       return yield* Effect.fail(new IdentityNotFound({
         message: "The API key does not exist.",
       }));
+    }
+    if (dependencies.organizationDirectoryVisibility === true && principal.membershipRole !== membershipRoles.owner) {
+      const authorizer = previous.authorizedByPrincipalId === null ? null : yield* dependencies.repository.findMember(dependencies.installationId, previous.authorizedByPrincipalId);
+      if (authorizer?.staff === true) return yield* Effect.fail(new AuthorizationDenied({message: "API keys authorized by staff cannot be changed by tenant administrators."}));
     }
     if (previous.principalKind === principalKinds.human) {
       const member = yield* dependencies.repository.findMember(dependencies.installationId, previous.principalId);
