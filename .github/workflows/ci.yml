@@ -14,6 +14,8 @@ on:
         options:
           - full
           - pr
+  schedule:
+    - cron: '0 7 * * 1'
   workflow_call:
     inputs:
       tier:
@@ -24,6 +26,10 @@ on:
 permissions:
   contents: read
 
+env:
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+
 concurrency:
   group: ci-${{ inputs.tier }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -32,7 +38,7 @@ jobs:
   build:
     name: PR / Build and static policy
     if: inputs.tier != 'release' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr'))
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 8
     steps:
       - name: Checkout repository
@@ -84,7 +90,7 @@ jobs:
     name: PR / Unit and conformance behavior
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 12
     steps:
       - name: Checkout repository
@@ -118,7 +124,7 @@ jobs:
     name: PR / Browser behavior
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -160,7 +166,7 @@ jobs:
     name: PR / Cloudflare deployment
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 8
     steps:
       - name: Checkout repository
@@ -190,7 +196,8 @@ jobs:
 
   portable:
     name: macOS portability
-    if: inputs.tier != 'release'
+    # GitHub-hosted macOS is unavailable on the in-cluster ARC pool; keep this off PRs and pushes.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: macos-14
     timeout-minutes: 12
     steps:
@@ -218,8 +225,8 @@ jobs:
 
   full:
     name: Full / Linux iteration gate
-    if: inputs.tier == 'release' || (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.tier == 'full'))
-    runs-on: ubuntu-latest
+    if: inputs.tier == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'full')
+    runs-on: public-dind-runners
     timeout-minutes: 47
     env:
       NODE_OPTIONS: --max-old-space-size=4096

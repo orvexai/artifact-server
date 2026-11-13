@@ -1724,6 +1724,84 @@ requirements:
     depends_on: [AUTH-021, AUTH-025, MCP-013, OPS-001]
     evidence: []
 
+  - id: GUEST-001
+    kind: security
+    behavior: A guest has viewer-level access only to explicitly shared restricted projects, may read artifacts and comments and write comments, and cannot create or manage artifacts or projects.
+    owner: authorization
+    source: {file: ../../docs/deployment.md, anchor: manage-access-with-issuer-groups}
+    acceptance:
+      behavior: {id: GUEST-001-B, description: "Resolve a guest's access to installation-scope, unshared restricted, and explicitly shared restricted projects; only the shared project grants viewer access."}
+      failure: {id: GUEST-001-F, description: "Deny guest artifact creation, artifact management, and project management while allowing artifact reads, comment reads, and comment writes."}
+    deployments: *all
+    status: specified
+    depends_on: [AUTH-008]
+    evidence: []
+
+  - id: GUEST-002
+    kind: behavior
+    behavior: Group-role resolution recognizes guest assignments, keeps guest above viewer and member assignments, and selects administrator or owner when either higher role also matches.
+    owner: authorization
+    source: {file: ../../docs/deployment.md, anchor: manage-access-with-issuer-groups}
+    acceptance:
+      behavior: {id: GUEST-002-B, description: "Resolve a guest-only assignment and overlapping guest, viewer, member, administrator, and owner assignments to the role asserted by the group-role policy."}
+      failure: {id: GUEST-002-F, description: "A guest assignment never overrides a matching administrator or owner group."}
+    deployments: *all
+    status: specified
+    depends_on: [AUTH-019]
+    evidence: []
+
+  - id: GUEST-003
+    kind: security
+    behavior: Guests receive no directory or member details, see only explicitly shared projects, and cannot create projects or API keys, use agent operations, administer public links, or mutate protected artifact state.
+    owner: authorization
+    source: {file: ../../docs/deployment.md, anchor: manage-access-with-issuer-groups}
+    acceptance:
+      behavior: {id: GUEST-003-B, description: "Return empty HTTP and MCP group lists and sharing details, expose only the explicitly shared project, and redact member identity from guest-visible comments, responses, versions, and state."}
+      failure: {id: GUEST-003-F, description: "Deny member listing, guest API-key creation, agent and dispatch access, project creation, public-link administration, protected state writes, comment clearing, Git-history operations, history clone tokens, and private artifact bootstrap or guest invitations."}
+    deployments: *all
+    status: specified
+    depends_on: [GUEST-001]
+    evidence: []
+
+  - id: GUEST-004
+    kind: constraint
+    behavior: Only owners may change directory-group roles, and the final active owner group cannot lose its owner role.
+    owner: authorization
+    source: {file: ../../docs/deployment.md, anchor: manage-access-with-issuer-groups}
+    acceptance:
+      behavior: {id: GUEST-004-B, description: "Have an owner assign a role to a directory group and confirm the group reports that role."}
+      failure: {id: GUEST-004-F, description: "Refuse non-owner role changes and removal of the role from the last active owner group."}
+    deployments: *all
+    status: specified
+    depends_on: [AUTH-028]
+    evidence: []
+
+  - id: GUEST-005
+    kind: behavior
+    behavior: An existing browser session and its member-owned API keys immediately follow a directory group's role change from viewer to guest.
+    owner: authorization
+    source: {file: ../../docs/deployment.md, anchor: manage-access-with-issuer-groups}
+    acceptance:
+      behavior: {id: GUEST-005-B, description: "Change a viewer group's role to guest and observe the existing browser session report guest membership and lose its viewer project list."}
+      failure: {id: GUEST-005-F, description: "An API key issued for the member as a viewer cannot continue to authorize requests after the member becomes a guest."}
+    deployments: *all
+    status: specified
+    depends_on: [GUEST-001, AUTH-009]
+    evidence: []
+
+  - id: GUEST-006
+    kind: security
+    behavior: Directory-role synchronization demotes moved members to guest, leaves members active when a snapshot is empty, deactivates members and revokes credentials when their last role is removed, and preserves the sole owner when the stored group mirror omits that owner group.
+    owner: authorization
+    source: {file: ../../docs/deployment.md, anchor: manage-access-with-issuer-groups}
+    acceptance:
+      behavior: {id: GUEST-006-B, description: "After a second seeded directory sync moves a member from a viewer group to a guest group, confirm that the member's role changes to guest."}
+      failure: {id: GUEST-006-F, description: "Deny sign-in when a non-owner's group role is missing from the stored directory-group mirror."}
+    deployments: *all
+    status: specified
+    depends_on: [AUTH-019, AUTH-027]
+    evidence: []
+
   - id: SEC-001
     kind: security
     behavior: Published websites are treated as untrusted arbitrary browser JavaScript.
