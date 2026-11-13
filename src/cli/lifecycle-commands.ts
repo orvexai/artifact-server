@@ -60,6 +60,11 @@ import {
   parseOrganizationAdmissionPolicyJson,
   type OrganizationAdmissionPolicy,
 } from "../external-storage/organization-registry.js";
+import {
+  organizationStaffGroupsVariable,
+  parseOrganizationStaffGroups,
+  requireOrganizationStaffGroups,
+} from "../external-storage/organization-staff-groups.js";
 import {runCliEffect} from "./run-cli-effect.js";
 import {waitForProcessSignal} from "./wait-for-process-signal.js";
 import {
@@ -466,6 +471,9 @@ async function syncKeycloakOrganizations(
   if (!parseOrganizationTenancy(process.env["ARTIFACT_SERVER_ORG_TENANCY"])) {
     throw new Error("Keycloak organization sync requires ARTIFACT_SERVER_ORG_TENANCY=on.");
   }
+  const organizationStaffGroups = requireOrganizationStaffGroups(
+    parseOrganizationStaffGroups(process.env[organizationStaffGroupsVariable]),
+  );
   assertAtMostOneBrowserLoginProvider(process.env);
   const oidc = await loadOidcConfiguration({
     ...process.env,
@@ -544,7 +552,7 @@ async function syncKeycloakOrganizations(
           keycloakOrganizationId: keycloakOrganization.id,
           slug: organization.slug,
           applicationOrigin: new URL(`/o/${organization.slug}`, configuration.applicationOrigin).toString(),
-        }, externalMaintenanceConfig(configuration), database);
+        }, {...externalMaintenanceConfig(configuration), organizationStaffGroups}, database);
         try {
           // oxlint-disable-next-line eslint/no-await-in-loop
           const memberReport = await orgRuntime.syncOrganizationMembers(directory, keycloakOrganization);
@@ -756,6 +764,10 @@ function configureExternalStorageStart(
       const organizationTenancy = parseOrganizationTenancy(
         process.env["ARTIFACT_SERVER_ORG_TENANCY"],
       );
+      const organizationStaffGroups = parseOrganizationStaffGroups(
+        process.env[organizationStaffGroupsVariable],
+      );
+      if (organizationTenancy) requireOrganizationStaffGroups(organizationStaffGroups);
       const parsed = await parseExternalConfiguration(options.host, options.port);
       const embedOrigins = loadEmbedOrigins(process.env);
       writeGitHistoryConfigurationWarnings(parsed.gitHistory);
@@ -787,6 +799,7 @@ function configureExternalStorageStart(
         gitHistory: parsed.gitHistory,
         hostname: parsed.hostname,
         installationId: parsed.installationId,
+        organizationStaffGroups,
         organizationTenancy,
         objectStorage: parsed.objectStorage,
         port: parsed.port,

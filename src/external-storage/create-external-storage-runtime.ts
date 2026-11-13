@@ -118,6 +118,11 @@ export interface ExternalStorageRuntimeConfig {
   readonly gitHistoryProvider?: GitHistoryProvider;
   /** Issuer groups that admit people and set their role, when configured. */
   readonly groupRolePolicy?: GroupRolePolicy | null;
+  /**
+   * Platform-wide Orvex staff groups (ARTIFACT_SERVER_ORG_STAFF_GROUPS):
+   * exact group paths masked as staff in every non-Orvex organization.
+   */
+  readonly organizationStaffGroups?: readonly string[];
   readonly installationId: string;
   /** Verified Keycloak org claims; composed by the identity provider layer. */
   readonly organizationMemberships?: OrganizationMembershipResolver;
@@ -231,6 +236,10 @@ export async function createOrgRuntime(
   const groupRolePolicy = isOrvex
     ? config.groupRolePolicy ?? null
     : orgConfig.admissionPolicy ?? null;
+  // One staff definition per tenant, used by login and by org sync alike.
+  const tenantStaffGroups = isOrvex
+    ? []
+    : tenantStaffGroupPaths(config.organizationStaffGroups ?? [], groupRolePolicy);
   const organizationOAuthResources = orgConfig.slug === undefined || isOrvex || applicationOrigin === null
     ? null
     : {
@@ -341,6 +350,7 @@ export async function createOrgRuntime(
       identityRepository,
       installationId,
       organizationDirectoryVisibility: !isOrvex && orgConfig.slug !== undefined,
+      tenantStaffGroups,
       gitHistory: {read: () => applicationGitHistory.read()},
       interactiveIdentityProvider: config.interactiveIdentityProvider === undefined
         ? null
@@ -540,7 +550,7 @@ export async function createOrgRuntime(
           readyRuntime,
           directory,
           organization,
-          organizationStaffSelectors(isOrvex ? null : groupRolePolicy),
+          tenantStaffGroups,
         ),
       syncDirectoryGroups: (directory, syncedAt, provider, recomputeRoles) =>
         runDirectoryGroupSyncPass(readyRuntime, directory, syncedAt, provider, recomputeRoles),
@@ -569,6 +579,18 @@ export function organizationStaffSelectors(policy: GroupRolePolicy | null): read
   return [...new Set(policy.seed.flatMap(({selector, staff}) =>
     staff === true && selector.startsWith("/") ? [selector] : []
   ))];
+}
+
+/**
+ * Every exact group path whose members are Orvex staff in one tenant: the
+ * platform-wide staff groups united with the org's own staff selectors. An
+ * org created by sync has no policy and relies on the platform groups alone.
+ */
+export function tenantStaffGroupPaths(
+  platformStaffGroups: readonly string[],
+  policy: GroupRolePolicy | null,
+): readonly string[] {
+  return [...new Set([...platformStaffGroups, ...organizationStaffSelectors(policy)])];
 }
 
 /** The runtime admission policy for one registered organization record. */

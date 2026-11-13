@@ -79,6 +79,11 @@
         "readinessWithdrawalMilliseconds": {"type": "integer", "minimum": 0, "maximum": 60000},
         "shutdownDeadlineMilliseconds": {"type": "integer", "minimum": 1, "maximum": 300000},
         "organizationTenancy": {"type": "string", "enum": ["off", "on"]},
+        "organizationStaffGroups": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^(/[^/\\s,]+)+$"}
+        },
         "s3": {
           "type": "object",
           "additionalProperties": false,

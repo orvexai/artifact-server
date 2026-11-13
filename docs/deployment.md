@@ -45,6 +45,17 @@ the cleanup CronJob and the directory-sync CronJob. Before you switch it on:
   organization chooser at `/`, which lists every enabled organization the
   person is admitted to and goes straight in when there is only one; the
   in-app organization switcher appears only with more than one.
+- **Name the Orvex staff groups.** Set `ARTIFACT_SERVER_ORG_STAFF_GROUPS` to
+  the comma-separated exact Keycloak group paths of Orvex staff, for example
+  `/Administrators,/Developers` (Helm: `configuration.organizationStaffGroups:
+  ["/Administrators", "/Developers"]`). Members of these groups who belong to
+  any non-Orvex organization are stored as staff at sign-in and by
+  `org sync`, and tenants see them only as "Orvex Support". This applies to
+  every tenant, including organizations created by `org sync` that have no
+  admission policy, in addition to any per-organization `"staff": true`
+  selectors. With tenancy on and this variable empty, the server refuses to
+  start and every `org sync` fails, and the Helm chart refuses to render.
+  The OIDC groups claim must carry full group paths so sign-in can match them.
 - **Keycloak must send the `organization` claim.** Add Keycloak's built-in
   `organization` client scope to the Artifact Server OIDC client as a default
   scope. Without it no token carries organization memberships: no Keycloak
@@ -67,11 +78,13 @@ admission policy.
 
 Run `artifact-server org sync` (or the `maintenance org-sync --once` CronJob
 path) to discover organizations and reconcile each organization's members.
-A member of an organization's admission-policy staff group (a seed entry with
-`"staff": true`) is stored as Orvex staff by the sync, exactly as at sign-in,
-so tenant member lists show them only as "Orvex Support". The directory client
-therefore needs to read those groups' members, and a staff group that cannot
-be read fails that organization's sync without changing anything. A Keycloak
+A member of an `ARTIFACT_SERVER_ORG_STAFF_GROUPS` group, or of an
+organization's own admission-policy staff group (a seed entry with
+`"staff": true`), is stored as Orvex staff by the sync, exactly as at sign-in,
+so tenant member lists show them only as "Orvex Support". The staff marker is
+never cleared automatically. The directory client therefore needs to read
+those groups' members, and a staff group that cannot be read fails that
+organization's sync without changing anything. A Keycloak
 organization using the reserved alias `orvex` is skipped; Orvex keeps its
 issuer-group admission policy.
 The sync command reports disappeared organizations but never deletes or

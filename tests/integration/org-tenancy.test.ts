@@ -511,6 +511,7 @@ describe.sequential("organization tenancy security boundary", () => {
       databaseUrl: Redacted.make(databaseUrl),
       installationId,
       organizationMemberships: {forIdentity: async () => platformMemberships},
+      organizationStaffGroups: ["/Developers"],
       groupRolePolicy: {seed: [{role: "administrator", selector: "/orvex/admin"}]},
       gitHistory: orgTenancyGitHistory,
       gitHistoryHealthProbe: orgTenancyGitHistoryProbe,
@@ -2620,6 +2621,48 @@ describe.sequential("organization tenancy security boundary", () => {
     } finally {
       await runtime.close();
     }
+  });
+
+  test("a sync-created org with no policy masks a /Developers member as staff (H1)", async () => {
+    const registry = new OrganizationRegistry(database);
+    const alias = `dev-${randomUUID().slice(0, 8)}`;
+    const keycloakId = randomUUID();
+    const synced = await registry.syncKeycloakOrganization(alias, "Synced Org", keycloakId);
+    if (synced.kind !== "synced") throw new Error("The Keycloak organization was not registered.");
+    expect(synced.organization.admissionPolicy).toBeNull();
+    const organization: DirectoryOrganization = {alias, id: keycloakId, name: "Synced Org"};
+    const directory: OrganizationDirectory = {
+      listGroupMemberIdsByPath: (path) => Effect.succeed(path === "/Developers" ? ["kc-dev"] : []),
+      listOrganizationMembers: () => Effect.succeed([
+        {id: "kc-client", username: "client", email: `client@${alias}.test`, emailVerified: true, enabled: true, firstName: null, lastName: null, role: "owner"},
+        {id: "kc-dev", username: "dev", email: `dev@${alias}.test`, emailVerified: true, enabled: true, firstName: "Private", lastName: "Developer", role: "viewer"},
+      ]),
+      listOrganizations: () => Effect.succeed([organization]),
+    };
+    const runtime = await createOrgRuntime(synced.organization.id, {
+      cookieRouteId: synced.organization.routeId,
+      keycloakOrganizationId: keycloakId,
+      slug: alias,
+    }, withoutGitHistory(config), database);
+    try {
+      await runtime.syncOrganizationMembers(directory, organization);
+      const rows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT email, staff FROM installation_members
+          WHERE installation_id = ${synced.organization.id} ORDER BY email`;
+      }));
+      expect(rows).toEqual([
+        {email: `client@${alias}.test`, staff: false},
+        {email: `dev@${alias}.test`, staff: true},
+      ]);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  test("the organization router refuses to start without a platform staff definition", async () => {
+    await expect(createOrganizationRouter({...config, organizationStaffGroups: []}))
+      .rejects.toThrow("ARTIFACT_SERVER_ORG_STAFF_GROUPS");
   });
 
   test("an org member removal deactivates only that installation's member", async () => {

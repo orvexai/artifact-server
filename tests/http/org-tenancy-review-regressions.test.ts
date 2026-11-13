@@ -11,7 +11,12 @@ import type {RegisteredAgentRecord} from "../../src/core/model.js";
 import {
   organizationRuntimeAdmissionPolicy,
   organizationStaffSelectors,
+  tenantStaffGroupPaths,
 } from "../../src/external-storage/create-external-storage-runtime.js";
+import {
+  parseOrganizationStaffGroups,
+  requireOrganizationStaffGroups,
+} from "../../src/external-storage/organization-staff-groups.js";
 import {prefixOrganizationRedirect} from "../../src/external-storage/create-organization-router.js";
 import {
   createKeycloakOrganizationMembershipResolver,
@@ -152,6 +157,43 @@ describe("H1: org sync marks staff from the admission policy", () => {
     expect(await Effect.runPromise(directory.listGroupMemberIdsByPath("/teams/acme/support"))).toEqual(["kc-staff"]);
     expect(requested).toContain("/admin/realms/test/group-by-path/teams/acme/support");
     await expect(Effect.runPromise(directory.listGroupMemberIdsByPath("/teams/acme/missing"))).rejects.toThrow("HTTP 404");
+  });
+});
+
+describe("H1: platform-wide staff groups (ARTIFACT_SERVER_ORG_STAFF_GROUPS)", () => {
+  const organization: DirectoryOrganization = {alias: "synced", id: "55555555-5555-4555-8555-555555555555", name: "Synced"};
+
+  test("a sync-created org with no policy masks a member of /Developers", async () => {
+    const staffGroups = tenantStaffGroupPaths(parseOrganizationStaffGroups("/Administrators, /Developers"), organizationRuntimeAdmissionPolicy(null));
+    expect(staffGroups).toEqual(["/Administrators", "/Developers"]);
+    const directory: OrganizationDirectory = {
+      listGroupMemberIdsByPath: (path) => Effect.succeed(path === "/Developers" ? ["kc-dev"] : []),
+      listOrganizationMembers: () => Effect.succeed([
+        {email: "dev@orvex.test", emailVerified: true, enabled: true, firstName: "Private", id: "kc-dev", lastName: "Developer", role: "viewer", username: "dev"},
+        {email: "client@synced.test", emailVerified: true, enabled: true, firstName: "Cara", id: "kc-client", lastName: "Client", role: "owner", username: "client"},
+      ]),
+      listOrganizations: () => Effect.succeed([organization]),
+    };
+    const result = await Effect.runPromise(Effect.result(readOrganizationDirectorySnapshot(directory, organization, staffGroups)));
+    if (result._tag !== "Success" || result.success.kind === "emptied") throw new Error("The snapshot was not read.");
+    expect(result.success.desired).toEqual(expect.arrayContaining([
+      {displayName: "Private Developer", email: "dev@orvex.test", role: "viewer", staff: true},
+      {displayName: "Cara Client", email: "client@synced.test", role: "owner"},
+    ]));
+  });
+
+  test("platform groups are united with an org's own staff selectors", () => {
+    expect(tenantStaffGroupPaths(["/Developers"], organizationRuntimeAdmissionPolicy({
+      groupRoots: ["/teams/acme/"],
+      seed: [{role: "administrator", selector: "/teams/acme/support", staff: true}],
+    }))).toEqual(["/Developers", "/teams/acme/support"]);
+  });
+
+  test("tenancy without a staff definition fails closed, and entries must be exact paths", () => {
+    expect(parseOrganizationStaffGroups(undefined)).toEqual([]);
+    expect(() => requireOrganizationStaffGroups(parseOrganizationStaffGroups(" , "))).toThrow("ARTIFACT_SERVER_ORG_STAFF_GROUPS");
+    expect(() => parseOrganizationStaffGroups("Developers")).toThrow("exact group paths");
+    expect(() => parseOrganizationStaffGroups("/Developers/")).toThrow("exact group paths");
   });
 });
 

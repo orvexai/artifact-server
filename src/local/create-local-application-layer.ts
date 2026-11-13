@@ -172,6 +172,8 @@ export interface ApplicationAdapters {
   readonly identityRepository: IdentityRepository;
   readonly installationId: string;
   readonly organizationDirectoryVisibility?: boolean | undefined;
+  /** Exact group paths whose members are Orvex staff in this tenant. */
+  readonly tenantStaffGroups?: readonly string[] | undefined;
   readonly interactiveIdentityProvider: InteractiveIdentityProvider | null;
   readonly uploadUrlLifetimeMilliseconds?: number;
   /** Live optional-provider state used to guard project enablement. */
@@ -848,6 +850,7 @@ export function createApplicationLayer(
     installationId: adapters.installationId,
     staffHandleSecret: adapters.staffHandleSecret ?? Redacted.make(""),
     organizationDirectoryVisibility: adapters.organizationDirectoryVisibility,
+    tenantStaffGroups: adapters.tenantStaffGroups ?? [],
     localBootstrapCredential: adapters.localBootstrapCredential,
     localLoginAttemptLifetimeMilliseconds: 60 * 1_000,
     protectBootstrapAdministrator: adapters.protectBootstrapAdministrator,

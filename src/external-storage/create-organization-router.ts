@@ -14,6 +14,7 @@ import {SqlClient} from "effect/unstable/sql/SqlClient";
 import {createKeycloakOrganizationMembershipResolver, createOrvexAdmissionRole} from "./organization-memberships.js";
 import {PostgresIdentityRepository} from "../storage/postgres-identity-repository.js";
 import {PlatformSessions} from "./platform-sessions.js";
+import {requireOrganizationStaffGroups} from "./organization-staff-groups.js";
 import {platformRootRedirectHeader} from "../http/create-http-app.js";
 
 const maximumCachedOrganizations = 16;
@@ -55,6 +56,8 @@ export async function createOrganizationRouter(
   config: ExternalStorageRuntimeConfig,
   options: OrganizationRouterOptions = {},
 ): Promise<OrganizationRouter> {
+  // Never serve tenants without a platform staff definition.
+  requireOrganizationStaffGroups(config.organizationStaffGroups);
   const database = await openExternalStorageDatabase(
     config,
     "artifact-server:organization-router",
