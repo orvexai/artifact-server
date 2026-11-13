@@ -8,6 +8,7 @@ import {
 } from "@aws-sdk/client-s3";
 import {Effect, Redacted} from "effect";
 import {SqlClient} from "effect/unstable/sql/SqlClient";
+import {PostgresIdentityRepository} from "../../src/storage/postgres-identity-repository.js";
 import {afterAll, beforeAll, describe, expect, test} from "vitest";
 import {z} from "zod";
 
@@ -953,6 +954,7 @@ describe.sequential("organization tenancy security boundary", () => {
     const organizationB: DirectoryOrganization = {alias: aliasB, id: idB, name: "Org B"};
     const usersA = [
       {id: "owner-a", username: "owner-a", email: "owner-a@example.test", emailVerified: true, enabled: true, firstName: null, lastName: null, role: "owner" as const},
+      {id: "owner-a-two", username: "owner-a-two", email: "owner-a-two@example.test", emailVerified: true, enabled: true, firstName: null, lastName: null, role: "owner" as const},
       {id: "editor-a", username: "editor-a", email: "editor-a@example.test", emailVerified: true, enabled: true, firstName: null, lastName: null, role: "editor" as const},
     ];
     const usersB = [
@@ -1019,8 +1021,9 @@ describe.sequential("organization tenancy security boundary", () => {
       }));
       expect(editorRows[0]?.["role"]).toBe("member");
       const ownerA = usersA.at(0);
-      if (ownerA === undefined) throw new Error("The Org A owner fixture is missing.");
-      snapshotA = [ownerA];
+      const secondOwnerA = usersA.at(1);
+      if (ownerA === undefined || secondOwnerA === undefined) throw new Error("The Org A owner fixtures are missing.");
+      snapshotA = [ownerA, secondOwnerA];
       const removed = await runtimeA.syncOrganizationMembers(directory, organizationA);
       if ("kind" in removed) {
         throw new Error("Org A's non-empty snapshot was skipped.");
@@ -1035,6 +1038,41 @@ describe.sequential("organization tenancy security boundary", () => {
         expect.objectContaining({installation_id: orgA.id, email: "editor-a@example.test", status: "inactive"}),
         expect.objectContaining({installation_id: orgBRecord.id, email: "editor-b@example.test", status: "active"}),
       ]));
+      const reactivatedLogin = await roleLogin(
+        "editor-a@example.test", "editor-a", ["/editor"],
+      );
+      expect(reactivatedLogin.status).toBe(303);
+      const reactivatedRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT status FROM installation_members
+          WHERE installation_id = ${orgA.id} AND email = 'editor-a@example.test'`;
+      }));
+      expect(reactivatedRows[0]?.["status"]).toBe("active");
+      const memberRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT id FROM installation_members
+          WHERE installation_id = ${orgA.id}
+            AND email IN ('owner-a@example.test', 'owner-a-two@example.test')`;
+      }));
+      const ownerRepo = new PostgresIdentityRepository(database, orgA.id);
+      const ownerIds = z.array(z.string()).parse(memberRows.map((row) => row["id"]));
+      expect(ownerIds).toHaveLength(2);
+      await Promise.all(ownerIds.map((memberId) => ownerRepo.setOrganizationMemberRole(
+        orgA.id, memberId, "member", new Date().toISOString(),
+      )));
+      const remainingOwners = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_members
+          WHERE installation_id = ${orgA.id} AND status = 'active' AND role = 'owner'`;
+      }));
+      expect(remainingOwners[0]?.["count"]).toBe(1);
+      const editorRow = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT id FROM installation_members
+          WHERE installation_id = ${orgA.id} AND email = 'editor-a@example.test'`;
+      }));
+      const editorId = z.string().parse(editorRow[0]?.["id"]);
+      snapshotA = usersA;
       oidc.claims.email = "owner-a@example.test";
       oidc.claims.emailVerified = true;
       oidc.claims.identityProvider = "google";
@@ -1059,6 +1097,49 @@ describe.sequential("organization tenancy security boundary", () => {
         headers: {Cookie: cookieA, Host: "artifacts.example.com"},
       });
       expect(sessionA.status).toBe(200);
+      const csrfPair = cookieA.split("; ").find((pair) =>
+        pair.slice(0, pair.indexOf("=")).toLowerCase().includes("csrf"),
+      );
+      const csrfCookie = csrfPair?.slice(csrfPair.indexOf("=") + 1);
+      if (csrfCookie === undefined) throw new Error("The org session has no CSRF cookie.");
+      const deactivated = await fetch(`${baseUrl}/o/${aliasA}/api/v1/members/${editorId}/deactivate`, {
+        method: "POST",
+        headers: {
+          Cookie: cookieA,
+          Host: "artifacts.example.com",
+          Origin: "https://artifacts.example.com",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfCookie,
+        },
+        body: "{}",
+      });
+      expect(deactivated.status).toBe(200);
+      const manualRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT status, manual_deactivation FROM installation_members
+          WHERE installation_id = ${orgA.id} AND id = ${editorId}`;
+      }));
+      expect(manualRows[0]).toMatchObject({status: "inactive", manual_deactivation: true});
+      const manuallyDeactivatedLogin = await roleLogin(
+        "editor-a@example.test", "editor-a", ["/owner"],
+      );
+      expect(manuallyDeactivatedLogin.status).toBe(403);
+      const activeManualSessions = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT COUNT(*)::integer AS count FROM application_sessions
+          WHERE installation_id = ${orgA.id} AND member_id = ${editorId}
+            AND revoked_at IS NULL`;
+      }));
+      expect(activeManualSessions[0]?.["count"]).toBe(0);
+      await runtimeA.syncOrganizationMembers(directory, organizationA);
+      const stillManualRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT status, manual_deactivation FROM installation_members
+          WHERE installation_id = ${orgA.id} AND id = ${editorId}`;
+      }));
+      expect(stillManualRows[0]).toMatchObject({status: "inactive", manual_deactivation: true});
       const loginB = await startRoutedOidcLogin(baseUrl, aliasB);
       const completedB = await fetch(loginB.callbackUrl, {
         headers: {Cookie: loginB.handshakeCookie},
@@ -1094,6 +1175,16 @@ describe.sequential("organization tenancy security boundary", () => {
         .toMatchObject({kind: "conflict"});
       await expect(registry.syncKeycloakOrganization("Invalid Slug", "Invalid", randomUUID()))
         .rejects.toThrow(/slug/u);
+      snapshotA = [];
+      expect(await runtimeA.syncOrganizationMembers(directory, organizationA))
+        .toMatchObject({kind: "emptied"});
+      expect(await registry.suspend(aliasA)).toMatchObject({status: "suspended"});
+      const suspendedRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_members
+          WHERE installation_id = ${orgA.id} AND status = 'active'`;
+      }));
+      expect(suspendedRows[0]?.["count"]).toBe(0);
     } finally {
       await Promise.all([runtimeA.close(), runtimeB.close()]);
     }

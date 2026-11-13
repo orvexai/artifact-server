@@ -46,6 +46,8 @@ export interface RunningStubKeycloak {
   readonly organizationMembers: Map<string, StubKeycloakUser[]>;
   readonly organizationRoleGroups: Map<string, Map<string, StubKeycloakUser[]>>;
   readonly organizationRoleGroupIds: Map<string, Map<string, string>>;
+  replaceOrganizationMembersAfterNextRead(organizationId: string, members: StubKeycloakUser[]): void;
+  changeOrganizationMembersAfterReads(organizationId: string, replacements: StubKeycloakUser[][]): void;
   readonly issuer: string;
   adminRequests(): readonly StubKeycloakAdminRequest[];
   /**
@@ -73,6 +75,7 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
   const organizationMembers = new Map<string, StubKeycloakUser[]>();
   const organizationRoleGroups = new Map<string, Map<string, StubKeycloakUser[]>>();
   const organizationRoleGroupIds = new Map<string, Map<string, string>>();
+  const replacementAfterMemberRead = new Map<string, StubKeycloakUser[][]>();
   const groupIds = new Map<string, string>();
   const adminRequests: StubKeycloakAdminRequest[] = [];
   const issuedTokens = new Set<string>();
@@ -221,7 +224,17 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
           json(404, JSON.stringify({error: "Could not find organization by id"}));
           return;
         }
-        json(200, JSON.stringify(page(users, query.first, query.max)));
+        const organizationId = decodeURIComponent(organizationMembersMatch[1] ?? "");
+        const responsePage = page(users, query.first, query.max);
+        const replacements = replacementAfterMemberRead.get(organizationId);
+        const replacement = replacements?.shift();
+        if (replacement !== undefined) {
+          organizationMembers.set(organizationId, replacement);
+          if (replacements !== undefined && replacements.length === 0) {
+            replacementAfterMemberRead.delete(organizationId);
+          }
+        }
+        json(200, JSON.stringify(responsePage));
         return;
       }
       if (path === "/groups" && query.search === undefined) {
@@ -317,6 +330,12 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
     organizationMembers,
     organizationRoleGroups,
     organizationRoleGroupIds,
+    replaceOrganizationMembersAfterNextRead: (organizationId, members) => {
+      replacementAfterMemberRead.set(organizationId, [members]);
+    },
+    changeOrganizationMembersAfterReads: (organizationId, replacements) => {
+      replacementAfterMemberRead.set(organizationId, [...replacements]);
+    },
     issuer,
     setTokenStatus: (status) => {
       tokenStatus = status;

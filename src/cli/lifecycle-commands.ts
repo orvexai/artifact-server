@@ -348,11 +348,30 @@ function configureOrganizations(program: Command): void {
         await database.close();
       }
     });
+  organization.command("suspend")
+    .description("Suspend an organization and deactivate its members.")
+    .argument("<slug>", "registered Artifact Server organization slug")
+    .action(async (slug: string) => {
+      const configuration = await runCliEffect(
+        parseExternalMigrationConfiguration(process.env),
+      );
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-org-suspend:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        console.log(JSON.stringify(await new OrganizationRegistry(database).suspend(slug), null, 2));
+      } finally {
+        await database.close();
+      }
+    });
 }
 
 interface OrganizationSyncReport {
   readonly discovered: readonly string[];
   readonly disappeared: readonly {readonly alias: string; readonly id: string}[];
+  readonly emptied: readonly {readonly alias: string; readonly reason: string}[];
   readonly skipped: readonly {readonly alias: string; readonly reason: string}[];
   readonly errors: readonly {readonly alias: string; readonly error: string}[];
   readonly memberSync: readonly {readonly alias: string; readonly report: unknown}[];
@@ -360,7 +379,7 @@ interface OrganizationSyncReport {
 
 function printOrganizationSyncReport(report: OrganizationSyncReport): void {
   console.log(JSON.stringify(report, null, 2));
-  if (report.errors.length > 0) process.exitCode = 2;
+  if (report.errors.length > 0 || report.emptied.length > 0) process.exitCode = 2;
 }
 
 async function syncKeycloakOrganizations(
@@ -399,6 +418,7 @@ async function syncKeycloakOrganizations(
     const keycloakOrganizations = await runCliEffect(directory.listOrganizations());
     const discovered: string[] = [];
     const skipped: {alias: string; reason: string}[] = [];
+    const emptied: {alias: string; reason: string}[] = [];
     const errors: {alias: string; error: string}[] = [];
     const memberSync: {alias: string; report: unknown}[] = [];
     for (const keycloakOrganization of keycloakOrganizations) {
@@ -421,6 +441,10 @@ async function syncKeycloakOrganizations(
         }
         const organization = result.organization;
         discovered.push(organization.slug);
+        if (organization.status !== "active") {
+          skipped.push({alias: keycloakOrganization.alias, reason: "Artifact Server organization is suspended."});
+          continue;
+        }
         // Orvex remains governed by the existing issuer-group policy.
         if (keycloakOrganization.alias === "orvex") continue;
         // oxlint-disable-next-line eslint/no-await-in-loop
@@ -433,8 +457,8 @@ async function syncKeycloakOrganizations(
         try {
           // oxlint-disable-next-line eslint/no-await-in-loop
           const memberReport = await orgRuntime.syncOrganizationMembers(directory, keycloakOrganization);
-          if ("kind" in memberReport && memberReport.kind === "skipped") {
-            skipped.push({alias: keycloakOrganization.alias, reason: memberReport.reason});
+          if ("kind" in memberReport && memberReport.kind === "emptied") {
+            emptied.push({alias: keycloakOrganization.alias, reason: memberReport.reason});
           } else {
             memberSync.push({alias: keycloakOrganization.alias, report: memberReport});
           }
@@ -450,7 +474,7 @@ async function syncKeycloakOrganizations(
       }
     }
     const disappeared = findDisappearedOrganizations(before, keycloakOrganizations);
-    return {discovered, disappeared, skipped, errors, memberSync};
+    return {discovered, disappeared, skipped, emptied, errors, memberSync};
   } finally {
     await Promise.all([configuration.objectStorage.close?.(), database.close()]);
   }

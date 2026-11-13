@@ -270,6 +270,42 @@ describe("generic OIDC MCP authorization", () => {
     }
   });
 
+  test("the discovered hosted verifier composes application resources and organization admission", async () => {
+    const alias = "hosted-org";
+    const id = crypto.randomUUID();
+    const mcpResource = "https://staging.artifactserver.test/o/hosted-org/mcp";
+    const hosted = await startOidcHostedAuthentication({
+      applicationOrigin: "https://staging.artifactserver.test",
+      clientId: "artifact-server",
+      clientSecret: null,
+      issuer,
+      scopes: "openid email profile",
+    });
+    try {
+      const applicationScoped = hosted.externalMcpOAuthVerifier.forApplicationResources?.({
+        apiResource: "https://staging.artifactserver.test/o/hosted-org/api",
+        mcpResource,
+      });
+      const verifier = applicationScoped?.forOrganization?.({alias, id});
+      if (verifier === undefined) {
+        throw new Error("The discovered hosted verifier cannot bind an organization.");
+      }
+      const token = await issueToken({
+        audience: mcpResource,
+        extraClaims: {
+          organization: {[alias]: {id, groups: ["/editor"]}},
+        },
+      });
+      const credential = Redacted.make(token);
+      const verified = await Effect.runPromise(verifier.verify(credential));
+      const identity = await Effect.runPromise(verifier.resolveIdentity(verified, credential));
+      expect(identity.organizationMembership).toMatchObject({alias, id, role: "member"});
+      expect(provider.keySetRequests()).toBe(1);
+    } finally {
+      hosted.close();
+    }
+  });
+
   test("a human token using a provisioner azp is refused and never falls back to userinfo", async () => {
     const apiResource = "https://artifacts.example.test/api";
     const verifier = new OidcMcpBearerVerifier({

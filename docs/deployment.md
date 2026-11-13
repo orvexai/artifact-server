@@ -38,12 +38,25 @@ clients; Orvex continues using that legacy callback.
 
 Each non-Orvex organization has separate protected-resource URLs and token
 audiences: `https://<application-host>/o/<slug>/api` for the HTTP API and
-`https://<application-host>/o/<slug>/mcp` for MCP. Provisioner service-account
-tokens use that organization's `/api` audience as well. Orvex keeps its
+`https://<application-host>/o/<slug>/mcp` for MCP. Orvex keeps its
 configured API resource override, or the legacy `<application-origin>/api`
 and `<application-origin>/mcp` defaults. Configure the matching Keycloak
 audience mapper for each organization's resources before enabling its OAuth
 admission policy.
+
+Run `artifact-server org sync` (or the `maintenance org-sync --once` CronJob
+path) to discover organizations and reconcile each organization's members.
+The sync command reports disappeared organizations but never deletes or
+suspends them. An enabled organization with zero members is reported as
+`emptied` and makes the command exit non-zero to raise an alert. Investigate
+the Keycloak membership first; when suspension is intended, run
+`artifact-server org suspend <slug>`. This deactivates that installation's
+members, revokes their sessions and human API keys, and suspends its route.
+Artifact Server administrator deactivations are sticky; only a
+Keycloak-driven deactivation is automatically reversed when the member returns.
+
+Org installations currently reject provisioner and service-account tokens;
+use an admitted human's organization-scoped token.
 
 ## Select storage
 

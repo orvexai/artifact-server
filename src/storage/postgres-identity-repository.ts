@@ -90,6 +90,9 @@ const memberRowSchema = z.object({
   status: memberStatusSchema,
   updatedAt: z.string(),
 });
+const organizationMemberRowSchema = memberRowSchema.extend({
+  manualDeactivation: z.boolean(),
+});
 const sessionRowSchema = z.object({
   createdAt: z.string(),
   csrfDigest: z.string(),
@@ -390,8 +393,11 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
   ): Promise<{
     readonly admitted: number;
     readonly deactivated: number;
+    readonly directoryUsers: number;
+    readonly groups: number;
     readonly reactivated: number;
     readonly roleChanged: number;
+    readonly skipped: number;
     readonly unchanged: number;
   }> {
     this.#assertInstallationScope(installationId);
@@ -412,11 +418,12 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         const rows = yield* sql.unsafe<object>(
           `SELECT id, installation_id AS "installationId", email,
              display_name AS "displayName", role, status,
-             created_at AS "createdAt", updated_at AS "updatedAt"
+             created_at AS "createdAt", updated_at AS "updatedAt",
+             manual_deactivation AS "manualDeactivation"
            FROM installation_members WHERE installation_id = $1 FOR UPDATE`,
           [installationId],
         );
-        const existing = z.array(memberRowSchema).parse(rows);
+        const existing = z.array(organizationMemberRowSchema).parse(rows);
         const byEmail = new Map(existing.map((member) => [member.email, member]));
         const desired = new Map(entries.map((entry) => [entry.email, entry]));
         const hasDesiredAdministrator = entries.some((entry) =>
@@ -455,6 +462,8 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
               ${entry.role}, ${memberStatuses.active}, ${updatedAt}, ${updatedAt}
             )`;
             admitted += 1;
+          } else if (member.status !== memberStatuses.active && member.manualDeactivation) {
+            unchanged += 1;
           } else if (member.status !== memberStatuses.active) {
             yield* sql`UPDATE installation_members SET display_name = ${entry.displayName},
               role = ${entry.role}, status = ${memberStatuses.active}, updated_at = ${updatedAt}
@@ -479,7 +488,62 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
             WHERE installation_id = ${installationId} AND principal_kind = ${principalKinds.human}
               AND principal_id = ${member.id}`;
         }
-        return {admitted, deactivated: removals.length, reactivated, roleChanged, unchanged};
+        return {
+          admitted,
+          deactivated: removals.length,
+          directoryUsers: entries.length,
+          groups: 0,
+          reactivated,
+          roleChanged,
+          skipped: 0,
+          unchanged,
+        };
+      }));
+    }));
+  }
+
+  async setOrganizationMemberRole(
+    installationId: string,
+    memberId: string,
+    role: InstallationMember["role"],
+    updatedAt: string,
+  ): Promise<InstallationMember | null> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen({self: this}, function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen({self: this}, function*() {
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:member-policy:${installationId}`}, 0)
+        )`;
+        const rows = yield* sql.unsafe<object>(
+          `SELECT id, installation_id AS "installationId", email,
+             display_name AS "displayName", role, status,
+             created_at AS "createdAt", updated_at AS "updatedAt",
+             manual_deactivation AS "manualDeactivation"
+           FROM installation_members WHERE installation_id = $1 AND id = $2 FOR UPDATE`,
+          [installationId, memberId],
+        );
+        const row = rows[0];
+        if (row === undefined) {
+          return yield* new IdentityNotFound({message: "The member does not exist."});
+        }
+        const {manualDeactivation, ...existing} = organizationMemberRowSchema.parse(row);
+        if (manualDeactivation) return null;
+        let effectiveRole = role;
+        if (isAdministratorRole(existing.role) && !isAdministratorRole(role)) {
+          const otherRows = yield* sql.unsafe<object>(
+            `SELECT COUNT(*)::integer AS count FROM installation_members
+             WHERE installation_id = $1 AND id <> $2 AND status = $3
+               AND role IN ($4, $5)`,
+            [installationId, memberId, memberStatuses.active,
+              membershipRoles.administrator, membershipRoles.owner],
+          );
+          if (countRowSchema.parse(otherRows[0]).count === 0) effectiveRole = existing.role;
+        }
+        yield* sql`UPDATE installation_members SET role = ${effectiveRole},
+          status = ${memberStatuses.active}, updated_at = ${updatedAt}
+          WHERE installation_id = ${installationId} AND id = ${memberId}`;
+        return {...existing, role: effectiveRole, status: memberStatuses.active, updatedAt};
       }));
     }));
   }
@@ -1004,6 +1068,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     installationId: string,
     memberId: string,
     updatedAt: string,
+    manualDeactivation = false,
   ): Promise<InstallationMember> {
     this.#assertInstallationScope(installationId);
     return this.#database.run(Effect.gen({self: this}, function*() {
@@ -1037,7 +1102,10 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
           }
         }
         yield* sql`UPDATE installation_members
-          SET status = ${memberStatuses.inactive}, updated_at = ${updatedAt}
+          SET status = ${memberStatuses.inactive},
+            manual_deactivation = CASE WHEN ${manualDeactivation}
+              THEN TRUE ELSE manual_deactivation END,
+            updated_at = ${updatedAt}
           WHERE installation_id = ${installationId} AND id = ${memberId}`;
         yield* sql`UPDATE application_sessions
           SET revoked_at = COALESCE(revoked_at, ${updatedAt})

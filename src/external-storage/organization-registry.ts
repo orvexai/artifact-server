@@ -289,6 +289,43 @@ export class OrganizationRegistry {
     }));
     return organizationSchema.parse(rows[0]);
   }
+
+  async suspend(slug: string): Promise<OrganizationRecord> {
+    const organization = await this.find(slug);
+    if (organization === null) throw new Error(`No organization '${slug}' is registered.`);
+    if (organization.slug === "orvex") throw new Error("The Orvex installation cannot be suspended with this command.");
+    const updatedAt = new Date().toISOString();
+    const rows = await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:directory-groups:${organization.id}`}, 0)
+        )`;
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:member-policy:${organization.id}`}, 0)
+        )`;
+        const members = yield* sql`UPDATE installation_members SET
+          status = 'inactive', manual_deactivation = TRUE, updated_at = ${updatedAt}
+          WHERE installation_id = ${organization.id} AND status = 'active'
+          RETURNING id`;
+        const memberIds = members.map((member) => member["id"]);
+        if (memberIds.length > 0) {
+          yield* sql`UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, ${updatedAt})
+            WHERE installation_id = ${organization.id} AND member_id = ANY(${memberIds}::text[])`;
+          yield* sql`UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ${updatedAt})
+            WHERE installation_id = ${organization.id} AND principal_kind = 'human'
+              AND principal_id = ANY(${memberIds}::text[])`;
+        }
+        return yield* sql`UPDATE artifact_installations SET status = 'suspended'
+          WHERE id = ${organization.id}
+          RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
+            status, admission_policy AS "admissionPolicy",
+            keycloak_organization_id AS "keycloakId"`;
+      }));
+    }));
+    if (rows[0] === undefined) throw new Error(`Organization '${slug}' disappeared while being suspended.`);
+    return organizationSchema.parse(rows[0]);
+  }
 }
 
 function randomRouteId(): string {

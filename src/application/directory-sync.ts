@@ -74,7 +74,7 @@ export interface DirectorySyncReport {
 }
 
 export type OrganizationDirectorySyncResult = DirectorySyncReport | {
-  readonly kind: "skipped";
+  readonly kind: "emptied";
   readonly reason: string;
 };
 
@@ -166,7 +166,7 @@ export const syncOrganizationDirectoryMembers = Effect.fn(
   const members = yield* directory.listOrganizationMembers(organization);
   if (members.length === 0) {
     return {
-      kind: "skipped",
+      kind: "emptied",
       reason: "Keycloak organization has no enabled members.",
     } as const;
   }

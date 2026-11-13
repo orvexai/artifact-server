@@ -246,7 +246,10 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
   );
 
   readonly listOrganizationMembers = Effect.fn("KeycloakDirectory.listOrganizationMembers")(
-    function*(this: KeycloakDirectory, organization: DirectoryOrganization) {
+    function*(this: KeycloakDirectory, organization: DirectoryOrganization, retry = 0): Effect.fn.Return<
+      readonly DirectoryOrganizationMember[],
+      DirectoryUnavailable
+    > {
       const token = yield* this.#accessToken();
       const roleByUserId = new Map<string, KeycloakOrganizationRole>();
       const groups: {id: string; path: string}[] = [];
@@ -301,6 +304,8 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
       }
       const members: DirectoryOrganizationMember[] = [];
       const seenMemberIds = new Set<string>();
+      let memberCount = 0;
+      let firstPageIds: string[] | undefined;
       for (let page = 0; page < maximumPagesPerGroup; page += 1) {
         const url = new URL(
           `${this.#adminBaseUrl}/organizations/${encodeURIComponent(organization.id)}/members`,
@@ -311,6 +316,11 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
         const listed = yield* decodeUserList(body).pipe(
           Effect.mapError(() => unavailable(`The Keycloak members of ${organization.alias} returned an invalid list.`)),
         );
+        memberCount += listed.length;
+        if (memberCount > maximumGroups * keycloakDirectoryPageSize) {
+          return yield* unavailable(`The Keycloak organization ${organization.alias} has too many members.`);
+        }
+        if (page === 0) firstPageIds = listed.map((member) => member.id);
         for (const member of listed) {
           seenMemberIds.add(member.id);
           if (member.enabled !== true) continue;
@@ -332,13 +342,45 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
           if ([...roleByUserId.keys()].some((id) => !seenMemberIds.has(id))) {
             return yield* unavailable(`Keycloak returned a role-group member missing from organization ${organization.alias}.`);
           }
-          return members;
+          break;
         }
         if (page === maximumPagesPerGroup - 1) {
           return yield* unavailable(`The Keycloak organization ${organization.alias} has too many member pages.`);
         }
       }
-      return yield* unavailable(`The Keycloak organization ${organization.alias} has too many member pages.`);
+      if (firstPageIds === undefined) {
+        return yield* unavailable(`The Keycloak organization ${organization.alias} returned no member page.`);
+      }
+      // Keycloak's members endpoint has no total-count header. Re-page it once
+      // after the snapshot to compare the total and first page before writing.
+      let verificationCount = 0;
+      let verificationFirstPageIds: string[] | undefined;
+      for (let page = 0; page < maximumPagesPerGroup; page += 1) {
+        const url = new URL(
+          `${this.#adminBaseUrl}/organizations/${encodeURIComponent(organization.id)}/members`,
+        );
+        url.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+        url.searchParams.set("max", String(keycloakDirectoryPageSize));
+        const body = yield* this.#adminGet(token, url,
+          `The Keycloak member verification for ${organization.alias}`);
+        const listed = yield* decodeUserList(body).pipe(
+          Effect.mapError(() => unavailable(`The Keycloak member verification for ${organization.alias} returned an invalid list.`)),
+        );
+        if (page === 0) verificationFirstPageIds = listed.map((member) => member.id);
+        verificationCount += listed.length;
+        if (listed.length < keycloakDirectoryPageSize) break;
+        if (page === maximumPagesPerGroup - 1) {
+          return yield* unavailable(`The Keycloak organization ${organization.alias} has too many verification pages.`);
+        }
+      }
+      const drifted = verificationFirstPageIds === undefined ||
+        verificationCount !== memberCount ||
+        JSON.stringify(verificationFirstPageIds) !== JSON.stringify(firstPageIds);
+      if (drifted) {
+        if (retry === 0) return yield* this.listOrganizationMembers(organization, 1);
+        return yield* unavailable(`The Keycloak organization ${organization.alias} membership changed during both sync attempts.`);
+      }
+      return members;
     },
   );
 

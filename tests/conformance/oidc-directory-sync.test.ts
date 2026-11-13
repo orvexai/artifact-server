@@ -192,6 +192,43 @@ describe("Keycloak directory sync", () => {
     expect(keycloak.adminRequests().some(({path: requestPath}) =>
       requestPath.includes("/fixture-disabled/"),
     )).toBe(false);
+
+    const driftedOrganization = {
+      alias: "org-drift",
+      enabled: true,
+      id: crypto.randomUUID(),
+      name: "Drifting membership",
+    };
+    const firstMember = keycloakUser("drift-first");
+    const secondMember = keycloakUser("drift-second");
+    keycloak.organizations.set(driftedOrganization.id, driftedOrganization);
+    keycloak.organizationMembers.set(driftedOrganization.id, [firstMember]);
+    keycloak.organizationRoleGroups.set(driftedOrganization.id, new Map());
+    keycloak.replaceOrganizationMembersAfterNextRead(driftedOrganization.id, [
+      firstMember,
+      secondMember,
+    ]);
+    expect(await Effect.runPromise(directory.listOrganizationMembers(driftedOrganization)))
+      .toMatchObject([
+        {id: "user-drift-first", role: "viewer"},
+        {id: "user-drift-second", role: "viewer"},
+      ]);
+
+    const continuouslyChangingOrganization = {
+      ...driftedOrganization,
+      alias: "org-drift-again",
+      id: crypto.randomUUID(),
+    };
+    keycloak.organizations.set(continuouslyChangingOrganization.id, continuouslyChangingOrganization);
+    keycloak.organizationMembers.set(continuouslyChangingOrganization.id, [firstMember]);
+    keycloak.organizationRoleGroups.set(continuouslyChangingOrganization.id, new Map());
+    keycloak.changeOrganizationMembersAfterReads(continuouslyChangingOrganization.id, [
+      [secondMember],
+      [firstMember],
+      [secondMember],
+    ]);
+    await expect(Effect.runPromise(directory.listOrganizationMembers(continuouslyChangingOrganization)))
+      .rejects.toThrow("membership changed during both sync attempts");
   });
 
   test("an incomplete organization role-group page fails closed", async () => {

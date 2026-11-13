@@ -130,6 +130,7 @@ import type {
 } from "../core/ports.js";
 import type {GroupRolePolicy} from "../core/group-role-policy.js";
 import type {IdentityRepository} from "../core/identity-ports.js";
+import type {InstallationMember} from "../core/installation-identity.js";
 import type { ManifestEntry } from "../core/model.js";
 import {randomBase64Url} from "../core/random.js";
 import { FileVerificationError } from "../storage/verified-file.js";
@@ -864,13 +865,14 @@ export function createApplicationLayer(
         "createLoginAttempt",
         () => identityRepository.createLoginAttempt(attempt),
       ),
-      deactivateMember: (installationId, memberId, updatedAt) =>
+      deactivateMember: (installationId, memberId, updatedAt, manualDeactivation) =>
         identityEffectWithConflictOrNotFound(
           "deactivateMember",
           () => identityRepository.deactivateMember(
             installationId,
             memberId,
             updatedAt,
+            manualDeactivation,
           ),
         ),
       findActiveMemberByEmail: (installationId, email) => identityEffect(
@@ -1010,6 +1012,38 @@ export function createApplicationLayer(
     },
     sessionLifetimeMilliseconds: 12 * 60 * 60 * 1_000,
   };
+  if (identityRepository.setOrganizationMemberRole !== undefined) {
+    Object.assign(installationAccessDependencies.repository, {
+      setOrganizationMemberRole: (installationId: string, memberId: string, role: InstallationMember["role"], updatedAt: string) =>
+        identityEffectWithConflictOrNotFound(
+          "setOrganizationMemberRole",
+          () => identityRepository.setOrganizationMemberRole?.(
+            installationId,
+            memberId,
+            role,
+            updatedAt,
+          ) ?? Promise.resolve(null),
+        ),
+    });
+  }
+  if (identityRepository.applyOrganizationMemberSnapshot !== undefined) {
+    Object.assign(installationAccessDependencies.repository, {
+      applyOrganizationMemberSnapshot: (
+        installationId: string,
+        entries: Parameters<NonNullable<IdentityRepository["applyOrganizationMemberSnapshot"]>>[1],
+        updatedAt: string,
+        maximumDeactivations: number,
+      ) => identityEffectWithConflict(
+        "applyOrganizationMemberSnapshot",
+        () => identityRepository.applyOrganizationMemberSnapshot?.(
+          installationId,
+          entries,
+          updatedAt,
+          maximumDeactivations,
+        ) ?? Promise.reject(new Error("Organization snapshot reconciliation is unavailable.")),
+      ),
+    });
+  }
   if (adapters.organizationAdmission !== undefined) {
     Object.assign(installationAccessDependencies, {
       organizationAdmission: adapters.organizationAdmission,

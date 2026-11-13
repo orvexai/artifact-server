@@ -76,6 +76,7 @@ export interface IdentityRepository {
     installationId: string,
     memberId: string,
     updatedAt: string,
+    manualDeactivation?: boolean,
   ): Promise<InstallationMember>;
   findActiveMemberByEmail(
     installationId: string,
@@ -194,6 +195,35 @@ export interface IdentityRepository {
     updatedAt: string,
     recomputeFromCurrentGroups?: boolean,
   ): Promise<InstallationMember | null>;
+  /** Organization role changes serialize with directory reconciliation and
+   * refuse to revive a manually deactivated member. */
+  setOrganizationMemberRole?(
+    installationId: string,
+    memberId: string,
+    role: InstallationMember["role"],
+    updatedAt: string,
+  ): Promise<InstallationMember | null>;
+  /** Reconcile a complete Keycloak organization snapshot in one transaction. */
+  applyOrganizationMemberSnapshot?(
+    installationId: string,
+    entries: readonly {
+      readonly displayName: string;
+      readonly email: string;
+      readonly id: string;
+      readonly role: InstallationMember["role"];
+    }[],
+    updatedAt: string,
+    maximumDeactivations: number,
+  ): Promise<{
+    readonly admitted: number;
+    readonly deactivated: number;
+    readonly directoryUsers: number;
+    readonly groups: number;
+    readonly reactivated: number;
+    readonly roleChanged: number;
+    readonly skipped: number;
+    readonly unchanged: number;
+  }>;
 }
 
 /** Atomic first-key operation required by private-team composition roots. */

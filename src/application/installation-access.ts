@@ -81,6 +81,12 @@ export interface InstallationIdentityRepository {
     updatedAt: string,
     maximumDeactivations: number,
   ) => Effect.Effect<DirectoryReconciliation, IdentityConflict | IdentityRepositoryFailure>;
+  readonly setOrganizationMemberRole?: (
+    installationId: string,
+    memberId: string,
+    role: MembershipRole,
+    updatedAt: string,
+  ) => Effect.Effect<InstallationMember | null, IdentityConflict | IdentityRepositoryFailure>;
   readonly listDirectoryGroups: (
     installationId: string,
   ) => Effect.Effect<readonly StoredDirectoryGroup[], IdentityRepositoryFailure>;
@@ -173,6 +179,7 @@ export interface InstallationIdentityRepository {
     installationId: string,
     memberId: string,
     updatedAt: string,
+    manuallyDeactivated?: boolean,
   ) => Effect.Effect<
     InstallationMember,
     IdentityConflict | IdentityNotFound | IdentityRepositoryFailure
@@ -1121,34 +1128,51 @@ function makeInstallationAccessService(
       }));
     }
     let member = existingMember;
-    const isSoleAdministrator = member !== null && isAdministratorRole(member.role)
-      ? yield* isSoleActiveAdministrator(member)
-      : false;
-    if (member !== null && isAdministratorRole(member.role) &&
-      !isAdministratorRole(organization.role) && isSoleAdministrator) {
-      // Keep the last administrator active so the installation can recover.
-    } else if (member === null) {
-      member = yield* dependencies.repository.admitMember({
-        createdAt: dependencies.clock.now().toISOString(),
-        displayName: identity.displayName,
-        email,
-        id: dependencies.ids.memberId(),
-        installationId: dependencies.installationId,
-        role: organization.role,
-      });
-    } else if (member.role !== organization.role) {
-      const updated = yield* dependencies.repository.setMemberRole(
+    let previousRole = member?.role;
+    let previousStatus = member?.status;
+    if (member === null) {
+      const previousMembers = yield* dependencies.repository.listMembers(
+        dependencies.installationId,
+      );
+      const previous = previousMembers.find((candidate) => candidate.email === email);
+      if (previous !== undefined) {
+        previousRole = previous.role;
+        previousStatus = previous.status;
+        const updateRole = dependencies.repository.setOrganizationMemberRole ??
+          dependencies.repository.setMemberRole;
+        member = yield* updateRole(
+          dependencies.installationId,
+          previous.id,
+          organization.role,
+          dependencies.clock.now().toISOString(),
+        );
+      } else {
+        member = yield* dependencies.repository.admitMember({
+          createdAt: dependencies.clock.now().toISOString(),
+          displayName: identity.displayName,
+          email,
+          id: dependencies.ids.memberId(),
+          installationId: dependencies.installationId,
+          role: organization.role,
+        });
+      }
+    } else {
+      const updateRole = dependencies.repository.setOrganizationMemberRole ??
+        dependencies.repository.setMemberRole;
+      member = yield* updateRole(
         dependencies.installationId,
         member.id,
         organization.role,
         dependencies.clock.now().toISOString(),
       );
-      if (updated === null) {
-        return yield* Effect.fail(new IdentityConflict({
-          message: "The member changed while organization admission was applied.",
-        }));
-      }
-      member = updated;
+    }
+    if (member !== null && (member.role !== previousRole || member.status !== previousStatus)) {
+      clearAuthenticationCaches();
+    }
+    if (member === null || member.status !== memberStatuses.active) {
+      return yield* Effect.fail(new IdentityAdmissionDenied({
+        message: "This organization member was manually deactivated or changed during login.",
+      }));
     }
     return member;
   }, Effect.catchTag("IdentityNotFound", () =>
@@ -1467,6 +1491,7 @@ function makeInstallationAccessService(
       dependencies.installationId,
       memberId,
       dependencies.clock.now().toISOString(),
+      dependencies.organizationAdmission !== undefined,
     );
     clearAuthenticationCaches();
     return member;
