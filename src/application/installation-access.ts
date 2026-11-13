@@ -54,6 +54,7 @@ import {
   isAdministratorRole,
   isHumanAdministrator,
   membershipRoles,
+  membershipRoleAtLeast,
   principalCapabilities,
   principalKinds,
   type MembershipRole,
@@ -61,7 +62,11 @@ import {
   type PrincipalCapability,
 } from "../core/identity.js";
 
-const allCapabilities = Object.values(principalCapabilities);
+const allCapabilities = new Set<PrincipalCapability>(
+  Object.values(principalCapabilities).filter((capability) =>
+    capability !== principalCapabilities.provisionProjects
+  ),
+);
 const localBrowserLoginProvider = "artifact-server-local";
 
 export interface InstallationIdentityRepository {
@@ -671,7 +676,7 @@ function makeInstallationAccessService(
   )(function*(snapshot: DirectoryGroupSnapshot) {
     const result = yield* dependencies.repository.applyDirectoryGroups(
       dependencies.installationId,
-      snapshot,
+      {...snapshot, guestGroupPrefixes: dependencies.groupRolePolicy?.guestGroupPrefixes ?? []},
     );
     // Group membership will decide project access; never serve a stale grant.
     if (
@@ -693,9 +698,7 @@ function makeInstallationAccessService(
   const listGroupRoles = Effect.fn(
     "InstallationAccessService.listGroupRoles",
   )(function*() {
-    return yield* dependencies.repository.listGroupRoles(
-      dependencies.installationId,
-    );
+    return yield* dependencies.repository.listGroupRoles(dependencies.installationId);
   });
 
   const isGroupRoleSeedApplied = Effect.fn(
@@ -949,9 +952,10 @@ function makeInstallationAccessService(
     // The configured roles decide until the directory sync has stored them,
     // and always without a directory sync; after that the stored roles do.
     const seeded = yield* dependencies.repository.isGroupRoleSeedApplied(dependencies.installationId);
-    const assignments = seeded
+    const baseAssignments = seeded
       ? yield* dependencies.repository.listGroupRoles(dependencies.installationId)
       : configuredGroupRoleAssignments(policy.seed);
+    const assignments = baseAssignments;
     const now = dependencies.clock.now().toISOString();
     // With every stored role removed nobody is turned away for good: the
     // roles are simply not set up.
@@ -1132,11 +1136,12 @@ function makeInstallationAccessService(
           message: "Service accounts require an installation group role.",
         });
       }
-      const assignments = (yield* dependencies.repository.isGroupRoleSeedApplied(
+      const baseAssignments = (yield* dependencies.repository.isGroupRoleSeedApplied(
           dependencies.installationId,
         ))
         ? yield* dependencies.repository.listGroupRoles(dependencies.installationId)
         : configuredGroupRoleAssignments(groupRolePolicy.seed);
+      const assignments = baseAssignments;
       const role = groupMembershipRole(assignments, identity.groups);
       if (role === null) {
         return yield* new IdentityAdmissionDenied({
@@ -1157,9 +1162,19 @@ function makeInstallationAccessService(
       ).map((group) => group.id);
       return {
         authorizedByPrincipalId: null,
-        capabilities: identity.embedBindingServiceAccount === true
-          ? [principalCapabilities.readArtifactResponses, principalCapabilities.bindArtifactEmbed]
-          : [principalCapabilities.readArtifactResponses],
+        capabilities: [
+          ...(identity.provisionProjectsServiceAccount !== true ||
+              identity.embedBindingServiceAccount === true
+            ? [principalCapabilities.readArtifactResponses]
+            : []),
+          ...(identity.embedBindingServiceAccount === true
+            ? [principalCapabilities.bindArtifactEmbed]
+            : []),
+          ...(identity.provisionProjectsServiceAccount === true &&
+              membershipRoleAtLeast(role, membershipRoles.member)
+            ? [principalCapabilities.provisionProjects]
+            : []),
+        ],
         directoryGroupIds,
         displayName: identity.displayName,
         email: null,
@@ -1167,6 +1182,8 @@ function makeInstallationAccessService(
         installationId: dependencies.installationId,
         kind: principalKinds.service,
         membershipRole: role,
+        provisionerGroupPrefixes: identity.provisionerGroupPrefixes ?? [],
+        serviceAccountClientId: identity.serviceAccountClientId,
         serviceAccountSource: "oidc" as const,
       };
     }
@@ -1597,7 +1614,7 @@ const normalizeCapabilities = Effect.fn(
   const unique = [...new Set(capabilities)];
   if (
     unique.length === 0 ||
-    unique.some((capability) => !allCapabilities.includes(capability))
+    unique.some((capability) => !allCapabilities.has(capability))
   ) {
     return yield* new IdentityConflict({
       message: "At least one recognized API key capability is required.",

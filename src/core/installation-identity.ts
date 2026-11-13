@@ -43,6 +43,11 @@ export interface ExternalIdentity {
   readonly serviceAccount?: boolean;
   /** True when its OAuth client opted in to embed question binding. */
   readonly embedBindingServiceAccount?: boolean;
+  /** True when this service account may use the restricted project tools. */
+  readonly provisionProjectsServiceAccount?: boolean;
+  /** Full directory group path prefixes the service account may share with. */
+  readonly provisionerGroupPrefixes?: readonly string[];
+  readonly serviceAccountClientId?: string;
 }
 
 /** One server-side browser session after its opaque credential is verified. */

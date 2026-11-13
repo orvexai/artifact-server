@@ -6,6 +6,7 @@ import {z} from "zod";
 
 import {createOidcIdentityProvider} from
   "../../src/identity/oidc-identity-provider.js";
+import {SqliteIdentityRepository} from "../../src/storage/sqlite-identity-repository.js";
 import type {OidcGroupRoles} from "../../src/identity/oidc-groups-claim.js";
 import {
   browserLoginKinds,
@@ -39,7 +40,7 @@ const groupRoles: OidcGroupRoles = {
 const sessionResponseSchema = z.object({
   principal: z.object({
     id: z.string(),
-    membershipRole: z.enum(["viewer", "member", "administrator", "owner"]),
+    membershipRole: z.enum(["guest", "viewer", "member", "administrator", "owner"]),
   }),
 });
 const failureSchema = z.object({
@@ -68,7 +69,7 @@ describe("generic OIDC browser login with issuer group roles", () => {
       applicationOrigin,
       bootstrapAdministratorEmail: bootstrapEmail,
       browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
-      groupRolePolicy: groupRoles,
+      groupRolePolicy: {...groupRoles, guestGroupPrefixes: ["/Guests/"]},
       interactiveIdentityProvider: createOidcIdentityProvider({
         applicationOrigin,
         clientId: provider.clientId,
@@ -106,6 +107,53 @@ describe("generic OIDC browser login with issuer group roles", () => {
     expect(refused.status).toBe(403);
     expect(failureSchema.parse(await refused.json()).error.message)
       .toBe("This person is not in a group admitted to the Artifact Server.");
+  });
+
+  test("a mirrored rule guest signs in again on a seeded installation; an unmirrored path is denied", async () => {
+    await storeTestGroupRoles(server, installation, [
+      {name: "artifact-admins", role: "administrator"},
+      {name: "artifact-users", role: "member"},
+    ]);
+    provider.claims.email = "tenant@example.test";
+    provider.claims.subject = "subject-tenant";
+    provider.claims.groups = ["/Guests/acme"];
+    expect((await completeLogin()).status).toBe(403);
+
+    const databasePath = path.join(installation.dataDirectory, "artifact-server.db");
+    const database = new DatabaseSync(databasePath);
+    let installationId = "";
+    let existingGroups: {id: string; name: string; path: string}[];
+    try {
+      installationId = z.object({installation_id: z.string()}).parse(database.prepare(
+        "SELECT installation_id FROM directory_groups LIMIT 1",
+      ).get()).installation_id;
+      existingGroups = z.array(z.object({id: z.string(), name: z.string(), path: z.string()})).parse(database.prepare(
+        "SELECT id, name, path FROM directory_groups",
+      ).all());
+    } finally {
+      database.close();
+    }
+    const repository = new SqliteIdentityRepository(databasePath);
+    try {
+      await repository.applyDirectoryGroups(installationId, {
+        groups: [
+          ...existingGroups.map((group) => Object.assign(group, {members: null})),
+          {id: "group-tenant-acme", name: "acme", path: "/Guests/acme", members: [
+            {email: "tenant@example.test", subject: "subject-tenant"},
+          ]},
+        ],
+        guestGroupPrefixes: ["/Guests/"],
+        provider: "test-oidc",
+        syncedAt: new Date().toISOString(),
+      });
+      expect(await repository.listGroupRoles(installationId)).toContainEqual(expect.objectContaining({
+        groupId: "group-tenant-acme", role: "guest", source: "rule",
+      }));
+    } finally {
+      repository.close();
+    }
+    expect(await sessionRole(await signIn())).toBe("guest");
+    expect(await sessionRole(await signIn())).toBe("guest");
   });
 
   test("once roles are stored they decide, and with none left sign-in is refused without changes", async () => {
@@ -152,6 +200,7 @@ describe("generic OIDC browser login with issuer group roles", () => {
 
     // Ada is the only Owner. Leaving the group, or every group, keeps her
     // role and access, so someone can still give the roles out again.
+    await storeDirectoryMembership("ada@example.test", "subject-ada", "artifact-users");
     provider.claims.groups = ["artifact-users"];
     expect(await sessionRole(await signIn())).toBe("owner");
     provider.claims.groups = ["sales"];
@@ -177,17 +226,21 @@ describe("generic OIDC browser login with issuer group roles", () => {
     provider.claims.groups = ["artifact-admins", "artifact-users"];
     const adaFirst = await signIn();
     expect(await sessionRole(adaFirst)).toBe("administrator");
+    await storeDirectoryMembership("ada@example.test", "subject-ada", "artifact-admins");
+    await storeDirectoryMembership("ada@example.test", "subject-ada", "artifact-users");
 
     provider.claims.email = "grace@example.test";
     provider.claims.subject = "subject-grace";
     provider.claims.groups = ["artifact-users", "sales"];
     expect(await sessionRole(await signIn())).toBe("member");
+    await storeDirectoryMembership("grace@example.test", "subject-grace", "artifact-users");
 
     // Ada leaves the administrator group; her next login demotes her, and the
     // session she already holds follows the member it belongs to.
     provider.claims.email = "ada@example.test";
     provider.claims.subject = "subject-ada";
     provider.claims.groups = ["artifact-users"];
+    await removeDirectoryMembership("subject-ada", "artifact-admins");
     expect(await sessionRole(await signIn())).toBe("member");
     expect(await sessionRole(adaFirst)).toBe("member");
 
@@ -244,6 +297,32 @@ describe("generic OIDC browser login with issuer group roles", () => {
       headers: {Cookie: authorization.handshakeCookie},
       redirect: "manual",
     });
+  }
+
+  async function storeDirectoryMembership(email: string, subject: string, group: string) {
+    const database = new DatabaseSync(path.join(installation.dataDirectory, "artifact-server.db"));
+    try {
+      const installationId = z.object({installation_id: z.string()}).parse(database.prepare(
+        "SELECT installation_id FROM directory_groups LIMIT 1",
+      ).get()).installation_id;
+      database.prepare(`INSERT INTO directory_group_members (
+        installation_id, group_id, subject, email, provider
+      ) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`).run(
+        installationId, `group-${group}`, subject, email, provider.issuer,
+      );
+    } finally {
+      database.close();
+    }
+  }
+
+  async function removeDirectoryMembership(subject: string, group: string) {
+    const database = new DatabaseSync(path.join(installation.dataDirectory, "artifact-server.db"));
+    try {
+      database.prepare(`DELETE FROM directory_group_members WHERE group_id = ? AND subject = ?`)
+        .run(`group-${group}`, subject);
+    } finally {
+      database.close();
+    }
   }
 
   /** Complete one login and return the application cookie header it issued. */

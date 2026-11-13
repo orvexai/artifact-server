@@ -920,6 +920,40 @@ const addGuestMembershipRole = Effect.gen(function*() {
   yield* sql.unsafe(`ALTER TABLE directory_group_roles ADD CONSTRAINT directory_group_roles_role_check CHECK (role IN ('guest', 'viewer', 'member', 'administrator', 'owner'))`);
 });
 
+const addGuestRoleRuleBackfill = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE directory_groups ADD COLUMN first_path TEXT NOT NULL DEFAULT ''`);
+  yield* sql.unsafe(`UPDATE directory_groups SET first_path = path WHERE first_path = ''`);
+  yield* sql.unsafe(`CREATE TABLE directory_group_role_rule_backfills (
+    installation_id TEXT PRIMARY KEY,
+    backfilled_at TEXT NOT NULL
+  )`);
+});
+
+const addProjectPrincipalCreator = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe("ALTER TABLE projects ADD COLUMN created_by_principal_id TEXT");
+});
+
+const addProjectProvisionerAuditEvents = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`CREATE TABLE project_provisioner_audit_events (
+    id SERIAL PRIMARY KEY,
+    installation_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('create', 'share', 'set_access')),
+    principal_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    actor_display_name TEXT NOT NULL,
+    details_json TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (installation_id, project_id)
+      REFERENCES projects(installation_id, id) ON DELETE CASCADE
+  )`);
+  yield* sql.unsafe(`CREATE INDEX project_provisioner_audit_project_created
+    ON project_provisioner_audit_events (installation_id, project_id, created_at DESC, id DESC)`);
+});
+
 const postgresMigrations = {
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -947,6 +981,9 @@ const postgresMigrations = {
   "0024_artifact_responses": addArtifactResponses,
   "0025_embed_response_binding_replay": addEmbedResponseBindingReplay,
   "0026_guest_membership_role": addGuestMembershipRole,
+  "0027_guest_role_rule_backfill": addGuestRoleRuleBackfill,
+  "0028_project_principal_creator": addProjectPrincipalCreator,
+  "0029_project_provisioner_audit_events": addProjectProvisionerAuditEvents,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

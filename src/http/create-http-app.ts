@@ -1268,16 +1268,18 @@ export function createHttpApp(
         ),
       );
       context.set("authenticationMethod", "bearer");
-      if (
-        principal.serviceAccountSource === "oidc" &&
-        principal.capabilities.includes(principalCapabilities.readArtifactResponses) &&
-        !((context.req.method === "GET" &&
-          /^\/api\/v1\/artifacts\/[^/]+\/responses(?:\/[^/]+)?$/u.test(context.req.path)) ||
-          (context.req.method === "POST" &&
-            /^\/api\/v1\/embed\/artifacts\/[^/]+\/binding$/u.test(context.req.path) &&
-            principal.capabilities.includes(principalCapabilities.bindArtifactEmbed)))
-      ) {
-        throw new AuthorizationDenied({message: "Service bearers may only read artifact responses."});
+      if (principal.serviceAccountSource === "oidc") {
+        const mayReadResponses =
+          principal.capabilities.includes(principalCapabilities.readArtifactResponses) &&
+          context.req.method === "GET" &&
+          /^\/api\/v1\/artifacts\/[^/]+\/responses(?:\/[^/]+)?$/u.test(context.req.path);
+        const mayBindEmbed =
+          principal.capabilities.includes(principalCapabilities.bindArtifactEmbed) &&
+          context.req.method === "POST" &&
+          /^\/api\/v1\/embed\/artifacts\/[^/]+\/binding$/u.test(context.req.path);
+        if (!mayReadResponses && !mayBindEmbed) {
+          throw new AuthorizationDenied({message: "Service bearers may access only API routes enabled for their capabilities."});
+        }
       }
       context.set("principal", principal);
       context.set("sessionCsrfDigest", null);
@@ -1549,7 +1551,12 @@ export function createHttpApp(
     const roles = await runHttpApplicationEffect(context, dependencies,
       InstallationAccessService.use((access) => access.listGroupRoles()));
     const roleByGroup = new Map(roles.map(({groupId, role}) => [groupId, role]));
-    return context.json({groups: groups.map((group) => Object.assign({}, group, {role: roleByGroup.get(group.id) ?? null}))});
+    const sourceByGroup = new Map(roles.filter(({source}) => source === "rule").map(({groupId}) => [groupId, "rule" as const]));
+    return context.json({groups: groups.map((group) => {
+      const visible = Object.assign({}, group, {role: roleByGroup.get(group.id) ?? null});
+      if (sourceByGroup.has(group.id)) Object.assign(visible, {source: "rule" as const});
+      return visible;
+    })});
   });
 
   app.put("/api/v1/groups/:groupId/role", boundedJsonBody, async (context) => {

@@ -834,6 +834,7 @@ describe("modern MCP HTTP", () => {
     const unavailableVerifier: BearerCredentialVerifier = {
       verify: () => Effect.fail(new IdentityRepositoryFailure({
         cause: new Error("The identity store is unavailable."),
+        message: "The identity store is unavailable.",
         operation: "findApiKey",
       })),
     };

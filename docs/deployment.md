@@ -133,6 +133,38 @@ HTTPS. The server logs `discovery_misconfigured`, keeps MCP and API OAuth off,
 stays ready with `components.identity.oauth` set to `misconfigured`, and does
 not retry. Correct the issuer configuration and restart.
 
+### Allow a project provisioner service client
+
+Client-credentials service accounts are refused on MCP by default. To opt one
+in, list its exact client ID in both `ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS`
+(`identity.oidcServiceClients` in Helm) and
+`ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS`
+(`identity.oidcProvisionerClients`). Startup fails if a provisioner is missing
+from the service-client list. Both settings default to empty. The Helm values
+schema checks their shape. A provisioner cannot also be an embed-binding client
+or the hosted-login/MCP OAuth client. Provisioners also require an OIDC
+group-role policy and `ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES`
+(`identity.oidcProvisionerGroupPrefixes` in Helm). Prefixes use the strict
+full-path form `^(/[^/\\s]+)+/$`; configure the intended production prefixes
+`/Guests/` and `/TenantWorkspaces/`. Both lists default to empty.
+
+An opted-in client must still be admitted by the configured directory group
+roles with at least the Operator/member role. Its verified service-account
+token must use the API resource audience (`<ARTIFACT_SERVER_ORIGIN>/api`). In
+MCP, the client can call only `project_list`, `project_create`,
+`project_sharing`, `project_share`, and `project_set_access`; tools/list exposes
+only those five. MCP resources and prompts are unavailable to provisioners.
+Project creation is restricted and records the service principal as creator.
+A provisioner can manage only projects it created; a manager grant on another
+project does not give it management rights. A provisioner cannot open projects
+to the installation or grant manager roles. Every shared group must use an
+existing full path beneath one of the configured prefixes. Each provisioner
+create/share/access change records an audit event with its principal and client
+IDs.
+
+This setting grants no API-key capability. The existing `/api` service-bearer
+restriction remains in force.
+
 ### Manage access with issuer groups
 
 By default an administrator admits each person by hand, and only the bootstrap
@@ -208,6 +240,36 @@ loses it, so someone can always give the roles out again.
 
 `artifactserver config check` reports the active policy under
 `configuration.oidcGroupRoles`.
+
+To make customer tenant groups guests automatically, set
+`ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES` to comma-separated absolute path
+prefixes matching `^(/[^/\s]+)+/$`, for example `/Guests/`; Helm uses
+`identity.oidcGuestGroupPrefixes: ["/Guests/"]`. This setting requires a group
+role seed or member/admin group configuration. A group matches only when its
+full path starts with the prefix and is longer than it, so `/Guests` and
+`/GuestsX/acme` do not match.
+
+When a matching group is first mirrored, the server stores an ordinary Guest
+role row marked as a rule assignment. Existing matching groups are backfilled
+once, skipping any group that already has a role row. An owner's explicit role
+row takes precedence. If an owner removes a rule-assigned role, that choice
+sticks through later syncs and the backfill. Settings > Groups and `group_list`
+show the role as `Guest (rule)`; the `None` action warns that members of the
+group will lose access. Backfill runs once per installation and records its
+completion, including when no group needs a new row.
+
+The rule applies only at first mirroring. A group first mirrored outside the
+prefix and moved into `/Guests/` later gets no Guest role automatically and
+fails closed until an owner assigns one. A group moved out of `/Guests/` keeps
+its stored Guest role. The bare `/Guests` group and groups outside the prefix
+are unaffected.
+
+The database migration adds `first_path` and the backfill marker table and is
+not automatically reversed. Before rolling back to a release that predates this
+schema, restore a database backup from before the upgrade. Disabling the prefix
+setting or rolling back the application also does not remove materialized Guest
+role rows; remove those rows in Settings > Groups first if they should not
+persist.
 
 ### Sync members from a Keycloak directory
 

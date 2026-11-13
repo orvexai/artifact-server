@@ -2,6 +2,7 @@ import {type Redacted, Schema} from "effect";
 import {z} from "zod";
 
 import type {GroupRoleSeedEntry} from "../core/group-role-policy.js";
+import {guestGroupPrefixPattern} from "../core/group-role-policy.js";
 import {membershipRoles, type MembershipRole} from "../core/identity.js";
 import {
   defaultOidcGroupsClaim,
@@ -30,12 +31,15 @@ const oidcEnvironmentSchema = z.object({
   ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL: z.url().optional(),
   ARTIFACT_SERVER_OIDC_DIRECTORY_PROVIDER: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: z.string().min(1).optional(),
+  ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES: z.string().optional(),
   ARTIFACT_SERVER_OIDC_GROUPS_CLAIM: z.string().trim().min(1).optional(),
   ARTIFACT_SERVER_OIDC_ISSUER: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_SCOPES: z.string().min(1).optional(),
   ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS: z.string().optional(),
   ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS: z.string().optional(),
+  ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS: z.string().optional(),
+  ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES: z.string().optional(),
   ARTIFACT_SERVER_ORIGIN: z.url().optional(),
 });
 
@@ -62,8 +66,12 @@ export interface OidcConfiguration {
   readonly directory: OidcDirectoryConfiguration | null;
   /** Service clients explicitly allowed to bind external embed questions. */
   readonly embedBindingClients: readonly string[];
+  /** Subset of service clients allowed to provision restricted projects. */
+  readonly provisionerClients: readonly string[];
+  readonly provisionerGroupPrefixes: readonly string[];
   /** Issuer groups that admit people and set their role; null keeps it manual. */
   readonly groupRoles: OidcGroupRoles | null;
+  readonly guestGroupPrefixes: readonly string[];
   readonly issuer: string;
   readonly scopes: string;
   /** Explicit OAuth clients allowed to use service-account bearer access. */
@@ -75,6 +83,17 @@ export async function loadOidcConfiguration(
   environment: NodeJS.ProcessEnv,
 ): Promise<OidcConfiguration | null> {
   const parsed = oidcEnvironmentSchema.parse(environment);
+  const guestGroupPrefixes = guestGroupPrefixesFrom(parsed.ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES);
+  const provisionerGroupPrefixes = groupPrefixesFrom(
+    parsed.ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES,
+    "ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES",
+  );
+  const configuredGroupRoles = oidcGroupRoles(parsed);
+  if (guestGroupPrefixes.length > 0 && configuredGroupRoles === null) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES requires ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED or ARTIFACT_SERVER_OIDC_MEMBER_GROUPS / ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS.",
+    );
+  }
   const clientSecret = await runCliEffect(loadOptionalCredential(
     environment,
     "ARTIFACT_SERVER_OIDC_CLIENT_SECRET",
@@ -95,12 +114,15 @@ export async function loadOidcConfiguration(
     parsed.ARTIFACT_SERVER_OIDC_SCOPES === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_GROUPS_CLAIM === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED === undefined &&
+    (parsed.ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES ?? "").trim() === "" &&
     parsed.ARTIFACT_SERVER_OIDC_MEMBER_GROUPS === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_ADMINISTRATOR_GROUPS === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_API_RESOURCE === undefined &&
     parsed.ARTIFACT_SERVER_OIDC_API_JWKS_URI === undefined
     && (parsed.ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS ?? "").trim() === ""
     && (parsed.ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS ?? "").trim() === ""
+    && (parsed.ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS ?? "").trim() === ""
+    && (parsed.ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES ?? "").trim() === ""
   ) {
     return null;
   }
@@ -128,14 +150,45 @@ export async function loadOidcConfiguration(
       "ARTIFACT_SERVER_OIDC_API_JWKS_URI must be an HTTPS URL. Plain http is allowed only when the OIDC issuer is local (localhost, 127.0.0.1, or ::1).",
     );
   }
-  const groupRoles = oidcGroupRoles(parsed);
+  const groupRoles = configuredGroupRoles === null ? null : guestGroupPrefixes.length === 0
+    ? configuredGroupRoles
+    : {...configuredGroupRoles, guestGroupPrefixes};
   const serviceClients = (parsed.ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS ?? "")
     .split(",").map((client) => client.trim()).filter(Boolean);
   const embedBindingClients = (parsed.ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS ?? "")
     .split(",").map((client) => client.trim()).filter(Boolean);
+  const provisionerClients = (parsed.ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS ?? "")
+    .split(",").map((client) => client.trim()).filter(Boolean);
+  if (provisionerClients.length > 0 && provisionerGroupPrefixes.length === 0) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS requires non-empty ARTIFACT_SERVER_OIDC_PROVISIONER_GROUP_PREFIXES.",
+    );
+  }
+  if (
+    provisionerClients.some((client) => client === requireString(parsed.ARTIFACT_SERVER_OIDC_CLIENT_ID))
+  ) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS must not include the hosted-login or MCP OAuth client id.",
+    );
+  }
   if (embedBindingClients.some((client) => !serviceClients.includes(client))) {
     throw new Error(
       "Every ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS entry must also appear in ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS.",
+    );
+  }
+  if (provisionerClients.some((client) => !serviceClients.includes(client))) {
+    throw new Error(
+      "Every ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS entry must also appear in ARTIFACT_SERVER_OIDC_SERVICE_CLIENTS.",
+    );
+  }
+  if (provisionerClients.some((client) => embedBindingClients.includes(client))) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS and ARTIFACT_SERVER_OIDC_EMBED_BIND_CLIENTS must not overlap.",
+    );
+  }
+  if (provisionerClients.length > 0 && configuredGroupRoles === null) {
+    throw new Error(
+      "ARTIFACT_SERVER_OIDC_PROVISIONER_CLIENTS requires an OIDC group-roles policy.",
     );
   }
   return {
@@ -154,11 +207,32 @@ export async function loadOidcConfiguration(
       groupRoles,
     ),
     embedBindingClients,
+    provisionerClients,
+    provisionerGroupPrefixes,
     groupRoles,
+    guestGroupPrefixes,
     issuer,
     scopes: parsed.ARTIFACT_SERVER_OIDC_SCOPES ?? defaultOidcScopes,
     serviceClients,
   };
+}
+
+function guestGroupPrefixesFrom(value: string | undefined): readonly string[] {
+  return groupPrefixesFrom(value, "ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES");
+}
+
+function groupPrefixesFrom(
+  value: string | undefined,
+  variableName: string,
+): readonly string[] {
+  if (value === undefined || value.trim() === "") return [];
+  const prefixes = value.split(",").map((prefix) => prefix.trim());
+  if (prefixes.some((prefix) => !guestGroupPrefixPattern.test(prefix))) {
+    throw new Error(
+      `Every ${variableName} entry must match ^(/[^/\\s]+)+/$, such as '/Guests/'.`,
+    );
+  }
+  return [...new Set(prefixes)];
 }
 
 /**

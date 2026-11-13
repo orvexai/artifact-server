@@ -61,6 +61,27 @@ describe("generic OIDC group-role configuration", () => {
     expect(configuration?.apiResource).toBeNull();
   });
 
+  test("guest prefixes require role configuration and the strict absolute path grammar", async () => {
+    await Promise.all(["/", "//", "/ /", "/Guests /", "/a//b/"].map((invalid) => expect(loadOidcConfiguration({
+        ...completeOidc,
+        ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES: invalid,
+      })).rejects.toThrow("must match ^(/[^/\\s]+)+/$")));
+    await expect(loadOidcConfiguration({
+      ...completeOidc,
+      ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES: "/Guests/",
+    })).rejects.toThrow("requires ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED");
+    const configuration = await loadOidcConfiguration({
+      ...completeOidc,
+      ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES: "/Guests/, /PartnerGuests/",
+      ARTIFACT_SERVER_OIDC_GROUP_ROLE_SEED: "Administrators=owner",
+    });
+    expect(configuration?.groupRoles).toEqual({
+      claim: "groups",
+      seed: [{role: "owner", selector: "Administrators"}],
+      guestGroupPrefixes: ["/Guests/", "/PartnerGuests/"],
+    });
+  });
+
   test("API OAuth resource can be overridden independently of the MCP resource", async () => {
     const configuration = await loadOidcConfiguration({
       ...completeOidc,
