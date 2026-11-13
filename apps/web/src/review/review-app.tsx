@@ -2425,7 +2425,9 @@ function ActivityInspector({
             <li key={action.id}>
               <strong>{actionLabel(action.action)}</strong>
               <time dateTime={action.createdAt}>{formatTimestamp(action.createdAt)}</time>
-              <code title={action.principalId}>{compactId(action.principalId)}</code>
+              <code title={action.principalId ?? undefined}>
+                {action.principalId === null ? "System" : compactId(action.principalId)}
+              </code>
             </li>
           ))}
         </ol>

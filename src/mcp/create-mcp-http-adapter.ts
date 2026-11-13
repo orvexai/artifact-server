@@ -73,6 +73,7 @@ export interface McpHttpAdapterDependencies {
   readonly applicationOrigin: string | null;
   readonly applicationRuntime: ApplicationRuntime;
   readonly contentDomain: string;
+  readonly contentTokenPrefix?: string | undefined;
   readonly gitHistory: GitHistoryCapabilityReader;
   readonly linkedArtifacts?: boolean;
   readonly mode: ArtifactMcpServerDependencies["mode"];
@@ -113,6 +114,7 @@ export function createMcpHttpAdapter(
           ?? requestOrigin(context.requestInfo),
         applicationRuntime: dependencies.applicationRuntime,
         contentDomain: dependencies.contentDomain,
+        contentTokenPrefix: dependencies.contentTokenPrefix,
         gitHistory: dependencies.gitHistory.read(),
         linkedArtifacts: dependencies.linkedArtifacts === true,
         mode: dependencies.mode,

@@ -37,6 +37,7 @@ import type {
   DiscoveredOAuthResources,
   HttpAppDependencies,
   McpOAuthResourceConfiguration,
+  WebAssetStore,
 } from "../http/create-http-app.js";
 import {
   defaultCompletedRequestLogSampleRate,
@@ -129,6 +130,8 @@ export interface ExternalStorageRuntimeConfig {
   readonly serviceVersion?: string;
   readonly uploadUrlLifetimeMilliseconds?: number;
   readonly stagingCleanupPolicy?: StagingCleanupPolicy;
+  /** Optional in-process asset provider for tests and embedded deployments. */
+  readonly webAssets?: WebAssetStore;
 }
 
 /** One ready external-storage runtime and its protocol adapter. */
@@ -159,11 +162,15 @@ export interface ExternalStorageRuntime {
 /** Per-organization security values that differ on a shared process host. */
 export interface ExternalStorageOrgConfig {
   readonly admissionPolicy?: GroupRolePolicy | null;
+  readonly allowLegacyEmbedBinding?: boolean;
+  readonly legacyEmbedBindingExpiresAt?: number;
   readonly applicationOrigin?: string;
   readonly bootstrapAdministratorEmail?: string | null;
   readonly bootstrapApiToken?: Redacted.Redacted;
   readonly cookieRouteId: string;
   readonly keycloakOrganizationId?: string | null;
+  readonly contentTokenPrefix?: string;
+  readonly embedOrigins?: readonly string[];
   readonly slug?: string;
   readonly issuePlatformSession?: (identity: ExternalIdentity, existingToken?: string | null) => Promise<string>;
 }
@@ -255,7 +262,9 @@ export async function createOrgRuntime(
   };
   const stagingCleanupPolicy = config.stagingCleanupPolicy ??
     defaultStagingCleanupPolicy;
-  const gitHistory = config.gitHistory ?? offNodeGitHistoryConfiguration();
+  const gitHistory = isOrvex
+    ? config.gitHistory ?? offNodeGitHistoryConfiguration()
+    : offNodeGitHistoryConfiguration();
   let applicationGitHistory = fixedGitHistoryCapabilityReader(
     gitHistory.capability,
   );
@@ -302,6 +311,13 @@ export async function createOrgRuntime(
       });
     }
     const {blobs, staging} = connectedObjectStorage;
+    const ids = new SystemIdGenerator();
+    if (orgConfig.contentTokenPrefix !== undefined) {
+      const createContentToken = ids.contentToken.bind(ids);
+      Object.assign(ids, {
+        contentToken: () => `${orgConfig.contentTokenPrefix}${createContentToken()}`,
+      });
+    }
     const applicationAdapters: Parameters<typeof createApplicationLayer>[0] = {
       apiToken: null,
       staffHandleSecret: config.apiToken,
@@ -320,7 +336,7 @@ export async function createOrgRuntime(
         ? scopedOAuthVerifier(config.externalMcpOAuthVerifier)
         : null,
       groupRolePolicy,
-      ids: new SystemIdGenerator(),
+      ids,
       identityRepository,
       installationId,
       organizationDirectoryVisibility: !isOrvex && orgConfig.slug !== undefined,
@@ -356,6 +372,9 @@ export async function createOrgRuntime(
     }
     if (gitHistoryProvider !== null) {
       Object.assign(applicationAdapters, {gitHistoryProvider});
+    }
+    if (orgConfig.contentTokenPrefix !== undefined) {
+      Object.assign(applicationAdapters, {contentTokenPrefix: orgConfig.contentTokenPrefix});
     }
     const applicationLayer = createApplicationLayer(applicationAdapters);
     const resources = Layer.effectDiscard(Effect.acquireRelease(
@@ -415,12 +434,28 @@ export async function createOrgRuntime(
       readiness: () => externalStorageReadiness(database, connectedObjectStorage),
       trustedApplicationOrigin: applicationOrigin,
       organizationSlug: orgConfig.slug,
-      webAssets: createNodeWebAssetStore(),
-    };
+      webAssets: config.webAssets ?? createNodeWebAssetStore(),    };
     if (orgConfig.issuePlatformSession !== undefined) {
       Object.assign(appDependenciesWithoutOAuth, {issuePlatformSession: orgConfig.issuePlatformSession});
     }
     let configuredAppDependencies: HttpAppDependencies = appDependenciesWithoutOAuth;
+    if (orgConfig.contentTokenPrefix !== undefined) {
+      configuredAppDependencies = {
+        ...configuredAppDependencies,
+        contentHostRoutingEnabled: true,
+        contentTokenPrefix: orgConfig.contentTokenPrefix,
+        installationId,
+      };
+    }
+    if (orgConfig.allowLegacyEmbedBinding === true) {
+      configuredAppDependencies = {...configuredAppDependencies, allowLegacyEmbedBinding: true};
+    }
+    if (orgConfig.legacyEmbedBindingExpiresAt !== undefined) {
+      configuredAppDependencies = {
+        ...configuredAppDependencies,
+        legacyEmbedBindingExpiresAt: orgConfig.legacyEmbedBindingExpiresAt,
+      };
+    }
     if (orgConfig.cookieRouteId !== "") {
       configuredAppDependencies = {
         ...configuredAppDependencies,
@@ -437,8 +472,12 @@ export async function createOrgRuntime(
         },
       };
     }
-    if (config.embedOrigins !== undefined) {
-      configuredAppDependencies = {...configuredAppDependencies, embedOrigins: config.embedOrigins};
+    if (orgConfig.slug === undefined || orgConfig.slug === "orvex") {
+      if (config.embedOrigins !== undefined) {
+        configuredAppDependencies = {...configuredAppDependencies, embedOrigins: config.embedOrigins};
+      }
+    } else if (orgConfig.embedOrigins !== undefined) {
+      configuredAppDependencies = {...configuredAppDependencies, embedOrigins: orgConfig.embedOrigins};
     }
     let appDependencies: HttpAppDependencies = configuredAppDependencies;
     if (config.apiOAuthResource !== undefined) {

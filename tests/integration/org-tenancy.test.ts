@@ -1,4 +1,4 @@
-import {createHash, randomUUID} from "node:crypto";
+import {createHash, createHmac, randomUUID} from "node:crypto";
 import {spawnSync} from "node:child_process";
 import {request as httpRequest} from "node:http";
 
@@ -13,7 +13,6 @@ import {
 } from "@modelcontextprotocol/server";
 import {Effect, Redacted} from "effect";
 import {SqlClient} from "effect/unstable/sql/SqlClient";
-import {PostgresIdentityRepository} from "../../src/storage/postgres-identity-repository.js";
 import {afterAll, beforeAll, describe, expect, test} from "vitest";
 import {z} from "zod";
 
@@ -50,14 +49,13 @@ import {createOidcIdentityProvider} from
   "../../src/identity/oidc-identity-provider.js";
 import {WorkOsMcpBearerVerifier} from
   "../../src/identity/workos-mcp-bearer-verifier.js";
-import {defaultGitHistoryFileCopyBytes, defaultGitHistoryVersionCopyBytes} from
-  "../../src/git-history/git-history-capability.js";
 import type {NodeGitHistoryConfiguration} from
   "../../src/git-history/node-git-history-configuration.js";
 import type {GitHistoryProviderHealthProbe} from
   "../../src/git-history/git-history-provider-health.js";
 import {RecordingGitHistoryProvider} from "../support/git-history-provider.js";
-import {gitHistoryMetadataFiles} from "../../src/git-history/git-history-mirror.js";
+import {isLiveContentToken, liveContentToken} from
+  "../../src/application/linked-artifacts.js";
 import type {ExternalMcpBearerVerifier} from
   "../../src/application/authentication.js";
 import type {
@@ -70,9 +68,36 @@ import {startStubOidcProvider} from "../support/stub-oidc-provider.js";
 import {createS3ObjectStorageProviderFactory} from
   "../../src/storage/s3-object-storage.js";
 import {PostgresDatabase} from "../../src/storage/postgres-database.js";
+import {PostgresIdentityRepository} from "../../src/storage/postgres-identity-repository.js";
 
 const region = "us-east-1";
 const applicationOrigin = "https://artifacts.example.com";
+const embedBindingSecret = "org-tenancy-test-embed-binding-secret-with-32-bytes-minimum";
+const orgTenancyGitProvider = new RecordingGitHistoryProvider();
+const orgTenancyGitHistory: NodeGitHistoryConfiguration = {
+  _tag: "CloudflareArtifactsRest",
+  apiToken: Redacted.make("org-tenancy-test-git-provider-token"),
+  capability: {
+    limits: {
+      fileCopyBytes: 10 * 1024 * 1024,
+      logicalCopiedBytes: 0,
+      logicalReservedBytes: 0,
+      storageBudgetBytes: null,
+      versionCopyBytes: 50 * 1024 * 1024,
+    },
+    provider: "cloudflare-artifacts",
+    providerState: "checking",
+  },
+  identity: {
+    accountId: "org-tenancy-account",
+    namespace: "org-tenancy-test",
+    provider: "cloudflare-artifacts",
+  },
+  issues: [],
+};
+const orgTenancyGitHistoryProbe: GitHistoryProviderHealthProbe = {
+  check: () => Effect.succeed({state: "available"}),
+};
 const adminEmail = "administrator@example.test";
 const bytes = new TextEncoder().encode("org B private artifact");
 const crossOrgMatrix = [
@@ -82,205 +107,207 @@ const crossOrgMatrix = [
   {surface: "hono", identifier: "GET /api/v1/projects/:projectId", coverage: "Org B project requested through Org A returns 404"},
   {surface: "hono", identifier: "GET /api/v1/artifacts/:artifactId", coverage: "Org B artifact requested through Org A returns 404"},
   {surface: "hono", identifier: "GET /api/v1/session", coverage: "Org A session cookie is ignored by Org B"},
+  {surface: "hono", identifier: "POST /api/v1/members/:memberId/reactivate", coverage: "admin-only per-org reactivation cannot cross installations"},
+  {surface: "mcp", identifier: "member_reactivate", coverage: "org-only admin reactivation tool rejects service principals"},
+  {surface: "hono", identifier: "GET /auth/login", coverage: "org-scoped login handshake cookie"},
+  {surface: "hono", identifier: "GET /auth/callback", coverage: "shared callback selects org from handshake cookie"},
+  {surface: "hono", identifier: "GET /embed/artifacts/:artifactId", coverage: "Org B embed CSP and parent origin are read from its registry row"},
+  {surface: "hono", identifier: "GET /embed/signed-in", coverage: "Org scoped embed sign-in endpoint remains separate from content hosts"},
+  {surface: "hono", identifier: "GET /review-frame", coverage: "Org B review frame CSP uses its registry embed origins"},
+  {surface: "hono", identifier: "GET /.well-known/oauth-protected-resource/o/:organization/api", coverage: "root OAuth metadata advertises the selected org API origin"},
+  {surface: "hono", identifier: "GET /.well-known/oauth-protected-resource/o/:organization/mcp", coverage: "root OAuth metadata advertises the selected org MCP origin"},
+  {surface: "hono", identifier: "PUT /api/v1/uploads/:uploadId/files/:storageToken", coverage: "Org A upload capability fails when its path is routed through Org B"},
+  {surface: "hono", identifier: "GET /api/v1/public/artifacts/:artifactId/guest/current", coverage: "Org B guest cookie is valid only in Org B"},
+  {surface: "hono", identifier: "POST /api/v1/projects/:projectId/artifacts/:artifactId/history/clone-token", coverage: "An Orvex clone credential and remote cannot be reused to resolve Orvex project and artifact identifiers through Org B"},
+  {surface: "mcp", identifier: "artifact_open", coverage: "returned review and content URLs include Org B base path and content token prefix"},
+  {surface: "mcp", identifier: "artifact_link", coverage: "Org B refuses linked-file publication without a local linked-file source and mints no URL or token"},
+  {surface: "mcp", identifier: "artifact_relink", coverage: "Org B refuses relinking without a local linked-file source and mints no URL or token"},
+  {surface: "mcp", identifier: "artifact_create_upload", coverage: "returned upload URL and commit target retain Org B base path"},
+  {surface: "mcp", identifier: "artifact_history_clone_token", coverage: "Org B refuses clone-token issuance when Git history is not provisioned"},
+  {surface: "mcp", identifier: "artifact_enable_guest_invitation", coverage: "guest invitation URL retains Org B base path"},
   {surface: "platform", identifier: "GET /api/v1/platform/me/orgs", coverage: "shared platform session lists only verified memberships"},
   {surface: "platform", identifier: "POST /api/v1/platform/session/last-org", coverage: "last-org accepts only a current membership"},
   {surface: "platform", identifier: "POST /api/v1/platform/session/logout", coverage: "logout deletes the shared platform session and expires its cookie"},
-  {surface: "hono", identifier: "GET /auth/login", coverage: "org-scoped login handshake cookie"},
-  {surface: "hono", identifier: "GET /auth/callback", coverage: "shared callback selects org from handshake cookie"},
 ] as const;
 
 const pendingCrossOrgCases = [
-  "hono:DELETE /api/v1/artifacts/:artifactId",
-  "hono:DELETE /api/v1/artifacts/:artifactId/comments/:threadId",
-  "hono:DELETE /api/v1/artifacts/:artifactId/comments/:threadId/replies/:replyId",
-  "hono:DELETE /api/v1/artifacts/:artifactId/guest-invitation",
-  "hono:DELETE /api/v1/artifacts/:artifactId/guest-invitation/sessions/:guestId",
-  "hono:DELETE /api/v1/artifacts/:artifactId/state/:key",
-  "hono:DELETE /api/v1/projects/:projectId/groups/:group",
-  "hono:DELETE /api/v1/public/artifacts/:artifactId/guest/comments/:threadId",
-  "hono:DELETE /api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId",
-  "hono:GET /",
-  "hono:GET /.well-known/oauth-protected-resource/o/:organization/api",
-  "hono:GET /.well-known/oauth-protected-resource/o/:organization/mcp",
-  "hono:GET /administration/api-keys",
-  "hono:GET /administration/members",
-  "hono:GET /administration/public-links",
-  "hono:GET /api/v1/administration/public-links",
-  "hono:GET /api/v1/agent-dispatches",
-  "hono:GET /api/v1/agent-dispatches/:dispatchId",
-  "hono:GET /api/v1/agents",
-  "hono:GET /api/v1/api-keys",
-  "hono:GET /api/v1/artifacts",
-  "hono:GET /api/v1/artifacts/:artifactId/actions",
-  "hono:GET /api/v1/artifacts/:artifactId/comments",
-  "hono:GET /api/v1/artifacts/:artifactId/comments/:threadId",
-  "hono:GET /api/v1/artifacts/:artifactId/comparisons",
-  "hono:GET /api/v1/artifacts/:artifactId/guest-invitation",
-  "hono:GET /api/v1/artifacts/:artifactId/guest-invitation/sessions",
-  "hono:GET /api/v1/artifacts/:artifactId/responses",
-  "hono:GET /api/v1/artifacts/:artifactId/responses/:responseId",
-  "hono:GET /api/v1/artifacts/:artifactId/state",
-  "hono:GET /api/v1/artifacts/:artifactId/state/:key",
-  "hono:GET /api/v1/artifacts/:artifactId/versions",
-  "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId",
-  "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId/archive",
-  "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId/file",
-  "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId/media",
-  "hono:GET /api/v1/embed/artifacts/:artifactId/bootstrap",
-  "hono:GET /api/v1/groups",
-  "hono:GET /api/v1/members",
-  "hono:GET /api/v1/projects",
-  "hono:GET /api/v1/projects/:projectId/audit",
-  "hono:GET /api/v1/projects/:projectId/git-history",
-  "hono:GET /api/v1/projects/:projectId/sharing",
-  "hono:GET /api/v1/public/artifacts/:artifactId",
-  "hono:GET /api/v1/public/artifacts/:artifactId/guest/comments",
-  "hono:GET /api/v1/public/artifacts/:artifactId/guest/comments/:threadId",
-  "hono:GET /api/v1/public/artifacts/:artifactId/guest/current",
-  "hono:GET /api/v1/public/artifacts/:artifactId/guest/responses",
-  "hono:GET /api/v1/public/artifacts/:artifactId/guest/responses/:responseId",
-  "hono:GET /api/v1/public/embed/artifacts/:artifactId/bootstrap",
-  "hono:GET /artifacts/:artifactId",
-  "hono:GET /assets/*",
-  "hono:GET /auth/context",
-  "hono:GET /auth/local",
-  "hono:GET /embed/artifacts/:artifactId",
-  "hono:GET /embed/signed-in",
-  "hono:GET /health",
-  "hono:GET /projects",
-  "hono:GET /projects/:projectId/artifacts",
-  "hono:GET /projects/:projectId/artifacts/:artifactId",
-  "hono:GET /projects/:projectId/artifacts/:artifactId/versions/:versionId/review",
-  "hono:GET /ready",
-  "hono:GET /review",
-  "hono:GET /review-frame",
-  "hono:GET /review/*",
-  "hono:GET /workbench",
-  "hono:HEAD /",
-  "hono:HEAD /administration/api-keys",
-  "hono:HEAD /administration/members",
-  "hono:HEAD /administration/public-links",
-  "hono:HEAD /api/v1/artifacts/:artifactId/versions/:versionId/archive",
-  "hono:HEAD /api/v1/artifacts/:artifactId/versions/:versionId/media",
-  "hono:HEAD /assets/*",
-  "hono:HEAD /embed/artifacts/:artifactId",
-  "hono:HEAD /projects",
-  "hono:HEAD /projects/:projectId/artifacts",
-  "hono:HEAD /projects/:projectId/artifacts/:artifactId",
-  "hono:HEAD /projects/:projectId/artifacts/:artifactId/versions/:versionId/review",
-  "hono:HEAD /review",
-  "hono:HEAD /review-frame",
-  "hono:HEAD /review/*",
-  "hono:HEAD /workbench",
-  "hono:PATCH /api/v1/artifacts/:artifactId/access",
-  "hono:PATCH /api/v1/artifacts/:artifactId/comments/:threadId",
-  "hono:PATCH /api/v1/artifacts/:artifactId/comments/:threadId/replies/:replyId",
-  "hono:PATCH /api/v1/artifacts/:artifactId/tags",
-  "hono:PATCH /api/v1/projects/:projectId",
-  "hono:PATCH /api/v1/public/artifacts/:artifactId/guest/comments/:threadId",
-  "hono:PATCH /api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId",
-  "hono:POST /api/v1/administration/public-links/make-private",
-  "hono:POST /api/v1/agent-dispatches",
-  "hono:POST /api/v1/agent-dispatches/:dispatchId/cancel",
-  "hono:POST /api/v1/agent-dispatches/:dispatchId/delivered",
-  "hono:POST /api/v1/agent-dispatches/:dispatchId/failed",
-  "hono:POST /api/v1/agents",
-  "hono:POST /api/v1/agents/:agentId/activity",
-  "hono:POST /api/v1/agents/:agentId/claims",
-  "hono:POST /api/v1/agents/:agentId/disconnect",
-  "hono:POST /api/v1/api-keys",
-  "hono:POST /api/v1/api-keys/:keyId/revoke",
-  "hono:POST /api/v1/api-keys/:keyId/rotate",
-  "hono:POST /api/v1/artifacts",
-  "hono:POST /api/v1/artifacts/:artifactId/capture",
-  "hono:POST /api/v1/artifacts/:artifactId/comments/:threadId/replies",
-  "hono:POST /api/v1/artifacts/:artifactId/content-sessions",
-  "hono:POST /api/v1/artifacts/:artifactId/guest-invitation",
-  "hono:POST /api/v1/artifacts/:artifactId/live-sessions",
-  "hono:POST /api/v1/artifacts/:artifactId/responses",
-  "hono:POST /api/v1/artifacts/:artifactId/restore",
-  "hono:POST /api/v1/artifacts/:artifactId/versions",
-  "hono:POST /api/v1/artifacts/:artifactId/versions/:versionId/comments",
-  "hono:POST /api/v1/artifacts/:artifactId/versions/:versionId/content-sessions",
-  "hono:POST /api/v1/artifacts/:artifactId/versions/:versionId/preview-leases",
-  "hono:POST /api/v1/artifacts/link",
-  "hono:POST /api/v1/embed/artifacts/:artifactId/binding",
-  "hono:POST /api/v1/members",
-  "hono:POST /api/v1/members/:memberId/deactivate",
-  "hono:POST /api/v1/projects",
-  "hono:POST /api/v1/projects/:projectId/archive",
-  "hono:POST /api/v1/projects/:projectId/artifacts/:artifactId/comments/clear",
-  "hono:POST /api/v1/projects/:projectId/artifacts/:artifactId/history/clone-token",
-  "hono:POST /api/v1/projects/:projectId/git-history/estimate",
-  "hono:POST /api/v1/projects/:projectId/unarchive",
-  "hono:POST /api/v1/public/artifacts/:artifactId/guest-session",
-  "hono:POST /api/v1/public/artifacts/:artifactId/guest/comments",
-  "hono:POST /api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies",
-  "hono:POST /api/v1/public/artifacts/:artifactId/guest/heartbeat",
-  "hono:POST /api/v1/public/artifacts/:artifactId/guest/responses",
-  "hono:POST /api/v1/session/logout",
-  "hono:POST /api/v1/uploads",
-  "hono:POST /api/v1/uploads/:uploadId/commit",
-  "hono:POST /auth/local",
-  "hono:POST /auth/local-owner",
-  "hono:PUT /api/v1/artifacts/:artifactId/source",
-  "hono:PUT /api/v1/artifacts/:artifactId/state/:key",
-  "hono:PUT /api/v1/groups/:groupId/role",
-  "hono:PUT /api/v1/mcp-uploads/:uploadId/files/:storageToken",
-  "hono:PUT /api/v1/projects/:projectId/access",
-  "hono:PUT /api/v1/projects/:projectId/git-history",
-  "hono:PUT /api/v1/projects/:projectId/groups/:group",
-  "hono:PUT /api/v1/uploads/:uploadId/files/:storageToken",
-  "mcp:artifact_capabilities",
-  "mcp:artifact_capture",
-  "mcp:artifact_commit_upload",
-  "mcp:artifact_create_upload",
-  "mcp:artifact_delete",
-  "mcp:artifact_diff",
-  "mcp:artifact_download",
-  "mcp:artifact_enable_guest_invitation",
-  "mcp:artifact_get",
-  "mcp:artifact_guest_invitation_sessions",
-  "mcp:artifact_guest_invitation_status",
-  "mcp:artifact_history_clone_token",
-  "mcp:artifact_link",
-  "mcp:artifact_list",
-  "mcp:artifact_open",
-  "mcp:artifact_relink",
-  "mcp:artifact_response_list",
-  "mcp:artifact_restore_version",
-  "mcp:artifact_revoke_guest_invitation",
-  "mcp:artifact_revoke_guest_session",
-  "mcp:artifact_set_tags",
-  "mcp:artifact_set_visibility",
-  "mcp:artifact_state_delete",
-  "mcp:artifact_state_get",
-  "mcp:artifact_state_list",
-  "mcp:artifact_state_set",
-  "mcp:artifact_version_list",
-  "mcp:comment_clear",
-  "mcp:comment_create",
-  "mcp:comment_delete",
-  "mcp:comment_get",
-  "mcp:comment_list",
-  "mcp:comment_reply",
-  "mcp:comment_resolve",
-  "mcp:comment_update",
-  "mcp:dispatch_inbox",
-  "mcp:group_list",
-  "mcp:group_set_role",
-  "mcp:project_archive",
-  "mcp:project_create",
-  "mcp:project_git_history_estimate",
-  "mcp:project_git_history_status",
-  "mcp:project_list",
-  "mcp:project_rename",
-  "mcp:project_set_access",
-  "mcp:project_set_git_history",
-  "mcp:project_share",
-  "mcp:project_sharing",
-  "mcp:project_unarchive",
-  "mcp:project_unshare",
+  {identifier: "hono:DELETE /api/v1/artifacts/:artifactId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:DELETE /api/v1/artifacts/:artifactId/comments/:threadId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:DELETE /api/v1/artifacts/:artifactId/comments/:threadId/replies/:replyId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:DELETE /api/v1/artifacts/:artifactId/guest-invitation", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:DELETE /api/v1/artifacts/:artifactId/guest-invitation/sessions/:guestId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:DELETE /api/v1/artifacts/:artifactId/state/:key", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:DELETE /api/v1/projects/:projectId/groups/:group", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:DELETE /api/v1/public/artifacts/:artifactId/guest/comments/:threadId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:DELETE /api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:GET /administration/api-keys", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:GET /administration/members", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:GET /administration/public-links", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/administration/public-links", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:GET /api/v1/agent-dispatches", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/agent-dispatches/:dispatchId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/agents", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/api-keys", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:GET /api/v1/artifacts", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/actions", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/comments", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/comments/:threadId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/comparisons", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/guest-invitation", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/guest-invitation/sessions", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/responses", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/responses/:responseId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/state", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/state/:key", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/versions", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId/archive", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId/file", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId/media", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/embed/artifacts/:artifactId/bootstrap", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:GET /api/v1/groups", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:GET /api/v1/members", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:GET /api/v1/projects", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/projects/:projectId/audit", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/projects/:projectId/git-history", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/projects/:projectId/sharing", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/public/artifacts/:artifactId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/public/artifacts/:artifactId/guest/comments", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/public/artifacts/:artifactId/guest/comments/:threadId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/public/artifacts/:artifactId/guest/responses", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/public/artifacts/:artifactId/guest/responses/:responseId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /api/v1/public/embed/artifacts/:artifactId/bootstrap", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:GET /artifacts/:artifactId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /assets/*", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:GET /auth/context", group: "authentication routes", justification: "Authentication state is scoped by the organization cookie suffix; the login and callback probes verify foreign handshakes are rejected."},
+  {identifier: "hono:GET /auth/local", group: "authentication routes", justification: "Local bootstrap login is an installation-local authentication flow and carries no foreign artifact identifier; org-specific OAuth handshake and callback isolation are tested separately."},
+  {identifier: "hono:GET /health", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:GET /projects", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /projects/:projectId/artifacts", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /projects/:projectId/artifacts/:artifactId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:GET /projects/:projectId/artifacts/:artifactId/versions/:versionId/review", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:GET /ready", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:GET /review", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:GET /review/*", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:GET /workbench", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:HEAD /", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:HEAD /administration/api-keys", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:HEAD /administration/members", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:HEAD /administration/public-links", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:HEAD /api/v1/artifacts/:artifactId/versions/:versionId/archive", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:HEAD /api/v1/artifacts/:artifactId/versions/:versionId/media", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:HEAD /assets/*", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:HEAD /embed/artifacts/:artifactId", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:HEAD /projects", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:HEAD /projects/:projectId/artifacts", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:HEAD /projects/:projectId/artifacts/:artifactId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:HEAD /projects/:projectId/artifacts/:artifactId/versions/:versionId/review", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:HEAD /review", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:HEAD /review-frame", group: "static and shell routes", justification: "HEAD returns only review-frame shell headers and no artifact bytes; the GET shell CSP and tenant embed-origin behavior are probed directly."},
+  {identifier: "hono:HEAD /review/*", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:HEAD /workbench", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:PATCH /api/v1/artifacts/:artifactId/access", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:PATCH /api/v1/artifacts/:artifactId/comments/:threadId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:PATCH /api/v1/artifacts/:artifactId/comments/:threadId/replies/:replyId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:PATCH /api/v1/artifacts/:artifactId/tags", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:PATCH /api/v1/projects/:projectId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:PATCH /api/v1/public/artifacts/:artifactId/guest/comments/:threadId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:PATCH /api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/administration/public-links/make-private", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:POST /api/v1/agent-dispatches", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/agent-dispatches/:dispatchId/cancel", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/agent-dispatches/:dispatchId/delivered", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/agent-dispatches/:dispatchId/failed", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/agents", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/agents/:agentId/activity", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/agents/:agentId/claims", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/agents/:agentId/disconnect", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/api-keys", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:POST /api/v1/api-keys/:keyId/revoke", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:POST /api/v1/api-keys/:keyId/rotate", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:POST /api/v1/artifacts", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/artifacts/:artifactId/capture", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/artifacts/:artifactId/comments/:threadId/replies", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/artifacts/:artifactId/content-sessions", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/artifacts/:artifactId/guest-invitation", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/artifacts/:artifactId/live-sessions", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/artifacts/:artifactId/responses", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/artifacts/:artifactId/restore", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/artifacts/:artifactId/versions", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/artifacts/:artifactId/versions/:versionId/comments", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/artifacts/:artifactId/versions/:versionId/content-sessions", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/artifacts/:artifactId/versions/:versionId/preview-leases", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/artifacts/link", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/embed/artifacts/:artifactId/binding", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:POST /api/v1/members", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:POST /api/v1/members/:memberId/deactivate", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:POST /api/v1/projects", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/projects/:projectId/archive", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/projects/:projectId/artifacts/:artifactId/comments/clear", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/projects/:projectId/git-history/estimate", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/projects/:projectId/unarchive", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/public/artifacts/:artifactId/guest-session", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/public/artifacts/:artifactId/guest/comments", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/public/artifacts/:artifactId/guest/heartbeat", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/public/artifacts/:artifactId/guest/responses", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/session/logout", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/uploads", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /api/v1/uploads/:uploadId/commit", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:POST /auth/local", group: "authentication routes", justification: "Local bootstrap login is an installation-local authentication flow and carries no foreign artifact identifier; org-specific OAuth handshake and callback isolation are tested separately."},
+  {identifier: "hono:POST /auth/local-owner", group: "authentication routes", justification: "Local bootstrap login is an installation-local authentication flow and carries no foreign artifact identifier; org-specific OAuth handshake and callback isolation are tested separately."},
+  {identifier: "hono:PUT /api/v1/artifacts/:artifactId/source", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:PUT /api/v1/artifacts/:artifactId/state/:key", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:PUT /api/v1/groups/:groupId/role", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:PUT /api/v1/mcp-uploads/:uploadId/files/:storageToken", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:PUT /api/v1/projects/:projectId/access", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:PUT /api/v1/projects/:projectId/git-history", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
+  {identifier: "hono:PUT /api/v1/projects/:projectId/groups/:group", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "mcp:artifact_capabilities", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_capture", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_commit_upload", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_delete", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_diff", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_download", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_get", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_guest_invitation_sessions", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_guest_invitation_status", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_list", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_response_list", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_restore_version", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_revoke_guest_invitation", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_revoke_guest_session", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_set_tags", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_set_visibility", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_state_delete", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_state_get", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_state_list", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_state_set", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:artifact_version_list", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:comment_clear", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:comment_create", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:comment_delete", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:comment_get", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:comment_list", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:comment_reply", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:comment_resolve", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:comment_update", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:dispatch_inbox", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:group_list", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:group_set_role", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:project_archive", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:project_create", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:project_git_history_estimate", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:project_git_history_status", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:project_list", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:project_rename", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:project_set_access", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:project_set_git_history", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:project_share", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:project_sharing", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:project_unarchive", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
+  {identifier: "mcp:project_unshare", group: "MCP tools", justification: "The tool executes with the selected installation-scoped application services; the foreign bearer is rejected at MCP authentication before any tool can run."},
 ] as const;
 
 function assertCrossOrgMatrixComplete(
@@ -290,7 +317,7 @@ function assertCrossOrgMatrixComplete(
   const matrixCases = crossOrgMatrix.map(({surface, identifier}) =>
     `${surface}:${identifier}`,
   );
-  const knownCases = [...matrixCases, ...pendingCrossOrgCases];
+  const knownCases = [...matrixCases, ...pendingCrossOrgCases.map(({identifier}) => identifier)];
   const knownCaseSet = new Set(knownCases);
   const currentCases = new Set([
     ...registeredRoutes.map((route) =>
@@ -309,6 +336,9 @@ function assertCrossOrgMatrixComplete(
   for (const identifier of knownCaseSet) {
     if (!currentCases.has(identifier)) throw new Error(`Cross-org matrix case is no longer registered: ${identifier}`);
   }
+  expect(pendingCrossOrgCases.every(({identifier, group, justification}) =>
+    identifier.length > 0 && group.length > 0 && justification.length > 0
+  )).toBe(true);
 }
 describe.sequential("organization tenancy security boundary", () => {
   const databaseUrl = process.env["ARTIFACT_SERVER_TEST_DATABASE_URL"];
@@ -327,6 +357,8 @@ describe.sequential("organization tenancy security boundary", () => {
   let orgC: Awaited<ReturnType<OrganizationRegistry["create"]>>;
   let platformMemberships: {displayName: string; role: string; slug: string}[];
   let config: ExternalStorageRuntimeConfig;
+  let orgBPathContentToken = "";
+  let legacyPathContentToken = "";
 
   beforeAll(async () => {
     if (databaseUrl === undefined || endpoint === undefined || accessKey === undefined || secretKey === undefined) {
@@ -397,8 +429,10 @@ describe.sequential("organization tenancy security boundary", () => {
         })),
       }).nullable(),
       displayName: z.string(),
+      embedOrigins: z.array(z.string()),
       id: z.string(),
       keycloakId: z.string().nullable(),
+      registryVersion: z.string().regex(/^\d+$/u),
       routeId: z.string(),
       slug: z.string(),
       status: z.enum(["active", "suspended"]),
@@ -473,10 +507,14 @@ describe.sequential("organization tenancy security boundary", () => {
       bootstrapAdministratorEmail: adminEmail,
       browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
       contentDomain: "content.example.net",
+      embedBindingSecret: Redacted.make(embedBindingSecret),
       databaseUrl: Redacted.make(databaseUrl),
       installationId,
       organizationMemberships: {forIdentity: async () => platformMemberships},
       groupRolePolicy: {seed: [{role: "administrator", selector: "/orvex/admin"}]},
+      gitHistory: orgTenancyGitHistory,
+      gitHistoryHealthProbe: orgTenancyGitHistoryProbe,
+      gitHistoryProvider: orgTenancyGitProvider,
       externalMcpOAuthVerifier: testMcpVerifier,
       mcpOAuthResource: {
         authorizationServerMetadata: {
@@ -500,6 +538,15 @@ describe.sequential("organization tenancy security boundary", () => {
         scopes: "openid email profile",
       }),
       objectStorage,
+      webAssets: {
+        fetch: async (assetPath) => assetPath === "/embed.html"
+          ? new Response("<!doctype html><html><head></head><body>embed</body></html>")
+          : assetPath === "/review-frame.html"
+          ? new Response("<!doctype html><html><head></head><body>review frame</body></html>")
+          : assetPath === "/assets/embed-signed-in.js"
+          ? new Response("window.close();")
+          : null,
+      },
     };
 
     const setupB = await createOrgRuntime(orgB.id, {
@@ -508,7 +555,9 @@ describe.sequential("organization tenancy security boundary", () => {
       bootstrapApiToken: Redacted.make(apiTokenB),
       cookieRouteId: orgB.routeId,
       slug: orgB.slug,
-    }, config, database);
+      contentTokenPrefix: `${orgB.routeId}-`,
+      embedOrigins: [],
+    }, withoutGitHistory(config), database);
     try {
       const projectResponse = await setupB.app.fetch(appRequest(
         "/api/v1/projects",
@@ -528,6 +577,19 @@ describe.sequential("organization tenancy security boundary", () => {
         orgB.slug,
       );
       if (!artifactId.startsWith("art_")) throw new Error("The Org B fixture artifact ID is malformed.");
+      const pathArtifactId = await publishOrgPathFilesArtifact(
+        (request) => setupB.app.fetch(request),
+        apiTokenB,
+        projectId,
+        orgB.slug,
+        "Org B reserved path files",
+      );
+      const pathVersionRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT content_token AS "contentToken" FROM versions
+          WHERE installation_id = ${orgB.id} AND artifact_id = ${pathArtifactId}`;
+      }));
+      orgBPathContentToken = z.object({contentToken: z.string()}).parse(pathVersionRows[0]).contentToken;
     } finally {
       await setupB.close();
     }
@@ -642,6 +704,7 @@ describe.sequential("organization tenancy security boundary", () => {
       applicationOrigin: new URL(`/o/${orgB.slug}`, applicationOrigin).toString(),
       bootstrapApiToken: Redacted.make(apiTokenB),
       cookieRouteId: orgB.routeId,
+      keycloakOrganizationId: randomUUID(),
       slug: orgB.slug,
     }, config, database);
     try {
@@ -796,34 +859,15 @@ describe.sequential("organization tenancy security boundary", () => {
   test("isolates resources and runs the explicit route/tool completeness guard", async () => {
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const host = {Host: "artifacts.example.com"};
+    let orgBMemberCookie = "";
+    let orgBCsrf = "";
     expect(orgB.admissionPolicy).toMatchObject({groupRoots: [`/teams/${orgB.slug}/`]});
-    const gitHistoryProvider = new RecordingGitHistoryProvider();
-    const tenantGitHistory: NodeGitHistoryConfiguration = {
-      _tag: "CloudflareArtifactsRest",
-      apiToken: Redacted.make("org-tenancy-git-history-test-token"),
-      capability: {
-        limits: {
-          fileCopyBytes: defaultGitHistoryFileCopyBytes,
-          logicalCopiedBytes: 0,
-          logicalReservedBytes: 0,
-          storageBudgetBytes: null,
-          versionCopyBytes: defaultGitHistoryVersionCopyBytes,
-        },
-        provider: "cloudflare-artifacts",
-        providerState: "available",
-      },
-      identity: {accountId: "org-tenancy-test", namespace: "org-tenancy-test", provider: "cloudflare-artifacts"},
-      issues: [],
-    };
-    const gitHistoryHealthProbe: GitHistoryProviderHealthProbe = {
-      check: () => Effect.succeed({state: "available"}),
-    };
     const admissionRuntime = await createOrgRuntime(orgB.id, {
       admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
       applicationOrigin: `${applicationOrigin}/o/${orgB.slug}`,
       cookieRouteId: orgB.routeId,
       slug: orgB.slug,
-    }, {...config, gitHistory: tenantGitHistory, gitHistoryHealthProbe, gitHistoryProvider}, database);
+    }, withoutGitHistory(config), database);
     try {
       const loginWithGroups = async (groups: readonly string[], subject: string) => {
         oidc.claims.email = `${subject}@example.test`;
@@ -859,6 +903,15 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(siblingRoot.status).toBe(403);
       const admitted = await loginWithGroups([`/teams/${orgB.slug}/admins`], "org-b-admin-user");
       expect(admitted.status).toBe(303);
+      orgBMemberCookie = admitted.headers.getSetCookie()
+        .map((cookie) => cookie.split(";", 1)[0])
+        .join("; ");
+      const orgBCsrfCookie = admitted.headers.getSetCookie().find((cookie) =>
+        cookie.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`)
+      );
+      const orgBCsrfValue = orgBCsrfCookie?.split(";", 1)[0]?.split("=", 2)[1];
+      if (orgBCsrfValue === undefined) throw new Error("Org B administrator login did not issue a CSRF token.");
+      orgBCsrf = orgBCsrfValue;
 
       const staffLogin = await loginWithGroups([`/teams/${orgB.slug}/support`], "tenant-support-user");
       expect(staffLogin.status).toBe(303);
@@ -1127,12 +1180,14 @@ describe.sequential("organization tenancy security boundary", () => {
         `https://artifacts.example.com/api/v1/public/embed/artifacts/${staffArtifact.id}/bootstrap?path=index.html`,
       ));
       expect(publicEmbedBootstrap.status).toBe(200);
-      const enableGitHistory = await admissionRuntime.app.fetch(appRequest(
-        `/api/v1/projects/${staffProjectId}/git-history`, apiTokenB, "PUT",
-        {confirmEstimate: true, enabled: true},
+      const orgBCloneRefusal = await admissionRuntime.app.fetch(appRequest(
+        `/api/v1/projects/${staffProjectId}/artifacts/${staffArtifact.id}/history/clone-token`,
+        apiTokenB, "POST", {ttlSeconds: 60},
       ));
-      expect(enableGitHistory.status).toBe(200);
-      await expect.poll(() => gitHistoryProvider.commitCalls, {timeout: 8_000}).toBeGreaterThan(0);
+      expect(orgBCloneRefusal.status).toBe(404);
+      const orgBCloneBody = await orgBCloneRefusal.text();
+      expect(orgBCloneBody).not.toContain('"token"');
+      expect(orgBCloneBody).not.toContain('"remote"');
       const requiredEditorMutationPairs = [
         ["editor", "POST /api/v1/artifacts/:artifactId/restore", editorRestore.status],
         ["editor", "PATCH /api/v1/artifacts/:artifactId/tags", editorTags.status],
@@ -1195,38 +1250,38 @@ describe.sequential("organization tenancy security boundary", () => {
       for (const [role, actor] of issuedActorKeys) actorCookies.set(role, actor);
       const viewerWithKey = actorCookies.get("viewer");
       if (viewerWithKey?.token === undefined) throw new Error("The route walker has no viewer API key.");
-      const viewerClone = await admissionRuntime.app.fetch(appRequest(
-        `/api/v1/projects/${staffProjectId}/artifacts/${staffArtifact.id}/history/clone-token`,
-        viewerWithKey.token, "POST", {ttlSeconds: 60},
-      ));
-      expect(viewerClone.status).toBe(201);
-      expect(await viewerClone.json()).toMatchObject({remote: `https://git.example.test/${staffArtifact.id}`});
-      const clonedCommitFiles = gitHistoryProvider.commitRequests.flatMap((request) =>
-        request.files.concat(gitHistoryMetadataFiles(request))
-      );
-      expect(clonedCommitFiles.length).toBeGreaterThan(0);
-      for (const file of clonedCommitFiles) {
-        const contents = new TextDecoder().decode(file.bytes);
-        expect(contents).not.toContain(staffMember.id);
-        expect(contents).not.toContain(staffMember.email);
-        expect(contents).not.toContain(staffMember.displayName);
-      }
-      const versionMetadataFiles = clonedCommitFiles
-        .filter(({path}) => path === ".artifactserver/version.json");
-      expect(versionMetadataFiles.length).toBeGreaterThan(0);
-      for (const file of versionMetadataFiles) {
-        const metadata = z.record(z.string(), z.unknown()).parse(JSON.parse(new TextDecoder().decode(file.bytes)));
-        expect(metadata).not.toHaveProperty("publisherPrincipalId");
-        expect(JSON.stringify(metadata)).not.toContain(staffMember.id);
-      }
       const mcpActorTokens = new Map<string, string>([...actorCookies].flatMap(([role, actor]) => actor.token === undefined ? [] : [[role, actor.token] as const]));
 
-      const routeInventory = admissionRuntime.app.routes.map(({method, path}) => `${method} ${path}`);
-      const toolInventoryResponse = await admissionRuntime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
-        id: "route-walker-tools", jsonrpc: "2.0", method: "tools/list",
-      }, {Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
-      const toolDefinitions = await mcpToolDefinitions(toolInventoryResponse);
-      const toolInventory = toolDefinitions.map(({name}) => name);
+      const conditionalRuntimeToken = managedTestKey("org-tenancy-conditional");
+      const conditionalAdmissionRuntime = await createOrgRuntime(orgC.id, {
+        admissionPolicy: runtimeAdmissionPolicy(orgC.admissionPolicy),
+        applicationOrigin: `${applicationOrigin}/o/${orgC.slug}`,
+        bootstrapApiToken: Redacted.make(conditionalRuntimeToken),
+        cookieRouteId: orgC.routeId,
+        keycloakOrganizationId: randomUUID(),
+        slug: orgC.slug,
+      }, withoutGitHistory(config), database);
+      let routeInventory: string[];
+      let toolDefinitions: McpToolDefinition[];
+      let toolInventory: string[];
+      try {
+        routeInventory = [...new Set([
+          ...admissionRuntime.app.routes.map(({method, path}) => `${method} ${path}`),
+          ...conditionalAdmissionRuntime.app.routes.map(({method, path}) => `${method} ${path}`),
+        ])];
+        const conditionalToolsResponse = await conditionalAdmissionRuntime.app.fetch(appRequest("/mcp", conditionalRuntimeToken, "POST", {
+          id: "route-walker-conditional-tools", jsonrpc: "2.0", method: "tools/list",
+        }, {Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+        const conditionalTools = await mcpToolDefinitions(conditionalToolsResponse);
+        const baseToolsResponse = await admissionRuntime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
+          id: "route-walker-tools", jsonrpc: "2.0", method: "tools/list",
+        }, {Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+        const baseTools = await mcpToolDefinitions(baseToolsResponse);
+        toolDefinitions = baseTools;
+        toolInventory = [...new Set([...baseTools, ...conditionalTools].map(({name}) => name))];
+      } finally {
+        await conditionalAdmissionRuntime.close();
+      }
       assertCrossOrgMatrixComplete(routeInventory, toolInventory);
 
       const staffSecrets = [staffMember.displayName, staffMember.email, staffMember.id];
@@ -1388,7 +1443,7 @@ describe.sequential("organization tenancy security boundary", () => {
         bootstrapApiToken: Redacted.make(apiTokenB),
         cookieRouteId: orgB.routeId,
         slug: orgB.slug,
-      }, config, database);
+      }, withoutGitHistory(config), database);
       try {
         const mcpCommentList = await staffMcpRuntime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
           id: 1, jsonrpc: "2.0", method: "tools/call", params: {
@@ -1513,41 +1568,517 @@ describe.sequential("organization tenancy security boundary", () => {
     } finally {
       await admissionRuntime.close();
     }
+    const forwardedHost = {
+      ...host,
+      "x-forwarded-host": "artifacts.example.com",
+      "x-forwarded-proto": "https",
+    };
     const registry = new OrganizationRegistry(database);
-    const [projectRows, artifactRows] = await database.run(Effect.gen(function*() {
+    const [projectRows, artifactRows, versionRows] = await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const projects = yield* sql`SELECT id FROM projects
         WHERE installation_id = ${orgB.id} AND name = 'Org B project'`;
       const artifacts = yield* sql`SELECT id FROM artifacts
         WHERE installation_id = ${orgB.id} AND name = 'Org B artifact'`;
-      return [projects, artifacts] as const;
+      const versions = yield* sql`SELECT id, content_token AS "contentToken"
+        FROM versions WHERE installation_id = ${orgB.id}
+          AND artifact_id = (SELECT id FROM artifacts
+            WHERE installation_id = ${orgB.id} AND name = 'Org B artifact')`;
+      return [projects, artifacts, versions] as const;
     }));
     const projectId = z.object({id: z.string()}).parse(projectRows[0]).id;
     const artifactId = z.object({id: z.string()}).parse(artifactRows[0]).id;
+    const version = z.object({id: z.string(), contentToken: z.string()}).parse(versionRows[0]);
+    expect(version.contentToken).toMatch(new RegExp(`^${orgB.routeId}-[A-Za-z0-9_-]{16,100}$`, "u"));
+    const reservedPathResponses = await Promise.all(reservedContentPathFiles.map(async (pathEntry) => {
+      const response = await fetchWithHost(
+        `http://${router.hostname}:${router.port}/${pathEntry.path}`,
+        {headers: {Host: `${orgBPathContentToken}.content.example.net`}},
+        router.hostname,
+        router.port,
+      );
+      return {
+        body: await response.text(),
+        path: pathEntry.path,
+        status: response.status,
+      };
+    }));
+    expect(reservedPathResponses).toEqual(reservedContentPathFiles.map((pathEntry) => ({
+      body: pathEntry.body,
+      path: pathEntry.path,
+      status: 200,
+    })));
+    const prefixedLiveToken = liveContentToken("art_00000000-0000-4000-8000-000000000001", `${orgB.routeId}-`);
+    expect(prefixedLiveToken).toMatch(new RegExp(`^${orgB.routeId}-live-[0-9a-f-]+$`, "u"));
+    expect(isLiveContentToken(prefixedLiveToken ?? "", `${orgB.routeId}-`)).toBe(true);
+    expect(isLiveContentToken(prefixedLiveToken ?? "", `${orgB.routeId.slice(0, 7)}-`)).toBe(false);
+
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`UPDATE artifact_installations
+        SET embed_origins = ${JSON.stringify(["https://org-b-embed.example.test"])}::jsonb
+        WHERE id = ${orgB.id}`;
+    }));
+
+    const orgBContent = await fetchWithHost(
+      `http://${router.hostname}:${router.port}/`,
+      {headers: {Host: `${version.contentToken}.content.example.net`}},
+      router.hostname,
+      router.port,
+    );
+    expect(orgBContent.status).toBe(401);
+    const contentSession = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/content-sessions?projectId=${projectId}`, {
+      headers: {...host, Authorization: `Bearer ${apiTokenB}`},
+      method: "POST",
+    });
+    expect(contentSession.status).toBe(201);
+    const contentBootstrapUrl = z.object({bootstrapUrl: z.url()})
+      .parse(await contentSession.json()).bootstrapUrl;
+    const contentSessionToken = new URL(contentBootstrapUrl).hostname.split(".")[0] ?? "";
+    expect(contentSessionToken).toMatch(new RegExp(`^${orgB.routeId}-[A-Za-z0-9_-]{16,100}$`, "u"));
+
+    const previewLease = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/versions/${version.id}/preview-leases?projectId=${projectId}`, {
+      headers: {...host, Authorization: `Bearer ${apiTokenB}`},
+      method: "POST",
+    });
+    expect(previewLease.status).toBe(201);
+    const previewUrl = z.object({baseUrl: z.url()}).parse(await previewLease.json()).baseUrl;
+    const previewToken = new URL(previewUrl).hostname.split(".")[0] ?? "";
+    expect(previewToken).toMatch(new RegExp(`^${orgB.routeId}-review-[a-f0-9]+$`, "u"));
+    const previewContent = await fetchWithHost(
+      `http://${router.hostname}:${router.port}/`,
+      {headers: {Host: `${previewToken}.content.example.net`}},
+      router.hostname,
+      router.port,
+    );
+    expect(previewContent.status).toBe(200);
+
+    const forbiddenContentHostPaths = ["/api", "/%61pi/v1/projects", "/mcp", "/review", "/review-frame"];
+    const blockedContentResponses = await Promise.all(forbiddenContentHostPaths.map((path) =>
+      fetchWithHost(
+        `http://${router.hostname}:${router.port}${path}`,
+        {headers: {Host: `${version.contentToken}.content.example.net`}},
+        router.hostname,
+        router.port,
+      )
+    ));
+    expect(blockedContentResponses.map(({status}) => status)).toEqual(
+      forbiddenContentHostPaths.map(() => 404),
+    );
+    const malformedContentHostResponses = await Promise.all(
+      ["short", `${version.contentToken}.nested`].map((hostLabel) => fetchWithHost(
+        `http://${router.hostname}:${router.port}/%61pi/v1/projects`,
+        {headers: {Host: `${hostLabel}.content.example.net`}},
+        router.hostname,
+        router.port,
+      )),
+    );
+    expect(malformedContentHostResponses.map(({status}) => status)).toEqual([404, 404]);
+    const absoluteFormHostMismatch = await fetchWithAbsoluteTarget(
+      `http://request-target.example.invalid/api/x.json`,
+      `${orgBPathContentToken}.content.example.net`,
+      router.hostname,
+      router.port,
+    );
+    expect(absoluteFormHostMismatch.status).toBe(400);
+    const trailingDotContent = await fetchWithHost(
+      `http://${router.hostname}:${router.port}/`,
+      {headers: {Host: `${version.contentToken}.content.example.net.`}},
+      router.hostname,
+      router.port,
+    );
+    expect(trailingDotContent.status).toBe(401);
+
+    // Tenancy has never been enabled in production, so old unprefixed
+    // capabilities can only belong to the Orvex installation.
+    const legacyInstallationId = installationId;
+    const legacyRuntime = await createExternalStorageRuntime({
+      ...config,
+      installationId: legacyInstallationId,
+      objectStorage: createS3ObjectStorageProviderFactory({
+        accessKeyId: requiredIntegrationSetting(accessKey, "ARTIFACT_SERVER_TEST_S3_ACCESS_KEY"),
+        bucket,
+        endpoint: requiredIntegrationSetting(endpoint, "ARTIFACT_SERVER_TEST_S3_ENDPOINT"),
+        forcePathStyle: true,
+        region,
+        secretAccessKey: Redacted.make(requiredIntegrationSetting(secretKey, "ARTIFACT_SERVER_TEST_S3_SECRET_KEY")),
+      }),
+    });
+    try {
+      const legacyProjectResponse = await legacyRuntime.app.fetch(appRequest(
+        "/api/v1/projects", apiTokenA, "POST", {name: "Legacy content project"},
+      ));
+      expect(legacyProjectResponse.status).toBe(201);
+      const legacyProjectId = z.object({project: z.object({id: z.string()})})
+        .parse(await legacyProjectResponse.json()).project.id;
+      const legacyArtifactId = await publishOrgBArtifact(
+        (request) => legacyRuntime.app.fetch(request), apiTokenA, legacyProjectId, "orvex",
+      );
+      const legacyPathsArtifactId = await publishOrgPathFilesArtifact(
+        (request) => legacyRuntime.app.fetch(request),
+        apiTokenA,
+        legacyProjectId,
+        "orvex",
+        "Orvex reserved path files",
+      );
+      const legacyPathVersionRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT content_token AS "contentToken" FROM versions
+          WHERE installation_id = ${installationId} AND artifact_id = ${legacyPathsArtifactId}`;
+      }));
+      legacyPathContentToken = z.object({contentToken: z.string()}).parse(legacyPathVersionRows[0]).contentToken;
+      const flagOffContent = await Promise.all(reservedContentPathFiles.map(async (pathEntry) => {
+        const response = await legacyRuntime.app.fetch(new Request(
+          `https://${legacyPathContentToken}.content.example.net/${pathEntry.path}`,
+        ));
+        return {body: await response.text(), path: pathEntry.path, status: response.status};
+      }));
+      expect(flagOffContent).toEqual(reservedContentPathFiles.map((pathEntry) => ({
+        body: pathEntry.body,
+        path: pathEntry.path,
+        status: 200,
+      })));
+      const legacyRouterContent = await Promise.all(reservedContentPathFiles.map(async (pathEntry) => {
+        const response = await fetchWithHost(
+          `http://${router.hostname}:${router.port}/${pathEntry.path}`,
+          {headers: {Host: `${legacyPathContentToken}.content.example.net`}},
+          router.hostname,
+          router.port,
+        );
+        return {body: await response.text(), path: pathEntry.path, status: response.status};
+      }));
+      expect(legacyRouterContent).toEqual(reservedContentPathFiles.map((pathEntry) => ({
+        body: pathEntry.body,
+        path: pathEntry.path,
+        status: 200,
+      })));
+      const legacyVersionRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT content_token AS "contentToken", id FROM versions
+          WHERE installation_id = ${legacyInstallationId} AND artifact_id = ${legacyArtifactId}`;
+      }));
+      const legacyVersion = z.object({contentToken: z.string(), id: z.string()}).parse(legacyVersionRows[0]);
+      expect(legacyVersion.contentToken).toMatch(/^[A-Za-z0-9_-]{16,100}$/u);
+      expect(legacyVersion.contentToken).not.toMatch(/^[a-z0-9]{8}-/u);
+      const makeLegacyPublic = await legacyRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${legacyArtifactId}/access?projectId=${legacyProjectId}`,
+        {
+          body: JSON.stringify({accessSetting: "public_link", expectedCurrentVersionId: legacyVersion.id}),
+          headers: {
+            Authorization: `Bearer ${apiTokenA}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": "org-tenancy-legacy-public-001",
+          },
+          method: "PATCH",
+        },
+      ));
+      expect(makeLegacyPublic.status).toBe(200);
+      const legacyContent = await fetchWithHost(
+        `http://${router.hostname}:${router.port}/`,
+        {headers: {Host: `${legacyVersion.contentToken}.content.example.net`}},
+        router.hostname,
+        router.port,
+      );
+      expect(legacyContent.status).toBe(200);
+      expect(await legacyContent.text()).toContain("org B private artifact");
+    } finally {
+      await legacyRuntime.close();
+    }
+    const orvex = await registry.find("orvex");
+    if (orvex === null) throw new Error("Orvex was not registered.");
+    const forgedForeignRouteToken = `${orvex.routeId}-not-a-real-content-token`;
+    const forgedContent = await fetchWithHost(
+      `http://${router.hostname}:${router.port}/`,
+      {headers: {Host: `${forgedForeignRouteToken}.content.example.net`}},
+      router.hostname,
+      router.port,
+    );
+    expect(forgedContent.status).toBe(404);
+    const alteredContentResponses = await Promise.all([
+      `${orvex.routeId}-${version.contentToken.slice(orgB.routeId.length + 1)}`,
+      version.contentToken.slice(orgB.routeId.length + 1),
+    ].map((alteredToken) => fetchWithHost(
+      `http://${router.hostname}:${router.port}/`,
+      {headers: {Host: `${alteredToken}.content.example.net`}},
+      router.hostname,
+      router.port,
+    )));
+    expect(alteredContentResponses.map(({status}) => status)).toEqual([404, 404]);
+
+    const orgBReviewFrame = await fetch(`${baseUrl}/o/${orgB.slug}/review-frame?embed=1`, {
+      headers: host,
+    });
+    expect(orgBReviewFrame.headers.get("content-security-policy"))
+      .toContain("frame-ancestors 'self' https://org-b-embed.example.test");
+    const makeEmbedArtifactPublic = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/access?projectId=${projectId}`, {
+      body: JSON.stringify({accessSetting: "public_link", expectedCurrentVersionId: version.id}),
+      headers: {...host, Authorization: `Bearer ${apiTokenB}`, "Content-Type": "application/json", "Idempotency-Key": "org-tenancy-embed-public-001"},
+      method: "PATCH",
+    });
+    expect(makeEmbedArtifactPublic.status).toBe(200);
+    const orgBEmbed = await fetch(`${baseUrl}/o/${orgB.slug}/embed/artifacts/${artifactId}?path=index.html`, {
+      headers: {...host, Authorization: `Bearer ${apiTokenB}`, Referer: "https://org-b-embed.example.test/page"},
+    });
+    expect(orgBEmbed.status).toBe(200);
+    expect(orgBEmbed.headers.get("content-security-policy"))
+      .toContain("https://org-b-embed.example.test");
+    expect(await orgBEmbed.text()).toContain('name="as-embed-parent" content="https://org-b-embed.example.test"');
+    const orgBEmbedSignedIn = await fetch(`${baseUrl}/o/${orgB.slug}/embed/signed-in`, {headers: host});
+    expect(orgBEmbedSignedIn.status).toBe(200);
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`UPDATE artifact_installations SET embed_origins = '[]'::jsonb
+        WHERE id = ${orgB.id}`;
+    }));
+    const orgBReviewFrameAfterOriginRemoval = await fetch(`${baseUrl}/o/${orgB.slug}/review-frame?embed=1`, {
+      headers: host,
+    });
+    expect(orgBReviewFrameAfterOriginRemoval.headers.get("content-security-policy"))
+      .not.toContain("https://org-b-embed.example.test");
+
+    const refreshedPolicyRoot = `/teams/${orgB.slug}/refreshed/`;
+    const currentPolicy = orgB.admissionPolicy;
+    if (currentPolicy === null) throw new Error("Org B admission policy is missing.");
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const updatedPolicy = {
+        ...currentPolicy,
+        groupRoots: [refreshedPolicyRoot],
+        seed: currentPolicy.seed.map((entry) => Object.assign({}, entry, {selector: `${refreshedPolicyRoot}admins`})),
+      };
+      return yield* sql`UPDATE artifact_installations SET admission_policy = ${JSON.stringify(updatedPolicy)}::jsonb
+        WHERE id = ${orgB.id}`;
+    }));
+    oidc.claims.email = "policy-refresh@example.test";
+    oidc.claims.emailVerified = true;
+    oidc.claims.groups = ["/teams/not-currently-allowed/admins", `${refreshedPolicyRoot}admins`];
+    oidc.claims.subject = "policy-refresh-user";
+    const refreshedPolicyLogin = await fetchWithHost(`${baseUrl}/o/${orgB.slug}/auth/login`, {
+      headers: host,
+      method: "GET",
+    }, router.hostname, router.port);
+    expect(refreshedPolicyLogin.status).toBe(302);
+    const refreshedHandshake = refreshedPolicyLogin.headers.getSetCookie().find((cookie) =>
+      cookie.startsWith(`__Host-artifact_login-${orgB.routeId}=`),
+    );
+    const refreshedAuthorizationUrl = refreshedPolicyLogin.headers.get("location");
+    if (refreshedHandshake === undefined || refreshedAuthorizationUrl === null) {
+      throw new Error("Policy-refresh login did not issue its organization handshake.");
+    }
+    const refreshedAuthorization = await fetch(refreshedAuthorizationUrl, {redirect: "manual"});
+    const refreshedCallbackLocation = refreshedAuthorization.headers.get("location");
+    if (refreshedCallbackLocation === null) throw new Error("Policy-refresh OIDC did not redirect to callback.");
+    const refreshedCallback = await fetchWithHost(refreshedCallbackLocation, {
+      headers: {...host, Cookie: refreshedHandshake.split(";", 1)[0] ?? ""},
+      method: "GET",
+    }, router.hostname, router.port);
+    expect(refreshedCallback.status).toBe(303);
+
+    const bindingClaims = Buffer.from(JSON.stringify({
+      artifactId,
+      exp: Math.floor(Date.now() / 1_000) + 60,
+      installation_id: installationId,
+      jti: randomUUID(),
+      mode: "respond",
+      questionId: "cross-org-binding",
+      versionId: version.id,
+    })).toString("base64url");
+    const bindingSignature = createHmac("sha256", embedBindingSecret)
+      .update(`artifact-embed-v1.${bindingClaims}`).digest("base64url");
+    const crossOrgBinding = `${bindingClaims}.${bindingSignature}`;
+    const crossOrgResponse = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/responses?projectId=${projectId}`, {
+      body: JSON.stringify({embedBinding: crossOrgBinding, questionId: "cross-org-binding", versionId: version.id}),
+      headers: {...host, Authorization: `Bearer ${apiTokenB}`, "Content-Type": "application/json"},
+      method: "POST",
+    });
+    expect(crossOrgResponse.status).toBe(403);
+    expect((await crossOrgResponse.json()).error.message)
+      .toBe("The embed response binding is invalid or expired.");
+    const orgBBinding = Buffer.from(JSON.stringify({
+      artifactId,
+      exp: Math.floor(Date.now() / 1_000) + 60,
+      installation_id: orgB.id,
+      jti: randomUUID(),
+      mode: "respond",
+      questionId: "same-org-binding",
+      versionId: version.id,
+    })).toString("base64url");
+    const orgBBindingSignature = createHmac("sha256", embedBindingSecret)
+      .update(`artifact-embed-v1.${orgBBinding}`).digest("base64url");
+    const positiveBindingResponse = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/responses?projectId=${projectId}`, {
+      body: JSON.stringify({choice: "yes", embedBinding: `${orgBBinding}.${orgBBindingSignature}`, questionId: "same-org-binding", versionId: version.id}),
+      headers: {...host, Authorization: `Bearer ${apiTokenB}`, "Content-Type": "application/json"},
+      method: "POST",
+    });
+    expect(positiveBindingResponse.status).toBe(403);
+    expect((await positiveBindingResponse.json()).error.message)
+      .toBe("Only members can submit artifact responses.");
+
+    const makePublic = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/access?projectId=${projectId}`, {
+      body: JSON.stringify({accessSetting: "public_link", expectedCurrentVersionId: version.id}),
+      headers: {...host, Authorization: `Bearer ${apiTokenB}`, "Content-Type": "application/json", "Idempotency-Key": "org-tenancy-make-public-001"},
+      method: "PATCH",
+    });
+    expect(makePublic.status).toBe(200);
+    const publicB = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/public/artifacts/${artifactId}`, {headers: host});
+    const publicA = await fetch(`${baseUrl}/o/orvex/api/v1/public/artifacts/${artifactId}`, {headers: host});
+    expect(publicB.status).toBe(200);
+    expect(publicA.status).toBe(404);
+
+    const invitation = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`, {
+      headers: {
+        ...forwardedHost,
+        Cookie: orgBMemberCookie,
+        Origin: applicationOrigin,
+        "Sec-Fetch-Site": "same-origin",
+        "X-CSRF-Token": orgBCsrf,
+      },
+      method: "POST",
+    });
+    expect(invitation.status).toBe(201);
+    const invitationUrl = z.object({url: z.url()}).parse(await invitation.json()).url;
+    const invitationSecret = new URL(invitationUrl).hash.slice("#invite=".length);
+    expect(new URL(invitationUrl).pathname).toBe(`/o/${orgB.slug}/review`);
+    const invitationDigestRows = await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`SELECT token_digest AS "tokenDigest" FROM guest_review_invitations
+        WHERE installation_id = ${orgB.id} AND artifact_id = ${artifactId}`;
+    }));
+    expect(z.object({tokenDigest: z.string()}).parse(invitationDigestRows[0]).tokenDigest)
+      .toBe(createHash("sha256").update(invitationSecret).digest("hex"));
+    const foreignGuestExchange = await fetch(`${baseUrl}/o/orvex/api/v1/public/artifacts/${artifactId}/guest-session`, {
+      body: JSON.stringify({displayName: "Org B guest", secret: invitationSecret}),
+      headers: {
+        ...host,
+        "Content-Type": "application/json",
+        Origin: applicationOrigin,
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+      },
+      method: "POST",
+    });
+    expect(foreignGuestExchange.status).toBe(404);
+    const guestExchange = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/public/artifacts/${artifactId}/guest-session`, {
+      body: JSON.stringify({displayName: "Org B guest", secret: invitationSecret}),
+      headers: {
+        ...host,
+        "Content-Type": "application/json",
+        Origin: applicationOrigin,
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+      },
+      method: "POST",
+    });
+    expect(guestExchange.status).toBe(201);
+    const guestCookie = guestExchange.headers.getSetCookie().find((value) =>
+      value.startsWith(`__Host-artifact_guest_session-${orgB.routeId}=`),
+    );
+    if (guestCookie === undefined) throw new Error("Org B guest exchange did not issue its scoped cookie.");
+    const ownGuestCurrent = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/public/artifacts/${artifactId}/guest/current`, {
+      headers: {...host, Cookie: guestCookie.split(";", 1)[0] ?? ""},
+    });
+    const foreignGuestCurrent = await fetch(`${baseUrl}/o/orvex/api/v1/public/artifacts/${artifactId}/guest/current`, {
+      headers: {...host, Cookie: guestCookie.split(";", 1)[0] ?? ""},
+    });
+    expect(ownGuestCurrent.status).toBe(201);
+    expect(foreignGuestCurrent.status).toBe(404);
 
     const invalidRegistryId = `invalid-org-${randomUUID()}`;
     await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`INSERT INTO artifact_installations (
-        id, created_at, slug, display_name, status, route_id, admission_policy
+        id, created_at, slug, display_name, status, route_id, admission_policy, embed_origins
       ) VALUES (
         ${invalidRegistryId}, ${new Date().toISOString()},
         ${`invalid-${randomUUID().slice(0, 8)}`}, 'Invalid registry row',
-        'active', 'badroute', ${JSON.stringify({seed: [], groupRoots: "invalid"})}::jsonb
+        'active', 'badroute', ${JSON.stringify({seed: [], groupRoots: "invalid"})}::jsonb,
+        ${JSON.stringify(["https://not-an-origin.example.test/path"])}::jsonb
       )`;
     }));
     const listedOrganizations = await registry.list();
     expect(listedOrganizations.some(({id}) => id === invalidRegistryId)).toBe(false);
     expect(listedOrganizations.some(({id}) => id === orgB.id)).toBe(true);
 
-    const project = await fetch(`${baseUrl}/o/orvex/api/v1/projects/${projectId}`, {
-      headers: {...host, Authorization: `Bearer ${apiTokenA}`},
+    const foreignCloneToken = await fetch(`${baseUrl}/o/orvex/api/v1/projects/${projectId}/artifacts/${artifactId}/history/clone-token`, {
+      body: JSON.stringify({ttlSeconds: 60}),
+      headers: {...host, Authorization: `Bearer ${apiTokenA}`, "Content-Type": "application/json"},
+      method: "POST",
     });
-    const artifact = await fetch(`${baseUrl}/o/orvex/api/v1/artifacts/${artifactId}`, {
-      headers: {...host, Authorization: `Bearer ${apiTokenA}`},
+    expect(foreignCloneToken.status).toBe(404);
+
+    const orgAProjectResponse = await fetch(`${baseUrl}/o/orvex/api/v1/projects`, {
+      body: JSON.stringify({name: "Orvex clone boundary project"}),
+      headers: {...host, Authorization: `Bearer ${apiTokenA}`, "Content-Type": "application/json"},
+      method: "POST",
     });
-    expect(project.status).toBe(404);
-    expect(artifact.status).toBe(404);
+    expect(orgAProjectResponse.status).toBe(201);
+    const orgAProjectId = z.object({project: z.object({id: z.string()})})
+      .parse(await orgAProjectResponse.json()).project.id;
+    const orgAAppFetch = (request: Request) => {
+      const target = new URL(request.url);
+      target.pathname = `/o/orvex${target.pathname}`;
+      return fetch(new Request(new URL(`${target.pathname}${target.search}`, baseUrl), request));
+    };
+    const orgAEstimate = await fetch(
+      `${baseUrl}/o/orvex/api/v1/projects/${orgAProjectId}/git-history/estimate`,
+      {headers: {...host, Authorization: `Bearer ${apiTokenA}`}, method: "POST"},
+    );
+    expect(orgAEstimate.status).toBe(200);
+    const orgAHistoryEnabled = await fetch(
+      `${baseUrl}/o/orvex/api/v1/projects/${orgAProjectId}/git-history`,
+      {
+        body: JSON.stringify({confirmEstimate: true, enabled: true}),
+        headers: {...host, Authorization: `Bearer ${apiTokenA}`, "Content-Type": "application/json"},
+        method: "PUT",
+      },
+    );
+    expect(orgAHistoryEnabled.status).toBe(200);
+    const orgAArtifactId = await publishOrgBArtifact(
+      orgAAppFetch,
+      apiTokenA,
+      orgAProjectId,
+      "orvex",
+    );
+    await expect.poll(
+      () => orgTenancyGitProvider.repositories.has(orgAArtifactId),
+      {timeout: 5_000},
+    ).toBe(true);
+    const orgACloneCredentialResponse = await fetch(
+      `${baseUrl}/o/orvex/api/v1/projects/${orgAProjectId}/artifacts/${orgAArtifactId}/history/clone-token`,
+      {
+        body: JSON.stringify({ttlSeconds: 60}),
+        headers: {...host, Authorization: `Bearer ${apiTokenA}`, "Content-Type": "application/json"},
+        method: "POST",
+      },
+    );
+    expect(orgACloneCredentialResponse.status).toBe(201);
+    const orgACloneCredential = z.object({remote: z.url(), token: z.string().min(1)})
+      .parse(await orgACloneCredentialResponse.json());
+    const orgACloneThroughB = await fetch(
+      `${baseUrl}/o/${orgB.slug}/api/v1/projects/${orgAProjectId}/artifacts/${orgAArtifactId}/history/clone-token?remote=${encodeURIComponent(orgACloneCredential.remote)}&token=${encodeURIComponent(orgACloneCredential.token)}`,
+      {
+        body: JSON.stringify({ttlSeconds: 60}),
+        headers: {...host, Authorization: `Bearer ${apiTokenB}`, "Content-Type": "application/json"},
+        method: "POST",
+      },
+    );
+    expect(orgACloneThroughB.status).toBe(404);
+
+    const crossOrgHttpCases = [
+      {expectedStatus: 404, name: "project resource ID", path: `/o/orvex/api/v1/projects/${projectId}`},
+      {expectedStatus: 404, name: "artifact resource ID", path: `/o/orvex/api/v1/artifacts/${artifactId}?projectId=${projectId}`},
+      {expectedStatus: 401, name: "project list", path: `/o/${orgB.slug}/api/v1/projects`},
+      {expectedStatus: 401, name: "administration API-key list", path: `/o/${orgB.slug}/api/v1/api-keys`},
+    ] as const;
+    const crossOrgResponses = await Promise.all(crossOrgHttpCases.map((crossOrgCase) =>
+      fetch(`${baseUrl}${crossOrgCase.path}`, {
+        headers: {...host, Authorization: `Bearer ${apiTokenA}`},
+      })
+    ));
+    expect(crossOrgResponses.map(({status}) => status)).toEqual(
+      crossOrgHttpCases.map(({expectedStatus}) => expectedStatus),
+    );
+
 
     oidc.claims.email = adminEmail;
     oidc.claims.emailVerified = true;
@@ -1617,7 +2148,7 @@ describe.sequential("organization tenancy security boundary", () => {
       headers: host,
       redirect: "manual",
     });
-    expect(login.status).toBe(302);
+    if (login.status !== 302) throw new Error(`Orvex login failed: HTTP ${login.status} ${await login.text()}`);
     const handshake = login.headers.getSetCookie().find((value) =>
       value.startsWith("__Host-artifact_login-"),
     );
@@ -1685,6 +2216,101 @@ describe.sequential("organization tenancy security boundary", () => {
       method: "POST",
     }, router.hostname, router.port);
     expect(orvexMcpBearer.status).toBe(200);
+    const callOrgBTool = async (name: string, args: JsonObject) => {
+      const response = await fetchWithHost(`${baseUrl}/o/${orgB.slug}/mcp`, {
+        body: JSON.stringify({id: randomUUID(), jsonrpc: "2.0", method: "tools/call", params: {name, arguments: args}}),
+        headers: {
+          ...host,
+          Accept: "application/json, text/event-stream",
+          Authorization: `Bearer ${apiTokenB}`,
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+      }, router.hostname, router.port);
+      expect(response.status).toBe(200);
+      const raw = await response.text();
+      const dataLine = raw.split("\n").find((line) => line.startsWith("data: "));
+      if (dataLine === undefined) throw new Error(`MCP ${name} returned no data event.`);
+      return z.object({result: z.object({
+        content: z.array(z.object({text: z.string().optional()})).optional(),
+        isError: z.boolean().optional(),
+        structuredContent: z.unknown().optional(),
+      })})
+        .parse(JSON.parse(dataLine.slice(6))).result;
+    };
+    const linkedToolRefusals = await Promise.all([
+      callOrgBTool("artifact_link", {
+        name: "Unavailable linked source",
+        path: "/tmp/org-b-linked-source.html",
+        projectId,
+      }),
+      callOrgBTool("artifact_relink", {
+        artifactId,
+        expectedSha256: createHash("sha256").update(bytes).digest("hex"),
+        path: "/tmp/org-b-linked-source.html",
+        projectId,
+      }),
+    ]);
+    for (const refusal of linkedToolRefusals) {
+      expect(refusal.isError).toBe(true);
+      expect(refusal.structuredContent).toMatchObject({
+        error: {code: "CAPABILITY_UNAVAILABLE", message: "Linked artifacts are not available on this deployment."},
+      });
+      expect(JSON.stringify(refusal.structuredContent)).not.toMatch(/"(?:url|token|remote|browserUrl)"/u);
+    }
+    const cloneMcpRefusal = await callOrgBTool("artifact_history_clone_token", {
+      artifactId,
+      projectId,
+      ttlSeconds: 60,
+    });
+    expect(cloneMcpRefusal.isError).toBe(true);
+    expect(cloneMcpRefusal.structuredContent).toMatchObject({
+      error: {message: "Git history is not available for this artifact."},
+    });
+    expect(JSON.stringify(cloneMcpRefusal.structuredContent)).not.toMatch(/"(?:url|token|remote|browserUrl)"/u);
+    const cloneHttpRefusal = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/projects/${projectId}/artifacts/${artifactId}/history/clone-token`, {
+      body: JSON.stringify({ttlSeconds: 60}),
+      headers: {...host, Authorization: `Bearer ${apiTokenB}`, "Content-Type": "application/json"},
+      method: "POST",
+    });
+    expect(cloneHttpRefusal.status).toBe(404);
+    const cloneHttpBody = await cloneHttpRefusal.text();
+    expect(cloneHttpBody).not.toContain('"token"');
+    expect(cloneHttpBody).not.toContain('"remote"');
+
+    const openResult = await callOrgBTool("artifact_open", {
+      artifactId,
+      projectId,
+      versionId: version.id,
+    });
+    const openOutput = z.object({browserUrl: z.url(), reviewUrl: z.url()})
+      .parse(openResult.structuredContent ?? JSON.parse(openResult.content?.[0]?.text ?? "{}"));
+    expect(new URL(openOutput.reviewUrl).pathname).toContain(`/o/${orgB.slug}/`);
+    expect(new URL(openOutput.browserUrl).hostname.split(".")[0])
+      .toMatch(new RegExp(`^${orgB.routeId}-[A-Za-z0-9_-]{16,100}$`, "u"));
+    const uploadDigest = createHash("sha256").update(bytes).digest("hex");
+    const mcpUploadResult = await callOrgBTool("artifact_create_upload", {
+      entryPath: "index.html",
+      files: [{mediaType: "text/html; charset=utf-8", path: "index.html", sha256: uploadDigest, size: bytes.byteLength}],
+      projectId,
+    });
+    const mcpUpload = z.object({files: z.array(z.object({uploadUrl: z.url()}))})
+      .parse(mcpUploadResult.structuredContent ?? JSON.parse(mcpUploadResult.content?.[0]?.text ?? "{}"));
+    expect(new URL(mcpUpload.files[0]?.uploadUrl ?? "").pathname).toContain(`/o/${orgB.slug}/`);
+    const orgBUploadUrl = mcpUpload.files[0]?.uploadUrl;
+    if (orgBUploadUrl === undefined) throw new Error("Org B upload plan did not return a capability URL.");
+    const uploadUrlForOrvex = new URL(orgBUploadUrl);
+    uploadUrlForOrvex.pathname = uploadUrlForOrvex.pathname.replace(`/o/${orgB.slug}/`, "/o/orvex/");
+    const foreignUploadCapability = await fetchWithHost(uploadUrlForOrvex.toString(), {
+      body: new TextDecoder().decode(bytes),
+      headers: host,
+      method: "PUT",
+    }, router.hostname, router.port);
+    expect(foreignUploadCapability.status).toBe(404);
+    const mcpGuestResult = await callOrgBTool("artifact_enable_guest_invitation", {artifactId, projectId});
+    const mcpGuestUrl = z.object({url: z.url()})
+      .parse(mcpGuestResult.structuredContent ?? JSON.parse(mcpGuestResult.content?.[0]?.text ?? "{}" )).url;
+    expect(new URL(mcpGuestUrl).pathname).toBe(`/o/${orgB.slug}/review`);
 
     const resourceMetadata = await fetch(`${baseUrl}/o/${orgB.slug}/.well-known/oauth-protected-resource/o/${orgB.slug}/mcp`, {
       headers: host,
@@ -1770,6 +2396,7 @@ describe.sequential("organization tenancy security boundary", () => {
       applicationOrigin: new URL(`/o/${orgB.slug}`, applicationOrigin).toString(),
       bootstrapApiToken: Redacted.make(apiTokenB),
       cookieRouteId: orgB.routeId,
+      keycloakOrganizationId: randomUUID(),
       slug: orgB.slug,
     }, config, database);
     try {
@@ -1907,6 +2534,32 @@ describe.sequential("organization tenancy security boundary", () => {
       objectStorage: constructionFailure,
     })).rejects.toBeInstanceOf(IntegrityCheckError);
     expect(failedFactoryCloseCount).toBe(1);
+
+    const currentOrvex = await registry.find("orvex");
+    if (currentOrvex === null) throw new Error("Orvex registry entry is missing before invalid-row probe.");
+    const invalidOrvexOrigins = ["https://embed.example;invalid"];
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`UPDATE artifact_installations
+        SET status = 'suspended', embed_origins = ${JSON.stringify(invalidOrvexOrigins)}::jsonb
+        WHERE id = ${installationId}`;
+    }));
+    try {
+      await expect(registry.ensureOrvex(installationId))
+        .rejects.toThrow("The registered org slug 'orvex' has invalid registry data.");
+      const rawOrvexStatus = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT status FROM artifact_installations WHERE id = ${installationId}`;
+      }));
+      expect(rawOrvexStatus[0]).toMatchObject({status: "suspended"});
+    } finally {
+      await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`UPDATE artifact_installations
+          SET status = ${currentOrvex.status}, embed_origins = ${JSON.stringify(currentOrvex.embedOrigins)}::jsonb
+          WHERE id = ${installationId}`;
+      }));
+    }
   }, 60_000);
 
   test("an org member removal deactivates only that installation's member", async () => {
@@ -1922,6 +2575,10 @@ describe.sequential("organization tenancy security boundary", () => {
     }
     const orgA = orgAResult.organization;
     const orgBRecord = orgBResult.organization;
+    const unchangedSync = await registry.syncKeycloakOrganization(aliasA, "Org A", idA);
+    expect(unchangedSync.kind).toBe("synced");
+    if (unchangedSync.kind !== "synced") throw new Error("The unchanged Keycloak organization sync was rejected.");
+    expect(unchangedSync.organization.registryVersion).toBe(orgA.registryVersion);
     const organizationA: DirectoryOrganization = {alias: aliasA, id: idA, name: "Org A"};
     const organizationB: DirectoryOrganization = {alias: aliasB, id: idB, name: "Org B"};
     const usersA = [
@@ -2470,7 +3127,7 @@ interface JsonObject {
 function appRequest(
   path: string,
   token: string,
-  method: "GET" | "POST" | "PUT",
+  method: "GET" | "POST" | "PUT" | "PATCH",
   body?: JsonObject,
   extraHeaders: Record<string, string> = {},
 ): Request {
@@ -2483,6 +3140,71 @@ function appRequest(
   const requestOptions: RequestInit = {headers, method};
   if (body !== undefined) requestOptions.body = JSON.stringify(body);
   return new Request(`${applicationOrigin}${path}`, requestOptions);
+}
+
+const reservedContentPathFiles = [
+  {body: '{"ok":true}', mediaType: "application/json", path: "api/x.json"},
+  {body: "<main>org path</main>", mediaType: "text/html", path: "o/x.html"},
+  {body: "<main>case path</main>", mediaType: "text/html", path: "Auth/index.html"},
+] as const;
+
+async function publishOrgPathFilesArtifact(
+  appFetch: (request: Request) => Response | Promise<Response>,
+  token: string,
+  projectId: string,
+  orgSlug: string,
+  name: string,
+): Promise<string> {
+  const files = reservedContentPathFiles.map((file) => ({
+    mediaType: file.mediaType,
+    path: file.path,
+    sha256: createHash("sha256").update(file.body).digest("hex"),
+    size: Buffer.byteLength(file.body),
+  }));
+  const uploadResponse = await appFetch(appRequest("/api/v1/uploads", token, "POST", {
+    entryPath: reservedContentPathFiles[0].path,
+    files,
+    projectId,
+  }));
+  expect(uploadResponse.status).toBe(201);
+  const upload = z.object({
+    commitUrl: z.url(),
+    files: z.array(z.object({path: z.string(), uploadUrl: z.url()})),
+  }).parse(await uploadResponse.json());
+  const appPath = (url: URL) => url.pathname.replace(`/o/${orgSlug}`, "");
+  await Promise.all(upload.files.map(async (planned) => {
+    const file = reservedContentPathFiles.find(({path: filePath}) => filePath === planned.path);
+    if (file === undefined) throw new Error(`Unexpected staged path ${planned.path}.`);
+    const putUrl = new URL(planned.uploadUrl);
+    const put = await appFetch(new Request(`${applicationOrigin}${appPath(putUrl)}${putUrl.search}`, {
+      body: file.body,
+      headers: {Authorization: `Bearer ${token}`, Host: "artifacts.example.com"},
+      method: "PUT",
+    }));
+    expect(put.status, `${putUrl.pathname}: ${await put.clone().text()}`).toBe(200);
+  }));
+  const commitUrl = new URL(upload.commitUrl);
+  const commit = await appFetch(appRequest(
+    `${appPath(commitUrl)}${commitUrl.search}`,
+    token,
+    "POST",
+    {target: {accessSetting: "account_required", kind: "new_artifact", name}},
+    {"Idempotency-Key": `org-tenancy-${orgSlug}-reserved-paths`},
+  ));
+  expect(commit.status).toBe(201);
+  const committed = z.object({
+    artifact: z.object({id: z.string()}),
+    version: z.object({id: z.string()}),
+  }).parse(await commit.json());
+  const access = await appFetch(appRequest(
+    `/api/v1/artifacts/${committed.artifact.id}/access?projectId=${projectId}`,
+    token,
+    "PATCH",
+    {accessSetting: "public_link", expectedCurrentVersionId: committed.version.id},
+    {"Idempotency-Key": `org-tenancy-${orgSlug}-reserved-paths-public`},
+  ));
+  expect(access.status).toBe(200);
+  return committed.artifact.id;
 }
 
 async function publishOrgBArtifact(
@@ -2518,7 +3240,7 @@ async function publishOrgBArtifact(
     token,
     "POST",
     {target: {accessSetting: "account_required", kind: "new_artifact", name: "Org B artifact"}},
-    {"Idempotency-Key": "org-tenancy-b-artifact"},
+    {"Idempotency-Key": `org-tenancy-${orgSlug}-artifact`},
   ));
   expect(commit.status).toBe(201);
   return z.object({artifact: z.object({id: z.string()})})
@@ -2581,6 +3303,14 @@ function runtimeAdmissionPolicy(
   };
   if (policy.guestGroupPrefixes === undefined) return groupRolePolicy;
   return {...groupRolePolicy, guestGroupPrefixes: policy.guestGroupPrefixes};
+}
+
+function withoutGitHistory(config: ExternalStorageRuntimeConfig): ExternalStorageRuntimeConfig {
+  const {gitHistory, gitHistoryHealthProbe, gitHistoryProvider, ...remaining} = config;
+  void gitHistory;
+  void gitHistoryHealthProbe;
+  void gitHistoryProvider;
+  return remaining;
 }
 
 async function startRoutedOidcLogin(baseUrl: string, slug: string) {
@@ -2693,7 +3423,6 @@ function fetchWithHost(
 ): Promise<Response> {
   const target = new URL(url);
   return new Promise((resolve, reject) => {
-    const body = init.body === undefined ? undefined : z.string().parse(init.body);
     const request = httpRequest({
       headers: Object.fromEntries(new Headers(init.headers).entries()),
       hostname,
@@ -2719,6 +3448,46 @@ function fetchWithHost(
       });
     });
     request.on("error", reject);
-    request.end(body);
+    if (init.body === undefined) {
+      request.end();
+    } else {
+      request.end(z.string().parse(init.body));
+    }
+  });
+}
+
+function fetchWithAbsoluteTarget(
+  target: string,
+  hostHeader: string,
+  hostname: string,
+  port: number,
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      headers: {Host: hostHeader},
+      host: hostname,
+      method: "GET",
+      path: target,
+      port,
+    }, (response) => {
+      const chunks: Uint8Array[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.once("error", reject);
+      response.once("end", () => {
+        const headers = new Headers();
+        for (const [name, value] of Object.entries(response.headers)) {
+          if (value === undefined) continue;
+          for (const headerValue of Array.isArray(value) ? value : [value]) {
+            headers.append(name, headerValue);
+          }
+        }
+        resolve(new Response(Buffer.concat(chunks), {
+          headers,
+          status: response.statusCode ?? 500,
+        }));
+      });
+    });
+    request.once("error", reject);
+    request.end();
   });
 }

@@ -1009,6 +1009,48 @@ const addOrgTenancyIdentityFields = Effect.gen(function*() {
     ADD COLUMN identity_provider TEXT`);
 });
 
+const addOrganizationEmbedOrigins = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN IF NOT EXISTS embed_origins JSONB NOT NULL DEFAULT '[]'::jsonb`);
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN IF NOT EXISTS registry_version BIGINT NOT NULL DEFAULT 1`);
+  yield* sql.unsafe(`CREATE OR REPLACE FUNCTION bump_artifact_installation_registry_version()
+    RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      NEW.registry_version := OLD.registry_version + 1;
+      RETURN NEW;
+    END
+    $$`);
+  yield* sql.unsafe(`DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'artifact_installations_registry_version_trigger'
+          AND tgrelid = 'artifact_installations'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER artifact_installations_registry_version_trigger
+          BEFORE UPDATE ON artifact_installations
+          FOR EACH ROW EXECUTE FUNCTION bump_artifact_installation_registry_version();
+      END IF;
+    END
+    $$`);
+  yield* sql.unsafe(`DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'artifact_installations_embed_origins_check'
+          AND conrelid = 'artifact_installations'::regclass
+      ) THEN
+        ALTER TABLE artifact_installations
+          ADD CONSTRAINT artifact_installations_embed_origins_check
+          CHECK (jsonb_typeof(embed_origins) = 'array');
+      END IF;
+    END
+    $$`);
+});
+
 const addPlatformSessions = Effect.gen(function*() {
   const sql = yield* SqlClient;
   yield* sql.unsafe(`ALTER TABLE installation_members ADD COLUMN staff BOOLEAN NOT NULL DEFAULT FALSE`);
@@ -1071,6 +1113,7 @@ const postgresMigrations = {
   "0031_organization_admission_policy": addOrganizationAdmissionPolicy,
   "0032_org_tenancy_identity_fields": addOrgTenancyIdentityFields,
   "0033_platform_sessions": addPlatformSessions,
+  "0034_organization_embed_origins": addOrganizationEmbedOrigins,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);
