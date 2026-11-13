@@ -92,7 +92,7 @@ export function GroupsScreen({canEdit}: {readonly canEdit: boolean}) {
                             <option className="bg-background text-foreground" value="none">None</option>
                             {(["guest", "viewer", "operator", "admin", "owner"] as const).map((role) => <option className="bg-background text-foreground" key={role} value={role}>{role === "admin" ? membershipRoleLabels.administrator : role === "operator" ? membershipRoleLabels.member : membershipRoleLabels[role]}{group.source === "rule" && role === "guest" ? " (rule)" : ""}</option>)}
                           </select>
-                        : group.role === null ? "None" : `${membershipRoleLabels[group.role]}${group.source === "rule" ? " (rule)" : ""}`}
+                        : group.role === null || group.role === undefined ? "None" : `${membershipRoleLabels[group.role]}${group.source === "rule" ? " (rule)" : ""}`}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-muted-foreground">
                       {formatTimestamp(group.syncedAt)}

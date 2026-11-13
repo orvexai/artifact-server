@@ -7,6 +7,7 @@ import type {ApplicationClock} from "./application-clock.js";
 import type {ContentSecretProvider} from "./content-access.js";
 import {ArtifactNotFound, AuthorizationDenied, GuestRateLimitExceeded, type ArtifactRepositoryFailure, type IdentityRepositoryFailure, type ProjectArchived, type ProjectNotFound} from "../core/errors.js";
 import type {Principal} from "../core/identity.js";
+import {isReservedTenantIdentityName} from "../core/identity.js";
 import type {GuestReviewInvitation, GuestReviewInvitationUsage, GuestReviewSession, GuestReviewSessionSummary} from "../core/model.js";
 import type {IdGenerator} from "../core/ports.js";
 
@@ -25,6 +26,7 @@ export interface GuestReviewer {
 export interface GuestReviewDependencies {
   readonly clock: ApplicationClock;
   readonly ids: IdGenerator;
+  readonly organizationDirectoryVisibility?: boolean | undefined;
   readonly repository: {
     readonly createGuestInvitation: (invitation: GuestReviewInvitation) => Effect.Effect<void, ArtifactRepositoryFailure>;
     readonly findGuestInvitation: (projectId: string, artifactId: string) => Effect.Effect<GuestReviewInvitation | null, ArtifactRepositoryFailure>;
@@ -96,7 +98,12 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
       const listSessions = Effect.fn("GuestReviewService.listSessions")(function*(command: {artifactId: string; principal: Principal; projectId: string | null}) {
         const result = yield* resolveManageableArtifact(command);
         if (result.invitation === null || result.invitation.revokedAt !== null) return [];
-        return yield* dependencies.repository.listGuestSessions(result.projectId, command.artifactId, DateTime.formatIso(yield* dependencies.clock.now));
+        const sessions = yield* dependencies.repository.listGuestSessions(result.projectId, command.artifactId, DateTime.formatIso(yield* dependencies.clock.now));
+        return dependencies.organizationDirectoryVisibility === true
+          ? sessions.map((session) => ({...session,
+            displayName: isReservedTenantIdentityName(session.displayName) ? "Orvex Support (member)" : session.displayName,
+          }))
+          : sessions;
       });
       const revokeSession = Effect.fn("GuestReviewService.revokeSession")(function*(command: {artifactId: string; guestId: string; principal: Principal; projectId: string | null}) {
         const result = yield* resolveManageableArtifact(command);
@@ -121,8 +128,11 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
         const now = yield* dependencies.clock.now;
         const nowIso = DateTime.formatIso(now);
         yield* dependencies.repository.deleteExpiredGuestContentRows(nowIso, 100);
-        const displayName = command.displayName.trim();
-        if (displayName.length < 1 || displayName.length > 80) return yield* new AuthorizationDenied({message: "The display name must contain 1 to 80 characters."});
+        const requestedDisplayName = command.displayName.trim();
+        if (requestedDisplayName.length < 1 || requestedDisplayName.length > 80) return yield* new AuthorizationDenied({message: "The display name must contain 1 to 80 characters."});
+        const displayName = dependencies.organizationDirectoryVisibility === true && isReservedTenantIdentityName(requestedDisplayName)
+          ? "Orvex Support (member)"
+          : requestedDisplayName;
         const invitation = yield* dependencies.repository.findGuestInvitationByDigest(dependencies.secrets.digest(Redacted.make(command.secret, {label: "guest-invitation"})));
         if (invitation === null || invitation.artifactId !== command.artifactId || invitation.revokedAt !== null) return yield* new ArtifactNotFound({message: "The requested route does not exist."});
         if (!(yield* creatorMayStillManage(invitation.projectId, invitation.createdByPrincipalId))) return yield* new ArtifactNotFound({message: "The requested route does not exist."});

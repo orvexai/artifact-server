@@ -79,10 +79,13 @@ export interface AzureBlobObjectStorageAdapters {
 export function createAzureBlobObjectStorageProviderFactory(
   config: AzureBlobObjectStorageProviderConfig,
 ): ObjectStorageProviderFactory {
+  const credential = new DefaultAzureCredential();
+  const service = new BlobServiceClient(config.accountUrl, credential);
   return {
     kind: "azure-blob",
     create: (installationId) => createAzureBlobObjectStorageProvider(
       config,
+      service,
       installationId,
     ),
   };
@@ -135,12 +138,9 @@ export function createAzureBlobObjectStorageAdapters(
 
 function createAzureBlobObjectStorageProvider(
   config: AzureBlobObjectStorageProviderConfig,
+  service: BlobServiceClient,
   installationId: string,
 ): ObjectStorageProvider {
-  const service = new BlobServiceClient(
-    config.accountUrl,
-    new DefaultAzureCredential(),
-  );
   const container = service.getContainerClient(config.container);
   const adapters = createAzureBlobObjectStorageAdapters({
     container,

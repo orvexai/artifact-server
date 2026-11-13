@@ -20,6 +20,14 @@ export interface StubKeycloakUser {
   readonly id: string;
   readonly lastName?: string;
   readonly username: string;
+  readonly groups?: readonly string[];
+}
+
+export interface StubKeycloakOrganization {
+  readonly alias: string;
+  readonly enabled?: boolean;
+  readonly id: string;
+  readonly name: string;
 }
 
 /** One admin request the stub answered, for pagination assertions. */
@@ -34,6 +42,13 @@ export interface RunningStubKeycloak {
   readonly clientSecret: string;
   /** Group name to its complete, ordered membership. */
   readonly groups: Map<string, StubKeycloakUser[]>;
+  readonly organizations: Map<string, StubKeycloakOrganization>;
+  readonly organizationMembers: Map<string, StubKeycloakUser[]>;
+  readonly organizationRoleGroups: Map<string, Map<string, StubKeycloakUser[]>>;
+  readonly organizationRoleGroupIds: Map<string, Map<string, string>>;
+  replaceOrganizationMembersAfterNextRead(organizationId: string, members: StubKeycloakUser[]): void;
+  changeOrganizationMembersAfterReads(organizationId: string, replacements: StubKeycloakUser[][]): void;
+  replaceOrganizationRoleGroupAfterNextRead(organizationId: string, path: string, members: StubKeycloakUser[]): void;
   readonly issuer: string;
   adminRequests(): readonly StubKeycloakAdminRequest[];
   /**
@@ -57,6 +72,12 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
   const clientId = "artifact-server-directory";
   const clientSecret = `directory-secret-${randomUUID()}`;
   const groups = new Map<string, StubKeycloakUser[]>();
+  const organizations = new Map<string, StubKeycloakOrganization>();
+  const organizationMembers = new Map<string, StubKeycloakUser[]>();
+  const organizationRoleGroups = new Map<string, Map<string, StubKeycloakUser[]>>();
+  const organizationRoleGroupIds = new Map<string, Map<string, string>>();
+  const replacementAfterMemberRead = new Map<string, StubKeycloakUser[][]>();
+  const replacementAfterRoleGroupRead = new Map<string, Map<string, StubKeycloakUser[]>>();
   const groupIds = new Map<string, string>();
   const adminRequests: StubKeycloakAdminRequest[] = [];
   const issuedTokens = new Set<string>();
@@ -151,6 +172,80 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
       };
       const path = url.pathname.slice(adminPath.length);
       adminRequests.push({path, query: withoutUndefined(query)});
+      if (path === "/organizations") {
+        json(200, JSON.stringify(page(
+          [...organizations.values()], query.first, query.max,
+        )));
+        return;
+      }
+      const organizationGroupsMatch = /^\/organizations\/([^/]+)\/groups$/u.exec(path);
+      if (organizationGroupsMatch !== null) {
+        const organizationId = decodeURIComponent(organizationGroupsMatch[1] ?? "");
+        const roleGroups = organizationRoleGroups.get(organizationId);
+        if (roleGroups === undefined) {
+          json(404, JSON.stringify({error: "Could not find organization by id"}));
+          return;
+        }
+        const ids = organizationRoleGroupIds.get(organizationId) ?? new Map<string, string>();
+        organizationRoleGroupIds.set(organizationId, ids);
+        const listed = [...roleGroups.keys()].map((pathName) => {
+          const id = ids.get(pathName) ?? randomUUID();
+          ids.set(pathName, id);
+          return {id, name: pathName.slice(1), path: pathName, parentId: null, subGroups: []};
+        });
+        json(200, JSON.stringify(page(listed, query.first, query.max)));
+        return;
+      }
+      const organizationGroupMembersMatch =
+        /^\/organizations\/([^/]+)\/groups\/([^/]+)\/members$/u.exec(path);
+      if (organizationGroupMembersMatch !== null) {
+        const organizationId = decodeURIComponent(organizationGroupMembersMatch[1] ?? "");
+        const groupIdValue = decodeURIComponent(organizationGroupMembersMatch[2] ?? "");
+        const roleGroups = organizationRoleGroups.get(organizationId);
+        const ids = organizationRoleGroupIds.get(organizationId);
+        const pathName = [...(ids ?? new Map()).entries()]
+          .find(([, id]) => id === groupIdValue)?.[0];
+        const users = pathName === undefined ? undefined : roleGroups?.get(pathName);
+        if (users === undefined) {
+          json(404, JSON.stringify({error: "Could not find organization group by id"}));
+          return;
+        }
+        const first = Number(query.first ?? "0");
+        if (failingPage !== null && failingPage.first === first && failingPage.remaining > 0) {
+          failingPage.remaining -= 1;
+          json(failingPage.status, JSON.stringify({error: "server_error"}));
+          return;
+        }
+        const responsePage = page(users, query.first, query.max);
+        const replacements = replacementAfterRoleGroupRead.get(organizationId);
+        const replacement = replacements?.get(pathName ?? "");
+        if (replacement !== undefined) {
+          roleGroups?.set(pathName ?? "", replacement);
+          replacements?.delete(pathName ?? "");
+        }
+        json(200, JSON.stringify(responsePage));
+        return;
+      }
+      const organizationMembersMatch = /^\/organizations\/([^/]+)\/members$/u.exec(path);
+      if (organizationMembersMatch !== null) {
+        const users = organizationMembers.get(decodeURIComponent(organizationMembersMatch[1] ?? ""));
+        if (users === undefined) {
+          json(404, JSON.stringify({error: "Could not find organization by id"}));
+          return;
+        }
+        const organizationId = decodeURIComponent(organizationMembersMatch[1] ?? "");
+        const responsePage = page(users, query.first, query.max);
+        const replacements = replacementAfterMemberRead.get(organizationId);
+        const replacement = replacements?.shift();
+        if (replacement !== undefined) {
+          organizationMembers.set(organizationId, replacement);
+          if (replacements !== undefined && replacements.length === 0) {
+            replacementAfterMemberRead.delete(organizationId);
+          }
+        }
+        json(200, JSON.stringify(responsePage));
+        return;
+      }
       if (path === "/groups" && query.search === undefined) {
         // Keycloak 26 lists top-level groups with a count of their children.
         json(200, JSON.stringify(
@@ -240,6 +335,21 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
       failingPage = first === null ? null : {first, remaining: times, status};
     },
     groups,
+    organizations,
+    organizationMembers,
+    organizationRoleGroups,
+    organizationRoleGroupIds,
+    replaceOrganizationMembersAfterNextRead: (organizationId, members) => {
+      replacementAfterMemberRead.set(organizationId, [members]);
+    },
+    changeOrganizationMembersAfterReads: (organizationId, replacements) => {
+      replacementAfterMemberRead.set(organizationId, [...replacements]);
+    },
+    replaceOrganizationRoleGroupAfterNextRead: (organizationId, path, members) => {
+      const replacements = replacementAfterRoleGroupRead.get(organizationId) ?? new Map();
+      replacements.set(path, members);
+      replacementAfterRoleGroupRead.set(organizationId, replacements);
+    },
     issuer,
     setTokenStatus: (status) => {
       tokenStatus = status;

@@ -10,6 +10,7 @@ import type {
   IdentityProviderFailure,
   IdentityRepositoryFailure,
 } from "../core/errors.js";
+import type {IdentityNotFound} from "../core/errors.js";
 import type {
   ExternalIdentity,
   IssuedApplicationSession,
@@ -37,6 +38,10 @@ export interface InteractiveIdentityProvider {
     nonce: string | null,
   ) => Effect.Effect<ExternalIdentity, IdentityProviderFailure>;
   readonly name: string;
+  /** Clone this provider with the callback for one routed application base. */
+  forApplicationOrigin?(origin: string): InteractiveIdentityProvider;
+  /** Scope a verified Keycloak organization claim to one registered org. */
+  forOrganization?(organization: {readonly alias: string; readonly id: string}): InteractiveIdentityProvider;
   readonly start: () => Effect.Effect<InteractiveAuthorization, IdentityProviderFailure>;
 }
 
@@ -72,12 +77,19 @@ export interface StartedInteractiveLogin {
 }
 
 interface InteractiveLoginOperations {
+  readonly completeIdentity: (
+    command: CompleteInteractiveLoginCommand,
+  ) => Effect.Effect<
+    {readonly identity: ExternalIdentity; readonly returnTo: string},
+    IdentityProviderFailure | IdentityRepositoryFailure | InteractiveLoginUnavailable | LoginAttemptRejected
+  >;
   readonly complete: (
     command: CompleteInteractiveLoginCommand,
   ) => Effect.Effect<
-    {readonly issued: IssuedApplicationSession; readonly returnTo: string},
+    {readonly identity: ExternalIdentity; readonly issued: IssuedApplicationSession; readonly returnTo: string},
     | IdentityAdmissionDenied
     | IdentityConflict
+    | IdentityNotFound
     | IdentityProviderFailure
     | IdentityRepositoryFailure
     | InteractiveLoginUnavailable
@@ -160,11 +172,26 @@ function makeInteractiveLoginService(
         attempt.nonce,
       );
       const issued = yield* installationAccess.completeExternalIdentity(identity);
-      return {issued, returnTo: attempt.returnTo};
+      return {identity, issued, returnTo: attempt.returnTo};
     },
   );
 
-  return InteractiveLoginService.of({complete, start});
+  const completeIdentity = Effect.fn("InteractiveLoginService.completeIdentity")(
+    function*(command: CompleteInteractiveLoginCommand) {
+      const provider = dependencies.provider;
+      if (provider === null) return yield* unavailable();
+      if (command.handshake === null || !identitySecretsEqual(command.handshake, command.state)) {
+        return yield* Effect.fail(new LoginAttemptRejected({message: "The browser login callback did not come from the browser that started it."}));
+      }
+      const attempt = yield* dependencies.repository.consume(
+        digestIdentitySecret(command.state), provider.name, dependencies.clock.now().toISOString(),
+      );
+      const identity = yield* provider.complete(command.code, attempt.codeVerifier, attempt.nonce);
+      return {identity, returnTo: attempt.returnTo};
+    },
+  );
+
+  return InteractiveLoginService.of({complete, completeIdentity, start});
 }
 
 function safeReturnTo(value: string): string {

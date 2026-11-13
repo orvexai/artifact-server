@@ -78,6 +78,7 @@ import { ReviewPreview } from "./review-preview.tsx";
 import {ReviewProjectPicker} from "./review-project-picker.tsx";
 import {isSettingsPath} from "./review-routes.ts";
 import {ReviewSettings} from "./review-settings.tsx";
+import {OrganizationSwitcher} from "@/components/product";
 import {frameMessageSchema, reviewProtocolVersion} from "../review-frame/protocol.ts";
 import {ReviewPanelEdge} from "./review-panel-edge.tsx";
 import {AgentLogos, ReviewShareControl} from "./review-share.tsx";
@@ -493,24 +494,30 @@ export function ReviewApp() {
 
   if (isSettingsPath(window.location.pathname)) {
     return (
-      <ReviewSettings
-        onProjectsChanged={loadProjects}
+      <>
+        <OrganizationSwitcher />
+        <ReviewSettings
+          onProjectsChanged={loadProjects}
+          onThemeChange={() => setTheme((current) => current === "moon" ? "dawn" : "moon")}
+          projects={projects}
+          session={session}
+          theme={theme}
+        />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <OrganizationSwitcher />
+      <ArtifactReview
+        onCreateProject={createProject}
         onThemeChange={() => setTheme((current) => current === "moon" ? "dawn" : "moon")}
         projects={projects}
         session={session}
         theme={theme}
       />
-    );
-  }
-
-  return (
-    <ArtifactReview
-      onCreateProject={createProject}
-      onThemeChange={() => setTheme((current) => current === "moon" ? "dawn" : "moon")}
-      projects={projects}
-      session={session}
-      theme={theme}
-    />
+    </>
   );
 }
 
@@ -2418,7 +2425,9 @@ function ActivityInspector({
             <li key={action.id}>
               <strong>{actionLabel(action.action)}</strong>
               <time dateTime={action.createdAt}>{formatTimestamp(action.createdAt)}</time>
-              <code title={action.principalId}>{compactId(action.principalId)}</code>
+              <code title={action.principalId ?? undefined}>
+                {action.principalId === null ? "System" : compactId(action.principalId)}
+              </code>
             </li>
           ))}
         </ol>

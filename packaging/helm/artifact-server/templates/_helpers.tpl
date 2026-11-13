@@ -203,6 +203,17 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
   value: {{ .Values.configuration.installationId | quote }}
 - name: ARTIFACT_SERVER_ORIGIN
   value: {{ .Values.configuration.applicationOrigin | quote }}
+- name: ARTIFACT_SERVER_ORG_TENANCY
+  value: {{ .Values.configuration.organizationTenancy | default "off" | quote }}
+{{- if eq (.Values.configuration.organizationTenancy | default "off") "on" }}
+{{- if not .Values.configuration.organizationStaffGroups }}
+{{- fail "configuration.organizationStaffGroups is required when configuration.organizationTenancy is on: list the exact Keycloak group paths of Orvex staff" }}
+{{- end }}
+{{- end }}
+{{- if .Values.configuration.organizationStaffGroups }}
+- name: ARTIFACT_SERVER_ORG_STAFF_GROUPS
+  value: {{ join "," .Values.configuration.organizationStaffGroups | quote }}
+{{- end }}
 - name: ARTIFACT_SERVER_OBJECT_STORAGE_PROVIDER
   value: "s3"
 - name: ARTIFACT_SERVER_POSTGRES_MAX_CONNECTIONS

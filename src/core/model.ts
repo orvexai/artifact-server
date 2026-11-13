@@ -217,7 +217,7 @@ export interface VersionRecord {
   readonly id: string;
   readonly manifestDigest: string;
   readonly number: number;
-  readonly publisherPrincipalId: string;
+  readonly publisherPrincipalId: string | null;
   readonly projectId: string;
   readonly routingMode: RoutingMode;
 }
@@ -369,6 +369,8 @@ export interface CommentAuthor {
   readonly displayName: string;
   readonly principalId: string;
   readonly principalKind: PrincipalKind;
+  /** Persisted admission classification; internal and omitted from public shapes. */
+  readonly staff?: boolean;
 }
 
 /** One root comment on one exact saved version. */

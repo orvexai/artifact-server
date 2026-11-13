@@ -255,14 +255,17 @@ export function PresenceAvatar({
             </dt>
             <dd>{formatRelativeTime(agent.lastSeenAt, now)}</dd>
           </div>
-          <div className="flex justify-between gap-3">
-            <dt className="shrink-0 font-semibold tracking-wide uppercase">
-              Working directory
-            </dt>
-            <dd className="min-w-0 font-mono break-all">
-              {agent.workingDirectory}
-            </dd>
-          </div>
+          {/* An Orvex staff agent in a tenant org has no visible directory. */}
+          {agent.workingDirectory === null ? null : (
+            <div className="flex justify-between gap-3">
+              <dt className="shrink-0 font-semibold tracking-wide uppercase">
+                Working directory
+              </dt>
+              <dd className="min-w-0 font-mono break-all">
+                {agent.workingDirectory}
+              </dd>
+            </div>
+          )}
         </dl>
       </PopoverContent>
     </Popover>

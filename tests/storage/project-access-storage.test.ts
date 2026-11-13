@@ -177,7 +177,7 @@ describe("project access storage (SQLite)", () => {
     repository = new SqliteIdentityRepository(databasePath);
     expect(readOnly((database) =>
       database.prepare("PRAGMA user_version").get()
-    )).toEqual({user_version: 17});
+    )).toEqual({user_version: 27});
     expect(await repository.findProjectAccess(installationId, defaultProject, "nobody"))
       .toMatchObject({accessMode: "installation"});
     await groups([group("g-a", [])]);
@@ -209,7 +209,10 @@ describe("project access storage (SQLite)", () => {
         updated_at TEXT NOT NULL,
         UNIQUE (installation_id, email)
       );
-      INSERT INTO installation_members_old SELECT * FROM installation_members;
+      INSERT INTO installation_members_old
+        (id, installation_id, email, display_name, role, status, created_at, updated_at)
+        SELECT id, installation_id, email, display_name, role, status, created_at, updated_at
+        FROM installation_members;
       DROP TABLE installation_members;
       ALTER TABLE installation_members_old RENAME TO installation_members;
       DROP TABLE directory_group_roles;
@@ -220,7 +223,7 @@ describe("project access storage (SQLite)", () => {
     repository = new SqliteIdentityRepository(databasePath);
     expect(readOnly((database) =>
       database.prepare("PRAGMA user_version").get()
-    )).toEqual({user_version: 17});
+    )).toEqual({user_version: 27});
     expect(readOnly((database) => database.prepare("PRAGMA foreign_key_check").all()))
       .toEqual([]);
     expect(await repository.findActiveMemberByExternalIdentity(
@@ -276,6 +279,25 @@ describe("project access storage (SQLite)", () => {
       {groupId: "g-dev", nameUnique: true},
       {groupId: "g-temporal", nameUnique: false},
     ]);
+  });
+
+  test("staff-only people are identified without hiding members of tenant groups", async () => {
+    await admit("staff-only");
+    await admit("staff-and-tenant");
+    await bind("staff-only", keycloak, "staff-only-subject");
+    await bind("staff-and-tenant", keycloak, "staff-and-tenant-subject");
+    await groups([
+      group("g-staff", [["staff-only-subject", "staff-only"], ["staff-and-tenant-subject", "staff-and-tenant"]]),
+      group("g-tenant", [["staff-and-tenant-subject", "staff-and-tenant"]]),
+    ]);
+    await repository.setMemberStaff(installationId, "mem_staff-only", true);
+    await repository.setMemberStaff(installationId, "mem_staff-and-tenant", false);
+
+    expect(await repository.listStaffOnlyMemberIds(installationId, ["g-staff"]))
+      .toEqual(["mem_staff-only"]);
+    expect((await repository.findMember(installationId, "mem_staff-only"))?.staff).toBe(true);
+    expect((await repository.listMembers(installationId)).filter(({staff}) => staff === true).map(({id}) => id))
+      .toEqual(["mem_staff-only"]);
   });
 
   function openRuntime() {

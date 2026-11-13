@@ -18,7 +18,12 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { formatTimestamp } from "@/lib/presentation";
 
 /** Administrator-only installation member lifecycle surface. */
-export function MembersScreen() {
+export function MembersScreen({canAdmit, canManage, showEmails, showRoles}: {
+  readonly canAdmit: boolean;
+  readonly canManage: boolean;
+  readonly showEmails: boolean;
+  readonly showRoles: boolean;
+}) {
   const [members, setMembers] = useState<readonly InstallationMember[]>([]);
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(true);
@@ -75,7 +80,7 @@ export function MembersScreen() {
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
-        actions={(
+        actions={!canManage || !canAdmit ? undefined : (
           <Dialog>
             <DialogTrigger render={<Button type="button" />}>Admit member</DialogTrigger>
             <DialogContent>
@@ -139,7 +144,9 @@ export function MembersScreen() {
             </DialogContent>
           </Dialog>
         )}
-        description="One installation has one closed member group. There is no public sign-up or project-specific membership."
+        description={canAdmit
+          ? "One installation has one closed member group. There is no public sign-up or project-specific membership."
+          : "Organization membership is managed by your identity provider."}
         eyebrow="Administration"
         title="Members"
       />
@@ -158,10 +165,10 @@ export function MembersScreen() {
               <thead className="border-b bg-muted/50 text-xs tracking-widest text-muted-foreground uppercase">
                 <tr>
                   <th className="px-4 py-3 font-semibold">Member</th>
-                  <th className="px-4 py-3 font-semibold">Role</th>
+                  {showRoles ? <th className="px-4 py-3 font-semibold">Role</th> : null}
                   <th className="px-4 py-3 font-semibold">Status</th>
                   <th className="px-4 py-3 font-semibold">Admitted</th>
-                  <th className="px-4 py-3 text-right font-semibold">Actions</th>
+                  {canManage ? <th className="px-4 py-3 text-right font-semibold">Actions</th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -169,18 +176,18 @@ export function MembersScreen() {
                   <tr className="border-b last:border-b-0" key={member.id}>
                     <td className="px-4 py-4">
                       <p className="font-heading font-semibold">{member.displayName}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">{member.email}</p>
+                  {showEmails && member.email !== undefined ? <p className="mt-1 text-xs text-muted-foreground">{member.email}</p> : null}
                     </td>
-                    <td className="px-4 py-4">{membershipRoleLabels[member.role]}</td>
+                    {showRoles ? <td className="px-4 py-4">{member.role === undefined ? "" : membershipRoleLabels[member.role]}</td> : null}
                     <td className="px-4 py-4">
                       <StatusBadge tone={member.status === "active" ? "primary" : "neutral"}>
                         {member.status}
                       </StatusBadge>
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-muted-foreground">
-                      {formatTimestamp(member.createdAt)}
+                      {member.createdAt === undefined ? "" : formatTimestamp(member.createdAt)}
                     </td>
-                    <td className="px-4 py-4 text-right">
+                    {canManage ? <td className="px-4 py-4 text-right">
                       {member.status === "inactive"
                         ? null
                         : (
@@ -211,7 +218,7 @@ export function MembersScreen() {
                             </DialogContent>
                           </Dialog>
                         )}
-                    </td>
+                    </td> : null}
                   </tr>
                 ))}
               </tbody>

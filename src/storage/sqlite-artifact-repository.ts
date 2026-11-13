@@ -4453,6 +4453,17 @@ export class SqliteArtifactRepository implements
     });
   }
 
+  findAgentsByIds(installationId: string, agentIds: readonly string[]): Promise<readonly RegisteredAgentRecord[]> {
+    return Promise.resolve().then(() => {
+      if (agentIds.length === 0) return [];
+      const placeholders = agentIds.map(() => "?").join(", ");
+      const rows = this.#database.prepare(
+        `${registeredAgentColumns} WHERE installation_id = ? AND id IN (${placeholders})`,
+      ).all(installationId, ...agentIds);
+      return z.array(registeredAgentRowSchema).parse(rows);
+    });
+  }
+
   createDispatch(command: CreateAgentDispatch): Promise<AgentDispatchCreation> {
     return Promise.resolve().then(() =>
       this.#transaction(() => {

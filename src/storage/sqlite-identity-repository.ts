@@ -119,6 +119,7 @@ const memberRowSchema = z.object({
   id: z.string(),
   installationId: z.string(),
   role: membershipRoleSchema,
+  staff: z.union([z.number(), z.boolean()]).default(0).transform((value) => value === true || value === 1),
   status: memberStatusSchema,
   updatedAt: z.string(),
 });
@@ -780,15 +781,16 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
     try {
       this.#database.prepare(`
         INSERT INTO installation_members (
-          id, installation_id, email, display_name, role, status,
+          id, installation_id, email, display_name, role, staff, status,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         command.id,
         command.installationId,
         command.email,
         command.displayName,
         command.role,
+        command.staff === true ? 1 : 0,
         memberStatuses.active,
         command.createdAt,
         command.createdAt,
@@ -814,6 +816,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         email,
         display_name AS displayName,
         role,
+        staff,
         status,
         created_at AS createdAt,
         updated_at AS updatedAt
@@ -822,6 +825,40 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       ORDER BY created_at ASC, id ASC
     `).all(installationId);
     return rows.map((row) => memberRowSchema.parse(row));
+  }
+
+  async listStaffOnlyMemberIds(
+    installationId: string,
+    staffGroupIds: readonly string[],
+  ): Promise<readonly string[]> {
+    if (staffGroupIds.length === 0) return [];
+    const ids = staffGroupIds.map(() => "?").join(", ");
+    const rows = this.#database.prepare(`
+      SELECT DISTINCT identity.member_id AS memberId
+      FROM directory_group_members staff_member
+      JOIN external_identities identity
+        ON identity.provider = staff_member.provider
+        AND identity.subject = staff_member.subject
+      JOIN installation_members member
+        ON member.id = identity.member_id
+      WHERE member.installation_id = ?
+        AND staff_member.group_id IN (${ids})
+        AND NOT EXISTS (
+          SELECT 1 FROM directory_group_members other_member
+          JOIN external_identities other_identity
+            ON other_identity.provider = other_member.provider
+            AND other_identity.subject = other_member.subject
+          WHERE other_identity.member_id = identity.member_id
+            AND other_member.installation_id = staff_member.installation_id
+            AND other_member.group_id NOT IN (${ids})
+        )
+    `).all(installationId, ...staffGroupIds, ...staffGroupIds);
+    return rows.map((row) => z.object({memberId: z.string()}).parse(row).memberId);
+  }
+
+  async setMemberStaff(installationId: string, memberId: string, staff: boolean): Promise<void> {
+    const result = this.#database.prepare(`UPDATE installation_members SET staff = ? WHERE installation_id = ? AND id = ?`).run(staff ? 1 : 0, installationId, memberId);
+    if (Number(result.changes) === 0) throw new IdentityNotFound({message: "The member does not exist."});
   }
 
   async findMember(
@@ -842,6 +879,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         email,
         display_name AS displayName,
         role,
+        staff,
         status,
         created_at AS createdAt,
         updated_at AS updatedAt
@@ -862,6 +900,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         email,
         display_name AS displayName,
         role,
+        staff,
         status,
         created_at AS createdAt,
         updated_at AS updatedAt
@@ -883,6 +922,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         member.email,
         member.display_name AS displayName,
         member.role,
+        member.staff,
         member.status,
         member.created_at AS createdAt,
         member.updated_at AS updatedAt
@@ -1402,6 +1442,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         role TEXT NOT NULL
           CHECK (role IN ('guest', 'viewer', 'member', 'administrator', 'owner')),
         status TEXT NOT NULL CHECK (status IN ('active', 'inactive')),
+        staff INTEGER NOT NULL DEFAULT 0 CHECK (staff IN (0, 1)),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE (installation_id, email)
@@ -1538,6 +1579,10 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
       ) STRICT;
     `);
     this.#addDirectoryGroupFirstPathIfMissing();
+    const memberColumns = z.array(z.object({name: z.string()})).parse(this.#database.prepare("PRAGMA table_info(installation_members)").all()).map(({name}) => name);
+    if (!memberColumns.includes("staff")) {
+      this.#database.exec("ALTER TABLE installation_members ADD COLUMN staff INTEGER NOT NULL DEFAULT 0 CHECK (staff IN (0, 1))");
+    }
     this.#addLoginAttemptNonceIfMissing();
     this.#addDirectoryGroupMemberProviderIfMissing();
     this.#widenMemberRolesIfNeeded();
@@ -1586,15 +1631,16 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
             role TEXT NOT NULL
               CHECK (role IN ('guest', 'viewer', 'member', 'administrator', 'owner')),
             status TEXT NOT NULL CHECK (status IN ('active', 'inactive')),
+            staff INTEGER NOT NULL DEFAULT 0 CHECK (staff IN (0, 1)),
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE (installation_id, email)
           );
           INSERT INTO installation_members_widened (
-            id, installation_id, email, display_name, role, status,
+            id, installation_id, email, display_name, role, staff, status,
             created_at, updated_at
           )
-          SELECT id, installation_id, email, display_name, role, status,
+          SELECT id, installation_id, email, display_name, role, staff, status,
             created_at, updated_at
           FROM installation_members;
           DROP TABLE installation_members;

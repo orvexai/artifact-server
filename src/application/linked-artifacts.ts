@@ -370,17 +370,20 @@ export const disabledLinkedArtifactLayer: Layer.Layer<LinkedArtifactService> =
   );
 
 /** Build the artifact-scoped live-origin host label for one artifact. */
-export function liveContentToken(artifactId: string): string | null {
+export function liveContentToken(artifactId: string, tokenPrefix = ""): string | null {
   if (!artifactId.startsWith(artifactIdentityPrefix)) return null;
   const identity = artifactId.slice(artifactIdentityPrefix.length);
   if (!liveIdentityPattern.test(identity)) return null;
-  return `${liveTokenPrefix}${identity}`;
+  return `${tokenPrefix}${liveTokenPrefix}${identity}`;
 }
 
 /** Determine whether one content-host label names a live origin. */
-export function isLiveContentToken(candidate: string): boolean {
-  return candidate.startsWith(liveTokenPrefix)
-    && liveIdentityPattern.test(candidate.slice(liveTokenPrefix.length));
+export function isLiveContentToken(candidate: string, tokenPrefix = ""): boolean {
+  const token = tokenPrefix.length > 0 && candidate.startsWith(tokenPrefix)
+    ? candidate.slice(tokenPrefix.length)
+    : candidate;
+  return token.startsWith(liveTokenPrefix)
+    && liveIdentityPattern.test(token.slice(liveTokenPrefix.length));
 }
 
 const unavailable = () =>
@@ -891,7 +894,7 @@ function makeLinkedArtifactService(
       current.artifact,
     );
     yield* requireBinding(project.id, command.artifactId);
-    const contentToken = liveContentToken(command.artifactId);
+    const contentToken = liveContentToken(command.artifactId, dependencies.secrets.tokenPrefix);
     if (contentToken === null) {
       return yield* Effect.die(
         new Error("The artifact identity cannot name a live origin."),

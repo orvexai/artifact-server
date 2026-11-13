@@ -615,6 +615,7 @@ export interface AgentDispatchRepository {
     installationId: string,
     agentId: string,
   ): Promise<RegisteredAgentRecord | null>;
+  findAgentsByIds(installationId: string, agentIds: readonly string[]): Promise<readonly RegisteredAgentRecord[]>;
   findDispatch(
     installationId: string,
     dispatchId: string,

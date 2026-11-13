@@ -2,10 +2,14 @@ import path from "node:path";
 
 import {oidcIdentityProviderName} from "../core/project-access.js";
 import {type Command, Option} from "commander";
-import {Redacted} from "effect";
+import {Effect, Redacted} from "effect";
+import {SqlClient} from "effect/unstable/sql/SqlClient";
 
 import {
   createExternalStorageRuntime,
+  createOrgRuntime,
+  organizationRuntimeAdmissionPolicy,
+  openExternalStorageDatabase,
   type ExternalStorageRuntimeConfig,
 } from "../external-storage/create-external-storage-runtime.js";
 import {
@@ -49,6 +53,18 @@ import {
   type LocalServerConfig,
 } from "../local/start-local-server.js";
 import {PostgresDatabase} from "../storage/postgres-database.js";
+import {
+  OrganizationRegistry,
+  findDisappearedOrganizations,
+  isReservedOrganizationSlug,
+  parseOrganizationAdmissionPolicyJson,
+  type OrganizationAdmissionPolicy,
+} from "../external-storage/organization-registry.js";
+import {
+  organizationStaffGroupsVariable,
+  parseOrganizationStaffGroups,
+  requireOrganizationStaffGroups,
+} from "../external-storage/organization-staff-groups.js";
 import {runCliEffect} from "./run-cli-effect.js";
 import {waitForProcessSignal} from "./wait-for-process-signal.js";
 import {
@@ -109,6 +125,8 @@ export function configureLifecycleCommands(
   configureSupportManifest(program, options.build);
   configureIntegrity(program);
   configureMaintenance(program);
+  configureOrganizations(program);
+  configureMembers(program);
   configureExternalStorageStart(program, options.build.productVersion);
 }
 
@@ -141,6 +159,22 @@ function configureMaintenance(program: Command): void {
       } finally {
         await runtime.close();
       }
+    });
+  maintenance
+    .command("org-sync")
+    .description("Discover Keycloak organizations and sync their members.")
+    .requiredOption("--once", "run one complete pass and exit")
+    .addOption(new Option("--mode <mode>", "external-storage only").choices(["external-storage"]).default("external-storage"))
+    .addOption(dataOption())
+    .addOption(hostOption())
+    .addOption(portOption())
+    .action(async (options: SyncDirectoryOptions) => {
+      const configuration = await lifecycleConfiguration(options);
+      if (configuration.deploymentMode !== "external-storage") {
+        throw new Error("Keycloak organization sync requires external-storage mode.");
+      }
+      const report = await syncKeycloakOrganizations(configuration);
+      printOrganizationSyncReport(report);
     });
   maintenance
     .command("sync-directory")
@@ -225,10 +259,338 @@ function configureMaintenance(program: Command): void {
             unchanged: Math.max(0, memberSync.unchanged - roleChangedDuringRecompute),
             roleChanged: memberSync.roleChanged + roleChangedDuringRecompute,
           }));
+        if (parseOrganizationTenancy(process.env["ARTIFACT_SERVER_ORG_TENANCY"])) {
+          if (configuration.deploymentMode !== "external-storage") {
+            throw new Error("Keycloak organization sync requires external-storage mode.");
+          }
+          const organizationSync = await syncKeycloakOrganizations(configuration);
+          printOrganizationSyncReport(organizationSync);
+        }
       } finally {
         await runtime.close();
       }
     });
+}
+
+function configureOrganizations(program: Command): void {
+  const organization = program.command("org")
+    .description("Manage configured Artifact Server organizations.");
+  organization.command("create")
+    .description("Register an organization without creating credentials.")
+    .argument("<slug>", "lowercase organization route slug")
+    .requiredOption("--name <display-name>", "organization display name")
+    .option("--group-role-seed <json>", "admission policy JSON with seed and optional groupRoots")
+    .action(async (slug: string, options: {readonly groupRoleSeed?: string; readonly name: string}) => {
+      let admissionPolicy: OrganizationAdmissionPolicy | null = null;
+      if (options.groupRoleSeed !== undefined) {
+        admissionPolicy = parseOrganizationAdmissionPolicyJson(options.groupRoleSeed);
+      }
+      const configuration = await runCliEffect(
+        parseExternalMigrationConfiguration(process.env),
+      );
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-org-create:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        console.log(JSON.stringify(
+          await new OrganizationRegistry(database).create(slug, options.name, admissionPolicy),
+          null,
+          2,
+        ));
+      } finally {
+        await database.close();
+      }
+    });
+  organization.command("list")
+    .description("List configured organizations without sensitive data.")
+    .action(async () => {
+      const configuration = await runCliEffect(
+        parseExternalMigrationConfiguration(process.env),
+      );
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-org-list:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        console.log(JSON.stringify(
+          await new OrganizationRegistry(database).list(),
+          null,
+          2,
+        ));
+      } finally {
+        await database.close();
+      }
+    });
+  organization.command("sync")
+    .description("Discover Keycloak organizations and sync their members.")
+    .addOption(new Option("--mode <mode>", "external-storage only").choices(["external-storage"]).default("external-storage"))
+    .addOption(hostOption())
+    .addOption(portOption())
+    .action(async (options: StartExternalStorageOptions) => {
+      const configuration = await parseExternalConfiguration(options.host, options.port);
+      const report = await syncKeycloakOrganizations(configuration);
+      printOrganizationSyncReport(report);
+    });
+  organization.command("link")
+    .description("Deliberately link a registered organization to a Keycloak organization id.")
+    .argument("<slug>", "registered Artifact Server organization slug")
+    .argument("<keycloak-id>", "Keycloak organization UUID")
+    .action(async (slug: string, keycloakId: string) => {
+      const configuration = await runCliEffect(
+        parseExternalMigrationConfiguration(process.env),
+      );
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-org-link:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        console.log(JSON.stringify(
+          await new OrganizationRegistry(database).linkKeycloakOrganization(slug, keycloakId),
+          null,
+          2,
+        ));
+      } finally {
+        await database.close();
+      }
+    });
+  organization.command("suspend")
+    .description("Suspend an organization and deactivate its members; reversible only with org resume.")
+    .argument("<slug>", "registered Artifact Server organization slug")
+    .option("--yes", "confirm suspension of this organization")
+    .action(async (slug: string, options: {readonly yes?: boolean}) => {
+      if (options.yes !== true) throw new Error("Organization suspension requires --yes.");
+      const configuration = await runCliEffect(
+        parseExternalMigrationConfiguration(process.env),
+      );
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-org-suspend:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        console.log(JSON.stringify(await new OrganizationRegistry(database).suspend(slug), null, 2));
+      } finally {
+        await database.close();
+      }
+    });
+  organization.command("resume")
+    .description("Resume an organization and immediately sync its Keycloak members.")
+    .argument("<slug>", "registered Artifact Server organization slug")
+    .action(async (slug: string) => {
+      const configuration = await parseExternalConfiguration();
+      try {
+        const database = await openExternalStorageDatabase(externalMaintenanceConfig(configuration));
+        try {
+          const resumed = await new OrganizationRegistry(database).resume(slug);
+          console.log(JSON.stringify(resumed, null, 2));
+        } finally {
+          await database.close();
+        }
+        try {
+          printOrganizationSyncReport(await syncKeycloakOrganizations(configuration, slug, false));
+        } catch (error) {
+          console.error(JSON.stringify({
+            alias: slug,
+            error: error instanceof Error ? error.message : String(error),
+            operation: "member-sync-after-resume",
+          }, null, 2));
+          process.exitCode = 2;
+        }
+      } finally {
+        await configuration.objectStorage.close?.();
+      }
+    });
+}
+
+function configureMembers(program: Command): void {
+  program.command("member")
+    .description("Operator-only organization member maintenance.")
+    .command("clear-staff")
+    .description("Clear a member's sticky staff marker and record the operator action.")
+    .argument("<org>", "organization slug")
+    .argument("<email>", "exact member email")
+    .requiredOption("--yes", "confirm clearing this sticky staff marker")
+    .action(async (org: string, email: string) => {
+      const configuration = await runCliEffect(parseExternalMigrationConfiguration(process.env));
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-member-clear-staff:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        const result = await database.run(Effect.gen(function*() {
+          const sql = yield* SqlClient;
+          return yield* sql.withTransaction(Effect.gen(function*() {
+            const organizations = yield* sql`SELECT id FROM artifact_installations WHERE slug = ${org}`;
+            if (organizations.length !== 1) throw new Error("Organization does not exist.");
+            const installationId = String(organizations[0]?.["id"]);
+            const members = yield* sql`SELECT id, email FROM installation_members WHERE installation_id = ${installationId} AND lower(email) = lower(${email})`;
+            if (members.length !== 1) throw new Error("Member does not exist or email is ambiguous.");
+            const memberId = String(members[0]?.["id"]);
+            const memberEmail = String(members[0]?.["email"]);
+            const changed = yield* sql`UPDATE installation_members SET staff = FALSE WHERE installation_id = ${installationId} AND id = ${memberId} AND staff IS TRUE RETURNING id`;
+            if (changed.length > 0) {
+              yield* sql`INSERT INTO installation_member_staff_audit (installation_id, member_id, member_email, actor, action, created_at) VALUES (${installationId}, ${memberId}, ${memberEmail}, 'operator_cli', 'clear_staff', ${new Date().toISOString()})`;
+            }
+            return {installationId, memberEmail};
+          }));
+        }));
+        console.log(JSON.stringify({action: "clear_staff", ...result}));
+      } finally {
+        await database.close();
+      }
+    });
+}
+
+interface OrganizationSyncReport {
+  readonly discovered: readonly string[];
+  readonly disappeared: readonly {readonly alias: string; readonly id: string}[];
+  readonly emptied: readonly {readonly alias: string; readonly reason: string}[];
+  readonly skipped: readonly {readonly alias: string; readonly reason: string}[];
+  readonly errors: readonly {readonly alias: string; readonly error: string}[];
+  readonly memberSync: readonly {readonly alias: string; readonly report: unknown}[];
+}
+
+function printOrganizationSyncReport(report: OrganizationSyncReport): void {
+  console.log(JSON.stringify(report, null, 2));
+  if (report.errors.length > 0 || report.emptied.length > 0) process.exitCode = 2;
+}
+
+async function syncKeycloakOrganizations(
+  configuration: ExternalStorageRuntimeConfiguration,
+  onlyAlias?: string,
+  closeObjectStorage = true,
+): Promise<OrganizationSyncReport> {
+  if (configuration.deploymentMode !== "external-storage") {
+    throw new Error("Keycloak organization sync requires external-storage mode.");
+  }
+  if (!parseOrganizationTenancy(process.env["ARTIFACT_SERVER_ORG_TENANCY"])) {
+    throw new Error("Keycloak organization sync requires ARTIFACT_SERVER_ORG_TENANCY=on.");
+  }
+  const organizationStaffGroups = requireOrganizationStaffGroups(
+    parseOrganizationStaffGroups(process.env[organizationStaffGroupsVariable]),
+  );
+  assertAtMostOneBrowserLoginProvider(process.env);
+  const oidc = await loadOidcConfiguration({
+    ...process.env,
+    ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL: configuration.bootstrapAdministratorEmail,
+    ARTIFACT_SERVER_ORIGIN: configuration.applicationOrigin,
+  });
+  const directorySettings = oidc?.directory ?? null;
+  if (oidc === null || directorySettings === null) {
+    throw new Error("Keycloak organization sync requires OIDC and ARTIFACT_SERVER_OIDC_DIRECTORY_* settings.");
+  }
+  const directoryConfig: KeycloakDirectoryConfig = {
+    adminBaseUrl: directorySettings.adminBaseUrl,
+    clientId: directorySettings.clientId,
+    clientSecret: directorySettings.clientSecret,
+    issuer: oidc.issuer,
+  };
+  const directory = new KeycloakDirectory(directorySettings.tokenEndpoint === undefined
+    ? directoryConfig
+    : {...directoryConfig, tokenEndpoint: directorySettings.tokenEndpoint});
+  const database = await openExternalStorageDatabase(externalMaintenanceConfig(configuration));
+  try {
+    const registry = new OrganizationRegistry(database);
+    await registry.ensureOrvex(configuration.installationId);
+    const before = await registry.list();
+    const keycloakOrganizations = await runCliEffect(directory.listOrganizations());
+    const discovered: string[] = [];
+    const skipped: {alias: string; reason: string}[] = [];
+    const emptied: {alias: string; reason: string}[] = [];
+    const errors: {alias: string; error: string}[] = [];
+    const memberSync: {alias: string; report: unknown}[] = [];
+    let foundRequestedAlias = false;
+    for (const keycloakOrganization of keycloakOrganizations) {
+      if (onlyAlias !== undefined && keycloakOrganization.alias !== onlyAlias) continue;
+      if (keycloakOrganization.alias === onlyAlias) foundRequestedAlias = true;
+      try {
+        // Orvex stays governed by its issuer-group admission policy. Skip a
+        // Keycloak org using a reserved alias before the registry sync, whose
+        // reserved-slug conflict would otherwise fail every run.
+        if (isReservedOrganizationSlug(keycloakOrganization.alias)) {
+          skipped.push({
+            alias: keycloakOrganization.alias,
+            reason: "Reserved organization alias; Orvex is governed by its issuer-group admission policy.",
+          });
+          continue;
+        }
+        if (keycloakOrganization.enabled === false) {
+          const reason = "Keycloak organization is disabled.";
+          if (keycloakOrganization.alias === onlyAlias) errors.push({alias: onlyAlias, error: reason});
+          else skipped.push({alias: keycloakOrganization.alias, reason});
+          continue;
+        }
+        // Keep each tenant operation sequential: the per-org catch below
+        // records failures independently and shared connections are bounded.
+        // oxlint-disable-next-line eslint/no-await-in-loop
+        const result = await registry.syncKeycloakOrganization(
+          keycloakOrganization.alias,
+          keycloakOrganization.name,
+          keycloakOrganization.id,
+        );
+        if (result.kind === "conflict") {
+          errors.push({alias: keycloakOrganization.alias, error: result.reason});
+          continue;
+        }
+        const organization = result.organization;
+        discovered.push(organization.slug);
+        if (organization.status !== "active") {
+          skipped.push({alias: keycloakOrganization.alias, reason: "Artifact Server organization is suspended."});
+          continue;
+        }
+        // oxlint-disable-next-line eslint/no-await-in-loop
+        const orgRuntime = await createOrgRuntime(organization.id, {
+          // Carry the org's admission policy so its staff selectors mark
+          // synced staff members exactly as interactive login does.
+          admissionPolicy: organizationRuntimeAdmissionPolicy(organization.admissionPolicy),
+          cookieRouteId: organization.routeId,
+          keycloakOrganizationId: keycloakOrganization.id,
+          slug: organization.slug,
+          applicationOrigin: new URL(`/o/${organization.slug}`, configuration.applicationOrigin).toString(),
+        }, {
+          ...externalMaintenanceConfig(configuration),
+          organizationStaffGroups,
+        }, database);
+        try {
+          // oxlint-disable-next-line eslint/no-await-in-loop
+          const memberReport = await orgRuntime.syncOrganizationMembers(directory, keycloakOrganization);
+          if ("kind" in memberReport && memberReport.kind === "emptied") {
+            emptied.push({alias: keycloakOrganization.alias, reason: memberReport.reason});
+          } else {
+            memberSync.push({alias: keycloakOrganization.alias, report: memberReport});
+            const missing = "staffGroupsMissing" in memberReport ? memberReport.staffGroupsMissing ?? [] : [];
+            if (missing.length > 0) {
+              console.warn(`Organization ${keycloakOrganization.alias}: staff groups not found in Keycloak, counted as having no members: ${missing.join(", ")}`);
+            }
+          }
+        } finally {
+          // oxlint-disable-next-line eslint/no-await-in-loop
+          await orgRuntime.close();
+        }
+      } catch (error) {
+        errors.push({
+          alias: keycloakOrganization.alias,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (onlyAlias !== undefined && !foundRequestedAlias) {
+      errors.push({alias: onlyAlias, error: "The organization is not present in the current Keycloak organization listing."});
+    }
+    const disappeared = findDisappearedOrganizations(before, keycloakOrganizations);
+    return {discovered, disappeared, skipped, emptied, errors, memberSync};
+  } finally {
+    if (closeObjectStorage) {
+      await Promise.all([configuration.objectStorage.close?.(), database.close()]);
+    } else {
+      await database.close();
+    }
+  }
 }
 
 function configureInitialization(program: Command): void {
@@ -377,12 +739,20 @@ function configureIntegrity(program: Command): void {
     .addOption(hostOption())
     .addOption(portOption())
     .action(async (options: LifecycleOptions) => {
-      const report = options.mode === "compact"
-        ? await runCliEffect(checkCompactIntegrity(path.resolve(options.data)))
-        : await checkExternalStorageIntegrity(await parseExternalConfiguration(
+      let report: Awaited<ReturnType<typeof checkExternalStorageIntegrity>>;
+      if (options.mode === "compact") {
+        report = await runCliEffect(checkCompactIntegrity(path.resolve(options.data)));
+      } else {
+        const configuration = await parseExternalConfiguration(
           options.host,
           options.port,
-        ));
+        );
+        try {
+          report = await checkExternalStorageIntegrity(configuration);
+        } finally {
+          await configuration.objectStorage.close?.();
+        }
+      }
       console.log(JSON.stringify(report, null, 2));
       if (report.status !== "healthy") process.exitCode = 2;
     });
@@ -398,6 +768,13 @@ function configureExternalStorageStart(
     .addOption(hostOption())
     .addOption(portOption())
     .action(async (options: StartExternalStorageOptions) => {
+      const organizationTenancy = parseOrganizationTenancy(
+        process.env["ARTIFACT_SERVER_ORG_TENANCY"],
+      );
+      const organizationStaffGroups = parseOrganizationStaffGroups(
+        process.env[organizationStaffGroupsVariable],
+      );
+      if (organizationTenancy) requireOrganizationStaffGroups(organizationStaffGroups);
       const parsed = await parseExternalConfiguration(options.host, options.port);
       const embedOrigins = loadEmbedOrigins(process.env);
       writeGitHistoryConfigurationWarnings(parsed.gitHistory);
@@ -429,6 +806,8 @@ function configureExternalStorageStart(
         gitHistory: parsed.gitHistory,
         hostname: parsed.hostname,
         installationId: parsed.installationId,
+        organizationStaffGroups,
+        organizationTenancy,
         objectStorage: parsed.objectStorage,
         port: parsed.port,
         postgresMaxConnections: parsed.postgresMaxConnections,
@@ -462,6 +841,12 @@ function configureExternalStorageStart(
         await server.close();
       });
     });
+}
+
+function parseOrganizationTenancy(value: string | undefined): boolean {
+  if (value === undefined || value === "off") return false;
+  if (value === "on") return true;
+  throw new Error("ARTIFACT_SERVER_ORG_TENANCY must be 'off' or 'on'.");
 }
 
 async function startCompactServer(
@@ -630,6 +1015,7 @@ function externalMaintenanceConfig(
 ): ExternalStorageRuntimeConfig {
   return {
     apiToken: configuration.apiToken,
+    bootstrapApiTokenEnabled: false,
     applicationOrigin: configuration.applicationOrigin,
     bootstrapAdministratorEmail: configuration.bootstrapAdministratorEmail,
     browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),

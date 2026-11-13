@@ -1,0 +1,25 @@
+{
+  "organization": {
+    "alias": "smoketest",
+    "enabled": true,
+    "id": "1f91f545-13d4-448f-839c-485274165908",
+    "name": "Smoke Test"
+  },
+  "groups": [
+    {"id": "bfa97ee7-27d4-4078-a956-dd027c96791a", "name": "viewer", "path": "/viewer", "parentId": null, "subGroups": []},
+    {"id": "39b3f002-33f2-4d06-b643-3c5639eea2e3", "name": "editor", "path": "/editor", "parentId": null, "subGroups": []},
+    {"id": "05dad745-4973-48e3-a274-dd6491f7605e", "name": "owner", "path": "/owner", "parentId": null, "subGroups": []},
+    {"id": "6c557a0a-d558-4a92-a316-a3906c42df9a", "name": "other", "path": "/other", "parentId": null, "subGroups": []}
+  ],
+  "members": [
+    {"id": "fixture-viewer", "username": "org-viewer", "firstName": "Org", "lastName": "Viewer", "email": "org-viewer@example.test", "emailVerified": true, "enabled": true, "createdTimestamp": 1794520000000, "membershipType": "MANAGED"},
+    {"id": "fixture-editor", "username": "org-editor", "firstName": "Org", "lastName": "Editor", "email": "org-editor@example.test", "emailVerified": true, "enabled": true, "createdTimestamp": 1794520000001, "membershipType": "MANAGED"},
+    {"id": "fixture-owner", "username": "org-owner", "firstName": "Org", "lastName": "Owner", "email": "org-owner@example.test", "emailVerified": true, "enabled": true, "createdTimestamp": 1794520000002, "membershipType": "MANAGED"},
+    {"id": "fixture-disabled", "username": "org-disabled", "email": "org-disabled@example.test", "emailVerified": true, "enabled": false, "createdTimestamp": 1794520000003, "membershipType": "MANAGED"}
+  ],
+  "groupMembers": {
+    "/viewer": ["fixture-viewer", "fixture-editor"],
+    "/editor": ["fixture-editor"],
+    "/owner": ["fixture-owner"]
+  }
+}
