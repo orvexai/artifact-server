@@ -36,8 +36,13 @@ configuration:
   organizationStaffGroups: []
   # Verified-email domains of Orvex staff (ARTIFACT_SERVER_ORG_STAFF_EMAIL_DOMAINS),
   # for example ["orvex.ai"]. Exact, case-insensitive match; subdomains and
-  # unverified emails never count.
+  # unverified emails never count. Only native realm accounts, or accounts
+  # brokered solely by organizationStaffEmailTrustedIdps, can match.
   organizationStaffEmailDomains: []
+  # Keycloak identity-provider aliases trusted to assert staff emails
+  # (ARTIFACT_SERVER_ORG_STAFF_EMAIL_TRUSTED_IDPS), for example ["google"].
+  # An account linked to any other identity provider never matches by domain.
+  organizationStaffEmailTrustedIdps: []
   s3:
     bucket: ""
     region: ""

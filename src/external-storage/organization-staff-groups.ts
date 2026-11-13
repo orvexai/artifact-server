@@ -3,6 +3,8 @@ export const organizationStaffGroupsVariable = "ARTIFACT_SERVER_ORG_STAFF_GROUPS
 
 /** Environment variable naming the verified-email domains of Orvex staff. */
 export const organizationStaffEmailDomainsVariable = "ARTIFACT_SERVER_ORG_STAFF_EMAIL_DOMAINS";
+/** Environment variable naming identity providers trusted to assert staff emails. */
+export const organizationStaffEmailTrustedIdpsVariable = "ARTIFACT_SERVER_ORG_STAFF_EMAIL_TRUSTED_IDPS";
 /** Placeholder expanded to each organization's slug. */
 export const organizationSlugPlaceholder = "{slug}";
 
@@ -64,4 +66,19 @@ export function parseOrganizationStaffEmailDomains(value: string | undefined): r
     }
   }
   return [...new Set(domains)];
+}
+
+/**
+ * Parse the Keycloak identity-provider aliases (such as `google`) trusted to
+ * assert a staff email. An account linked to any other provider never counts.
+ */
+export function parseOrganizationStaffEmailTrustedIdps(value: string | undefined): readonly string[] {
+  if (value === undefined) return [];
+  const aliases = value.split(",").map((alias) => alias.trim()).filter((alias) => alias !== "");
+  for (const alias of aliases) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u.test(alias)) {
+      throw new Error(`${organizationStaffEmailTrustedIdpsVariable} entries must be identity-provider aliases such as google; got ${JSON.stringify(alias)}.`);
+    }
+  }
+  return [...new Set(aliases)];
 }

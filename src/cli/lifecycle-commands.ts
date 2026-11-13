@@ -62,8 +62,10 @@ import {
 } from "../external-storage/organization-registry.js";
 import {
   organizationStaffEmailDomainsVariable,
+  organizationStaffEmailTrustedIdpsVariable,
   organizationStaffGroupsVariable,
   parseOrganizationStaffEmailDomains,
+  parseOrganizationStaffEmailTrustedIdps,
   parseOrganizationStaffGroups,
   requireOrganizationStaffGroups,
 } from "../external-storage/organization-staff-groups.js";
@@ -479,6 +481,9 @@ async function syncKeycloakOrganizations(
   const organizationStaffEmailDomains = parseOrganizationStaffEmailDomains(
     process.env[organizationStaffEmailDomainsVariable],
   );
+  const organizationStaffEmailTrustedIdps = parseOrganizationStaffEmailTrustedIdps(
+    process.env[organizationStaffEmailTrustedIdpsVariable],
+  );
   assertAtMostOneBrowserLoginProvider(process.env);
   const oidc = await loadOidcConfiguration({
     ...process.env,
@@ -557,7 +562,12 @@ async function syncKeycloakOrganizations(
           keycloakOrganizationId: keycloakOrganization.id,
           slug: organization.slug,
           applicationOrigin: new URL(`/o/${organization.slug}`, configuration.applicationOrigin).toString(),
-        }, {...externalMaintenanceConfig(configuration), organizationStaffEmailDomains, organizationStaffGroups}, database);
+        }, {
+          ...externalMaintenanceConfig(configuration),
+          organizationStaffEmailDomains,
+          organizationStaffEmailTrustedIdps,
+          organizationStaffGroups,
+        }, database);
         try {
           // oxlint-disable-next-line eslint/no-await-in-loop
           const memberReport = await orgRuntime.syncOrganizationMembers(directory, keycloakOrganization);
@@ -776,6 +786,9 @@ function configureExternalStorageStart(
       const organizationStaffEmailDomains = parseOrganizationStaffEmailDomains(
         process.env[organizationStaffEmailDomainsVariable],
       );
+      const organizationStaffEmailTrustedIdps = parseOrganizationStaffEmailTrustedIdps(
+        process.env[organizationStaffEmailTrustedIdpsVariable],
+      );
       const parsed = await parseExternalConfiguration(options.host, options.port);
       const embedOrigins = loadEmbedOrigins(process.env);
       writeGitHistoryConfigurationWarnings(parsed.gitHistory);
@@ -808,6 +821,7 @@ function configureExternalStorageStart(
         hostname: parsed.hostname,
         installationId: parsed.installationId,
         organizationStaffEmailDomains,
+        organizationStaffEmailTrustedIdps,
         organizationStaffGroups,
         organizationTenancy,
         objectStorage: parsed.objectStorage,

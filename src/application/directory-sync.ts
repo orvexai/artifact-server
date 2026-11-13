@@ -5,7 +5,12 @@ import type {
   DirectoryGroupRecord,
 } from "../core/directory-groups.js";
 import {membershipRolePrecedence} from "../core/group-role-policy.js";
-import {emailHasStaffDomain} from "../core/tenant-staff.js";
+import {
+  emailHasStaffDomain,
+  emptyTenantStaffDefinition,
+  staffEmailIdentityProvidersTrusted,
+  type TenantStaffDefinition,
+} from "../core/tenant-staff.js";
 import type {MembershipRole} from "../core/identity.js";
 import type {DirectoryOrganization} from "../identity/keycloak-directory.js";
 import type {OrganizationDirectory} from "../identity/keycloak-directory.js";
@@ -71,6 +76,8 @@ export interface DirectorySyncReport {
   readonly reactivated: number;
   readonly roleChanged: number;
   readonly skipped: number;
+  /** Org sync only: members the snapshot marks as Orvex staff. */
+  readonly staffMarked?: number;
   readonly unchanged: number;
 }
 
@@ -175,6 +182,8 @@ export interface OrganizationDirectorySnapshot {
   readonly desired: readonly DirectoryMemberEntry[];
   readonly directoryUsers: number;
   readonly skipped: number;
+  /** Members this snapshot marks as Orvex staff. */
+  readonly staffMarked: number;
 }
 
 /**
@@ -188,8 +197,7 @@ export const readOrganizationDirectorySnapshot = Effect.fn(
 )(function*(
   directory: OrganizationDirectory,
   organization: DirectoryOrganization,
-  staffSelectors: readonly string[] = [],
-  staffEmailDomains: readonly string[] = [],
+  staff: TenantStaffDefinition = emptyTenantStaffDefinition,
 ) {
   const members = yield* directory.listOrganizationMembers(organization);
   if (members.length === 0) {
@@ -199,15 +207,10 @@ export const readOrganizationDirectorySnapshot = Effect.fn(
     } as const;
   }
   const staffUserIds = new Set<string>();
-  if (staffSelectors.length > 0) {
-    if (directory.listGroupMemberIdsByPath === undefined) {
-      return yield* new DirectoryUnavailable({
-        message: `Keycloak organization ${organization.alias} has staff selectors but the directory cannot read group members; nothing was changed.`,
-      });
-    }
-    for (const selector of staffSelectors) {
-      for (const id of yield* directory.listGroupMemberIdsByPath(selector)) staffUserIds.add(id);
-    }
+  // A staff group that cannot be read fails the pass before anything changes.
+  for (const selector of staff.groups) {
+    const missingIsEmpty = staff.groupsMissingIsEmpty.includes(selector);
+    for (const id of yield* directory.listGroupMemberIdsByPath(selector, {missingIsEmpty})) staffUserIds.add(id);
   }
   const desired = new Map<string, DirectoryMemberEntry>();
   let skipped = 0;
@@ -225,14 +228,21 @@ export const readOrganizationDirectorySnapshot = Effect.fn(
       ? "member"
       : "viewer";
     const previous = desired.get(email);
-    const staff = staffUserIds.has(user.id) || previous?.staff === true ||
-      emailHasStaffDomain(email, user.emailVerified, staffEmailDomains);
-    const entry: DirectoryMemberEntry = staff
+    // An email-domain match counts only for a native account or one linked
+    // solely to trusted identity providers; a failed lookup fails the pass.
+    const staffByEmail = !staffUserIds.has(user.id) &&
+      emailHasStaffDomain(email, user.emailVerified, staff.emailDomains) &&
+      staffEmailIdentityProvidersTrusted(
+        yield* directory.listFederatedIdentityProviders(user.id),
+        staff.emailTrustedIdps,
+      );
+    const isStaff = staffUserIds.has(user.id) || previous?.staff === true || staffByEmail;
+    const entry: DirectoryMemberEntry = isStaff
       ? {displayName: displayName(user, email), email, role, staff: true}
       : {displayName: displayName(user, email), email, role};
     if (previous === undefined || membershipRolePrecedence(role) > membershipRolePrecedence(previous.role)) {
       desired.set(email, entry);
-    } else if (staff && previous.staff !== true) {
+    } else if (isStaff && previous.staff !== true) {
       desired.set(email, {...previous, staff: true});
     }
   }
@@ -241,10 +251,12 @@ export const readOrganizationDirectorySnapshot = Effect.fn(
       message: `Keycloak organization ${organization.alias} has no eligible members; nothing was changed.`,
     });
   }
+  const entries = [...desired.values()];
   return {
-    desired: [...desired.values()],
+    desired: entries,
     directoryUsers: members.length,
     skipped,
+    staffMarked: entries.filter((entry) => entry.staff === true).length,
   } satisfies OrganizationDirectorySnapshot;
 });
 
@@ -255,10 +267,9 @@ export const syncOrganizationDirectoryMembers = Effect.fn(
   directory: OrganizationDirectory,
   organization: DirectoryOrganization,
   maximumDeactivations: number,
-  staffSelectors: readonly string[] = [],
-  staffEmailDomains: readonly string[] = [],
+  staff: TenantStaffDefinition = emptyTenantStaffDefinition,
 ) {
-  const snapshot = yield* readOrganizationDirectorySnapshot(directory, organization, staffSelectors, staffEmailDomains);
+  const snapshot = yield* readOrganizationDirectorySnapshot(directory, organization, staff);
   if (snapshot.kind === "emptied") return {kind: snapshot.kind, reason: snapshot.reason} as const;
   const reconciliation = yield* InstallationAccessService.use((access) =>
     access.reconcileDirectoryMembers(snapshot.desired, maximumDeactivations)
@@ -272,6 +283,7 @@ export const syncOrganizationDirectoryMembers = Effect.fn(
     deactivated: reconciliation.deactivated,
     unchanged: reconciliation.unchanged,
     skipped: snapshot.skipped,
+    staffMarked: snapshot.staffMarked,
   } satisfies DirectorySyncReport;
 });
 

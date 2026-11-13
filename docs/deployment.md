@@ -57,8 +57,13 @@ the cleanup CronJob and the directory-sync CronJob. Before you switch it on:
   start and every `org sync` fails, and the Helm chart refuses to render.
   Write `{slug}` to name a per-organization group, for example
   `/TenantWorkspaces/{slug}/{slug}-staff`; it expands to each organization's
-  slug and must still form an exact path. Every staff path also covers its
-  subgroups, at sign-in and in `org sync`.
+  slug and must still form an exact path. A `{slug}` group that does not
+  exist yet in Keycloak counts as having no members; any other missing staff
+  group fails the sync for that organization. Every staff path also covers
+  its subgroups, at sign-in and in `org sync`, so each staff subtree must
+  contain only Orvex staff and only realm administrators may manage it:
+  anyone who can add a user to a staff group or subgroup can hide that user
+  from tenants.
   The OIDC groups claim must carry full group paths so sign-in can match them.
 - **Optionally name staff email domains.** Set
   `ARTIFACT_SERVER_ORG_STAFF_EMAIL_DOMAINS` (Helm:
@@ -68,6 +73,18 @@ the cleanup CronJob and the directory-sync CronJob. Before you switch it on:
   the token's `email_verified` must be true, and in `org sync` Keycloak's
   `emailVerified` must be true. An unverified email never counts. This adds
   to the staff groups; it does not replace them.
+  A domain match also requires the account to be native to the realm or
+  brokered only by a trusted identity provider, so a customer-brokered IdP
+  with "Trust Email" turned on cannot claim a staff domain. List the trusted
+  Keycloak identity-provider aliases in
+  `ARTIFACT_SERVER_ORG_STAFF_EMAIL_TRUSTED_IDPS` (Helm:
+  `configuration.organizationStaffEmailTrustedIdps`), for example `google`.
+  At sign-in the token's `identity_provider` claim must be absent or listed.
+  In `org sync` every federated identity on the Keycloak user must be listed
+  (an empty list means a native account); a user linked to any other
+  provider, including a mix of a trusted and an untrusted one, never matches.
+  If the federated-identity lookup fails, that organization's sync changes
+  nothing.
 - **Keycloak must send the `organization` claim.** Add Keycloak's built-in
   `organization` client scope to the Artifact Server OIDC client as a default
   scope. Without it no token carries organization memberships: no Keycloak
@@ -94,8 +111,10 @@ A member of an `ARTIFACT_SERVER_ORG_STAFF_GROUPS` group, or of an
 organization's own admission-policy staff group (a seed entry with
 `"staff": true`), is stored as Orvex staff by the sync, exactly as at sign-in,
 so tenant member lists show them only as "Orvex Support". The staff marker is
-never cleared automatically. The directory client therefore needs to read
-those groups' members, and a staff group that cannot be read fails that
+never cleared automatically. Each organization's report includes
+`staffMarked`, the number of its synced members counted as staff. The
+directory client therefore needs to read those groups' members and each
+staff-domain user's federated identities, and a staff group that cannot be read fails that
 organization's sync without changing anything. A Keycloak
 organization using the reserved alias `orvex` is skipped; Orvex keeps its
 issuer-group admission policy.

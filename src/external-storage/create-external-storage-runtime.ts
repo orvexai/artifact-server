@@ -9,7 +9,8 @@ import type {InteractiveIdentityProvider} from "../application/interactive-login
 import type {ExternalIdentity} from "../core/installation-identity.js";
 import type {OrganizationMembershipResolver} from "./organization-memberships.js";
 import type {OrganizationAdmissionPolicy} from "./organization-registry.js";
-import {expandOrganizationStaffGroups} from "./organization-staff-groups.js";
+import {expandOrganizationStaffGroups, organizationSlugPlaceholder} from "./organization-staff-groups.js";
+import {emptyTenantStaffDefinition, type TenantStaffDefinition} from "../core/tenant-staff.js";
 import type {Clock} from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
 import type {
@@ -129,6 +130,11 @@ export interface ExternalStorageRuntimeConfig {
    * matched exactly in every non-Orvex organization.
    */
   readonly organizationStaffEmailDomains?: readonly string[];
+  /**
+   * Identity-provider aliases trusted to assert staff emails
+   * (ARTIFACT_SERVER_ORG_STAFF_EMAIL_TRUSTED_IDPS), such as `google`.
+   */
+  readonly organizationStaffEmailTrustedIdps?: readonly string[];
   readonly installationId: string;
   /** Verified Keycloak org claims; composed by the identity provider layer. */
   readonly organizationMemberships?: OrganizationMembershipResolver;
@@ -243,10 +249,9 @@ export async function createOrgRuntime(
     ? config.groupRolePolicy ?? null
     : orgConfig.admissionPolicy ?? null;
   // One staff definition per tenant, used by login and by org sync alike.
-  const tenantStaffGroups = isOrvex || orgConfig.slug === undefined
-    ? []
-    : tenantStaffGroupPaths(config.organizationStaffGroups ?? [], groupRolePolicy, orgConfig.slug);
-  const tenantStaffEmailDomains = isOrvex ? [] : config.organizationStaffEmailDomains ?? [];
+  const tenantStaff = isOrvex || orgConfig.slug === undefined
+    ? emptyTenantStaffDefinition
+    : tenantStaffDefinition(config, groupRolePolicy, orgConfig.slug);
   const organizationOAuthResources = orgConfig.slug === undefined || isOrvex || applicationOrigin === null
     ? null
     : {
@@ -357,8 +362,7 @@ export async function createOrgRuntime(
       identityRepository,
       installationId,
       organizationDirectoryVisibility: !isOrvex && orgConfig.slug !== undefined,
-      tenantStaffEmailDomains,
-      tenantStaffGroups,
+      tenantStaff,
       gitHistory: {read: () => applicationGitHistory.read()},
       interactiveIdentityProvider: config.interactiveIdentityProvider === undefined
         ? null
@@ -558,8 +562,7 @@ export async function createOrgRuntime(
           readyRuntime,
           directory,
           organization,
-          tenantStaffGroups,
-          tenantStaffEmailDomains,
+          tenantStaff,
         ),
       syncDirectoryGroups: (directory, syncedAt, provider, recomputeRoles) =>
         runDirectoryGroupSyncPass(readyRuntime, directory, syncedAt, provider, recomputeRoles),
@@ -604,6 +607,27 @@ export function tenantStaffGroupPaths(
     ...expandOrganizationStaffGroups(platformStaffGroups, slug),
     ...organizationStaffSelectors(policy),
   ])];
+}
+
+/**
+ * One tenant's complete staff definition for login and sync. Platform staff
+ * groups have `{slug}` expanded; only those templated paths may be missing.
+ */
+export function tenantStaffDefinition(
+  config: Pick<ExternalStorageRuntimeConfig, "organizationStaffEmailDomains" | "organizationStaffEmailTrustedIdps" | "organizationStaffGroups">,
+  policy: GroupRolePolicy | null,
+  slug: string,
+): TenantStaffDefinition {
+  const platform = config.organizationStaffGroups ?? [];
+  return {
+    emailDomains: config.organizationStaffEmailDomains ?? [],
+    emailTrustedIdps: config.organizationStaffEmailTrustedIdps ?? [],
+    groups: tenantStaffGroupPaths(platform, policy, slug),
+    groupsMissingIsEmpty: expandOrganizationStaffGroups(
+      platform.filter((group) => group.includes(organizationSlugPlaceholder)),
+      slug,
+    ),
+  };
 }
 
 /** The runtime admission policy for one registered organization record. */

@@ -65,6 +65,9 @@ const decodeGroupTree = Schema.decodeUnknownEffect(groupTree);
 const decodeUserList = Schema.decodeUnknownEffect(userList);
 const decodeOrganizationList = Schema.decodeUnknownEffect(organizationList);
 const decodeOrganizationGroupList = Schema.decodeUnknownEffect(organizationGroupList);
+const decodeFederatedIdentities = Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({
+  identityProvider: Schema.NonEmptyString,
+})));
 const decodeGroupByPath = Schema.decodeUnknownEffect(Schema.Struct({
   id: Schema.NonEmptyString,
   path: Schema.String,
@@ -91,8 +94,17 @@ export interface OrganizationDirectory {
    * Keycloak user ids that are members of the realm group at one full path or
    * of any subgroup beneath it. Org sync uses it to mark staff groups.
    */
-  readonly listGroupMemberIdsByPath?: (
+  readonly listGroupMemberIdsByPath: (
     path: string,
+    options?: {readonly missingIsEmpty?: boolean},
+  ) => Effect.Effect<readonly string[], DirectoryUnavailable>;
+  /**
+   * The identity-provider aliases linked to one Keycloak user (its federated
+   * identities). Email-domain staff marking trusts only native accounts or
+   * accounts linked solely to trusted identity providers.
+   */
+  readonly listFederatedIdentityProviders: (
+    userId: string,
   ) => Effect.Effect<readonly string[], DirectoryUnavailable>;
 }
 
@@ -473,7 +485,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
    * silently admit staff unmasked.
    */
   readonly listGroupMemberIdsByPath = Effect.fn("KeycloakDirectory.listGroupMemberIdsByPath")(
-    function*(this: KeycloakDirectory, path: string) {
+    function*(this: KeycloakDirectory, path: string, options?: {readonly missingIsEmpty?: boolean}) {
       const segments = path.split("/").filter((segment) => segment !== "");
       if (!path.startsWith("/") || segments.length === 0) {
         return yield* unavailable(`The staff group selector ${path} is not a full group path.`);
@@ -482,7 +494,13 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
       const url = new URL(
         `${this.#adminBaseUrl}/group-by-path/${segments.map((segment) => encodeURIComponent(segment)).join("/")}`,
       );
-      const body = yield* this.#adminGet(token, url, `The Keycloak staff group ${path}`);
+      const body = yield* this.#adminGet(token, url, `The Keycloak staff group ${path}`, true);
+      if (body === null) {
+        // A per-organization ({slug}) staff group that does not exist yet has
+        // no members; any other missing staff group fails closed.
+        if (options?.missingIsEmpty === true) return [];
+        return yield* unavailable(`The Keycloak staff group ${path} does not exist.`);
+      }
       const group = yield* decodeGroupByPath(body).pipe(
         Effect.mapError(() => unavailable(`The Keycloak staff group ${path} returned an invalid group.`)),
       );
@@ -521,6 +539,19 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
         for (const user of yield* this.#groupMembers(token, path, groupId)) ids.add(user.id);
       }
       return [...ids];
+    },
+  );
+
+  /** The identity-provider aliases of one user's federated identities. */
+  readonly listFederatedIdentityProviders = Effect.fn("KeycloakDirectory.listFederatedIdentityProviders")(
+    function*(this: KeycloakDirectory, userId: string) {
+      const token = yield* this.#accessToken();
+      const url = new URL(`${this.#adminBaseUrl}/users/${encodeURIComponent(userId)}/federated-identity`);
+      const body = yield* this.#adminGet(token, url, `The federated identities of Keycloak user ${userId}`);
+      const identities = yield* decodeFederatedIdentities(body).pipe(
+        Effect.mapError(() => unavailable(`The federated identities of Keycloak user ${userId} returned an invalid list.`)),
+      );
+      return identities.map(({identityProvider}) => identityProvider);
     },
   );
 
@@ -636,6 +667,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
     token: Redacted.Redacted,
     url: URL,
     subject: string,
+    notFoundAsNull = false,
   ): Effect.Effect<Schema.Json, DirectoryUnavailable> {
     return this.#request(url.toString(), {
       headers: {
@@ -643,7 +675,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
         Authorization: `Bearer ${Redacted.value(token)}`,
       },
       method: "GET",
-    }, subject);
+    }, subject, notFoundAsNull);
   }
 
   /**
@@ -655,9 +687,10 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
     url: string,
     init: RequestInit,
     subject: string,
+    notFoundAsNull = false,
   ): Effect.Effect<Schema.Json, DirectoryUnavailable> {
     const attempt = (number: number): Effect.Effect<Schema.Json, DirectoryUnavailable> =>
-      this.#requestOnce(url, init, subject).pipe(
+      this.#requestOnce(url, init, subject, notFoundAsNull).pipe(
         Effect.catch((failure) =>
           failure.retryable && number < requestAttempts
             ? Effect.sleep(this.#retryBaseDelayMilliseconds * 2 ** (number - 1)).pipe(
@@ -673,6 +706,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
     url: string,
     init: RequestInit,
     subject: string,
+    notFoundAsNull = false,
   ): Effect.Effect<Schema.Json, {readonly message: string; readonly retryable: boolean}> {
     return Effect.tryPromise({
       try: async (signal) => {
@@ -685,6 +719,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
             AbortSignal.timeout(requestTimeoutMilliseconds),
           ]),
         });
+        if (response.status === 404 && notFoundAsNull) return null;
         if (response.status !== 200) {
           throw new HttpStatusFailure(
             `${subject} returned HTTP ${response.status}.`,

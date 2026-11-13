@@ -218,6 +218,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 - name: ARTIFACT_SERVER_ORG_STAFF_EMAIL_DOMAINS
   value: {{ join "," .Values.configuration.organizationStaffEmailDomains | quote }}
 {{- end }}
+{{- if .Values.configuration.organizationStaffEmailTrustedIdps }}
+- name: ARTIFACT_SERVER_ORG_STAFF_EMAIL_TRUSTED_IDPS
+  value: {{ join "," .Values.configuration.organizationStaffEmailTrustedIdps | quote }}
+{{- end }}
 - name: ARTIFACT_SERVER_OBJECT_STORAGE_PROVIDER
   value: "s3"
 - name: ARTIFACT_SERVER_POSTGRES_MAX_CONNECTIONS

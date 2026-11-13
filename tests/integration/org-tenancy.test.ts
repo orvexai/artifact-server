@@ -2040,9 +2040,12 @@ describe.sequential("organization tenancy security boundary", () => {
       orgAProjectId,
       "orvex",
     );
+    // The mirror worker backs off while idle (2s doubling to a 30s cap), and
+    // the Orvex runtime has been idle since the suite's first test, so the
+    // first mirror can lag the publish by up to one 30s idle sleep.
     await expect.poll(
       () => orgTenancyGitProvider.repositories.has(orgAArtifactId),
-      {timeout: 5_000},
+      {timeout: 40_000},
     ).toBe(true);
     const orgACloneCredentialResponse = await fetch(
       `${baseUrl}/o/orvex/api/v1/projects/${orgAProjectId}/artifacts/${orgAArtifactId}/history/clone-token`,
@@ -2583,6 +2586,7 @@ describe.sequential("organization tenancy security boundary", () => {
     ];
     const staffLookups: string[] = [];
     const directory: OrganizationDirectory = {
+      listFederatedIdentityProviders: () => Effect.succeed([]),
       listGroupMemberIdsByPath: (path) => {
         staffLookups.push(path);
         return Effect.succeed(path === `${groupRoot}support` ? ["kc-staff"] : []);
@@ -2632,6 +2636,7 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(synced.organization.admissionPolicy).toBeNull();
     const organization: DirectoryOrganization = {alias, id: keycloakId, name: "Synced Org"};
     const directory: OrganizationDirectory = {
+      listFederatedIdentityProviders: () => Effect.succeed([]),
       listGroupMemberIdsByPath: (path) => Effect.succeed(path === "/Developers" ? ["kc-dev"] : []),
       listOrganizationMembers: () => Effect.succeed([
         {id: "kc-client", username: "client", email: `client@${alias}.test`, emailVerified: true, enabled: true, firstName: null, lastName: null, role: "owner"},
@@ -2695,6 +2700,9 @@ describe.sequential("organization tenancy security boundary", () => {
     ];
     let snapshotA: readonly DirectoryOrganizationMember[] = usersA;
     const directory: OrganizationDirectory = {
+      listFederatedIdentityProviders: () => Effect.succeed([]),
+      // The platform staff group (/Developers) has no members in this fixture.
+      listGroupMemberIdsByPath: () => Effect.succeed([]),
       listOrganizations: () => Effect.succeed([organizationA, organizationB]),
       listOrganizationMembers: (organization) =>
         Effect.succeed(organization.id === idA ? snapshotA : usersB),
@@ -3085,6 +3093,8 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(resumedOwner[0]).toMatchObject({role: "owner", status: "active"});
 
       const failingDirectory: OrganizationDirectory = {
+        listFederatedIdentityProviders: directory.listFederatedIdentityProviders,
+        listGroupMemberIdsByPath: directory.listGroupMemberIdsByPath,
         listOrganizations: directory.listOrganizations,
         listOrganizationMembers: () => Effect.fail(new DirectoryUnavailable({
           message: "The Keycloak organization member read failed.",

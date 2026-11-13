@@ -4,26 +4,30 @@ import {Effect, Redacted} from "effect";
 import {describe, expect, test} from "vitest";
 
 import {api} from "../../apps/web/src/api/client.js";
-import {readOrganizationDirectorySnapshot} from "../../src/application/directory-sync.js";
+import {DirectoryUnavailable, readOrganizationDirectorySnapshot} from "../../src/application/directory-sync.js";
 import {membershipRoles, principalKinds, type Principal} from "../../src/core/identity.js";
 import type {InstallationMember} from "../../src/core/installation-identity.js";
 import type {RegisteredAgentRecord} from "../../src/core/model.js";
 import {
   organizationRuntimeAdmissionPolicy,
   organizationStaffSelectors,
+  tenantStaffDefinition,
   tenantStaffGroupPaths,
 } from "../../src/external-storage/create-external-storage-runtime.js";
 import {
   expandOrganizationStaffGroups,
   parseOrganizationStaffEmailDomains,
+  parseOrganizationStaffEmailTrustedIdps,
   parseOrganizationStaffGroups,
   requireOrganizationStaffGroups,
 } from "../../src/external-storage/organization-staff-groups.js";
 import {
   emailHasStaffDomain,
+  emptyTenantStaffDefinition,
   staffPathCovers,
   tenantLoginIsStaff,
   type TenantLoginStaffInput,
+  type TenantStaffDefinition,
 } from "../../src/core/tenant-staff.js";
 import {prefixOrganizationRedirect} from "../../src/external-storage/create-organization-router.js";
 import {
@@ -45,6 +49,15 @@ import {
 } from "../../src/identity/keycloak-directory.js";
 
 const origin = "https://artifacts.example.test";
+
+const staffDomainMember = (id: string): DirectoryOrganizationMember => ({
+  email: `${id}@orvex.ai`, emailVerified: true, enabled: true, firstName: null, id, lastName: null, role: "viewer", username: id,
+});
+
+const staffOf = (definition: Partial<TenantStaffDefinition>): TenantStaffDefinition => ({
+  ...emptyTenantStaffDefinition,
+  ...definition,
+});
 
 const platformRedirect = () => new Response(null, {
   headers: {Location: "/", [platformRootRedirectHeader]: "1"},
@@ -97,11 +110,12 @@ describe("H1: org sync marks staff from the admission policy", () => {
     {email: "staff@orvex.test", emailVerified: true, enabled: true, firstName: "Private", id: "kc-staff", lastName: "Staffer", role: "editor", username: "staff"},
   ];
   const runSync = (directory: OrganizationDirectory, selectors: readonly string[]) =>
-    Effect.runPromise(Effect.result(readOrganizationDirectorySnapshot(directory, organization, selectors)));
+    Effect.runPromise(Effect.result(readOrganizationDirectorySnapshot(directory, organization, staffOf({groups: selectors}))));
 
   test("the staff selector's group members reach the snapshot as staff", async () => {
     const lookups: string[] = [];
     const directory: OrganizationDirectory = {
+      listFederatedIdentityProviders: () => Effect.succeed([]),
       listGroupMemberIdsByPath: (path) => {
         lookups.push(path);
         return Effect.succeed(path === "/teams/acme/support" ? ["kc-staff"] : []);
@@ -119,13 +133,15 @@ describe("H1: org sync marks staff from the admission policy", () => {
     ]));
   });
 
-  test("staff selectors with no way to read group members fail closed", async () => {
+  test("a staff group that cannot be read fails the snapshot closed", async () => {
     const directory: OrganizationDirectory = {
+      listFederatedIdentityProviders: () => Effect.succeed([]),
+      listGroupMemberIdsByPath: () => Effect.fail(new DirectoryUnavailable({message: "The Keycloak staff group /teams/acme/support returned HTTP 404."})),
       listOrganizationMembers: () => Effect.succeed(users),
       listOrganizations: () => Effect.succeed([organization]),
     };
     const result = await runSync(directory, ["/teams/acme/support"]);
-    expect(result).toMatchObject({_tag: "Failure", failure: {message: expect.stringContaining("cannot read group members")}});
+    expect(result).toMatchObject({_tag: "Failure", failure: {message: expect.stringContaining("HTTP 404")}});
   });
 
   test("the sync runtime receives the registered admission policy's staff selectors", () => {
@@ -163,6 +179,9 @@ describe("H1: org sync marks staff from the admission policy", () => {
           return Response.json([{id: "group-nights", name: "nights", subGroupCount: 0}]);
         }
         if (url.pathname.endsWith("/groups/group-oncall/members")) return Response.json([]);
+        if (url.pathname.endsWith("/users/kc-google/federated-identity")) {
+          return Response.json([{identityProvider: "google", userId: "g-1", userName: "dev@orvex.ai"}]);
+        }
         if (url.pathname.endsWith("/groups/group-nights/members")) {
           return Response.json([{id: "kc-nested", username: "nested"}, {id: "kc-staff", username: "staff"}]);
         }
@@ -174,7 +193,11 @@ describe("H1: org sync marks staff from the admission policy", () => {
     });
     expect(await Effect.runPromise(directory.listGroupMemberIdsByPath("/teams/acme/support"))).toEqual(["kc-staff", "kc-nested"]);
     expect(requested).toContain("/admin/realms/test/group-by-path/teams/acme/support");
-    await expect(Effect.runPromise(directory.listGroupMemberIdsByPath("/teams/acme/missing"))).rejects.toThrow("HTTP 404");
+    expect(await Effect.runPromise(directory.listFederatedIdentityProviders("kc-google"))).toEqual(["google"]);
+    await expect(Effect.runPromise(directory.listFederatedIdentityProviders("kc-unknown"))).rejects.toThrow("HTTP 404");
+    await expect(Effect.runPromise(directory.listGroupMemberIdsByPath("/teams/acme/missing"))).rejects.toThrow("does not exist");
+    // L-2: a missing {slug}-expanded group has no members instead of failing.
+    expect(await Effect.runPromise(directory.listGroupMemberIdsByPath("/teams/acme/missing", {missingIsEmpty: true}))).toEqual([]);
   });
 });
 
@@ -185,6 +208,7 @@ describe("H1: platform-wide staff groups (ARTIFACT_SERVER_ORG_STAFF_GROUPS)", ()
     const staffGroups = tenantStaffGroupPaths(parseOrganizationStaffGroups("/Administrators, /Developers"), organizationRuntimeAdmissionPolicy(null), "synced");
     expect(staffGroups).toEqual(["/Administrators", "/Developers"]);
     const directory: OrganizationDirectory = {
+      listFederatedIdentityProviders: () => Effect.succeed([]),
       listGroupMemberIdsByPath: (path) => Effect.succeed(path === "/Developers" ? ["kc-dev"] : []),
       listOrganizationMembers: () => Effect.succeed([
         {email: "dev@orvex.test", emailVerified: true, enabled: true, firstName: "Private", id: "kc-dev", lastName: "Developer", role: "viewer", username: "dev"},
@@ -192,7 +216,7 @@ describe("H1: platform-wide staff groups (ARTIFACT_SERVER_ORG_STAFF_GROUPS)", ()
       ]),
       listOrganizations: () => Effect.succeed([organization]),
     };
-    const result = await Effect.runPromise(Effect.result(readOrganizationDirectorySnapshot(directory, organization, staffGroups)));
+    const result = await Effect.runPromise(Effect.result(readOrganizationDirectorySnapshot(directory, organization, staffOf({groups: staffGroups}))));
     if (result._tag !== "Success" || result.success.kind === "emptied") throw new Error("The snapshot was not read.");
     expect(result.success.desired).toEqual(expect.arrayContaining([
       {displayName: "Private Developer", email: "dev@orvex.test", role: "viewer", staff: true},
@@ -214,6 +238,7 @@ describe("H1: platform-wide staff groups (ARTIFACT_SERVER_ORG_STAFF_GROUPS)", ()
     expect(tenantStaffGroupPaths(platform, null, "globex")).toEqual(["/TenantWorkspaces/globex/globex-staff"]);
     const lookups: string[] = [];
     const directory: OrganizationDirectory = {
+      listFederatedIdentityProviders: () => Effect.succeed([]),
       listGroupMemberIdsByPath: (path) => {
         lookups.push(path);
         return Effect.succeed(["kc-staff"]);
@@ -223,7 +248,7 @@ describe("H1: platform-wide staff groups (ARTIFACT_SERVER_ORG_STAFF_GROUPS)", ()
       ]),
       listOrganizations: () => Effect.succeed([organization]),
     };
-    const result = await Effect.runPromise(Effect.result(readOrganizationDirectorySnapshot(directory, organization, staffGroups)));
+    const result = await Effect.runPromise(Effect.result(readOrganizationDirectorySnapshot(directory, organization, staffOf({groups: staffGroups}))));
     expect(lookups).toEqual(["/TenantWorkspaces/acme/acme-staff"]);
     if (result._tag !== "Success" || result.success.kind === "emptied") throw new Error("The snapshot was not read.");
     expect(result.success.desired.at(0)?.staff).toBe(true);
@@ -249,6 +274,8 @@ describe("H1: staff email domains (ARTIFACT_SERVER_ORG_STAFF_EMAIL_DOMAINS)", ()
 
   test("org sync marks Keycloak-verified staff-domain members and nobody else", async () => {
     const directory: OrganizationDirectory = {
+      listFederatedIdentityProviders: () => Effect.succeed([]),
+      listGroupMemberIdsByPath: () => Effect.succeed([]),
       listOrganizationMembers: () => Effect.succeed([
         {email: "staff@orvex.ai", emailVerified: true, enabled: true, firstName: null, id: "kc-staff", lastName: null, role: "viewer", username: "staff"},
         {email: "sub@eu.orvex.ai", emailVerified: true, enabled: true, firstName: null, id: "kc-sub", lastName: null, role: "viewer", username: "sub"},
@@ -257,10 +284,92 @@ describe("H1: staff email domains (ARTIFACT_SERVER_ORG_STAFF_EMAIL_DOMAINS)", ()
       listOrganizations: () => Effect.succeed([organization]),
     };
     const result = await Effect.runPromise(Effect.result(
-      readOrganizationDirectorySnapshot(directory, organization, [], ["orvex.ai"]),
+      readOrganizationDirectorySnapshot(directory, organization, staffOf({emailDomains: ["orvex.ai"]})),
     ));
     if (result._tag !== "Success" || result.success.kind === "emptied") throw new Error("The snapshot was not read.");
     expect(result.success.desired.filter(({staff}) => staff === true).map(({email}) => email)).toEqual(["staff@orvex.ai"]);
+  });
+});
+
+describe("M-1: staff email domains trust only native or trusted-IdP accounts", () => {
+  const organization: DirectoryOrganization = {alias: "acme", id: "77777777-7777-4777-8777-777777777777", name: "Acme"};
+  const linked = new Map<string, readonly string[]>([
+    ["native", []], ["google", ["google"]], ["github", ["github"]], ["mixed", ["google", "github"]],
+  ]);
+  const directoryFor = (failFederatedLookup = false): OrganizationDirectory => ({
+    listFederatedIdentityProviders: (userId) => failFederatedLookup
+      ? Effect.fail(new DirectoryUnavailable({message: `The federated identities of Keycloak user ${userId} returned HTTP 503.`}))
+      : Effect.succeed(linked.get(userId) ?? []),
+    listGroupMemberIdsByPath: () => Effect.succeed([]),
+    listOrganizationMembers: () => Effect.succeed([...linked.keys()].map(staffDomainMember)),
+    listOrganizations: () => Effect.succeed([organization]),
+  });
+
+  test("sync: native and google-only count; another IdP or google plus another IdP never do", async () => {
+    const result = await Effect.runPromise(Effect.result(readOrganizationDirectorySnapshot(
+      directoryFor(), organization, staffOf({emailDomains: ["orvex.ai"], emailTrustedIdps: ["google"]}),
+    )));
+    if (result._tag !== "Success" || result.success.kind === "emptied") throw new Error("The snapshot was not read.");
+    expect(result.success.desired.filter(({staff}) => staff === true).map(({email}) => email).toSorted())
+      .toEqual(["google@orvex.ai", "native@orvex.ai"]);
+    expect(result.success.staffMarked).toBe(2);
+  });
+
+  test("sync: with no trusted IdPs only native accounts count", async () => {
+    const result = await Effect.runPromise(Effect.result(readOrganizationDirectorySnapshot(
+      directoryFor(), organization, staffOf({emailDomains: ["orvex.ai"]}),
+    )));
+    if (result._tag !== "Success" || result.success.kind === "emptied") throw new Error("The snapshot was not read.");
+    expect(result.success.desired.filter(({staff}) => staff === true).map(({email}) => email)).toEqual(["native@orvex.ai"]);
+  });
+
+  test("sync: a failed federated-identity lookup fails the org closed", async () => {
+    const result = await Effect.runPromise(Effect.result(readOrganizationDirectorySnapshot(
+      directoryFor(true), organization, staffOf({emailDomains: ["orvex.ai"], emailTrustedIdps: ["google"]}),
+    )));
+    expect(result).toMatchObject({_tag: "Failure", failure: {message: expect.stringContaining("HTTP 503")}});
+  });
+
+  test("login: the identity_provider claim must be absent or trusted", () => {
+    const login = {
+      email: "dev@orvex.ai", emailVerified: true, groups: [], seed: [], staffEmailDomains: ["orvex.ai"],
+      staffEmailTrustedIdps: ["google"], staffGroups: [],
+    } satisfies TenantLoginStaffInput;
+    expect(tenantLoginIsStaff({...login, identityProvider: null})).toBe(true);
+    expect(tenantLoginIsStaff(login)).toBe(true);
+    expect(tenantLoginIsStaff({...login, identityProvider: "google"})).toBe(true);
+    expect(tenantLoginIsStaff({...login, identityProvider: "customer-saml"})).toBe(false);
+    expect(tenantLoginIsStaff({...login, identityProvider: "google", staffEmailTrustedIdps: []})).toBe(false);
+    expect(parseOrganizationStaffEmailTrustedIdps(" google , google ")).toEqual(["google"]);
+    expect(() => parseOrganizationStaffEmailTrustedIdps("goo gle")).toThrow("identity-provider aliases");
+  });
+
+  test("L-2: only {slug}-expanded staff paths may be missing", () => {
+    expect(tenantStaffDefinition({
+      organizationStaffGroups: ["/TenantWorkspaces/{slug}/{slug}-staff", "/Developers"],
+    }, null, "acme")).toEqual({
+      emailDomains: [], emailTrustedIdps: [],
+      groups: ["/TenantWorkspaces/acme/acme-staff", "/Developers"],
+      groupsMissingIsEmpty: ["/TenantWorkspaces/acme/acme-staff"],
+    });
+  });
+
+  test("L-2: sync passes missingIsEmpty only for templated paths", async () => {
+    const calls: {path: string; missingIsEmpty: boolean | undefined}[] = [];
+    const directory: OrganizationDirectory = {
+      ...directoryFor(),
+      listGroupMemberIdsByPath: (path, options) => {
+        calls.push({missingIsEmpty: options?.missingIsEmpty, path});
+        return Effect.succeed([]);
+      },
+    };
+    await Effect.runPromise(readOrganizationDirectorySnapshot(directory, organization, tenantStaffDefinition({
+      organizationStaffGroups: ["/TenantWorkspaces/{slug}/{slug}-staff", "/Developers"],
+    }, null, "acme")));
+    expect(calls).toEqual([
+      {missingIsEmpty: true, path: "/TenantWorkspaces/acme/acme-staff"},
+      {missingIsEmpty: false, path: "/Developers"},
+    ]);
   });
 });
 
