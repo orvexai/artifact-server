@@ -999,8 +999,9 @@ function makeInstallationAccessService(
       } else {
         unchanged += 1;
       }
-      if (member !== undefined && member.staff !== (entry.staff === true)) {
-        yield* dependencies.repository.setMemberStaff(dependencies.installationId, member.id, entry.staff === true);
+      const stickyStaff = member?.staff === true || entry.staff === true;
+      if (member !== undefined && member.staff !== stickyStaff) {
+        yield* dependencies.repository.setMemberStaff(dependencies.installationId, member.id, stickyStaff);
         clearAuthenticationCaches();
       }
     }
@@ -1326,10 +1327,13 @@ function makeInstallationAccessService(
     yield* dependencies.repository.bindExternalIdentity(binding);
     if (dependencies.organizationDirectoryVisibility === true && groupRolePolicy !== null) {
       const fullPathGroups = (identity.groups ?? []).filter((group) => group.startsWith("/"));
-      if (fullPathGroups.length === 0) yield* Effect.logWarning("Tenant login carried no full-path groups; clearing stored staff status.");
-      const staff = fullPathGroups.length > 0 && groupRolePolicy.seed.some(({selector, staff: isStaff}) =>
+      if (fullPathGroups.length === 0) yield* Effect.logWarning("Tenant login carried no full-path groups; retaining sticky staff privacy marker.");
+      const matchedStaffSelector = fullPathGroups.length > 0 && groupRolePolicy.seed.some(({selector, staff: isStaff}) =>
         isStaff === true && selector.startsWith("/") && fullPathGroups.includes(selector)
       );
+      // This persisted marker is intentionally sticky: old authored content
+      // must not become attributable after an admission-policy change.
+      const staff = member.staff === true || matchedStaffSelector;
       if (member.staff !== staff) {
         yield* dependencies.repository.setMemberStaff(dependencies.installationId, member.id, staff).pipe(
           Effect.catchTag("IdentityNotFound", () => Effect.fail(new IdentityAdmissionDenied({

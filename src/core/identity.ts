@@ -83,7 +83,7 @@ export interface Principal {
   readonly membershipRole: MembershipRole;
   /** Internal request context used to project tenant-visible identities by id. */
   readonly tenantStaffPrincipalIds?: readonly string[] | undefined;
-  /** Persisted tenant admission marker for this human identity. */
+  /** Persisted tenant privacy marker; once true it means this identity has ever been staff. */
   readonly staff?: boolean | undefined;
   /** Directory group IDs carried by a constrained OIDC service identity. */
   readonly directoryGroupIds?: readonly string[] | undefined;
@@ -107,18 +107,29 @@ export function tenantVisiblePrincipalId(principal: Principal | undefined, princ
 
 const reservedNameConfusables = new Map(Object.entries({
   "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "@": "a", "$": "s",
-  "а": "a", "е": "e", "і": "i", "ο": "o", "о": "o", "р": "p", "с": "c", "τ": "t", "т": "t", "х": "x", "у": "y", "ѕ": "s", "ӏ": "l",
-  "α": "a", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "ρ": "p", "σ": "s", "υ": "u", "χ": "x",
+  "а": "a", "е": "e", "і": "i", "ο": "o", "о": "o", "р": "p", "с": "c", "τ": "t", "т": "t", "х": "x", "у": "y", "ѕ": "s", "ӏ": "l", "ѵ": "v",
+  "в": "b", "г": "r", "д": "d", "и": "n", "к": "k", "м": "m", "н": "h", "п": "n", "ь": "b", "э": "e", "я": "r",
+  "օ": "o", "ս": "s", "α": "a", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "ρ": "p", "σ": "s", "υ": "u", "χ": "x", "ϲ": "c", "ϱ": "p", "ϖ": "w",
+  "ᴏ": "o", "ʀ": "r", "ᴠ": "v", "ᴇ": "e", "ᴜ": "u", "ᴘ": "p", "ᴛ": "t", "ᴄ": "c", "ᴅ": "d", "ɴ": "n", "ᴍ": "m", "ʜ": "h", "ᴋ": "k", "ᴡ": "w",
 }));
 
 /** Compare reserved tenant identity labels after compatibility and confusable folding. */
 export function isReservedTenantIdentityName(value: string): boolean {
-  const normalized = value.normalize("NFKC")
+  const normalized = [...value.normalize("NFKD")
     .replace(/[\p{Default_Ignorable_Code_Point}\p{Cc}]/gu, "")
     .toLowerCase()
-    .replace(/[0134578@$аеіοорсτтхуѕӏαεικνρσυχ]/gu, (character) => reservedNameConfusables.get(character) ?? character)
-    .replace(/\s/gu, "");
-  return normalized === "orvexsupport";
+    .replace(/[\p{M}\p{P}\p{S}\p{Z}]/gu, "")]
+    .map((character) => reservedNameConfusables.get(character) ?? character)
+    .join("");
+  return normalized.includes("orvexsupport");
+}
+
+/** Apply the tenant author projection to a version at the application boundary. */
+export function tenantVersionRecord<T extends {readonly publisherPrincipalId: string | null}>(
+  principal: Principal | undefined,
+  version: T,
+): Omit<T, "publisherPrincipalId"> & {readonly publisherPrincipalId: string | null} {
+  return {...version, publisherPrincipalId: principal === undefined ? null : tenantVisiblePrincipalId(principal, version.publisherPrincipalId)};
 }
 
 /** Stable public presentation for an identity in a tenant organization. */

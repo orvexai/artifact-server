@@ -346,7 +346,7 @@ const processJob = Effect.fn("GitHistoryMirrorWorker.processJob")(function*(
         installationId: dependencies.installationId,
         manifestDigest: version.version.manifestDigest,
         projectId: version.version.projectId,
-        publisherPrincipalId: version.version.publisherPrincipalId,
+        publisherPrincipalId: version.version.publisherPrincipalId ?? "",
         versionId: version.version.id,
         versionNumber: version.version.number,
       },

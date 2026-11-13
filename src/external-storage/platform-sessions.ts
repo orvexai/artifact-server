@@ -42,23 +42,7 @@ export class PlatformSessions {
   async issue(identity: ExternalIdentity, existingToken?: string | null): Promise<string> {
     const now = new Date();
     const token = randomBytes(32).toString("base64url");
-    let memberships = parseMemberships(await this.#memberships.forIdentity(identity));
-    const old = existingToken !== undefined && existingToken !== null ? await this.#database.run(Effect.gen(function*() {
-      const sql = yield* SqlClient;
-      const rows = yield* sql`SELECT provider AS "provider", subject AS "subject",
-        organizations_json::text AS "organizations"
-        FROM artifact_platform_sessions
-        WHERE token_digest = ${digest(existingToken)} AND expires_at > ${now.toISOString()}`;
-      return rows[0] ?? null;
-    })) : null;
-    if (old !== null && old["provider"] === identity.provider && old["subject"] === identity.subject) {
-      let previous = z.array(membershipsSchema.element).safeParse(null);
-      try {
-        const oldJson = z.string().safeParse(old["organizations"]);
-        if (oldJson.success) previous = z.array(membershipsSchema.element).safeParse(JSON.parse(oldJson.data));
-      } catch { /* Ignore corrupt old membership snapshots. */ }
-      if (previous.success) memberships = mergeMemberships(previous.data, memberships);
-    }
+    const memberships = parseMemberships(await this.#memberships.forIdentity(identity));
     await this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       yield* sql`DELETE FROM artifact_platform_sessions WHERE expires_at <= ${now.toISOString()}`;
@@ -175,10 +159,4 @@ function parseMemberships(value: readonly OrganizationMembership[]): readonly Or
     const parsed = membershipsSchema.element.safeParse(item);
     return parsed.success && parsed.data.role.trim().length > 0 ? [parsed.data] : [];
   });
-}
-
-function mergeMemberships(previous: readonly OrganizationMembership[], current: readonly OrganizationMembership[]): readonly OrganizationMembership[] {
-  const merged = new Map(previous.map((item) => [item.slug, item]));
-  for (const item of current) merged.set(item.slug, item);
-  return [...merged.values()];
 }

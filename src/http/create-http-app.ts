@@ -1525,8 +1525,7 @@ export function createHttpApp(
         dependencies,
         InteractiveLoginService.use((login) => login.completeIdentity({...query, handshake})),
       );
-      if (returnTo.returnTo === "/__artifact_platform_login?returnTo=%2F") {
-        if (dependencies.issuePlatformSession === undefined) return context.notFound();
+      if (returnTo.returnTo === "/__artifact_platform_login?returnTo=%2F" && dependencies.issuePlatformSession !== undefined) {
         const platformToken = await dependencies.issuePlatformSession(returnTo.identity, getCookie(context, "__Host-artifact_platform"));
         setCookie(context, "__Host-artifact_platform", platformToken, {
           httpOnly: true, maxAge: 60 * 60, path: "/", sameSite: "Lax", secure: true,
@@ -1545,7 +1544,9 @@ export function createHttpApp(
       context.header("Cache-Control", "private, no-store");
       context.header("Referrer-Policy", "no-referrer");
       clearLoginHandshakeCookie(context, dependencies);
-      return context.redirect(returnTo.returnTo, 303);
+      return context.redirect(returnTo.returnTo === "/__artifact_platform_login?returnTo=%2F"
+        ? "/api/v1/session"
+        : returnTo.returnTo, 303);
     } catch (error) {
       clearLoginHandshakeCookie(context, dependencies);
       if (error instanceof Error && isArtifactServerFailure(error)) {
@@ -4283,17 +4284,19 @@ function publicLinkMutationResponse(
 
 function registeredAgentResponse(agent: RegisteredAgentRecord, principal?: Principal) {
   const owner = tenantIdentityPresentation(principal, {displayName: agent.principalId, principalId: agent.principalId});
+  const hideStaffAgentDetails = principal?.tenantStaffPrincipalIds !== undefined &&
+    principal.staff !== true && principal.tenantStaffPrincipalIds.includes(agent.principalId);
   return {
-    agentSessionId: agent.agentSessionId,
+    agentSessionId: hideStaffAgentDetails ? null : agent.agentSessionId,
     capabilities: agent.capabilities,
-    connectionKey: agent.connectionKey,
+    connectionKey: hideStaffAgentDetails ? null : agent.connectionKey,
     createdAt: agent.createdAt,
-    displayName: principal?.tenantStaffPrincipalIds === undefined || !isReservedTenantIdentityName(agent.displayName) ? agent.displayName : "Orvex Support (member)",
+    displayName: hideStaffAgentDetails ? "Orvex Support" : principal?.tenantStaffPrincipalIds === undefined || !isReservedTenantIdentityName(agent.displayName) ? agent.displayName : "Orvex Support (member)",
     id: agent.id,
     kind: agent.kind,
     lastSeenAt: agent.lastSeenAt,
     principalId: owner.subject,
-    workingDirectory: agent.workingDirectory,
+    workingDirectory: hideStaffAgentDetails ? null : agent.workingDirectory,
   };
 }
 
@@ -4600,12 +4603,10 @@ function versionResponse(
   contentDomain: string,
   version: VersionRecord,
   isGuest = false,
-  principal?: Principal,
+  _principal?: Principal,
 ) {
   const {publisherPrincipalId: _publisherPrincipalId, ...guestVersion} = version;
-  const visibleVersion = principal?.tenantStaffPrincipalIds === undefined
-    ? version
-    : {...version, publisherPrincipalId: tenantVisiblePrincipalId(principal, version.publisherPrincipalId)};
+  const visibleVersion = version;
   return {
     links: {
       review: artifactReviewUrl(

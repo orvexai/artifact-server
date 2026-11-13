@@ -28,7 +28,7 @@ import {
   InvalidPagination,
   VersionNotFound,
 } from "../core/errors.js";
-import {principalCapabilities, type Principal} from "../core/identity.js";
+import {principalCapabilities, tenantVersionRecord, type Principal} from "../core/identity.js";
 import type {
   AccessSetting,
   ArtifactActionPage,
@@ -353,7 +353,7 @@ function makeArtifactManagementService(
         artifact.id,
         artifact.currentVersionId,
       );
-      return {artifact, current};
+      return {artifact, current: {...current, version: tenantVersionRecord(command.principal, current.version)}};
     },
   );
 
@@ -390,7 +390,7 @@ function makeArtifactManagementService(
           message: "The saved version does not exist on this artifact.",
         });
       }
-      return {artifact, saved: version};
+      return {artifact, saved: {...version, version: tenantVersionRecord(command.principal, version.version)}};
     },
   );
 
@@ -421,7 +421,7 @@ function makeArtifactManagementService(
         return yield* new ArtifactNotFound({message: "The artifact does not exist."});
       }
       yield* authorization.requireArtifactRead(command.principal);
-      return versions;
+      return versions.map((version) => tenantVersionRecord(command.principal, version));
     },
   );
 
@@ -488,7 +488,7 @@ function makeArtifactManagementService(
       yield* requireVersion(project.id, artifact.id, command.versionId);
       const idempotencyKey = yield* parseIdempotencyKey(command.idempotencyKey);
       const createdAt = DateTime.formatIso(yield* dependencies.clock.now);
-      return yield* dependencies.repository.restoreVersion({
+      const restored = yield* dependencies.repository.restoreVersion({
         artifactId: artifact.id,
         authorizedByPrincipalId: command.principal.authorizedByPrincipalId,
         createdAt,
@@ -506,6 +506,7 @@ function makeArtifactManagementService(
         projectId: project.id,
         versionId: command.versionId,
       });
+      return {...restored, version: tenantVersionRecord(command.principal, restored.version)};
     },
   );
 
@@ -520,7 +521,7 @@ function makeArtifactManagementService(
       yield* authorization.requireArtifactManagement(command.principal);
       const idempotencyKey = yield* parseIdempotencyKey(command.idempotencyKey);
       const createdAt = DateTime.formatIso(yield* dependencies.clock.now);
-      return yield* dependencies.repository.changeAccessSetting({
+      const changed = yield* dependencies.repository.changeAccessSetting({
         accessSetting: command.accessSetting,
         artifactId: artifact.id,
         authorizedByPrincipalId: command.principal.authorizedByPrincipalId,
@@ -538,6 +539,7 @@ function makeArtifactManagementService(
         principalId: command.principal.id,
         projectId: project.id,
       });
+      return {...changed, version: tenantVersionRecord(command.principal, changed.version)};
     },
   );
 
@@ -553,7 +555,7 @@ function makeArtifactManagementService(
       const idempotencyKey = yield* parseIdempotencyKey(command.idempotencyKey);
       const tags = yield* parseArtifactTags(command.tags);
       const createdAt = DateTime.formatIso(yield* dependencies.clock.now);
-      return yield* dependencies.repository.changeTags({
+      const changed = yield* dependencies.repository.changeTags({
         artifactId: artifact.id,
         authorizedByPrincipalId: command.principal.authorizedByPrincipalId,
         createdAt,
@@ -571,6 +573,7 @@ function makeArtifactManagementService(
         projectId: project.id,
         tags,
       });
+      return {...changed, version: tenantVersionRecord(command.principal, changed.version)};
     },
   );
 

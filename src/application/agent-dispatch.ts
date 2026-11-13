@@ -599,7 +599,12 @@ function makeAgentDispatchService(
         });
       }
       return yield* dependencies.repository.createDispatch({
-        agentDisplayName: agent.displayName,
+        // Dispatch history stores a display-name snapshot. Capture the tenant
+        // privacy projection here so deleting or changing the agent row cannot
+        // make a staff-owned agent attributable later.
+        agentDisplayName: command.principal.staff === true && agent.principalId === command.principal.id
+          ? "Orvex Support"
+          : agent.displayName,
         agentId: agent.id,
         createdAt: yield* now(),
         id: dependencies.ids.agentDispatchId(),

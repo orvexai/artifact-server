@@ -733,6 +733,7 @@ export function createApplicationLayer(
 
   const contentDependencies: ContentAccessDependencies = {
     clock,
+    organizationDirectoryVisibility: adapters.organizationDirectoryVisibility,
     repository: {
       reserveGuestBootstrap: (guestId, at) => Effect.tryPromise({try: () => adapters.repository.reserveGuestBootstrap(guestId, at), catch: (cause) => repositoryFailure("reserveGuestBootstrap", cause)}),
       createContentBootstrap: (command) =>
@@ -1344,6 +1345,7 @@ export function createApplicationLayer(
   const guestReviewLayer = GuestReviewService.layer({
     clock,
     ids: adapters.ids,
+    organizationDirectoryVisibility: adapters.organizationDirectoryVisibility === true,
     repository: {
       createGuestInvitation: (invitation) => Effect.tryPromise({try: () => adapters.repository.createGuestInvitation(invitation), catch: (cause) => repositoryFailure("createGuestInvitation", cause)}),
       findGuestInvitation: (projectId, artifactId) => Effect.tryPromise({try: () => adapters.repository.findGuestInvitation(projectId, artifactId), catch: (cause) => repositoryFailure("findGuestInvitation", cause)}),

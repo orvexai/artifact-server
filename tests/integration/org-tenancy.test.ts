@@ -24,8 +24,7 @@ import {
 } from
   "../../src/external-storage/create-external-storage-runtime.js";
 import type {GroupRolePolicy} from "../../src/core/group-role-policy.js";
-import {principalCapabilities, type Principal} from "../../src/core/identity.js";
-import type {BearerCredentialVerifier} from "../../src/application/authentication.js";
+import {principalCapabilities} from "../../src/core/identity.js";
 import {createOrganizationRouter} from
   "../../src/external-storage/create-organization-router.js";
 import {
@@ -351,7 +350,7 @@ describe.sequential("organization tenancy security boundary", () => {
         {role: "administrator" as const, selector: `${groupRoot}admins`},
         {role: "member" as const, selector: `${groupRoot}editors`},
         {role: "viewer" as const, selector: `${groupRoot}viewers`},
-        {role: "member" as const, selector: `${groupRoot}support`, staff: true},
+        {role: "administrator" as const, selector: `${groupRoot}support`, staff: true},
       ],
     };
     const cliEnvironment = {
@@ -558,7 +557,7 @@ describe.sequential("organization tenancy security boundary", () => {
     token = await sessions.issue(identity, priorToken);
     expect(token).not.toBe(priorToken);
     expect(await sessions.find(priorToken)).toBeNull();
-    expect((await sessions.find(token))?.organizations.map(({slug}) => slug).toSorted()).toEqual([orgB.slug, orgC.slug, "not-a-member"].toSorted());
+    expect((await sessions.find(token))?.organizations).toEqual(claimMemberships);
     const sameSubjectToken = token;
     token = await sessions.issue({...identity, subject: "different-subject"}, sameSubjectToken);
     expect(token).not.toBe(sameSubjectToken);
@@ -767,29 +766,18 @@ describe.sequential("organization tenancy security boundary", () => {
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const host = {Host: "artifacts.example.com"};
     expect(orgB.admissionPolicy).toMatchObject({groupRoots: [`/teams/${orgB.slug}/`]});
-    const mcpPrincipals = new Map<string, Principal>();
-    const routeWalkerMcpVerifier: BearerCredentialVerifier = {
-      verify: (credential) => Effect.succeed(mcpPrincipals.get(Redacted.value(credential)) ?? {
-        authorizedByPrincipalId: null,
-        capabilities: [],
-        displayName: "Unknown route-walker test principal",
-        id: "unknown-route-walker-principal",
-        installationId: orgB.id,
-        kind: "human",
-        membershipRole: "guest",
-      }),
-    };
     const admissionRuntime = await createOrgRuntime(orgB.id, {
       admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
       applicationOrigin: `${applicationOrigin}/o/${orgB.slug}`,
       cookieRouteId: orgB.routeId,
       slug: orgB.slug,
-    }, {...config, externalMcpBearerVerifier: routeWalkerMcpVerifier}, database);
+    }, config, database);
     try {
       const loginWithGroups = async (groups: readonly string[], subject: string) => {
         oidc.claims.email = `${subject}@example.test`;
         oidc.claims.emailVerified = true;
         oidc.claims.groups = groups;
+        oidc.claims.name = subject === "tenant-support-user" ? "Private Tenant Support Identity" : "Stub Administrator";
         oidc.claims.subject = subject;
         const login = await admissionRuntime.app.fetch(new Request(
           `https://artifacts.example.com/auth/login`,
@@ -829,17 +817,44 @@ describe.sequential("organization tenancy security boundary", () => {
       const csrfToken = csrfCookie.split(";", 1)[0]?.split("=", 2)[1];
       if (csrfToken === undefined) throw new Error("Staff login issued an invalid CSRF cookie.");
 
+      const staffProjectResponse = await admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/projects", {
+        body: JSON.stringify({name: "Staff authored project"}),
+        headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+          "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+        method: "POST",
+      }));
+      expect(staffProjectResponse.status).toBe(201);
+      const staffProjectId = z.object({project: z.object({id: z.string()})}).parse(await staffProjectResponse.json()).project.id;
+      const staffArtifactId = await publishOrgBArtifactWithSession(
+        (request) => admissionRuntime.app.fetch(request), staffCookieHeader, csrfToken,
+        staffProjectId, orgB.slug, "Staff authored artifact",
+      );
       const artifactRows = await database.run(Effect.gen(function*() {
         const sql = yield* SqlClient;
-        return yield* sql`SELECT id, current_version_id AS "versionId" FROM artifacts
-          WHERE installation_id = ${orgB.id} AND name = 'Org B artifact'`;
+        return yield* sql`SELECT current_version_id AS "versionId" FROM artifacts
+          WHERE installation_id = ${orgB.id} AND id = ${staffArtifactId}`;
       }));
-      const projectRows = await database.run(Effect.gen(function*() {
+      const staffArtifact = {id: staffArtifactId};
+      let staffVersionId = z.object({versionId: z.string()}).parse(artifactRows?.[0]).versionId;
+      const firstVersionId = staffVersionId;
+      await publishOrgBArtifactWithSession((request) => admissionRuntime.app.fetch(request),
+        staffCookieHeader, csrfToken, staffProjectId, orgB.slug, "Staff authored second version",
+        {artifactId: staffArtifact.id, expectedCurrentVersionId: firstVersionId});
+      const secondVersionRows = await database.run(Effect.gen(function*() {
         const sql = yield* SqlClient;
-        return yield* sql`SELECT id FROM projects WHERE installation_id = ${orgB.id} AND name = 'Org B project'`;
+        return yield* sql`SELECT current_version_id AS "versionId" FROM artifacts
+          WHERE installation_id = ${orgB.id} AND id = ${staffArtifact.id}`;
       }));
-      const staffArtifact = z.object({id: z.string(), versionId: z.string()}).parse(artifactRows?.[0]);
-      const staffProjectId = z.object({id: z.string()}).parse(projectRows[0]).id;
+      const secondVersionId = z.object({versionId: z.string()}).parse(secondVersionRows?.[0]).versionId;
+      const restored = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/restore?projectId=${staffProjectId}`,
+        {body: JSON.stringify({expectedCurrentVersionId: secondVersionId, versionId: firstVersionId}),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", "Idempotency-Key": randomUUID(),
+            Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+          method: "POST"},
+      ));
+      expect(restored.status).toBe(200);
+      staffVersionId = z.object({version: z.object({id: z.string()})}).parse(await restored.json()).version.id;
       const installVisibleProject = await admissionRuntime.app.fetch(appRequest(
         `/api/v1/projects/${staffProjectId}/access`, apiTokenB, "PUT", {accessMode: "installation"},
       ));
@@ -850,7 +865,7 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(staffMembers.status).toBe(200);
       expect(await staffMembers.text()).not.toContain("tenant-support-user@example.test");
       const createComment = await admissionRuntime.app.fetch(new Request(
-        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/versions/${staffArtifact.versionId}/comments?projectId=${staffProjectId}`,
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/versions/${staffVersionId}/comments?projectId=${staffProjectId}`,
         {body: JSON.stringify({body: "Support authored comment"}), headers: {
           Cookie: staffCookieHeader,
           "Content-Type": "application/json",
@@ -863,15 +878,82 @@ describe.sequential("organization tenancy security boundary", () => {
       ));
       expect(createComment.status).toBe(201);
       const staffThread = z.object({thread: z.object({id: z.string()})}).passthrough().parse(await createComment.json()).thread;
+      const createResponse = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/responses?projectId=${staffProjectId}`,
+        {body: JSON.stringify({choice: "approve", questionId: "staff-authored-question", versionId: staffVersionId}),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+            "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken}, method: "POST"},
+      ));
+      expect(createResponse.status).toBe(201);
+      const staffResponseId = z.object({id: z.string()}).passthrough().parse(await createResponse.json()).id;
+      const stateWrite = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/state/staff-authored?projectId=${staffProjectId}`,
+        {body: JSON.stringify({value: {privatePayload: "staff state fixture"}}),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+            "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken}, method: "PUT"},
+      ));
+      expect(stateWrite.status).toBe(200);
+
+      const staffAgentName = `staff-support-${randomUUID()}`;
+      const staffAgentResponse = await admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com/api/v1/agents", {
+          body: JSON.stringify({
+            agentSessionId: "private-agent-session",
+            connectionKey: "private-agent-connection-key",
+            displayName: staffAgentName,
+            kind: "mcp-mailbox",
+            workingDirectory: "/private/support/worktree",
+          }),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+            "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+          method: "POST",
+        },
+      ));
+      expect(staffAgentResponse.status).toBe(200);
+      const staffAgentId = z.object({agent: z.object({id: z.string()})})
+        .parse(await staffAgentResponse.json()).agent.id;
+      const staffDispatchResponse = await admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com/api/v1/agent-dispatches", {
+          body: JSON.stringify({agentId: staffAgentId, note: "Staff authored dispatch", projectId: staffProjectId, threadIds: [staffThread.id]}),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", "Idempotency-Key": randomUUID(),
+            Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+          method: "POST",
+        },
+      ));
+      expect(staffDispatchResponse.status).toBe(201);
+      const staffDispatchId = z.object({dispatch: z.object({id: z.string()})})
+        .parse(await staffDispatchResponse.json()).dispatch.id;
+      const guestInvitationResponse = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/guest-invitation?projectId=${staffProjectId}`,
+        {body: "{}", headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+          "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken}, method: "POST"},
+      ));
+      expect(guestInvitationResponse.status).toBe(201);
+      const guestInvitationUrl = z.object({url: z.url()}).parse(await guestInvitationResponse.json()).url;
+      const guestSecret = new URLSearchParams(new URL(guestInvitationUrl).hash.slice(1)).get("invite");
+      if (guestSecret === null) throw new Error("The tenant guest invitation did not include a link secret.");
+      const reservedGuestResponse = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/public/artifacts/${staffArtifact.id}/guest-session`,
+        {body: JSON.stringify({displayName: "օrvex սupport", secret: guestSecret}),
+          headers: {"Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Site": "same-origin"}, method: "POST"},
+      ));
+      expect(reservedGuestResponse.status).toBe(201);
+      expect(await reservedGuestResponse.clone().text()).toContain("Orvex Support (member)");
+      const tenantGuestSessions = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/guest-invitation/sessions?projectId=${staffProjectId}`,
+        {headers: {Cookie: staffCookieHeader}},
+      ));
+      expect(tenantGuestSessions.status).toBe(200);
+      expect(await tenantGuestSessions.text()).toContain("Orvex Support (member)");
 
       const staffMemberRows = await database.run(Effect.gen(function*() {
         const sql = yield* SqlClient;
-        return yield* sql`SELECT id, email FROM installation_members
+        return yield* sql`SELECT id, email, display_name AS "displayName" FROM installation_members
           WHERE installation_id = ${orgB.id} AND email = 'tenant-support-user@example.test'`;
       }));
-      const staffMember = z.object({email: z.string(), id: z.string()}).parse(staffMemberRows[0]);
+      const staffMember = z.object({displayName: z.string(), email: z.string(), id: z.string()}).parse(staffMemberRows[0]);
 
-      type RouteWalkerActor = {readonly csrf: string; readonly cookie: string; readonly memberId: string};
+      type RouteWalkerActor = {readonly csrf: string; readonly cookie: string; readonly memberId: string; readonly token?: string};
       const roleGroups = [["admin", "admins"], ["editor", "editors"], ["viewer", "viewers"]] as const;
       const actorEntries = await roleGroups.reduce<Promise<Array<[string, RouteWalkerActor]>>>(
         async (previous, [role, group]) => {
@@ -893,24 +975,32 @@ describe.sequential("organization tenancy security boundary", () => {
         Promise.resolve([]),
       );
       const actorCookies = new Map<string, RouteWalkerActor>(actorEntries);
-      const mcpActorTokens = new Map<string, string>([...actorCookies].map(([role, actor]) => {
-        const token = `route-walker-mcp-${role}`;
-        mcpPrincipals.set(token, {
-          authorizedByPrincipalId: null,
-          capabilities: Object.values(principalCapabilities),
-          displayName: `Route walker ${role}`,
-          id: actor.memberId,
-          installationId: orgB.id,
-          kind: "human",
-          membershipRole: role === "viewer" ? "viewer" : role === "editor" ? "member" : "administrator",
-          staff: false,
-          tenantStaffPrincipalIds: [staffMember.id],
-        });
-        return [role, token] as const;
-      }));
-
       const adminActor = actorCookies.get("admin");
       if (adminActor === undefined) throw new Error("The route walker has no administrator session.");
+      const issuedActorKeys = await Promise.all([...actorCookies].map(async ([role, actor]) => {
+        const keyResponse = await admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/api-keys", {
+          body: JSON.stringify({
+            capabilities: [
+              principalCapabilities.connectAgents, principalCapabilities.createArtifact,
+              principalCapabilities.issueContentSession, principalCapabilities.manageAnyArtifact,
+              principalCapabilities.manageProjects, principalCapabilities.publishAnyArtifact,
+              principalCapabilities.readArtifacts, principalCapabilities.readArtifactResponses,
+              principalCapabilities.writeComments,
+            ],
+            expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+            memberId: actor.memberId,
+            name: `route-walker-${role}`,
+          }),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin,
+            "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+          method: "POST",
+        }));
+        expect(keyResponse.status).toBe(201);
+        const token = z.object({token: z.string()}).parse(await keyResponse.json()).token;
+        return [role, {...actor, token}] as const;
+      }));
+      for (const [role, actor] of issuedActorKeys) actorCookies.set(role, actor);
+      const mcpActorTokens = new Map<string, string>([...actorCookies].flatMap(([role, actor]) => actor.token === undefined ? [] : [[role, actor.token] as const]));
 
       const routeInventory = admissionRuntime.app.routes.map(({method, path}) => `${method} ${path}`);
       const toolInventoryResponse = await admissionRuntime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
@@ -920,20 +1010,33 @@ describe.sequential("organization tenancy security boundary", () => {
       const toolInventory = toolDefinitions.map(({name}) => name);
       assertCrossOrgMatrixComplete(routeInventory, toolInventory);
 
-      const staffSecrets = [staffMember.email, staffMember.id];
+      const staffSecrets = [staffMember.displayName, staffMember.email, staffMember.id];
       const routeParam = (name: string, readOnly: boolean): string => {
         if (!readOnly) return `missing-${name}-${randomUUID()}`;
         switch (name) {
           case "artifactId": return staffArtifact.id;
           case "projectId": return staffProjectId;
           case "threadId": return staffThread.id;
-          case "versionId": return staffArtifact.versionId;
+          case "responseId": return staffResponseId;
+          case "dispatchId": return staffDispatchId;
+          case "versionId": return staffVersionId;
           default: return `missing-${name}`;
         }
       };
       const orderedRoutes = [...routeInventory].toSorted((left, right) =>
         Number(left.endsWith("/session/logout")) - Number(right.endsWith("/session/logout"))
       );
+      // The generic walker bodies intentionally exercise both successful reads
+      // and documented validation/authorization/not-found outcomes. No route
+      // may fail with a server error, and each role must reach successful data.
+      const expectedHttpStatuses = {
+        GET: [200, 204, 301, 302, 303, 307, 308, 400, 401, 403, 404, 405, 409, 410, 415, 422],
+        HEAD: [200, 204, 301, 302, 303, 307, 308, 400, 401, 403, 404, 405, 415, 422],
+        POST: [200, 201, 202, 204, 301, 302, 303, 307, 308, 400, 401, 403, 404, 405, 409, 410, 422],
+        PUT: [200, 201, 204, 400, 401, 403, 404, 405, 409, 410, 422],
+        PATCH: [200, 204, 400, 401, 403, 404, 405, 409, 410, 422],
+        DELETE: [200, 202, 204, 400, 401, 403, 404, 405, 409, 410, 422],
+      } as const satisfies Readonly<Record<string, readonly number[]>>;
       const actorScans = await Promise.all([...actorCookies].map(async ([role, actor]) => {
         const routeResponses = await Promise.all(orderedRoutes.map(async (route) => {
             const [rawMethod, rawPath] = route.split(" ", 2);
@@ -942,7 +1045,12 @@ describe.sequential("organization tenancy security boundary", () => {
             const readOnly = method === "GET" || method === "HEAD";
             const path = rawPath.replace(/:([A-Za-z][A-Za-z0-9_]*)/gu, (_match, name: string) => routeParam(name, readOnly)).replace(/\/\*/gu, "/route-walker");
             const url = new URL(path, "https://artifacts.example.com");
-            if (path.includes("artifact") || path.includes("project")) url.searchParams.set("projectId", staffProjectId);
+            if (path.includes("artifact") || path.includes("project") || path.includes("agent-dispatches")) url.searchParams.set("projectId", staffProjectId);
+            if (path.includes("/compare")) {
+              url.searchParams.set("fromVersionId", firstVersionId);
+              url.searchParams.set("toVersionId", staffVersionId);
+            }
+            if (path.includes("/media") || path.includes("embed")) url.searchParams.set("path", "index.html");
             const headers = new Headers({Cookie: actor.cookie});
             if (!readOnly) {
               headers.set("Content-Type", "application/json");
@@ -955,16 +1063,40 @@ describe.sequential("organization tenancy security boundary", () => {
             const response = await admissionRuntime.app.fetch(new Request(url, requestInit));
             const body = await response.text();
             assertNoStaffIdentity(body, staffSecrets);
+            // SAFETY: method is normalized from the live route inventory, and the table explicitly covers each registered HTTP verb.
+            const acceptedStatuses = expectedHttpStatuses[method as keyof typeof expectedHttpStatuses];
+            expect(acceptedStatuses).toContain(response.status);
             return {route, status: response.status};
         }));
         expect(routeResponses).toHaveLength(orderedRoutes.length);
+        expect(routeResponses.filter(({status}) => status >= 200 && status < 300).length, `${role} HTTP routes must include successful results`).toBeGreaterThanOrEqual(2);
+        const agents = await admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/agents", {
+          headers: {Cookie: actor.cookie},
+        }));
+        expect(agents.status).toBe(200);
+        const listedAgents = z.object({items: z.array(z.object({
+          agentSessionId: z.string().nullable(), connectionKey: z.string().nullable(), displayName: z.string(),
+          id: z.string(), principalId: z.string().nullable(), workingDirectory: z.string().nullable(),
+        }).passthrough())}).parse(await agents.json()).items;
+        expect(listedAgents).toContainEqual(expect.objectContaining({
+          agentSessionId: null, connectionKey: null, displayName: "Orvex Support", id: staffAgentId,
+          principalId: null, workingDirectory: null,
+        }));
+        const dispatch = await admissionRuntime.app.fetch(new Request(
+          `https://artifacts.example.com/api/v1/agent-dispatches/${staffDispatchId}?projectId=${staffProjectId}`,
+          {headers: {Cookie: actor.cookie}},
+        ));
+        expect(dispatch.status).toBe(200);
+        const dispatchBody = await dispatch.text();
+        assertNoStaffIdentity(dispatchBody, staffSecrets);
+        expect(dispatchBody).toContain("Orvex Support");
 
         const token = mcpActorTokens.get(role);
         if (token === undefined) throw new Error(`The route walker has no ${role} MCP credential.`);
         const toolResponses = await Promise.all(toolDefinitions.map(async (tool) => {
           const argumentsValue = tool.name === "dispatch_inbox"
-            ? {agentName: "route-walker", operation: "list"}
-            : tool.readOnly ? safeMcpReadArguments(tool.inputSchema, staffArtifact.id, staffProjectId, staffArtifact.versionId, staffThread.id)
+            ? {agentName: staffAgentName, operation: "list"}
+            : tool.readOnly ? safeMcpReadArguments(tool.inputSchema, staffArtifact.id, staffProjectId, staffVersionId, staffThread.id)
             : {};
           const response = await admissionRuntime.app.fetch(appRequest("/mcp", token, "POST", {
             id: `route-walker-${role}-${tool.name}`, jsonrpc: "2.0", method: "tools/call", params: {
@@ -979,9 +1111,11 @@ describe.sequential("organization tenancy security boundary", () => {
           }, {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": tool.name, Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
           const responseBody = await response.text();
           assertNoStaffIdentity(responseBody, staffSecrets);
+          expect(response.status, `${role} MCP tool ${tool.name}`).toBe(200);
           return response.status;
         }));
         expect(toolResponses).toHaveLength(toolDefinitions.length);
+        expect(toolResponses.filter((status) => status >= 200 && status < 300).length, `${role} MCP tools must include successful results`).toBeGreaterThanOrEqual(2);
         return {role, routes: routeResponses.length, tools: toolResponses.length};
       }));
       expect(actorScans).toHaveLength(3);
@@ -996,17 +1130,14 @@ describe.sequential("organization tenancy security boundary", () => {
       try {
         const mcpCommentList = await staffMcpRuntime.app.fetch(appRequest("/mcp", apiTokenB, "POST", {
           id: 1, jsonrpc: "2.0", method: "tools/call", params: {
-            name: "comment_list", arguments: {
-              artifactId: staffArtifact.id, cursor: null, dispatched: null, limit: 50,
-              projectId: staffProjectId, since: null, state: null, versionId: null,
-            },
+            name: "comment_get", arguments: {artifactId: staffArtifact.id, projectId: staffProjectId, threadId: staffThread.id},
             _meta: {
               [CLIENT_CAPABILITIES_META_KEY]: {},
               [CLIENT_INFO_META_KEY]: {name: "artifact-server-test", version: "1"},
               [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
             },
           },
-        }, {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "comment_list", Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+        }, {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "comment_get", Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
         expect(mcpCommentList.status).toBe(200);
         const mcpText = await mcpCommentList.text();
         expect(mcpText).toContain("Orvex Support");
@@ -1988,6 +2119,50 @@ async function publishOrgBArtifact(
   expect(commit.status).toBe(201);
   return z.object({artifact: z.object({id: z.string()})})
     .parse(await commit.json()).artifact.id;
+}
+
+async function publishOrgBArtifactWithSession(
+  appFetch: (request: Request) => Response | Promise<Response>,
+  cookie: string,
+  csrf: string,
+  projectId: string,
+  orgSlug: string,
+  name: string,
+  existing?: {readonly artifactId: string; readonly expectedCurrentVersionId: string},
+): Promise<string> {
+  const content = new TextEncoder().encode(`<!doctype html><title>${name}</title>`);
+  const digest = createHash("sha256").update(content).digest("hex");
+  const headers = {Cookie: cookie, "Content-Type": "application/json", Origin: applicationOrigin,
+    "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrf};
+  const uploadResponse = await appFetch(new Request(`${applicationOrigin}/api/v1/uploads`, {
+    body: JSON.stringify({entryPath: "index.html", files: [{mediaType: "text/html; charset=utf-8",
+      path: "index.html", sha256: digest, size: content.byteLength}], projectId}),
+    headers, method: "POST",
+  }));
+  expect(uploadResponse.status).toBe(201);
+  const upload = z.object({commitUrl: z.url(), files: z.array(z.object({uploadUrl: z.url()}))})
+    .parse(await uploadResponse.json());
+  const planned = upload.files[0];
+  if (planned === undefined) throw new Error("Session upload plan is missing its file.");
+  const appPath = (url: URL) => url.pathname.replace(`/o/${orgSlug}`, "");
+  const putUrl = new URL(planned.uploadUrl);
+  const put = await appFetch(new Request(`${applicationOrigin}${appPath(putUrl)}${putUrl.search}`, {
+    body: content,
+    headers: {Cookie: cookie, Host: "artifacts.example.com", Origin: applicationOrigin,
+      "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrf},
+    method: "PUT",
+  }));
+  expect(put.status).toBe(200);
+  const commitUrl = new URL(upload.commitUrl);
+  const commit = await appFetch(new Request(`${applicationOrigin}${appPath(commitUrl)}${commitUrl.search}`, {
+    body: JSON.stringify({target: existing === undefined
+      ? {accessSetting: "account_required", kind: "new_artifact", name, tags: []}
+      : {kind: "new_version", artifactId: existing.artifactId,
+        expectedCurrentVersionId: existing.expectedCurrentVersionId}}),
+    headers: {...headers, "Idempotency-Key": randomUUID()}, method: "POST",
+  }));
+  expect(commit.status).toBe(201);
+  return z.object({artifact: z.object({id: z.string()})}).parse(await commit.json()).artifact.id;
 }
 
 function runtimeAdmissionPolicy(

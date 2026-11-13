@@ -217,7 +217,7 @@ export interface VersionRecord {
   readonly id: string;
   readonly manifestDigest: string;
   readonly number: number;
-  readonly publisherPrincipalId: string;
+  readonly publisherPrincipalId: string | null;
   readonly projectId: string;
   readonly routingMode: RoutingMode;
 }

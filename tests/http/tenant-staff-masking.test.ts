@@ -1,6 +1,6 @@
 import {describe, expect, test} from "vitest";
 
-import {isReservedTenantIdentityName, tenantIdentityPresentation, tenantVisiblePrincipalId, type Principal} from "../../src/core/identity.js";
+import {isReservedTenantIdentityName, tenantIdentityPresentation, tenantVersionRecord, tenantVisiblePrincipalId, type Principal} from "../../src/core/identity.js";
 import {projectHttpTenantResponse, projectTenantMembers} from "../../src/http/create-http-app.js";
 import type {ArtifactResponseRecord} from "../../src/core/model.js";
 import {createKeycloakOrganizationMembershipResolver} from "../../src/external-storage/organization-memberships.js";
@@ -31,7 +31,15 @@ describe("tenant identity projection", () => {
   });
 
   test("reserved tenant identity folding catches invisible characters and common confusables", () => {
-    for (const value of ["Orvex\u200d Support", "Orvex\u00ad Support", "0rvex Support"]) {
+    for (const value of [
+      "Orvex\u200d Support",
+      "Orvex\u00ad Support",
+      "0rvex Support",
+      "օrvex սupport",
+      "ᴏʀᴠᴇx ѕᴜᴘᴘᴏʀᴛ",
+      "orѵex-support",
+      "Orvex\u0307.Support",
+    ]) {
       expect(isReservedTenantIdentityName(value)).toBe(true);
       expect(tenantIdentityPresentation(principal, {displayName: value, principalId: "member-id"}).displayName)
         .toBe("Orvex Support (member)");
@@ -42,6 +50,10 @@ describe("tenant identity projection", () => {
     expect(["principalId", "authorizedByPrincipalId", "publisherPrincipalId", "updatedByPrincipalId"]
       .map(() => tenantVisiblePrincipalId(principal, "staff-id"))).toEqual([null, null, null, null]);
     expect(tenantVisiblePrincipalId(principal, "member-id")).toBe("member-id");
+    const version = {id: "v1", publisherPrincipalId: "staff-id"};
+    expect(tenantVersionRecord(principal, version).publisherPrincipalId).toBeNull();
+    expect(tenantVersionRecord(undefined, version).publisherPrincipalId).toBeNull();
+    expect(tenantVersionRecord(principal, {...version, publisherPrincipalId: "member-id"}).publisherPrincipalId).toBe("member-id");
   });
 
   test("platform memberships require the claim organization id to match the registry", async () => {

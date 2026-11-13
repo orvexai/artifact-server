@@ -1390,7 +1390,7 @@ export function createArtifactMcpServer(
           manifestDigest: version.manifestDigest,
           number: version.number,
         }, identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest
-          ? {} : {publisherPrincipalId: isTenantOrganization ? tenantVisiblePrincipalId(identity.principal, version.publisherPrincipalId) : version.publisherPrincipalId})),
+          ? {} : {publisherPrincipalId: version.publisherPrincipalId})),
       };
     }),
   );

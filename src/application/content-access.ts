@@ -15,7 +15,7 @@ import {
   GuestRateLimitExceeded,
   VersionNotFound,
 } from "../core/errors.js";
-import type { Principal } from "../core/identity.js";
+import {tenantVersionRecord, type Principal} from "../core/identity.js";
 import {
   accessSettings,
   type ContentBootstrapRecord,
@@ -105,6 +105,7 @@ export type VersionContentFallback = "entry" | "none";
 /** Dependencies used to construct private and public content access. */
 export interface ContentAccessDependencies {
   readonly clock: ApplicationClock;
+  readonly organizationDirectoryVisibility?: boolean | undefined;
   readonly repository: ContentAccessRepository;
   readonly secrets: ContentSecretProvider;
 }
@@ -273,7 +274,7 @@ function makeContentAccessService(
         new VersionNotFound({message: "The saved version does not exist on this artifact."}),
       );
     }
-    return {artifact: current.artifact, project, target};
+    return {artifact: current.artifact, project, target: tenantVersionRecord(command.principal, target)};
   });
 
   const issueContentBootstrap = Effect.fn(
@@ -477,7 +478,9 @@ function makeContentAccessService(
     if (version === null) {
       return yield* Effect.fail(new VersionNotFound({message: "The requested route does not exist."}));
     }
-    return {artifact: current.artifact, version};
+    return {artifact: current.artifact, version: dependencies.organizationDirectoryVisibility === true
+      ? {...version, version: tenantVersionRecord(undefined, version.version)}
+      : version};
   });
 
   return ContentAccessService.of({
