@@ -1697,6 +1697,13 @@ describe.sequential("organization tenancy security boundary", () => {
       )),
     );
     expect(malformedContentHostResponses.map(({status}) => status)).toEqual([404, 404]);
+    const absoluteFormHostMismatch = await fetchWithAbsoluteTarget(
+      `http://request-target.example.invalid/api/x.json`,
+      `${orgBPathContentToken}.content.example.net`,
+      router.hostname,
+      router.port,
+    );
+    expect(absoluteFormHostMismatch.status).toBe(400);
     const trailingDotContent = await fetchWithHost(
       `http://${router.hostname}:${router.port}/`,
       {headers: {Host: `${version.contentToken}.content.example.net.`}},
@@ -2549,6 +2556,32 @@ describe.sequential("organization tenancy security boundary", () => {
       objectStorage: constructionFailure,
     })).rejects.toBeInstanceOf(IntegrityCheckError);
     expect(failedFactoryCloseCount).toBe(1);
+
+    const currentOrvex = await registry.find("orvex");
+    if (currentOrvex === null) throw new Error("Orvex registry entry is missing before invalid-row probe.");
+    const invalidOrvexOrigins = ["https://embed.example;invalid"];
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`UPDATE artifact_installations
+        SET status = 'suspended', embed_origins = ${JSON.stringify(invalidOrvexOrigins)}::jsonb
+        WHERE id = ${installationId}`;
+    }));
+    try {
+      await expect(registry.ensureOrvex(installationId))
+        .rejects.toThrow("The registered org slug 'orvex' has invalid registry data.");
+      const rawOrvexStatus = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT status FROM artifact_installations WHERE id = ${installationId}`;
+      }));
+      expect(rawOrvexStatus[0]).toMatchObject({status: "suspended"});
+    } finally {
+      await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`UPDATE artifact_installations
+          SET status = ${currentOrvex.status}, embed_origins = ${JSON.stringify(currentOrvex.embedOrigins)}::jsonb
+          WHERE id = ${installationId}`;
+      }));
+    }
   }, 60_000);
 
   test("an org member removal deactivates only that installation's member", async () => {
@@ -3438,5 +3471,41 @@ function fetchWithHost(
     } else {
       request.end(z.string().parse(init.body));
     }
+  });
+}
+
+function fetchWithAbsoluteTarget(
+  target: string,
+  hostHeader: string,
+  hostname: string,
+  port: number,
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      headers: {Host: hostHeader},
+      host: hostname,
+      method: "GET",
+      path: target,
+      port,
+    }, (response) => {
+      const chunks: Uint8Array[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.once("error", reject);
+      response.once("end", () => {
+        const headers = new Headers();
+        for (const [name, value] of Object.entries(response.headers)) {
+          if (value === undefined) continue;
+          for (const headerValue of Array.isArray(value) ? value : [value]) {
+            headers.append(name, headerValue);
+          }
+        }
+        resolve(new Response(Buffer.concat(chunks), {
+          headers,
+          status: response.statusCode ?? 500,
+        }));
+      });
+    });
+    request.once("error", reject);
+    request.end();
   });
 }

@@ -244,6 +244,9 @@ export async function createOrganizationRouter(
       fetch: async (request) => {
         if (closed) return new Response("Service Unavailable", {status: 503});
         const sourceUrl = new URL(request.url);
+        if (!requestHostMatchesUrl(request, sourceUrl)) {
+          return new Response("Bad Request", {status: 400});
+        }
         const contentHostRequest = contentTokenFromHost(request, config.contentDomain);
         const contentHost = contentHostRequest.isContentHost;
         if (!contentHost && sourceUrl.pathname === "/") {
@@ -537,6 +540,24 @@ function contentTokenFromHost(
   const label = hostname.slice(0, -suffix.length);
   if (label.includes(".") || label.length === 0) return {isContentHost: true, token: null};
   return {isContentHost: true, token: /^[A-Za-z0-9_-]{16,100}$/u.test(label) ? label : null};
+}
+
+function requestHostMatchesUrl(request: Request, requestUrl: URL): boolean {
+  const hostHeader = request.headers.get("host");
+  if (hostHeader === null) return true;
+  try {
+    const hostUrl = new URL(`${requestUrl.protocol}//${hostHeader}`);
+    return hostUrl.username === "" && hostUrl.password === "" && hostUrl.pathname === "/" &&
+      hostUrl.search === "" && hostUrl.hash === "" &&
+      normalizeHostName(hostUrl.hostname) === normalizeHostName(requestUrl.hostname) &&
+      hostUrl.port === requestUrl.port;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeHostName(hostname: string): string {
+  return hostname.toLowerCase().replace(/\.$/u, "");
 }
 
 

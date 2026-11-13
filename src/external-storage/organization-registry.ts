@@ -193,8 +193,16 @@ export class OrganizationRegistry {
   }
 
   async ensureOrvex(installationId: string): Promise<OrganizationRecord> {
-    const existing = await this.find("orvex");
-    if (existing !== null) {
+    const rawExisting = await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`SELECT id FROM artifact_installations WHERE slug = 'orvex'`;
+      return rows[0] ?? null;
+    }));
+    if (rawExisting !== null) {
+      const existing = await this.find("orvex");
+      if (existing === null) {
+        throw new Error("The registered org slug 'orvex' has invalid registry data.");
+      }
       if (existing.id !== installationId) {
         throw new Error("The configured installation does not match org slug 'orvex'.");
       }
@@ -208,7 +216,7 @@ export class OrganizationRegistry {
       ) VALUES (
         ${installationId}, ${new Date().toISOString()}, 'orvex', 'Orvex', 'active', ${routeId}
       ) ON CONFLICT (id) DO UPDATE SET slug = 'orvex', display_name = 'Orvex',
-        status = 'active', route_id = COALESCE(artifact_installations.route_id, EXCLUDED.route_id)
+        route_id = COALESCE(artifact_installations.route_id, EXCLUDED.route_id)
       WHERE artifact_installations.slug IS NULL OR artifact_installations.slug = 'orvex'
         RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
         status, admission_policy AS "admissionPolicy",
