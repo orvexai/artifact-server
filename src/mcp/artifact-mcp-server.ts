@@ -371,9 +371,11 @@ const mailboxAgentSchema = z.object({
   kind: z.string(),
 }).strict();
 const mailboxInboxItemSchema = z.object({
+  agentDisplayName: z.string(),
   createdAt: z.string(),
   id: z.string(),
   note: z.string().nullable(),
+  senderDisplayName: z.string(),
   threadCount: z.number().int().positive(),
 }).strict();
 const mailboxClaimSchema = z.object({
@@ -2568,9 +2570,13 @@ export function createArtifactMcpServer(
           : (left.createdAt < right.createdAt ? -1 : 1)
       )
       .map((dispatch) => ({
+        agentDisplayName: dispatch.agentDisplayName,
         createdAt: dispatch.createdAt,
         id: dispatch.id,
         note: dispatch.note,
+        senderDisplayName: isTenantOrganization && (dispatch.sender.staff === true || identity.principal.tenantStaffPrincipalIds?.includes(dispatch.sender.principalId) === true)
+          ? "Orvex Support"
+          : dispatch.sender.displayName,
         threadCount: dispatch.threadIds.length,
       }));
   };
@@ -2764,7 +2770,7 @@ export function createArtifactMcpServer(
         case "list": {
           const agent = await registerMailboxAgent(input.agentName);
           return {
-            agent: mailboxAgentProjection(agent, isTenantOrganization),
+            agent: mailboxAgentProjection(agent, isTenantOrganization, identity.principal),
             claimed: null,
             inbox: await listMailboxInbox(agent.id),
             operation: "list",
@@ -2785,7 +2791,7 @@ export function createArtifactMcpServer(
           );
           if (dispatch === null) {
             return {
-              agent: mailboxAgentProjection(agent, isTenantOrganization),
+              agent: mailboxAgentProjection(agent, isTenantOrganization, identity.principal),
               claimed: null,
               inbox: null,
               operation: "claim",
@@ -2800,7 +2806,7 @@ export function createArtifactMcpServer(
             throw cause;
           }
           return {
-            agent: mailboxAgentProjection(agent, isTenantOrganization),
+            agent: mailboxAgentProjection(agent, isTenantOrganization, identity.principal),
             claimed: {
               dispatchId: dispatch.id,
               message: renderBundleMessage(assembled.bundle, "mailbox"),
@@ -2827,7 +2833,7 @@ export function createArtifactMcpServer(
             ),
           );
           return {
-            agent: mailboxAgentProjection(agent, isTenantOrganization),
+            agent: mailboxAgentProjection(agent, isTenantOrganization, identity.principal),
             claimed: null,
             inbox: null,
             operation: "delivered",
@@ -2848,7 +2854,7 @@ export function createArtifactMcpServer(
             ),
           );
           return {
-            agent: mailboxAgentProjection(agent, isTenantOrganization),
+            agent: mailboxAgentProjection(agent, isTenantOrganization, identity.principal),
             claimed: null,
             inbox: null,
             operation: "failed",
@@ -3145,10 +3151,19 @@ function requiredMailboxClientId(agentClientId: string | null): string {
   return agentClientId;
 }
 
-function mailboxAgentProjection(agent: RegisteredAgentRecord, tenant = false) {
+function mailboxAgentProjection(
+  agent: RegisteredAgentRecord,
+  tenant = false,
+  principal?: Principal,
+) {
+  const staffOwner = tenant && (agent.principalId === principal?.id && principal.staff === true ||
+    principal?.tenantStaffPrincipalIds?.includes(agent.principalId) === true);
+  const displayName = staffOwner
+    ? `${agent.displayName.split(" for ", 1)[0]} for Orvex Support`
+    : tenant && isReservedTenantIdentityName(agent.displayName) ? "Orvex Support (member)" : agent.displayName;
   return {
     capabilities: agent.capabilities,
-    displayName: tenant && isReservedTenantIdentityName(agent.displayName) ? "Orvex Support (member)" : agent.displayName,
+    displayName,
     id: agent.id,
     kind: agent.kind,
   };

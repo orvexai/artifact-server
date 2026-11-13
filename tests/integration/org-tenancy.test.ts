@@ -355,6 +355,7 @@ describe.sequential("organization tenancy security boundary", () => {
     const admissionPolicy = {
       groupRoots: [groupRoot],
       seed: [
+        {role: "owner" as const, selector: `${groupRoot}owners`},
         {role: "administrator" as const, selector: `${groupRoot}admins`},
         {role: "member" as const, selector: `${groupRoot}editors`},
         {role: "viewer" as const, selector: `${groupRoot}viewers`},
@@ -431,22 +432,35 @@ describe.sequential("organization tenancy security boundary", () => {
     testMcpVerifier = {
       forApplicationResources: () => testMcpVerifier,
       forOrganization: () => testMcpVerifier,
-      verify: () => Effect.succeed({
-        clientId: "orgvex-service",
-        expiresAt: Math.floor(Date.now() / 1_000) + 60,
-        provider: "test-oidc",
-        scopes: [],
-        subject: "service-account",
-      }),
-      resolveIdentity: () => Effect.succeed({
-        displayName: "service account",
-        email: null,
-        emailVerified: false,
-        groups: ["/orvex/admin"],
-        provider: "test-oidc",
-        serviceAccount: true,
-        subject: "service-account",
-      }),
+      verify: (credential) => {
+        const staffMailbox = Redacted.value(credential) === "tenant-staff-mailbox-token";
+        return Effect.succeed({
+          clientId: staffMailbox ? "tenant-staff-mailbox" : "orgvex-service",
+          expiresAt: Math.floor(Date.now() / 1_000) + 60,
+          provider: staffMailbox ? oidc.issuer : "test-oidc",
+          scopes: [],
+          subject: staffMailbox ? "tenant-staff-mailbox-subject" : "service-account",
+        });
+      },
+      resolveIdentity: (verified) => verified.subject === "tenant-staff-mailbox-subject"
+        ? Effect.succeed({
+          displayName: "Tenant support",
+          email: "tenant-support-user@example.test",
+          emailVerified: true,
+          groups: [`/teams/${orgB.slug}/support`],
+          provider: oidc.issuer,
+          serviceAccount: false,
+          subject: "tenant-staff-mailbox-subject",
+        })
+        : Effect.succeed({
+          displayName: "service account",
+          email: null,
+          emailVerified: false,
+          groups: ["/orvex/admin"],
+          provider: "test-oidc",
+          serviceAccount: true,
+          subject: "service-account",
+        }),
     };
     config = {
       apiToken: Redacted.make(apiTokenA),
@@ -735,7 +749,15 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(dispatches.status).toBe(200);
       expect(JSON.stringify(dispatches.body)).toContain("sender");
       expect(JSON.stringify(dispatches.body)).not.toContain('"email":null');
+      expect(JSON.stringify(dispatches.body)).not.toContain('"staff"');
       expect(JSON.stringify(dispatches.body)).not.toContain("Orvex Support");
+      const dispatchId = z.object({dispatch: z.object({id: z.string()})})
+        .parse(await dispatchCreate.json()).dispatch.id;
+      const dispatch = await compareRoute(`/api/v1/agent-dispatches/${dispatchId}?projectId=${projectId}`, "GET");
+      expect(dispatch.status).toBe(200);
+      expect(JSON.stringify(dispatch.body)).not.toContain('"staff"');
+      expect(JSON.stringify(dispatch.body)).not.toContain('"email":null');
+      expect(JSON.stringify(dispatch.body)).not.toContain("Orvex Support");
       const dispatchMcpBody: JsonObject = {
         id: `orvex-dispatch-inbox-${randomUUID()}`,
         jsonrpc: "2.0",
@@ -981,6 +1003,64 @@ describe.sequential("organization tenancy security boundary", () => {
           WHERE installation_id = ${orgB.id} AND email = 'tenant-support-user@example.test'`;
       }));
       const staffMember = z.object({displayName: z.string(), email: z.string(), id: z.string()}).parse(staffMemberRows[0]);
+
+      const callStaffMailbox = async (operation: "claim" | "list") => {
+        const response = await admissionRuntime.app.fetch(appRequest("/mcp", "tenant-staff-mailbox-token", "POST", {
+          id: `tenant-staff-mailbox-${operation}-${randomUUID()}`,
+          jsonrpc: "2.0",
+          method: "tools/call",
+          params: {
+            _meta: {
+              [CLIENT_CAPABILITIES_META_KEY]: {},
+              [CLIENT_INFO_META_KEY]: {name: "Support Reviewer", version: "1"},
+              [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+            },
+            arguments: {agentName: "Support Reviewer", operation},
+            name: "dispatch_inbox",
+          },
+        }, {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "dispatch_inbox",
+          Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
+        expect(response.status).toBe(200);
+        const text = await response.text();
+        const payload = response.headers.get("content-type")?.includes("text/event-stream")
+          ? text.split("\n").find((line) => line.startsWith("data: "))?.slice(6) ?? "{}"
+          : text;
+        const decoded = z.object({result: z.object({isError: z.boolean().optional(), structuredContent: z.unknown().optional()})})
+          .parse(JSON.parse(payload));
+        expect(decoded.result.isError).not.toBe(true);
+        return z.object({agent: z.object({displayName: z.string(), id: z.string()}), claimed: z.unknown().nullable(),
+          inbox: z.array(z.object({agentDisplayName: z.string(), senderDisplayName: z.string(), id: z.string()})).nullable(),
+          operation: z.enum(["claim", "list"])}).parse(decoded.result.structuredContent);
+      };
+      const staffMailbox = await callStaffMailbox("list");
+      expect(staffMailbox.agent.displayName).toBe("Support Reviewer for Orvex Support");
+      const staffMailboxAgentId = staffMailbox.agent.id;
+      const mailboxThreadResponse = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/versions/${staffVersionId}/comments?projectId=${staffProjectId}`,
+        {body: JSON.stringify({body: "Staff-authored mailbox fixture."}), headers: {
+          Cookie: staffCookieHeader, "Content-Type": "application/json", "Idempotency-Key": randomUUID(),
+          Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken,
+        }, method: "POST"},
+      ));
+      expect(mailboxThreadResponse.status).toBe(201);
+      const mailboxThreadId = z.object({thread: z.object({id: z.string()})})
+        .parse(await mailboxThreadResponse.json()).thread.id;
+      const mailboxDispatchResponse = await admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com/api/v1/agent-dispatches", {
+          body: JSON.stringify({agentId: staffMailboxAgentId, note: "Mailbox staff projection", projectId: staffProjectId, threadIds: [mailboxThreadId]}),
+          headers: {Cookie: staffCookieHeader, "Content-Type": "application/json", "Idempotency-Key": randomUUID(),
+            Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrfToken},
+          method: "POST",
+        },
+      ));
+      expect(mailboxDispatchResponse.status).toBe(201);
+      const listedStaffMailbox = await callStaffMailbox("list");
+      expect(listedStaffMailbox.inbox).toEqual([expect.objectContaining({
+        agentDisplayName: "Orvex Support", senderDisplayName: "Orvex Support",
+      })]);
+      const claimedStaffMailbox = await callStaffMailbox("claim");
+      expect(claimedStaffMailbox.agent.displayName).toBe("Support Reviewer for Orvex Support");
+      expect(claimedStaffMailbox.claimed).not.toBeNull();
 
       const editorLogin = await loginWithGroups([`/teams/${orgB.slug}/editors`], "route-walker-editor-mutations");
       expect(editorLogin.status).toBe(303);
@@ -1270,14 +1350,15 @@ describe.sequential("organization tenancy security boundary", () => {
           }, {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": tool.name, Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
           const responseBody = await response.text();
           assertNoStaffIdentity(responseBody, staffSecrets);
-          expect(response.status, `${role} MCP tool ${tool.name}`).toBe(200);
+          expect(response.status).toBe(200);
           const payload = response.headers.get("content-type")?.includes("text/event-stream")
             ? responseBody.split("\n").find((line) => line.startsWith("data: "))?.slice(6) ?? "{}"
             : responseBody;
-          const decoded = z.object({result: z.object({isError: z.boolean().optional()}).passthrough()}).passthrough().parse(JSON.parse(payload));
-          const mustSucceed = new Set(["artifact_get", "comment_list", "comment_get", "artifact_response_list", "artifact_state_list"]);
-          expect(mustSucceed.has(tool.name) ? decoded.result.isError : false,
-            `${role} MCP ${tool.name} must return a successful tool result: ${responseBody}`).toBe(false);
+          const decoded = z.object({result: z.object({isError: z.boolean().optional(), content: z.array(z.unknown()).optional(), structuredContent: z.unknown().optional()}).passthrough()}).passthrough().parse(JSON.parse(payload));
+          const mustSucceed = new Set(["artifact_get", "comment_list", "comment_get", "artifact_response_list", "artifact_state_list", "project_git_history_status"]);
+          expect(!mustSucceed.has(tool.name) || decoded.result.isError !== true).toBe(true);
+          expect(decoded.result.content !== undefined || decoded.result.structuredContent !== undefined,
+            `${role} MCP ${tool.name} must include a result payload: ${responseBody}`).toBe(true);
           return response.status;
         }));
         expect(toolResponses).toHaveLength(toolDefinitions.length);
@@ -1324,6 +1405,81 @@ describe.sequential("organization tenancy security boundary", () => {
       } finally {
         await staffMcpRuntime.close();
       }
+      const ownerLogin = await loginWithGroups([`/teams/${orgB.slug}/owners`], "tenant-owner-user");
+      expect(ownerLogin.status).toBe(303);
+      const ownerCookies = ownerLogin.headers.getSetCookie();
+      const ownerCookieHeader = ownerCookies.map((cookie) => cookie.split(";", 1)[0]).join("; ");
+      const ownerCsrfCookie = ownerCookies.find((cookie) => cookie.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`));
+      const ownerCsrf = ownerCsrfCookie?.split(";", 1)[0]?.split("=", 2)[1];
+      if (ownerCsrf === undefined) throw new Error("Owner login did not issue a CSRF token.");
+      const ownerMembersResponse = await admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/members", {
+        headers: {Cookie: ownerCookieHeader},
+      }));
+      expect(ownerMembersResponse.status).toBe(200);
+      const ownerMembers = z.object({members: z.array(z.object({id: z.string(), displayName: z.string()}).passthrough())})
+        .parse(await ownerMembersResponse.json()).members;
+      const staffSectionRow = ownerMembers.find(({displayName}) => displayName === "Orvex Support");
+      if (staffSectionRow === undefined) throw new Error("Owner directory omitted the staff section.");
+      expect(staffSectionRow.id).toMatch(/^staff_[A-Za-z0-9_-]{22}$/u);
+      expect(JSON.stringify(ownerMembers)).not.toContain(staffMember.id);
+      expect(JSON.stringify(ownerMembers)).not.toContain(staffMember.email);
+      const adminCookieHeader = admitted.headers.getSetCookie().map((cookie) => cookie.split(";", 1)[0]).join("; ");
+      const adminCsrfCookie = admitted.headers.getSetCookie().find((cookie) => cookie.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`));
+      const adminCsrf = adminCsrfCookie?.split(";", 1)[0]?.split("=", 2)[1];
+      if (adminCsrf === undefined) throw new Error("Administrator login did not issue a CSRF token.");
+      const hiddenStaffAttempt = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/members/${staffMember.id}/deactivate`,
+        {body: "{}", headers: {Cookie: adminCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": adminCsrf}, method: "POST"},
+      ));
+      const missingMemberAttempt = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/members/missing-${randomUUID()}/deactivate`,
+        {body: "{}", headers: {Cookie: adminCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": adminCsrf}, method: "POST"},
+      ));
+      expect(hiddenStaffAttempt.status).toBe(404);
+      expect(missingMemberAttempt.status).toBe(404);
+      const ownerDeactivateStaff = await admissionRuntime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/members/${staffSectionRow.id}/deactivate`,
+        {body: "{}", headers: {Cookie: ownerCookieHeader, "Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": ownerCsrf}, method: "POST"},
+      ));
+      expect(ownerDeactivateStaff.status).toBe(200);
+      const deactivatedStaff = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT staff, manual_deactivation FROM installation_members
+          WHERE installation_id = ${orgB.id} AND id = ${staffMember.id}`;
+      }));
+      expect(deactivatedStaff[0]).toMatchObject({staff: true, manual_deactivation: true});
+      expect((await loginWithGroups([`/teams/${orgB.slug}/support`], "tenant-support-user")).status).toBe(403);
+      const memberCliEnvironment = {
+        ...process.env,
+        ARTIFACT_SERVER_DATABASE_URL: databaseUrl,
+        ARTIFACT_SERVER_INSTALLATION_ID: installationId,
+      };
+      const clearStaff = spawnSync(process.execPath, ["--import", "tsx", "src/cli/main.ts", "member", "clear-staff", orgB.slug, staffMember.email, "--yes"], {
+        cwd: process.cwd(), encoding: "utf8", env: memberCliEnvironment,
+      });
+      expect(clearStaff.status).toBe(0);
+      const clearAudit = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        const members = yield* sql`SELECT staff FROM installation_members WHERE installation_id = ${orgB.id} AND id = ${staffMember.id}`;
+        const audits = yield* sql`SELECT COUNT(*)::integer AS count FROM installation_member_staff_audit
+          WHERE installation_id = ${orgB.id} AND member_id = ${staffMember.id} AND action = 'clear_staff'`;
+        return {audits, members};
+      }));
+      expect(clearAudit.members[0]).toMatchObject({staff: false});
+      expect(clearAudit.audits[0]?.["count"]).toBe(1);
+      const repeatedClearStaff = spawnSync(process.execPath, ["--import", "tsx", "src/cli/main.ts", "member", "clear-staff", orgB.slug, staffMember.email, "--yes"], {
+        cwd: process.cwd(), encoding: "utf8", env: memberCliEnvironment,
+      });
+      expect(repeatedClearStaff.status).toBe(0);
+      const repeatedAudit = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_member_staff_audit
+          WHERE installation_id = ${orgB.id} AND member_id = ${staffMember.id} AND action = 'clear_staff'`;
+      }));
+      expect(repeatedAudit[0]?.["count"]).toBe(1);
       const orgSessionCookie = staffCookies.find((cookie) => cookie.startsWith(`__Host-artifact_session-${orgB.routeId}=`));
       if (orgSessionCookie === undefined) throw new Error("Staff login did not issue its organization session cookie.");
       const platformLogout = await fetch(`http://${router.hostname}:${router.port}/api/v1/platform/session/logout`, {

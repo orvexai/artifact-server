@@ -418,15 +418,17 @@ function configureMembers(program: Command): void {
         const result = await database.run(Effect.gen(function*() {
           const sql = yield* SqlClient;
           return yield* sql.withTransaction(Effect.gen(function*() {
-            const organizations = yield* sql`SELECT id FROM artifact_installations WHERE id = ${configuration.installationId} AND slug = ${org}`;
+            const organizations = yield* sql`SELECT id FROM artifact_installations WHERE slug = ${org}`;
             if (organizations.length !== 1) throw new Error("Organization does not exist.");
             const installationId = String(organizations[0]?.["id"]);
             const members = yield* sql`SELECT id, email FROM installation_members WHERE installation_id = ${installationId} AND lower(email) = lower(${email})`;
             if (members.length !== 1) throw new Error("Member does not exist or email is ambiguous.");
             const memberId = String(members[0]?.["id"]);
             const memberEmail = String(members[0]?.["email"]);
-            yield* sql`UPDATE installation_members SET staff = FALSE WHERE installation_id = ${installationId} AND id = ${memberId}`;
-            yield* sql`INSERT INTO installation_member_staff_audit (installation_id, member_id, member_email, actor, action, created_at) VALUES (${installationId}, ${memberId}, ${memberEmail}, 'operator_cli', 'clear_staff', ${new Date().toISOString()})`;
+            const changed = yield* sql`UPDATE installation_members SET staff = FALSE WHERE installation_id = ${installationId} AND id = ${memberId} AND staff IS TRUE RETURNING id`;
+            if (changed.length > 0) {
+              yield* sql`INSERT INTO installation_member_staff_audit (installation_id, member_id, member_email, actor, action, created_at) VALUES (${installationId}, ${memberId}, ${memberEmail}, 'operator_cli', 'clear_staff', ${new Date().toISOString()})`;
+            }
             return {installationId, memberEmail};
           }));
         }));

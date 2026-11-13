@@ -1,10 +1,13 @@
 import {describe, expect, test} from "vitest";
+import {createHash} from "node:crypto";
+import {readFileSync} from "node:fs";
 
 import {isReservedTenantIdentityName, tenantIdentityPresentation, tenantVersionRecord, tenantVisiblePrincipalId, type Principal} from "../../src/core/identity.js";
 import {projectHttpTenantResponse, projectTenantMembers} from "../../src/http/create-http-app.js";
 import type {ArtifactResponseRecord} from "../../src/core/model.js";
 import {createKeycloakOrganizationMembershipResolver} from "../../src/external-storage/organization-memberships.js";
 import {gitHistoryMetadataFiles, gitHistoryVersionMetadata} from "../../src/git-history/git-history-mirror.js";
+import {unicodeConfusablesVersion} from "../../src/core/confusables.js";
 
 describe("tenant identity projection", () => {
   const principal: Principal = {
@@ -47,12 +50,28 @@ describe("tenant identity projection", () => {
       "orvexҽupport",
       "orvҽxsupport",
       "orvex suppo\u2ca3t",
+      "orvex \ua731upport",
+      "or\u04bdex support",
+      "or\u028bex support",
       "оrvexsupport",
     ]) {
       expect(isReservedTenantIdentityName(value), `reserved identity: ${value}`).toBe(true);
       expect(tenantIdentityPresentation(principal, {displayName: value, principalId: "member-id"}).displayName)
         .toBe("Orvex Support (member)");
     }
+    for (const value of ["Orvex 5upport", "$upport", "Orv3x", "0rv3x 5upp0r7", "or\u2c9fvexsupport", "orvex suppo\u2ca3t"]) {
+      expect(isReservedTenantIdentityName(value), `reserved identity: ${value}`).toBe(true);
+    }
+    for (const value of ["田中 Taro", "Иван Ivanov"]) {
+      expect(isReservedTenantIdentityName(value), `ordinary name: ${value}`).toBe(false);
+    }
+  });
+
+  test("vendors the pinned Unicode 17 UTS #39 confusables table", () => {
+    const bytes = readFileSync(new URL("../../src/core/unicode/confusables.txt", import.meta.url));
+    expect(unicodeConfusablesVersion).toBe("17.0.0");
+    expect(createHash("sha256").update(bytes).digest("hex"))
+      .toBe("091c7f82fc39ef208faf8f94d29c244de99254675e09de163160c810d13ef22a");
   });
 
   test("tenant attribution projection masks staff ids while preserving other principals", () => {

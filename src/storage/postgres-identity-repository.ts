@@ -1075,6 +1075,16 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     }));
   }
 
+  async isMemberManuallyDeactivated(installationId: string, email: string): Promise<boolean> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`SELECT manual_deactivation AS "manualDeactivation"
+        FROM installation_members WHERE installation_id = ${installationId} AND email = ${email}`;
+      return rows.length > 0 && rows[0]?.["manualDeactivation"] === true;
+    }));
+  }
+
   async findActiveMemberByExternalIdentity(
     installationId: string,
     provider: string,

@@ -676,6 +676,10 @@ export function createApplicationLayer(
         "findRegisteredAgent",
         () => dispatchStore.findAgent(installationId, agentId),
       ),
+      findAgentsByIds: (installationId, agentIds) => dispatchEffect(
+        "findRegisteredAgent",
+        () => dispatchStore.findAgentsByIds(installationId, agentIds),
+      ),
       findDispatch: (installationId, dispatchId, now) => dispatchEffect(
         "findAgentDispatch",
         () => dispatchStore.findDispatch(installationId, dispatchId, now),
@@ -1045,6 +1049,16 @@ export function createApplicationLayer(
           "reactivateMember",
           () => identityRepository.reactivateMember?.(installationId, memberId) ??
             Promise.reject(new Error("Organization member reactivation is unavailable.")),
+        ),
+    });
+  }
+  if (identityRepository.isMemberManuallyDeactivated !== undefined) {
+    Object.assign(installationAccessDependencies.repository, {
+      isMemberManuallyDeactivated: (installationId: string, email: string) =>
+        identityEffect(
+          "isMemberManuallyDeactivated",
+          () => identityRepository.isMemberManuallyDeactivated?.(installationId, email) ??
+            Promise.resolve(false),
         ),
     });
   }

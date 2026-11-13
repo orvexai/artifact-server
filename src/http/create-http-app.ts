@@ -1675,7 +1675,13 @@ export function createHttpApp(
       ),
     );
     if (tenantOrganization) {
-      if (principal.kind === "human") return context.json({members: projectTenantMembers(members, principal.membershipRole)});
+      if (principal.kind === "human") {
+        const projectedMembers = projectTenantMembers(members, principal.membershipRole);
+        if (principal.membershipRole !== membershipRoles.owner) return context.json({members: projectedMembers});
+        const staffMembers = await runHttpApplicationEffect(context, dependencies,
+          InstallationAccessService.use((access) => access.listStaffOnlyMembers()));
+        return context.json({members: [...projectedMembers, ...staffMembers.map(({id}) => ({id, displayName: "Orvex Support"}))]});
+      }
       return context.json({members: members.map(({email: _email, role: _role, staff: _staff, ...visible}) => Object.assign({}, visible, {
         displayName: isReservedTenantIdentityName(visible.displayName) ? "Orvex Support (member)" : visible.displayName,
       }))});

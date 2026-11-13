@@ -93,6 +93,10 @@ export interface AgentDispatchPersistence {
     installationId: string,
     agentId: string,
   ) => Effect.Effect<RegisteredAgentRecord | null, AgentDispatchRepositoryFailure>;
+  readonly findAgentsByIds: (
+    installationId: string,
+    agentIds: readonly string[],
+  ) => Effect.Effect<readonly RegisteredAgentRecord[], AgentDispatchRepositoryFailure>;
   readonly findDispatch: (
     installationId: string,
     dispatchId: string,
@@ -711,12 +715,16 @@ function makeAgentDispatchService(
         state: command.state,
       });
       if (dependencies.organizationDirectoryVisibility !== true) return page;
-      const items = yield* Effect.forEach(page.items, (dispatch) => Effect.gen(function*() {
-        const agent = yield* dependencies.repository.findAgent(dependencies.installationId, dispatch.agentId);
-        return agent !== null && command.principal.tenantStaffPrincipalIds?.includes(agent.principalId) === true
-          ? {...dispatch, agentDisplayName: "Orvex Support"}
-          : dispatch;
-      }));
+      const agents = yield* dependencies.repository.findAgentsByIds(
+        dependencies.installationId,
+        [...new Set(page.items.map(({agentId}) => agentId))],
+      );
+      const staffAgentIds = new Set(agents.filter(({principalId}) =>
+        command.principal.tenantStaffPrincipalIds?.includes(principalId) === true,
+      ).map(({id}) => id));
+      const items = page.items.map((dispatch) => staffAgentIds.has(dispatch.agentId)
+        ? {...dispatch, agentDisplayName: "Orvex Support"}
+        : dispatch);
       return {...page, items};
     },
   );
@@ -798,7 +806,7 @@ function dispatchSender(principal: Principal, tenant: boolean): CommentAuthor {
   const isStaff = tenant && (principal.staff === true ||
     principal.tenantStaffPrincipalIds?.includes(principal.id) === true ||
     principal.authorizedByPrincipalId !== null && principal.tenantStaffPrincipalIds?.includes(principal.authorizedByPrincipalId) === true);
-  return {
+  const sender: CommentAuthor = {
     actor: principal.actorClientId === null || principal.actorClientId === undefined
       ? null
       : {clientId: principal.actorClientId, kind: "mcp-client"},
@@ -806,6 +814,7 @@ function dispatchSender(principal: Principal, tenant: boolean): CommentAuthor {
     displayName: isStaff ? "Orvex Support" : principal.displayName,
     principalId: principal.id,
     principalKind: principal.kind,
-    staff: principal.staff === true,
   };
+  if (!tenant) return sender;
+  return {...sender, staff: principal.staff === true};
 }
