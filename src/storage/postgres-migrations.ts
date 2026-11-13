@@ -1011,10 +1011,14 @@ const addOrgTenancyIdentityFields = Effect.gen(function*() {
 
 const addPlatformSessions = Effect.gen(function*() {
   const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE installation_members ADD COLUMN staff BOOLEAN NOT NULL DEFAULT FALSE`);
   yield* sql.unsafe(`CREATE TABLE artifact_platform_sessions (
     token_digest TEXT PRIMARY KEY,
     organizations_json JSONB NOT NULL,
     last_org TEXT,
+    identity_json JSONB NOT NULL,
+    provider TEXT NOT NULL,
+    subject TEXT NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
   )`);

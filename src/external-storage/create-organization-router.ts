@@ -8,7 +8,7 @@ import {
 import {OrganizationRegistry, type OrganizationRecord} from
   "./organization-registry.js";
 import {z} from "zod";
-import {emptyOrganizationMembershipResolver} from "./organization-memberships.js";
+import {createOrganizationMembershipsAdapter} from "./organization-memberships.js";
 import {PlatformSessions} from "./platform-sessions.js";
 
 const maximumCachedOrganizations = 16;
@@ -50,7 +50,7 @@ export async function createOrganizationRouter(
     const registry = new OrganizationRegistry(database);
     const platformSessions = new PlatformSessions(
       database,
-      config.organizationMemberships ?? emptyOrganizationMembershipResolver,
+        createOrganizationMembershipsAdapter(config.organizationMemberships),
     );
     await registry.ensureOrvex(config.installationId);
     const closeResources = async () => {
@@ -135,6 +135,7 @@ export async function createOrganizationRouter(
       }
     };
     const evictIdle = async () => {
+      await platformSessions.sweepExpired().catch(() => undefined);
       const now = Date.now();
       const idleMilliseconds = options.idleMilliseconds ?? idleOrganizationMilliseconds;
       const expired = [...runtimes.entries()].filter(([, entry]) =>
@@ -168,7 +169,7 @@ export async function createOrganizationRouter(
         if (sourceUrl.pathname === "/") {
           if (request.method !== "GET" && request.method !== "HEAD") return notFound();
           const session = await platformSessionForRequest(request, platformSessions);
-          if (session === null) return new Response(null, {headers: {Location: "/o/orvex/auth/login?returnTo=%2F"}, status: 302});
+          if (session === null) return new Response(null, {headers: {Location: "/auth/platform/login?returnTo=%2F"}, status: 302});
           const active = new Set((await registry.list()).filter(({status}) => status === "active").map(({slug}) => slug));
           const organizations = session.organizations.filter(({slug}) => active.has(slug));
           if (organizations.length === 0) {
@@ -183,8 +184,16 @@ export async function createOrganizationRouter(
             `<li><a href="/o/${encodeURIComponent(slug)}/">${escapeHtml(displayName)}</a></li>`).join("");
           return new Response(`<!doctype html><html><head><meta charset="utf-8"><title>Choose organization</title></head><body><main><h1>Choose an organization</h1><ul>${choices}</ul></main></body></html>`, {headers: {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "private, no-store"}});
         }
-        if (sourceUrl.pathname === "/auth/login") {
-          return new Response(null, {headers: {Location: "/o/orvex/auth/login?returnTo=%2F"}, status: 302});
+        if (sourceUrl.pathname === "/auth/login" || sourceUrl.pathname === "/auth/platform/login") {
+          const returnTo = sourceUrl.searchParams.get("returnTo") ?? "/";
+          const organization = await registry.find("orvex").catch(() => null);
+          if (organization === null || organization.status !== "active") return notFound();
+          const entry = await runtimeFor(organization);
+          const target = new URL(request.url);
+          target.pathname = "/auth/login";
+          target.search = "";
+          target.searchParams.set("returnTo", returnTo);
+          return entry.runtime.app.fetch(new Request(target, request));
         }
         if (sourceUrl.pathname === "/api/v1/platform/me/orgs" && request.method === "GET") {
           const session = await platformSessionForRequest(request, platformSessions);
@@ -197,14 +206,24 @@ export async function createOrganizationRouter(
           if (request.headers.get("sec-fetch-site") !== "same-origin") return notFound();
           const token = platformCookie(request);
           if (token === null) return notFound();
+          const session = await platformSessions.find(token);
+          if (session === null) return notFound();
           let body: unknown;
           try { body = await request.json(); } catch { return notFound(); }
           const parsedBody = z.object({slug: z.string().min(1).max(40)}).strict().safeParse(body);
           if (!parsedBody.success) return notFound();
+          if (!session.organizations.some(({slug}) => slug === parsedBody.data.slug)) return notFound();
           const organization = await registry.find(parsedBody.data.slug).catch(() => null);
           if (organization === null || organization.status !== "active") return notFound();
           const saved = await platformSessions.setLastOrg(token, parsedBody.data.slug);
           return saved ? new Response(null, {status: 204}) : notFound();
+        }
+        if (sourceUrl.pathname === "/api/v1/platform/session/logout" && request.method === "POST") {
+          if (config.applicationOrigin !== undefined && request.headers.get("origin") !== new URL(config.applicationOrigin).origin) return notFound();
+          if (request.headers.get("sec-fetch-site") !== "same-origin") return notFound();
+          const token = platformCookie(request);
+          if (token !== null) await platformSessions.logout(token);
+          return new Response(null, {headers: {"Set-Cookie": "__Host-artifact_platform=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax"}, status: 204});
         }
         const route = organizationRoute(sourceUrl.pathname) ??
           rootOAuthMetadataRoute(sourceUrl.pathname) ??

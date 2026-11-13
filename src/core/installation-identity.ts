@@ -26,6 +26,8 @@ export interface InstallationMember {
   readonly id: string;
   readonly installationId: string;
   readonly role: MembershipRole;
+  /** True when the directory admitted this member through a staff selector. */
+  readonly staff?: boolean;
   readonly status: MemberStatus;
   readonly updatedAt: string;
 }

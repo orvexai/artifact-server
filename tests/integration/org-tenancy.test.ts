@@ -69,6 +69,7 @@ const crossOrgMatrix = [
   {surface: "hono", identifier: "GET /api/v1/session", coverage: "Org A session cookie is ignored by Org B"},
   {surface: "platform", identifier: "GET /api/v1/platform/me/orgs", coverage: "shared platform session lists only verified memberships"},
   {surface: "platform", identifier: "POST /api/v1/platform/session/last-org", coverage: "last-org accepts only a current membership"},
+  {surface: "platform", identifier: "POST /api/v1/platform/session/logout", coverage: "logout deletes the shared platform session and expires its cookie"},
   {surface: "hono", identifier: "GET /auth/login", coverage: "org-scoped login handshake cookie"},
   {surface: "hono", identifier: "GET /auth/callback", coverage: "shared callback selects org from handshake cookie"},
   {surface: "hono", identifier: "POST /api/v1/members/:memberId/reactivate", coverage: "admin-only per-org reactivation cannot cross installations"},
@@ -286,6 +287,7 @@ function assertCrossOrgMatrixComplete(
     ),
     "platform:GET /api/v1/platform/me/orgs",
     "platform:POST /api/v1/platform/session/last-org",
+    "platform:POST /api/v1/platform/session/logout",
     ...registeredTools.map((tool) => `mcp:${tool}`),
   ]);
   expect(knownCaseSet.size).toBe(knownCases.length);
@@ -312,6 +314,7 @@ describe.sequential("organization tenancy security boundary", () => {
   let router: Awaited<ReturnType<typeof startExternalStorageServer>>;
   let orgB: Awaited<ReturnType<OrganizationRegistry["create"]>>;
   let orgC: Awaited<ReturnType<OrganizationRegistry["create"]>>;
+  let platformMemberships: {displayName: string; role: string; slug: string}[];
   let config: ExternalStorageRuntimeConfig;
 
   beforeAll(async () => {
@@ -385,6 +388,10 @@ describe.sequential("organization tenancy security boundary", () => {
       .parse(JSON.parse(createResult.stdout));
     if (orgB.slug !== orgSlug) throw new Error("org create CLI returned the wrong slug.");
     orgC = await registry.create(`team-${randomUUID().slice(0, 8)}`, "Org C");
+    platformMemberships = [
+      {displayName: "Org B", role: "viewer", slug: orgB.slug},
+      {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
+    ];
     const listResult = spawnSync(process.execPath, [
       "--import", "tsx", "src/cli/main.ts", "org", "list",
     ], {cwd: process.cwd(), encoding: "utf8", env: cliEnvironment});
@@ -437,7 +444,7 @@ describe.sequential("organization tenancy security boundary", () => {
       contentDomain: "content.example.net",
       databaseUrl: Redacted.make(databaseUrl),
       installationId,
-      organizationMemberships: {forIdentity: async () => [{displayName: "Org B", role: "viewer", slug: orgSlug}]},
+      organizationMemberships: {forIdentity: async () => platformMemberships},
       groupRolePolicy: {seed: [{role: "administrator", selector: "/orvex/admin"}]},
       externalMcpOAuthVerifier: testMcpVerifier,
       mcpOAuthResource: {
@@ -517,38 +524,72 @@ describe.sequential("organization tenancy security boundary", () => {
       provider: "test-oidc",
       subject: "platform-member",
     };
-    const sessions = new PlatformSessions(database, {forIdentity: async () => [
+    let membershipReads = 0;
+    const sessions = new PlatformSessions(database, {forIdentity: async () => {
+      membershipReads += 1;
+      return [
       {displayName: "Org B", role: "viewer", slug: orgB.slug},
       {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
-    ]});
+      ];
+    }});
     const token = await sessions.issue(identity);
+    const refreshed = await sessions.find(token);
+    expect(refreshed?.organizations).toEqual([
+      {displayName: "Org B", role: "viewer", slug: orgB.slug},
+      {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
+    ]);
+    expect(membershipReads).toBe(2);
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const cookie = `__Host-artifact_platform=${token}`;
+    platformMemberships = [];
     const orgs = await fetch(`${baseUrl}/api/v1/platform/me/orgs`, {headers: {Cookie: cookie}});
     expect(orgs.status).toBe(200);
-    expect(await orgs.json()).toEqual([{displayName: "Org B", role: "viewer", slug: orgB.slug}]);
-    const landing = await fetch(`${baseUrl}/`, {headers: {Cookie: cookie}, redirect: "manual"});
-    expect(landing.status).toBe(302);
-    expect(landing.headers.get("location")).toBe(`/o/${orgB.slug}/`);
+    expect(await orgs.json()).toEqual([]);
+    const noOrgLanding = await fetch(`${baseUrl}/`, {headers: {Cookie: cookie}});
+    expect(await noOrgLanding.text()).toContain("You don't belong to any organization yet.");
+    platformMemberships = [
+      {displayName: "Org B", role: "viewer", slug: orgB.slug},
+      {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
+    ];
+    const memberOrgs = await fetch(`${baseUrl}/api/v1/platform/me/orgs`, {headers: {Cookie: cookie}});
+    expect(await memberOrgs.json()).toEqual([{displayName: "Org B", role: "viewer", slug: orgB.slug}]);
+    const memberLanding = await fetch(`${baseUrl}/`, {headers: {Cookie: cookie}, redirect: "manual"});
+    expect(memberLanding.status).toBe(302);
+    expect(memberLanding.headers.get("location")).toBe(`/o/${orgB.slug}/`);
     const unknown = await fetch(`${baseUrl}/api/v1/platform/me/orgs`);
     expect(unknown.status).toBe(404);
     const lastOrg = await fetch(`${baseUrl}/api/v1/platform/session/last-org`, {
-      body: JSON.stringify({slug: "not-a-member"}),
+      body: JSON.stringify({slug: orgC.slug}),
       headers: {Cookie: cookie, "Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Site": "same-origin"},
       method: "POST",
     });
     expect(lastOrg.status).toBe(404);
+
+    const platformLogin = await fetch(`${baseUrl}/`, {redirect: "manual"});
+    expect(platformLogin.headers.get("location")).toBe("/auth/platform/login?returnTo=%2F");
 
     const multiOrgSessions = new PlatformSessions(database, {forIdentity: async () => [
       {displayName: "Org B", role: "viewer", slug: orgB.slug},
       {displayName: orgC.displayName, role: "editor", slug: orgC.slug},
     ]});
     const multiOrgToken = await multiOrgSessions.issue(identity);
+    platformMemberships = [
+      {displayName: "Org B", role: "viewer", slug: orgB.slug},
+      {displayName: orgC.displayName, role: "editor", slug: orgC.slug},
+    ];
+    expect(await sessions.find(token)).toBeNull();
     const chooser = await fetch(`${baseUrl}/`, {
       headers: {Cookie: `__Host-artifact_platform=${multiOrgToken}`},
     });
     expect(chooser.status).toBe(200);
     expect(await chooser.text()).toContain("Choose an organization");
+    expect(await sessions.find(token)).toBeNull();
+    const logout = await fetch(`${baseUrl}/api/v1/platform/session/logout`, {
+      headers: {Cookie: `__Host-artifact_platform=${multiOrgToken}`, Origin: applicationOrigin, "Sec-Fetch-Site": "same-origin"}, method: "POST",
+    });
+    expect(logout.status).toBe(204);
+    expect(logout.headers.get("set-cookie")).toContain("SameSite=Lax");
+    expect(await multiOrgSessions.find(multiOrgToken)).toBeNull();
 
     const runtime = await createOrgRuntime(orgB.id, {
       applicationOrigin: new URL(`/o/${orgB.slug}`, applicationOrigin).toString(),

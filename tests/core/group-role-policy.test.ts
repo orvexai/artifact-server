@@ -2,7 +2,9 @@ import {describe, expect, test} from "vitest";
 
 import {
   type GroupRoleAssignment,
+  groupRoleEditAllowed,
   groupMembershipRole,
+  groupRoleSeedMarksStaff,
 } from "../../src/core/group-role-policy.js";
 import type {MembershipRole} from "../../src/core/identity.js";
 
@@ -29,6 +31,15 @@ const assignments = [
 ];
 
 describe("stored group roles", () => {
+  test("tenant role edits are owner-only and staff groups stay protected", () => {
+    const staffSeed = [{role: "member" as const, selector: "/Tenant/Support", staff: true}];
+    expect(groupRoleEditAllowed("administrator", true, true)).toBe(false);
+    expect(groupRoleEditAllowed("owner", true, true)).toBe(true);
+    expect(groupRoleEditAllowed("administrator", true, false)).toBe(true);
+    expect(groupRoleSeedMarksStaff({name: "Support", path: "/Tenant/Support"}, staffSeed)).toBe(true);
+    expect(groupRoleSeedMarksStaff({name: "Support", path: "/Tenant/Customer/Support"}, staffSeed)).toBe(false);
+  });
+
   test("the strongest role among a person's groups wins", () => {
     expect(groupMembershipRole(assignments, ["Developers", "Administrators"]))
       .toBe("owner");

@@ -45,6 +45,8 @@ import {
 } from "../core/installation-identity.js";
 import {
   configuredGroupRoleAssignments,
+  groupRoleEditAllowed,
+  groupRoleSeedMarksStaff,
   type GroupRoleAssignment,
   type GroupRolePolicy,
   type GroupRoleSeedEntry,
@@ -139,6 +141,7 @@ export interface InstallationIdentityRepository {
       readonly id: string;
       readonly installationId: string;
       readonly role: MembershipRole;
+      readonly staff?: boolean;
     },
   ) => Effect.Effect<InstallationMember, IdentityConflict | IdentityRepositoryFailure>;
   readonly bindExternalIdentity: (
@@ -253,6 +256,7 @@ export interface InstallationIdentityRepository {
     InstallationMember | null,
     IdentityNotFound | IdentityRepositoryFailure
   >;
+  readonly setMemberStaff: (installationId: string, memberId: string, staff: boolean) => Effect.Effect<void, IdentityNotFound | IdentityRepositoryFailure>;
 }
 
 export interface IdentitySecretProvider {
@@ -319,6 +323,7 @@ export interface DirectoryMemberEntry {
   /** Already normalized with {@link normalizeMemberEmail}. */
   readonly email: string;
   readonly role: MembershipRole;
+  readonly staff?: boolean;
 }
 
 /** What one directory reconciliation changed. */
@@ -416,6 +421,7 @@ export interface InstallationAccessOperations {
     AuthorizationDenied | IdentityRepositoryFailure
   >;
   readonly listStaffOnlyMemberIds: () => Effect.Effect<readonly string[], IdentityRepositoryFailure>;
+  readonly listStaffOnlyMembers: () => Effect.Effect<readonly Pick<InstallationMember, "id" | "displayName" | "email">[], IdentityRepositoryFailure>;
   readonly issueLocalBrowserLogin: (
     credential: Redacted.Redacted,
   ) => Effect.Effect<
@@ -732,17 +738,15 @@ function makeInstallationAccessService(
       dependencies.installationId,
     );
     if (dependencies.organizationDirectoryVisibility !== true || groupRolePolicy === null) return groups;
-    const staffSelectors = groupRolePolicy.seed.filter(({staff}) => staff === true)
-      .map(({selector}) => selector);
-    return groups.filter((group) => !staffSelectors.some((selector) =>
-      selector.startsWith("/") ? group.path === selector : group.name === selector
-    ));
+    return groups.filter((group) => !groupRoleSeedMarksStaff(group, groupRolePolicy.seed));
   });
 
   const listGroupRoles = Effect.fn(
     "InstallationAccessService.listGroupRoles",
   )(function*() {
-    return yield* dependencies.repository.listGroupRoles(dependencies.installationId);
+    const roles = yield* dependencies.repository.listGroupRoles(dependencies.installationId);
+    if (groupRolePolicy === null) return roles;
+    return roles.map((group) => Object.assign({}, group, {staff: groupRoleSeedMarksStaff(group, groupRolePolicy.seed)}));
   });
 
   const isGroupRoleSeedApplied = Effect.fn(
@@ -789,11 +793,17 @@ function makeInstallationAccessService(
 
   const setGroupRole = Effect.fn("InstallationAccessService.setGroupRole")(
     function*(principal: Principal, groupId: string, role: MembershipRole | null) {
-      if (
-        principal.kind !== "human" || principal.authorizedByPrincipalId !== null ||
-        principal.membershipRole !== membershipRoles.owner &&
-        !(dependencies.organizationDirectoryVisibility === true && isAdministratorRole(principal.membershipRole))
-      ) return yield* new AuthorizationDenied({message: "Only installation owners may edit group roles."});
+      const directHuman = principal.kind === "human" && principal.authorizedByPrincipalId === null;
+      const tenantOrganization = dependencies.organizationDirectoryVisibility === true;
+      if (!groupRoleEditAllowed(principal.membershipRole, directHuman, tenantOrganization)) {
+        return yield* new AuthorizationDenied({message: "Only installation owners may edit group roles."});
+      }
+      const groups = yield* dependencies.repository.listDirectoryGroups(dependencies.installationId);
+      const target = groups.find((group) => group.id === groupId);
+      if (target === undefined) return yield* new IdentityNotFound({message: "The group does not exist."});
+      if (tenantOrganization && groupRolePolicy !== null && groupRoleSeedMarksStaff(target, groupRolePolicy.seed)) {
+        return yield* new AuthorizationDenied({message: "Staff group roles cannot be edited."});
+      }
       yield* dependencies.repository.setGroupRole(
         dependencies.installationId,
         groupId,
@@ -942,6 +952,7 @@ function makeInstallationAccessService(
           id: dependencies.ids.memberId(),
           installationId: dependencies.installationId,
           role: entry.role,
+          staff: entry.staff === true,
         });
         admitted += 1;
       } else if (member.status !== memberStatuses.active) {
@@ -962,6 +973,9 @@ function makeInstallationAccessService(
         roleChanged += 1;
       } else {
         unchanged += 1;
+      }
+      if (member !== undefined && member.staff !== (entry.staff === true)) {
+        yield* dependencies.repository.setMemberStaff(dependencies.installationId, member.id, entry.staff === true);
       }
     }
     let deactivated = 0;
@@ -1485,7 +1499,7 @@ function makeInstallationAccessService(
     "InstallationAccessService.listMembers",
   )(function*(principal: Principal) {
     if (dependencies.organizationDirectoryVisibility === true) {
-      if (principal.installationId !== dependencies.installationId || principal.kind !== "human") {
+      if (principal.installationId !== dependencies.installationId || principal.kind !== "human" && principal.kind !== "service") {
         return yield* new AuthorizationDenied({message: "This organization directory is not available to this principal."});
       }
       if (principal.membershipRole === membershipRoles.guest) return [];
@@ -1494,34 +1508,28 @@ function makeInstallationAccessService(
     }
     const members = yield* dependencies.repository.listMembers(dependencies.installationId);
     if (dependencies.organizationDirectoryVisibility !== true || groupRolePolicy === null) return members;
-    const staffSelectors = groupRolePolicy.seed.filter(({staff}) => staff === true).map(({selector}) => selector);
-    if (staffSelectors.length === 0) return members;
-    const groups = yield* dependencies.repository.listDirectoryGroups(dependencies.installationId);
-    const staffGroupIds = groups.filter((group) => staffSelectors.some((selector) =>
-      selector.startsWith("/") ? group.path === selector : group.name === selector
-    )).map(({id}) => id);
-    const staffOnlyIds = dependencies.repository.listStaffOnlyMemberIds === undefined
-      ? []
-      : yield* dependencies.repository.listStaffOnlyMemberIds(dependencies.installationId, staffGroupIds);
-    const hidden = new Set(staffOnlyIds);
-    return members.filter((member) => !hidden.has(member.id));
+    return members.filter((member) => member.staff !== true);
   });
 
   const listStaffOnlyMemberIds = Effect.fn("InstallationAccessService.listStaffOnlyMemberIds")(function*() {
-    if (dependencies.organizationDirectoryVisibility !== true || groupRolePolicy === null || dependencies.repository.listStaffOnlyMemberIds === undefined) return [];
-    const staffSelectors = groupRolePolicy.seed.filter(({staff}) => staff === true).map(({selector}) => selector);
-    if (staffSelectors.length === 0) return [];
-    const groups = yield* dependencies.repository.listDirectoryGroups(dependencies.installationId);
-    const staffGroupIds = groups.filter((group) => staffSelectors.some((selector) =>
-      selector.startsWith("/") ? group.path === selector : group.name === selector
-    )).map(({id}) => id);
-    return yield* dependencies.repository.listStaffOnlyMemberIds(dependencies.installationId, staffGroupIds);
+    if (dependencies.organizationDirectoryVisibility !== true) return [];
+    const members = yield* dependencies.repository.listMembers(dependencies.installationId);
+    return members.filter(({staff}) => staff === true).map(({id}) => id);
+  });
+  const listStaffOnlyMembers = Effect.fn("InstallationAccessService.listStaffOnlyMembers")(function*() {
+    if (dependencies.organizationDirectoryVisibility !== true) return [];
+    const members = yield* dependencies.repository.listMembers(dependencies.installationId);
+    return members.filter(({staff}) => staff === true).map(({id, displayName, email}) => ({id, displayName, email}));
   });
 
   const deactivateMember = Effect.fn(
     "InstallationAccessService.deactivateMember",
   )(function*(principal: Principal, memberId: string) {
     yield* requireAdministrator(principal, dependencies.installationId);
+    if (dependencies.organizationDirectoryVisibility === true) {
+      const target = yield* dependencies.repository.findMember(dependencies.installationId, memberId);
+      if (target?.staff === true) return yield* new IdentityNotFound({message: "The member does not exist."});
+    }
     if (principal.id === memberId) {
       return yield* Effect.fail(new IdentityConflict({
         message: "An administrator cannot deactivate their current member.",
@@ -1714,6 +1722,7 @@ function makeInstallationAccessService(
     listApiKeys,
     listMembers,
     listStaffOnlyMemberIds,
+    listStaffOnlyMembers,
     loginWithLocalBrowserToken,
     reconcileDirectoryMembers,
     applyDirectoryGroups,

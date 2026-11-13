@@ -77,6 +77,7 @@ export interface McpHttpAdapterDependencies {
   readonly organizationTenancy?: boolean;
   /** The OAuth protected resource in force for this request, if any. */
   readonly oauthResource: () => string | null;
+  readonly organizationSlug?: string;
 }
 
 /** Stateless MCP HTTP adapter mounted by every Artifact Server deployment. */
@@ -105,7 +106,7 @@ export function createMcpHttpAdapter(
           ...principal,
           actorClientId: agentClientId,
         };
-      const serverDependencies: ArtifactMcpServerDependencies = {
+      const serverDependencies = Object.assign({
         applicationOrigin: dependencies.applicationOrigin
           ?? requestOrigin(context.requestInfo),
         applicationRuntime: dependencies.applicationRuntime,
@@ -115,7 +116,7 @@ export function createMcpHttpAdapter(
         mode: dependencies.mode,
         organizationTenancy: dependencies.organizationTenancy === true,
         requestId: requestIdFrom(context.requestInfo),
-      };
+      }, dependencies.organizationSlug === undefined ? {} : {organizationSlug: dependencies.organizationSlug});
       return createArtifactMcpServer(
         serverDependencies,
         {agentClientId, agentDisplayName, principal: attributedPrincipal},

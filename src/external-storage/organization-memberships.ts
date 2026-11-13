@@ -18,3 +18,10 @@ export interface OrganizationMembershipResolver {
 export const emptyOrganizationMembershipResolver: OrganizationMembershipResolver = {
   forIdentity: async () => [],
 };
+
+/** Named composition seam for the verified-identity organization claim adapter. */
+export function createOrganizationMembershipsAdapter(
+  resolver?: OrganizationMembershipResolver,
+): OrganizationMembershipResolver {
+  return resolver ?? emptyOrganizationMembershipResolver;
+}

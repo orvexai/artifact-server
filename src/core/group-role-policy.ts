@@ -22,6 +22,24 @@ export interface GroupRolePolicy {
   readonly guestGroupPrefixes?: readonly string[];
 }
 
+/** Staff selectors are exact names or exact full paths, matching admission semantics. */
+export function groupRoleSeedMarksStaff(
+  group: {readonly name: string; readonly path: string},
+  seed: readonly GroupRoleSeedEntry[],
+): boolean {
+  return seed.some((entry) => entry.staff === true &&
+    (entry.selector.startsWith("/") ? entry.selector === group.path : entry.selector === group.name));
+}
+
+/** Tenant group-role edits stay with direct owners; legacy Orvex admins retain current access. */
+export function groupRoleEditAllowed(
+  role: MembershipRole,
+  directHuman: boolean,
+  tenantOrganization: boolean,
+): boolean {
+  return directHuman && (role === "owner" || !tenantOrganization && role === "administrator");
+}
+
 /** Who stored a role that came from the configured seed rather than a person. */
 export const groupRoleSeedPrincipalId = "configuration:group-role-seed";
 /** Marker stored on a role row created from the guest path rule. */
@@ -42,6 +60,8 @@ export interface GroupRoleAssignment {
   readonly nameUnique: boolean;
   readonly path: string;
   readonly role: MembershipRole;
+  /** Set by the application adapter from the configured staff selector. */
+  readonly staff?: boolean;
   /** Present for a guest role row created from the configured path rule. */
   readonly source?: "rule";
 }

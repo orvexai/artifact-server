@@ -98,6 +98,8 @@ export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
   }
   const rolesByUser = new Map<string, {
     role: MembershipRole;
+    staffSelector: boolean;
+    regularSelector: boolean;
     readonly user: DirectoryUser;
   }>();
   for (const assignment of assignments) {
@@ -109,15 +111,25 @@ export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
     for (const user of users) {
       const seen = rolesByUser.get(user.id);
       if (seen === undefined) {
-        rolesByUser.set(user.id, {role: assignment.role, user});
+        rolesByUser.set(user.id, {
+          role: assignment.role,
+          staffSelector: assignment.staff === true,
+          regularSelector: assignment.staff !== true,
+          user,
+        });
       } else if (membershipRolePrecedence(assignment.role) > membershipRolePrecedence(seen.role)) {
         seen.role = assignment.role;
+      }
+      if (seen !== undefined) {
+        if (assignment.staff === true) seen.staffSelector = true;
+        else seen.regularSelector = true;
       }
     }
   }
   const desired = new Map<string, DirectoryMemberEntry>();
   let skipped = 0;
-  for (const {role, user} of rolesByUser.values()) {
+  for (const {role, staffSelector, regularSelector, user} of rolesByUser.values()) {
+    const staff = staffSelector && !regularSelector;
     const email = user.enabled && user.emailVerified && user.email !== null
       ? normalizeMemberEmail(user.email)
       : null;
@@ -129,7 +141,9 @@ export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
     // Two directory users sharing one address are one member; the stronger
     // role wins, as one person in both groups would.
     if (previous === undefined || membershipRolePrecedence(role) > membershipRolePrecedence(previous.role)) {
-      desired.set(email, {displayName: displayName(user, email), email, role});
+      desired.set(email, {displayName: displayName(user, email), email, role, staff});
+    } else if (previous.staff !== (previous.staff === true && staff)) {
+      desired.set(email, {...previous, staff: previous.staff === true && staff});
     }
   }
   if (desired.size === 0) {

@@ -1011,6 +1011,10 @@ export function createApplicationLayer(
             recomputeFromCurrentGroups,
           ),
         ),
+      setMemberStaff: (installationId, memberId, staff) => identityEffectWithNotFound(
+        "setMemberRole",
+        () => identityRepository.setMemberStaff(installationId, memberId, staff),
+      ),
     },
     secrets: {
       digest: digestIdentitySecret,

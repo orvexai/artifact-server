@@ -45,6 +45,7 @@ import {
   maximumGitCloneCredentialTtlSeconds,
 } from "../application/git-history-access.js";
 import {StagedUploadService} from "../application/staged-upload.js";
+import type {InstallationMember} from "../core/installation-identity.js";
 import {
   accessSettings,
   agentDispatchStates,
@@ -447,6 +448,7 @@ export interface ArtifactMcpServerDependencies {
   readonly organizationTenancy?: boolean;
   readonly mode: "local" | "remote";
   readonly requestId: string;
+  readonly organizationSlug?: string;
 }
 
 function runMcpApplicationEffect<A, E>(
@@ -493,6 +495,10 @@ export function createArtifactMcpServer(
   );
   const isProvisioner = identity.principal.serviceAccountSource === "oidc" &&
     identity.principal.capabilities.includes(principalCapabilities.provisionProjects);
+  const isTenantOrganization = dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex";
+  let staffProjection: Promise<readonly Pick<InstallationMember, "id" | "displayName" | "email">[]> | null = null;
+  const staffMembers = () => staffProjection ??= runMcpApplicationEffect(dependencies,
+    InstallationAccessService.use((access) => access.listStaffOnlyMembers()));
 
   /**
    * Keep the verified OAuth client as the durable actor and use the MCP
@@ -546,14 +552,22 @@ export function createArtifactMcpServer(
     // A schemaless tool keeps its original callback on purpose: the SDK
     // invokes such a tool with a single context argument, which the
     // two-argument nudge wrapper below cannot forward. None exist today.
-    if (nudgeFreeTools.has(name) || config.inputSchema === undefined) {
+    if (config.inputSchema === undefined) {
       return;
     }
     const execute = registered.executor;
     registered.update({
       callback: async (toolArguments, context) => {
-        const result = await execute(toolArguments, context);
+        let result = await execute(toolArguments, context);
         if (!isCallToolResult(result) || result.isError === true) return result;
+        if (isTenantOrganization) {
+          try {
+            result = await projectTenantMcpResult(result, await staffMembers(), identity.principal.membershipRole);
+          } catch {
+            result = {...result, content: [], structuredContent: undefined};
+          }
+        }
+        if (nudgeFreeTools.has(name)) return result;
         // The call's arguments are parsed here, at the protocol boundary; only
         // the thread a progress echo may name travels further.
         const nudge = await deriveNudge(progressEchoThread(
@@ -3353,6 +3367,54 @@ function successResult<Value extends object>(value: Value, summary?: string) {
     }],
     structuredContent: value,
   };
+}
+
+export function projectTenantMcpResult<Output extends {readonly content: readonly {readonly type: string; readonly text?: string}[]; readonly structuredContent?: unknown}>(
+  result: Output,
+  staffMembers: readonly Pick<InstallationMember, "id" | "displayName" | "email">[],
+  role: Principal["membershipRole"],
+): Output {
+  const structuredSchema = z.json();
+  const parsedStructured = structuredSchema.safeParse(result.structuredContent);
+  const byId = new Map(staffMembers.map((member) => [member.id, member]));
+  type JsonValue = z.infer<typeof structuredSchema>;
+  const transform = (value: JsonValue): JsonValue => {
+    if (Array.isArray(value)) return value.map(transform);
+    if (value === null || Object.prototype.toString.call(value) !== "[object Object]") return value;
+    // SAFETY: Structured MCP content was validated as JSON immediately before this projection.
+    const record = value as Record<string, JsonValue>;
+    const authorId = z.string().safeParse(record["principalId"]).data ?? z.string().safeParse(record["authorSubject"]).data ?? null;
+    const staff = authorId === null ? undefined : byId.get(authorId);
+    const authorName = z.string().safeParse(record["displayName"]).data ?? z.string().safeParse(record["authorDisplayName"]).data ?? null;
+    const displayNameIsStaff = authorName !== null && staffMembers.some((member) => member.displayName === authorName);
+    const output: Record<string, JsonValue> = {};
+    for (const [key, child] of Object.entries(record)) {
+      if (key === "authorSubject") continue;
+      if ((key === "authorEmail" || key === "email") &&
+        (staff !== undefined || displayNameIsStaff || role !== membershipRoles.member && role !== membershipRoles.owner)) continue;
+      if ((key === "displayName" || key === "authorDisplayName") && (staff !== undefined || displayNameIsStaff)) {
+        output[key] = "Orvex Support";
+      } else if (key === "actorDisplayName" && (staff !== undefined || displayNameIsStaff)) {
+        output[key] = "Orvex Support";
+      } else {
+        output[key] = transform(child);
+      }
+    }
+    return output;
+  };
+  // SAFETY: MCP structured content is emitted as JSON; safeParse validates its shape before projection.
+  const structuredContent = parsedStructured.success ? transform(parsedStructured.data) : undefined;
+  const content = result.content.map((item) => {
+    if (item.text === undefined) return item;
+    let text = item.text;
+    for (const member of staffMembers) {
+      if (member.displayName !== "") text = text.split(member.displayName).join("Orvex Support");
+      if (member.email !== "") text = text.split(member.email).join("Orvex Support");
+    }
+    return {...item, text};
+  });
+  // SAFETY: The result envelope and protocol content shape are preserved; only identity display fields are projected.
+  return {...result, content, structuredContent} as Output;
 }
 
 function publicationSummary(published: {

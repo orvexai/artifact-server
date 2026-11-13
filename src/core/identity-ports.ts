@@ -26,6 +26,7 @@ export interface AdmitMemberRecord {
   readonly id: string;
   readonly installationId: string;
   readonly role: InstallationMember["role"];
+  readonly staff?: boolean;
 }
 
 /** Values persisted when binding one external identity to a member. */
@@ -233,6 +234,7 @@ export interface IdentityRepository {
     readonly skipped: number;
     readonly unchanged: number;
   }>;
+  setMemberStaff(installationId: string, memberId: string, staff: boolean): Promise<void>;
 }
 
 /** Atomic first-key operation required by private-team composition roots. */
