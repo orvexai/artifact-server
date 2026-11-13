@@ -563,6 +563,7 @@ export interface HttpAppDependencies {
   readonly installationId?: string;
   /** Transitional compatibility for pre-slice-4 bindings, Orvex only. */
   readonly allowLegacyEmbedBinding?: boolean;
+  readonly legacyEmbedBindingExpiresAt?: number;
   /** Suffix scoped to one configured organization on the shared app host. */
   readonly organizationCookieSuffix?: string;
   /** Keycloak organization bound to this installation for token admission. */
@@ -874,8 +875,7 @@ export function createHttpApp(
     if (dependencies.contentHostRoutingEnabled === true && isContentDomain) {
       if (
         contentToken === null ||
-        (context.req.method !== "GET" && context.req.method !== "HEAD") ||
-        isForbiddenContentHostPath(requestUrl.pathname)
+        (context.req.method !== "GET" && context.req.method !== "HEAD")
       ) return context.notFound();
     }
     if (contentToken !== null) {
@@ -2694,6 +2694,11 @@ export function createHttpApp(
       artifactId: context.req.param("artifactId"),
       versionId: body.versionId,
     };
+    if (dependencies.legacyEmbedBindingExpiresAt !== undefined) {
+      Object.assign(expectedBinding, {
+        legacyInstallationlessExpiresAt: dependencies.legacyEmbedBindingExpiresAt,
+      });
+    }
     if (dependencies.installationId !== undefined) {
       Object.assign(expectedBinding, {installation_id: dependencies.installationId});
     }
@@ -5439,15 +5444,6 @@ function isContentDomainHost(hostname: string, contentDomain: string): boolean {
   return normalizedHostname === normalizedDomain || normalizedHostname.endsWith(`.${normalizedDomain}`);
 }
 
-function isForbiddenContentHostPath(pathname: string): boolean {
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    return true;
-  }
-  return /^\/(?:api(?:\/|$)|mcp(?:\/|$)|review(?:\/|$)|o(?:\/|$)|auth(?:\/|$)|embed(?:\/|$)|review-frame(?:\/|$))/iu.test(decoded);
-}
 
 function isContentBootstrapRequest(requestUrl: URL): boolean {
   return requestUrl.searchParams.has(contentBootstrapQueryParameter);
@@ -5553,6 +5549,7 @@ function verifyEmbedBinding(
   token: string,
   expected: Pick<EmbedBindingClaims, "artifactId" | "installation_id" | "versionId"> & {
     readonly allowLegacyInstallationless?: boolean;
+    readonly legacyInstallationlessExpiresAt?: number;
   },
 ): EmbedBindingClaims | null {
   const parts = token.split(".");
@@ -5585,7 +5582,10 @@ function verifyEmbedBinding(
     || claims.exp > now + 60 * 60
     || claims.artifactId !== expected.artifactId
     || (expected.installation_id !== undefined && claims.installation_id !== expected.installation_id
-      && !(claims.installation_id === undefined && expected.allowLegacyInstallationless === true))
+      && !(claims.installation_id === undefined && expected.allowLegacyInstallationless === true
+        && expected.legacyInstallationlessExpiresAt !== undefined
+        && now < expected.legacyInstallationlessExpiresAt
+        && claims.exp <= expected.legacyInstallationlessExpiresAt))
     || claims.versionId !== expected.versionId
   ) return null;
   return claims;

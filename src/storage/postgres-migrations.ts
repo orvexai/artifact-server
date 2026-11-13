@@ -994,6 +994,29 @@ const addOrganizationEmbedOrigins = Effect.gen(function*() {
   const sql = yield* SqlClient;
   yield* sql.unsafe(`ALTER TABLE artifact_installations
     ADD COLUMN IF NOT EXISTS embed_origins JSONB NOT NULL DEFAULT '[]'::jsonb`);
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN IF NOT EXISTS registry_version BIGINT NOT NULL DEFAULT 1`);
+  yield* sql.unsafe(`CREATE OR REPLACE FUNCTION bump_artifact_installation_registry_version()
+    RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      NEW.registry_version := OLD.registry_version + 1;
+      RETURN NEW;
+    END
+    $$`);
+  yield* sql.unsafe(`DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'artifact_installations_registry_version_trigger'
+          AND tgrelid = 'artifact_installations'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER artifact_installations_registry_version_trigger
+          BEFORE UPDATE ON artifact_installations
+          FOR EACH ROW EXECUTE FUNCTION bump_artifact_installation_registry_version();
+      END IF;
+    END
+    $$`);
   yield* sql.unsafe(`DO $$
     BEGIN
       IF NOT EXISTS (

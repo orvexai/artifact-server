@@ -163,6 +163,7 @@ export interface ExternalStorageRuntime {
 export interface ExternalStorageOrgConfig {
   readonly admissionPolicy?: GroupRolePolicy | null;
   readonly allowLegacyEmbedBinding?: boolean;
+  readonly legacyEmbedBindingExpiresAt?: number;
   readonly applicationOrigin?: string;
   readonly bootstrapAdministratorEmail?: string | null;
   readonly bootstrapApiToken?: Redacted.Redacted;
@@ -446,6 +447,12 @@ export async function createOrgRuntime(
     }
     if (orgConfig.allowLegacyEmbedBinding === true) {
       configuredAppDependencies = {...configuredAppDependencies, allowLegacyEmbedBinding: true};
+    }
+    if (orgConfig.legacyEmbedBindingExpiresAt !== undefined) {
+      configuredAppDependencies = {
+        ...configuredAppDependencies,
+        legacyEmbedBindingExpiresAt: orgConfig.legacyEmbedBindingExpiresAt,
+      };
     }
     if (orgConfig.cookieRouteId !== "") {
       configuredAppDependencies = {

@@ -65,10 +65,38 @@ import {startStubOidcProvider} from "../support/stub-oidc-provider.js";
 import {createS3ObjectStorageProviderFactory} from
   "../../src/storage/s3-object-storage.js";
 import {PostgresDatabase} from "../../src/storage/postgres-database.js";
+import type {NodeGitHistoryConfiguration} from "../../src/git-history/node-git-history-configuration.js";
+import type {GitHistoryProviderHealthProbe} from "../../src/git-history/git-history-provider-health.js";
+import {RecordingGitHistoryProvider} from "../support/git-history-provider.js";
 
 const region = "us-east-1";
 const applicationOrigin = "https://artifacts.example.com";
 const embedBindingSecret = "org-tenancy-test-embed-binding-secret-with-32-bytes-minimum";
+const orgTenancyGitProvider = new RecordingGitHistoryProvider();
+const orgTenancyGitHistory: NodeGitHistoryConfiguration = {
+  _tag: "CloudflareArtifactsRest",
+  apiToken: Redacted.make("org-tenancy-test-git-provider-token"),
+  capability: {
+    limits: {
+      fileCopyBytes: 10 * 1024 * 1024,
+      logicalCopiedBytes: 0,
+      logicalReservedBytes: 0,
+      storageBudgetBytes: null,
+      versionCopyBytes: 50 * 1024 * 1024,
+    },
+    provider: "cloudflare-artifacts",
+    providerState: "checking",
+  },
+  identity: {
+    accountId: "org-tenancy-account",
+    namespace: "org-tenancy-test",
+    provider: "cloudflare-artifacts",
+  },
+  issues: [],
+};
+const orgTenancyGitHistoryProbe: GitHistoryProviderHealthProbe = {
+  check: () => Effect.succeed({state: "available"}),
+};
 const adminEmail = "administrator@example.test";
 const bytes = new TextEncoder().encode("org B private artifact");
 const crossOrgMatrix = [
@@ -87,7 +115,7 @@ const crossOrgMatrix = [
   {surface: "hono", identifier: "GET /.well-known/oauth-protected-resource/o/:organization/mcp", coverage: "root OAuth metadata advertises the selected org MCP origin"},
   {surface: "hono", identifier: "PUT /api/v1/uploads/:uploadId/files/:storageToken", coverage: "Org A upload capability fails when its path is routed through Org B"},
   {surface: "hono", identifier: "GET /api/v1/public/artifacts/:artifactId/guest/current", coverage: "Org B guest cookie is valid only in Org B"},
-  {surface: "hono", identifier: "POST /api/v1/projects/:projectId/artifacts/:artifactId/history/clone-token", coverage: "Org B refuses clone-token issuance because Git history is not provisioned there"},
+  {surface: "hono", identifier: "POST /api/v1/projects/:projectId/artifacts/:artifactId/history/clone-token", coverage: "An Orvex clone credential and remote cannot be reused to resolve Orvex project and artifact identifiers through Org B"},
   {surface: "mcp", identifier: "artifact_open", coverage: "returned review and content URLs include Org B base path and content token prefix"},
   {surface: "mcp", identifier: "artifact_link", coverage: "Org B refuses linked-file publication without a local linked-file source and mints no URL or token"},
   {surface: "mcp", identifier: "artifact_relink", coverage: "Org B refuses relinking without a local linked-file source and mints no URL or token"},
@@ -175,7 +203,7 @@ const pendingCrossOrgCases = [
   {identifier: "hono:HEAD /projects/:projectId/artifacts/:artifactId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
   {identifier: "hono:HEAD /projects/:projectId/artifacts/:artifactId/versions/:versionId/review", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
   {identifier: "hono:HEAD /review", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
-  {identifier: "hono:HEAD /review-frame", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  {identifier: "hono:HEAD /review-frame", group: "static and shell routes", justification: "HEAD returns only review-frame shell headers and no artifact bytes; the GET shell CSP and tenant embed-origin behavior are probed directly."},
   {identifier: "hono:HEAD /review/*", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
   {identifier: "hono:HEAD /workbench", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
   {identifier: "hono:PATCH /api/v1/artifacts/:artifactId/access", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
@@ -328,6 +356,8 @@ describe.sequential("organization tenancy security boundary", () => {
   let orgC: Awaited<ReturnType<OrganizationRegistry["create"]>>;
   let platformMemberships: {displayName: string; role: string; slug: string}[];
   let config: ExternalStorageRuntimeConfig;
+  let orgBPathContentToken = "";
+  let legacyPathContentToken = "";
 
   beforeAll(async () => {
     if (databaseUrl === undefined || endpoint === undefined || accessKey === undefined || secretKey === undefined) {
@@ -400,6 +430,7 @@ describe.sequential("organization tenancy security boundary", () => {
       displayName: z.string(),
       embedOrigins: z.array(z.string()),
       id: z.string(),
+      registryVersion: z.string().regex(/^\d+$/u),
       routeId: z.string(),
       slug: z.string(),
       status: z.enum(["active", "suspended"]),
@@ -495,6 +526,9 @@ describe.sequential("organization tenancy security boundary", () => {
       installationId,
       organizationMemberships: {forIdentity: async () => platformMemberships},
       groupRolePolicy: {seed: [{role: "administrator", selector: "/orvex/admin"}]},
+      gitHistory: orgTenancyGitHistory,
+      gitHistoryHealthProbe: orgTenancyGitHistoryProbe,
+      gitHistoryProvider: orgTenancyGitProvider,
       externalMcpOAuthVerifier: testMcpVerifier,
       mcpOAuthResource: {
         authorizationServerMetadata: {
@@ -537,7 +571,7 @@ describe.sequential("organization tenancy security boundary", () => {
       slug: orgB.slug,
       contentTokenPrefix: `${orgB.routeId}-`,
       embedOrigins: [],
-    }, config, database);
+    }, withoutGitHistory(config), database);
     try {
       const projectResponse = await setupB.app.fetch(appRequest(
         "/api/v1/projects",
@@ -557,6 +591,19 @@ describe.sequential("organization tenancy security boundary", () => {
         orgB.slug,
       );
       if (!artifactId.startsWith("art_")) throw new Error("The Org B fixture artifact ID is malformed.");
+      const pathArtifactId = await publishOrgPathFilesArtifact(
+        (request) => setupB.app.fetch(request),
+        apiTokenB,
+        projectId,
+        orgB.slug,
+        "Org B reserved path files",
+      );
+      const pathVersionRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT content_token AS "contentToken" FROM versions
+          WHERE installation_id = ${orgB.id} AND artifact_id = ${pathArtifactId}`;
+      }));
+      orgBPathContentToken = z.object({contentToken: z.string()}).parse(pathVersionRows[0]).contentToken;
     } finally {
       await setupB.close();
     }
@@ -1557,13 +1604,33 @@ describe.sequential("organization tenancy security boundary", () => {
       const artifacts = yield* sql`SELECT id FROM artifacts
         WHERE installation_id = ${orgB.id} AND name = 'Org B artifact'`;
       const versions = yield* sql`SELECT id, content_token AS "contentToken"
-        FROM versions WHERE installation_id = ${orgB.id}`;
+        FROM versions WHERE installation_id = ${orgB.id}
+          AND artifact_id = (SELECT id FROM artifacts
+            WHERE installation_id = ${orgB.id} AND name = 'Org B artifact')`;
       return [projects, artifacts, versions] as const;
     }));
     const projectId = z.object({id: z.string()}).parse(projectRows[0]).id;
     const artifactId = z.object({id: z.string()}).parse(artifactRows[0]).id;
     const version = z.object({id: z.string(), contentToken: z.string()}).parse(versionRows[0]);
     expect(version.contentToken).toMatch(new RegExp(`^${orgB.routeId}-[A-Za-z0-9_-]{16,100}$`, "u"));
+    const reservedPathResponses = await Promise.all(reservedContentPathFiles.map(async (pathEntry) => {
+      const response = await fetchWithHost(
+        `http://${router.hostname}:${router.port}/${pathEntry.path}`,
+        {headers: {Host: `${orgBPathContentToken}.content.example.net`}},
+        router.hostname,
+        router.port,
+      );
+      return {
+        body: await response.text(),
+        path: pathEntry.path,
+        status: response.status,
+      };
+    }));
+    expect(reservedPathResponses).toEqual(reservedContentPathFiles.map((pathEntry) => ({
+      body: pathEntry.body,
+      path: pathEntry.path,
+      status: 200,
+    })));
     const prefixedLiveToken = liveContentToken("art_00000000-0000-4000-8000-000000000001", `${orgB.routeId}-`);
     expect(prefixedLiveToken).toMatch(new RegExp(`^${orgB.routeId}-live-[0-9a-f-]+$`, "u"));
     expect(isLiveContentToken(prefixedLiveToken ?? "", `${orgB.routeId}-`)).toBe(true);
@@ -1623,7 +1690,7 @@ describe.sequential("organization tenancy security boundary", () => {
     );
     const malformedContentHostResponses = await Promise.all(
       ["short", `${version.contentToken}.nested`].map((hostLabel) => fetchWithHost(
-        `http://${router.hostname}:${router.port}/auth/login`,
+        `http://${router.hostname}:${router.port}/%61pi/v1/projects`,
         {headers: {Host: `${hostLabel}.content.example.net`}},
         router.hostname,
         router.port,
@@ -1663,10 +1730,48 @@ describe.sequential("organization tenancy security boundary", () => {
       const legacyArtifactId = await publishOrgBArtifact(
         (request) => legacyRuntime.app.fetch(request), apiTokenA, legacyProjectId, "orvex",
       );
+      const legacyPathsArtifactId = await publishOrgPathFilesArtifact(
+        (request) => legacyRuntime.app.fetch(request),
+        apiTokenA,
+        legacyProjectId,
+        "orvex",
+        "Orvex reserved path files",
+      );
+      const legacyPathVersionRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT content_token AS "contentToken" FROM versions
+          WHERE installation_id = ${installationId} AND artifact_id = ${legacyPathsArtifactId}`;
+      }));
+      legacyPathContentToken = z.object({contentToken: z.string()}).parse(legacyPathVersionRows[0]).contentToken;
+      const flagOffContent = await Promise.all(reservedContentPathFiles.map(async (pathEntry) => {
+        const response = await legacyRuntime.app.fetch(new Request(
+          `https://${legacyPathContentToken}.content.example.net/${pathEntry.path}`,
+        ));
+        return {body: await response.text(), path: pathEntry.path, status: response.status};
+      }));
+      expect(flagOffContent).toEqual(reservedContentPathFiles.map((pathEntry) => ({
+        body: pathEntry.body,
+        path: pathEntry.path,
+        status: 200,
+      })));
+      const legacyRouterContent = await Promise.all(reservedContentPathFiles.map(async (pathEntry) => {
+        const response = await fetchWithHost(
+          `http://${router.hostname}:${router.port}/${pathEntry.path}`,
+          {headers: {Host: `${legacyPathContentToken}.content.example.net`}},
+          router.hostname,
+          router.port,
+        );
+        return {body: await response.text(), path: pathEntry.path, status: response.status};
+      }));
+      expect(legacyRouterContent).toEqual(reservedContentPathFiles.map((pathEntry) => ({
+        body: pathEntry.body,
+        path: pathEntry.path,
+        status: 200,
+      })));
       const legacyVersionRows = await database.run(Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT content_token AS "contentToken", id FROM versions
-          WHERE installation_id = ${legacyInstallationId}`;
+          WHERE installation_id = ${legacyInstallationId} AND artifact_id = ${legacyArtifactId}`;
       }));
       const legacyVersion = z.object({contentToken: z.string(), id: z.string()}).parse(legacyVersionRows[0]);
       expect(legacyVersion.contentToken).toMatch(/^[A-Za-z0-9_-]{16,100}$/u);
@@ -1916,6 +2021,64 @@ describe.sequential("organization tenancy security boundary", () => {
       method: "POST",
     });
     expect(foreignCloneToken.status).toBe(404);
+
+    const orgAProjectResponse = await fetch(`${baseUrl}/o/orvex/api/v1/projects`, {
+      body: JSON.stringify({name: "Orvex clone boundary project"}),
+      headers: {...host, Authorization: `Bearer ${apiTokenA}`, "Content-Type": "application/json"},
+      method: "POST",
+    });
+    expect(orgAProjectResponse.status).toBe(201);
+    const orgAProjectId = z.object({project: z.object({id: z.string()})})
+      .parse(await orgAProjectResponse.json()).project.id;
+    const orgAAppFetch = (request: Request) => {
+      const target = new URL(request.url);
+      target.pathname = `/o/orvex${target.pathname}`;
+      return fetch(new Request(new URL(`${target.pathname}${target.search}`, baseUrl), request));
+    };
+    const orgAArtifactId = await publishOrgBArtifact(
+      orgAAppFetch,
+      apiTokenA,
+      orgAProjectId,
+      "orvex",
+    );
+    const orgAEstimate = await fetch(
+      `${baseUrl}/o/orvex/api/v1/projects/${orgAProjectId}/git-history/estimate`,
+      {headers: {...host, Authorization: `Bearer ${apiTokenA}`}, method: "POST"},
+    );
+    expect(orgAEstimate.status).toBe(200);
+    const orgAHistoryEnabled = await fetch(
+      `${baseUrl}/o/orvex/api/v1/projects/${orgAProjectId}/git-history`,
+      {
+        body: JSON.stringify({confirmEstimate: true, enabled: true}),
+        headers: {...host, Authorization: `Bearer ${apiTokenA}`, "Content-Type": "application/json"},
+        method: "PUT",
+      },
+    );
+    expect(orgAHistoryEnabled.status).toBe(200);
+    await expect.poll(
+      () => orgTenancyGitProvider.repositories.has(orgAArtifactId),
+      {timeout: 5_000},
+    ).toBe(true);
+    const orgACloneCredentialResponse = await fetch(
+      `${baseUrl}/o/orvex/api/v1/projects/${orgAProjectId}/artifacts/${orgAArtifactId}/history/clone-token`,
+      {
+        body: JSON.stringify({ttlSeconds: 60}),
+        headers: {...host, Authorization: `Bearer ${apiTokenA}`, "Content-Type": "application/json"},
+        method: "POST",
+      },
+    );
+    expect(orgACloneCredentialResponse.status).toBe(201);
+    const orgACloneCredential = z.object({remote: z.url(), token: z.string().min(1)})
+      .parse(await orgACloneCredentialResponse.json());
+    const orgACloneThroughB = await fetch(
+      `${baseUrl}/o/${orgB.slug}/api/v1/projects/${orgAProjectId}/artifacts/${orgAArtifactId}/history/clone-token?remote=${encodeURIComponent(orgACloneCredential.remote)}&token=${encodeURIComponent(orgACloneCredential.token)}`,
+      {
+        body: JSON.stringify({ttlSeconds: 60}),
+        headers: {...host, Authorization: `Bearer ${apiTokenB}`, "Content-Type": "application/json"},
+        method: "POST",
+      },
+    );
+    expect(orgACloneThroughB.status).toBe(404);
 
     const crossOrgHttpCases = [
       {expectedStatus: 404, name: "project resource ID", path: `/o/orvex/api/v1/projects/${projectId}`},
@@ -2949,7 +3112,7 @@ interface JsonObject {
 function appRequest(
   path: string,
   token: string,
-  method: "GET" | "POST" | "PUT",
+  method: "GET" | "POST" | "PUT" | "PATCH",
   body?: JsonObject,
   extraHeaders: Record<string, string> = {},
 ): Request {
@@ -2962,6 +3125,71 @@ function appRequest(
   const requestOptions: RequestInit = {headers, method};
   if (body !== undefined) requestOptions.body = JSON.stringify(body);
   return new Request(`${applicationOrigin}${path}`, requestOptions);
+}
+
+const reservedContentPathFiles = [
+  {body: '{"ok":true}', mediaType: "application/json", path: "api/x.json"},
+  {body: "<main>org path</main>", mediaType: "text/html", path: "o/x.html"},
+  {body: "<main>case path</main>", mediaType: "text/html", path: "Auth/index.html"},
+] as const;
+
+async function publishOrgPathFilesArtifact(
+  appFetch: (request: Request) => Response | Promise<Response>,
+  token: string,
+  projectId: string,
+  orgSlug: string,
+  name: string,
+): Promise<string> {
+  const files = reservedContentPathFiles.map((file) => ({
+    mediaType: file.mediaType,
+    path: file.path,
+    sha256: createHash("sha256").update(file.body).digest("hex"),
+    size: Buffer.byteLength(file.body),
+  }));
+  const uploadResponse = await appFetch(appRequest("/api/v1/uploads", token, "POST", {
+    entryPath: reservedContentPathFiles[0].path,
+    files,
+    projectId,
+  }));
+  expect(uploadResponse.status).toBe(201);
+  const upload = z.object({
+    commitUrl: z.url(),
+    files: z.array(z.object({path: z.string(), uploadUrl: z.url()})),
+  }).parse(await uploadResponse.json());
+  const appPath = (url: URL) => url.pathname.replace(`/o/${orgSlug}`, "");
+  await Promise.all(upload.files.map(async (planned) => {
+    const file = reservedContentPathFiles.find(({path: filePath}) => filePath === planned.path);
+    if (file === undefined) throw new Error(`Unexpected staged path ${planned.path}.`);
+    const putUrl = new URL(planned.uploadUrl);
+    const put = await appFetch(new Request(`${applicationOrigin}${appPath(putUrl)}${putUrl.search}`, {
+      body: file.body,
+      headers: {Authorization: `Bearer ${token}`, Host: "artifacts.example.com"},
+      method: "PUT",
+    }));
+    expect(put.status, `${putUrl.pathname}: ${await put.clone().text()}`).toBe(200);
+  }));
+  const commitUrl = new URL(upload.commitUrl);
+  const commit = await appFetch(appRequest(
+    `${appPath(commitUrl)}${commitUrl.search}`,
+    token,
+    "POST",
+    {target: {accessSetting: "account_required", kind: "new_artifact", name}},
+    {"Idempotency-Key": `org-tenancy-${orgSlug}-reserved-paths`},
+  ));
+  expect(commit.status).toBe(201);
+  const committed = z.object({
+    artifact: z.object({id: z.string()}),
+    version: z.object({id: z.string()}),
+  }).parse(await commit.json());
+  const access = await appFetch(appRequest(
+    `/api/v1/artifacts/${committed.artifact.id}/access?projectId=${projectId}`,
+    token,
+    "PATCH",
+    {accessSetting: "public_link", expectedCurrentVersionId: committed.version.id},
+    {"Idempotency-Key": `org-tenancy-${orgSlug}-reserved-paths-public`},
+  ));
+  expect(access.status).toBe(200);
+  return committed.artifact.id;
 }
 
 async function publishOrgBArtifact(
@@ -3060,6 +3288,14 @@ function runtimeAdmissionPolicy(
   };
   if (policy.guestGroupPrefixes === undefined) return groupRolePolicy;
   return {...groupRolePolicy, guestGroupPrefixes: policy.guestGroupPrefixes};
+}
+
+function withoutGitHistory(config: ExternalStorageRuntimeConfig): ExternalStorageRuntimeConfig {
+  const {gitHistory, gitHistoryHealthProbe, gitHistoryProvider, ...remaining} = config;
+  void gitHistory;
+  void gitHistoryHealthProbe;
+  void gitHistoryProvider;
+  return remaining;
 }
 
 async function startRoutedOidcLogin(baseUrl: string, slug: string) {

@@ -7,6 +7,7 @@ import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
 
 import {loadEmbedOrigins} from "../../src/cli/embed-configuration.js";
+import {validateEmbedOrigins} from "../../src/http/embed-origins.js";
 import {loadOidcConfiguration} from "../../src/cli/oidc-configuration.js";
 import {membershipRoles, principalCapabilities, principalKinds} from "../../src/core/identity.js";
 import {createTestInstallation, issueLocalBrowserLogin, removeTestInstallation, startTestServer, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
@@ -26,6 +27,18 @@ function signBinding(secret: string, claims: {
     .update("artifact-embed-v1." + payload).digest("base64url");
   return payload + "." + signature;
 }
+
+describe("embed origin hostname validation", () => {
+  test.each(["https://tenant.example,evil.test", "https://tenant.example;evil.test"])(
+    "rejects URL host delimiters in %s",
+    (origin) => expect(() => validateEmbedOrigins([origin])).toThrow(/Invalid/u),
+  );
+
+  test.each(["https://xn--bcher-kva.example", "http://[::1]"])(
+    "accepts the supported hostname form %s",
+    (origin) => expect(() => validateEmbedOrigins([origin])).not.toThrow(),
+  );
+});
 
 describe("artifact embeds", () => {
   type JsonValue = string | number | boolean | null | readonly JsonValue[] | {[key: string]: JsonValue};

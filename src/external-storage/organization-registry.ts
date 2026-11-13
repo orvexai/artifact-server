@@ -64,6 +64,7 @@ const organizationSchema = z.object({
   }),
   id: z.string(),
   keycloakId: z.string().nullable(),
+  registryVersion: z.string().regex(/^\d+$/u),
   admissionPolicy: admissionPolicySchema.nullable(),
   routeId: z.string().regex(/^[a-z0-9]{8}$/u),
   slug: organizationSlugSchema,
@@ -77,6 +78,7 @@ export interface OrganizationRecord {
   readonly embedOrigins: readonly string[];
   readonly id: string;
   readonly keycloakId: string | null;
+  readonly registryVersion: string;
   readonly routeId: string;
   readonly slug: string;
   readonly status: "active" | "suspended";
@@ -117,12 +119,19 @@ export class OrganizationRegistry {
       const sql = yield* SqlClient;
       const rows = yield* sql`SELECT id, slug, display_name AS "displayName",
         route_id AS "routeId", status, admission_policy AS "admissionPolicy",
-keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
+        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins",
+        registry_version::text AS "registryVersion"
         FROM artifact_installations
         WHERE slug = ${slug}`;
       return rows[0] ?? null;
     }));
-    return row === null ? null : organizationSchema.parse(row);
+    if (row === null) return null;
+    const parsed = organizationSchema.safeParse(row);
+    if (parsed.success) return parsed.data;
+    console.error("Skipping invalid organization registry row", {
+      issues: parsed.error.issues.map(({code, path}) => ({code, path})),
+    });
+    return null;
   }
 
   async findByKeycloakId(keycloakId: string): Promise<OrganizationRecord | null> {
@@ -130,7 +139,8 @@ keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
       const sql = yield* SqlClient;
       const rows = yield* sql`SELECT id, slug, display_name AS "displayName",
         route_id AS "routeId", status, admission_policy AS "admissionPolicy",
-        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
+        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins",
+        registry_version::text AS "registryVersion"
         FROM artifact_installations
         WHERE keycloak_organization_id = ${keycloakId}`;
       return rows[0] ?? null;
@@ -143,7 +153,8 @@ keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
       const sql = yield* SqlClient;
       return yield* sql`SELECT id, slug, display_name AS "displayName",
         route_id AS "routeId", status, admission_policy AS "admissionPolicy",
-keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
+        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins",
+        registry_version::text AS "registryVersion"
         FROM artifact_installations
         WHERE slug IS NOT NULL ORDER BY slug`;
     }));
@@ -153,11 +164,9 @@ keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
       if (parsed.success) {
         organizations.push(parsed.data);
       } else {
-        // A corrupt registry entry must not take unrelated organizations
-        // offline, while retaining an operator-visible diagnostic.
         console.error("Skipping invalid organization registry row", {
           index,
-          issues: parsed.error.issues.map(({path, code}) => ({code, path})),
+          issues: parsed.error.issues.map(({code, path}) => ({code, path})),
         });
       }
     }
@@ -169,11 +178,18 @@ keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
       const sql = yield* SqlClient;
       const rows = yield* sql`SELECT id, slug, display_name AS "displayName",
         route_id AS "routeId", status, admission_policy AS "admissionPolicy",
-        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
+        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins",
+        registry_version::text AS "registryVersion"
         FROM artifact_installations WHERE route_id = ${routeId}`;
       return rows[0] ?? null;
     }));
-    return row === null ? null : organizationSchema.parse(row);
+    if (row === null) return null;
+    const parsed = organizationSchema.safeParse(row);
+    if (parsed.success) return parsed.data;
+    console.error("Skipping invalid organization registry row", {
+      issues: parsed.error.issues.map(({code, path}) => ({code, path})),
+    });
+    return null;
   }
 
   async ensureOrvex(installationId: string): Promise<OrganizationRecord> {
@@ -196,7 +212,8 @@ keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
       WHERE artifact_installations.slug IS NULL OR artifact_installations.slug = 'orvex'
         RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
         status, admission_policy AS "admissionPolicy",
-        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"`;
+        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins",
+        registry_version::text AS "registryVersion"`;
       return rows[0] ?? null;
     }));
     if (row === null) {
@@ -232,8 +249,9 @@ keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"
         ${routeId}, ${admissionPolicy === null ? null : JSON.stringify(admissionPolicy)}::jsonb,
         ${keycloakId}
       ) RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
-status, admission_policy AS "admissionPolicy",
-        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins"`;
+        status, admission_policy AS "admissionPolicy",
+        keycloak_organization_id AS "keycloakId", embed_origins AS "embedOrigins",
+        registry_version::text AS "registryVersion"`;
       return rows[0];
     }));
     return organizationSchema.parse(row);

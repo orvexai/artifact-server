@@ -16,7 +16,10 @@ import {PlatformSessions} from "./platform-sessions.js";
 const maximumCachedOrganizations = 16;
 const idleOrganizationMilliseconds = 5 * 60 * 1_000;
 const organizationEvictionIntervalMilliseconds = 30_000;
-const routeIdCacheMilliseconds = 1_000;
+// The verifier accepts installation-less bindings only for Orvex, and only
+// when exp is no later than one hour after process start. The ordinary
+// one-hour binding TTL makes this a bounded rolling-deployment transition.
+const legacyInstallationlessBindingExpiresAt = Math.floor(Date.now() / 1_000) + 60 * 60;
 const notFound = () => new Response("Not Found", {status: 404});
 
 export interface OrganizationRouterOptions {
@@ -27,13 +30,15 @@ export interface OrganizationRouterOptions {
 interface CachedRuntime {
   activeRequests: number;
   lastUsedAt: number;
+  readonly registryVersion: string;
   readonly securityFingerprint: string;
+  readonly status: OrganizationRecord["status"];
   readonly runtime: ExternalStorageRuntime;
 }
 
-interface CachedRoute {
-  readonly expiresAt: number;
-  readonly slug: string;
+interface OpeningRuntime {
+  readonly registryVersion: string;
+  readonly promise: Promise<CachedRuntime>;
 }
 
 /** One shared pool and provider factory serving lazily opened org runtimes. */
@@ -53,8 +58,7 @@ export async function createOrganizationRouter(
   );
   const runtimes = new Map<string, CachedRuntime>();
   const retiredRuntimes = new Set<CachedRuntime>();
-  const openingRuntimes = new Map<string, Promise<CachedRuntime>>();
-  const routeIds = new Map<string, CachedRoute>();
+  const openingRuntimes = new Map<string, OpeningRuntime>();
   let closed = false;
   let evictionTimer: ReturnType<typeof setInterval> | undefined;
   try {
@@ -80,7 +84,7 @@ export async function createOrganizationRouter(
       if (closed) return;
       closed = true;
       if (evictionTimer !== undefined) clearInterval(evictionTimer);
-      await Promise.allSettled(openingRuntimes.values());
+      await Promise.allSettled([...openingRuntimes.values()].map(({promise}) => promise));
       const active = [...runtimes.values()];
       runtimes.clear();
       await Promise.all([
@@ -98,20 +102,27 @@ export async function createOrganizationRouter(
         slug: organization.slug,
         status: organization.status,
       });
+      const acquire = (entry: CachedRuntime): CachedRuntime | null => {
+        if (entry.status !== "active") return null;
+        entry.activeRequests += 1;
+        entry.lastUsedAt = Date.now();
+        runtimes.delete(organization.id);
+        runtimes.set(organization.id, entry);
+        return entry;
+      };
       const cached = runtimes.get(organization.id);
-      if (cached !== undefined && cached.securityFingerprint === securityFingerprint) {
-        cached.lastUsedAt = Date.now();
-        runtimes.delete(organization.id);
-        runtimes.set(organization.id, cached);
-        return cached;
-      }
       if (cached !== undefined) {
-        runtimes.delete(organization.id);
-        if (cached.activeRequests === 0) await cached.runtime.close();
-        else retiredRuntimes.add(cached);
+        if (BigInt(cached.registryVersion) > BigInt(organization.registryVersion)) {
+          return cached.status === "active" ? acquire(cached) : null;
+        }
+        if (cached.registryVersion === organization.registryVersion) {
+          return cached.securityFingerprint === securityFingerprint ? acquire(cached) : null;
+        }
       }
       const opening = openingRuntimes.get(organization.id);
-      if (opening !== undefined) return opening;
+      if (opening !== undefined && BigInt(opening.registryVersion) >= BigInt(organization.registryVersion)) {
+        return acquire(await opening.promise);
+      }
       const admissionPolicy = organization.admissionPolicy === null
         ? null
         : {
@@ -135,7 +146,9 @@ export async function createOrganizationRouter(
         embedOrigins: organization.embedOrigins,
         slug: organization.slug,
         issuePlatformSession: (identity, existingToken) => platformSessions.issue(identity, existingToken),
-        allowLegacyEmbedBinding: organization.slug === "orvex",      };
+        allowLegacyEmbedBinding: organization.slug === "orvex",
+        legacyEmbedBindingExpiresAt: legacyInstallationlessBindingExpiresAt,
+      };
       if (organization.keycloakId !== null) {
         Object.assign(orgConfig, {keycloakOrganizationId: organization.keycloakId});
       }
@@ -147,10 +160,15 @@ export async function createOrganizationRouter(
       if (organization.slug === "orvex") {
         Object.assign(orgConfig, {bootstrapApiToken: config.apiToken});
       }
+      // The configured Git history provider owns one Orvex installation
+      // location. Tenant runtimes cannot claim or reuse that provider location.
+      const runtimeConfig = organization.slug === "orvex"
+        ? config
+        : withoutGitHistory(config);
       const pending = createOrgRuntime(
         organization.id,
         orgConfig,
-        config,
+        runtimeConfig,
         database,
       ).then(async (runtime) => {
         // close() may race a lazy startup. Never publish a runtime after the
@@ -159,15 +177,37 @@ export async function createOrganizationRouter(
           await runtime.close();
           throw new Error("The organization router is closed.");
         }
-        const entry = {activeRequests: 0, lastUsedAt: Date.now(), securityFingerprint, runtime};
+        const current = runtimes.get(organization.id);
+        if (current !== undefined && BigInt(current.registryVersion) >= BigInt(organization.registryVersion)) {
+          await runtime.close();
+          return current;
+        }
+        const newerOpening = openingRuntimes.get(organization.id);
+        if (newerOpening !== undefined && BigInt(newerOpening.registryVersion) > BigInt(organization.registryVersion)) {
+          await runtime.close();
+          return newerOpening.promise;
+        }
+        const entry: CachedRuntime = {
+          activeRequests: 0,
+          lastUsedAt: Date.now(),
+          registryVersion: organization.registryVersion,
+          securityFingerprint,
+          status: organization.status,
+          runtime,
+        };
         runtimes.set(organization.id, entry);
+        if (current !== undefined) {
+          if (current.activeRequests === 0) await current.runtime.close();
+          else retiredRuntimes.add(current);
+        }
         return entry;
       });
-      openingRuntimes.set(organization.id, pending);
+      const openingEntry = {registryVersion: organization.registryVersion, promise: pending};
+      openingRuntimes.set(organization.id, openingEntry);
       try {
-        return await pending;
+        return acquire(await pending);
       } finally {
-        if (openingRuntimes.get(organization.id) === pending) {
+        if (openingRuntimes.get(organization.id) === openingEntry) {
           openingRuntimes.delete(organization.id);
         }
       }
@@ -314,6 +354,7 @@ export async function createOrganizationRouter(
           }
           return new Response(null, {headers: logoutHeaders, status: 204});
         }
+        let organization: OrganizationRecord | null = null;
         let route = contentHost
           ? null
           : organizationRoute(sourceUrl.pathname) ??
@@ -326,7 +367,6 @@ export async function createOrganizationRouter(
               : null);
         if (contentHost) {
           if (contentHostRequest.token === null) return notFound();
-          if (isForbiddenContentHostPath(sourceUrl.pathname)) return notFound();
           const prefixedRouteId = /^([a-z0-9]{8})-/u.exec(contentHostRequest.token)?.[1];
           let contentOrganization: OrganizationRecord | null;
           if (prefixedRouteId === undefined) {
@@ -335,21 +375,11 @@ export async function createOrganizationRouter(
             // a legacy unprefixed token to migrate or honor.
             contentOrganization = await registry.find("orvex").catch(() => null);
           } else {
-            const now = Date.now();
-            const cachedRoute = routeIds.get(prefixedRouteId);
-            const slug = cachedRoute !== undefined && cachedRoute.expiresAt > now
-              ? cachedRoute.slug
-              : (await registry.findByRouteId(prefixedRouteId).catch(() => null))?.slug;
-            if (slug !== undefined) {
-              routeIds.set(prefixedRouteId, {expiresAt: now + routeIdCacheMilliseconds, slug});
-              contentOrganization = await registry.find(slug).catch(() => null);
-              if (contentOrganization?.routeId !== prefixedRouteId) contentOrganization = null;
-            } else {
-              routeIds.delete(prefixedRouteId);
-              contentOrganization = null;
-            }
+            contentOrganization = await registry.findByRouteId(prefixedRouteId).catch(() => null);
+            if (contentOrganization?.routeId !== prefixedRouteId) contentOrganization = null;
           }
-          if (contentOrganization === null) return notFound();
+          if (contentOrganization === null || contentOrganization.status !== "active") return notFound();
+          organization = contentOrganization;
           route = {path: sourceUrl.pathname, slug: contentOrganization.slug};
         }
         if (route === null) {
@@ -361,20 +391,18 @@ export async function createOrganizationRouter(
             status: 308,
           });
         }
-        const organization = await registry.find(route.slug).catch(() => null);
+        organization ??= await registry.find(route.slug).catch(() => null);
         if (organization === null || organization.status !== "active") {
           return notFound();
         }
-        if (contentHost && isForbiddenContentHostPath(route.path)) return notFound();
-        let entry: CachedRuntime;
+        let entry: CachedRuntime | null;
         try {
           entry = await runtimeFor(organization);
         } catch {
           if (closed) return new Response("Service Unavailable", {status: 503});
           return notFound();
         }
-        entry.activeRequests += 1;
-        entry.lastUsedAt = Date.now();
+        if (entry === null) return notFound();
         let requestFinished = false;
         const finish = () => {
           if (requestFinished) return;
@@ -439,6 +467,19 @@ export async function createOrganizationRouter(
   }
 }
 
+function withoutGitHistory(config: ExternalStorageRuntimeConfig): ExternalStorageRuntimeConfig {
+  const {
+    gitHistory,
+    gitHistoryHealthProbe,
+    gitHistoryProvider,
+    ...remaining
+  } = config;
+  void gitHistory;
+  void gitHistoryHealthProbe;
+  void gitHistoryProvider;
+  return remaining;
+}
+
 function organizationRoute(pathname: string): {readonly path: string; readonly slug: string} | null {
   const match = /^\/o\/([^/]+)(\/.*)?$/u.exec(pathname);
   if (match === null) return null;
@@ -498,15 +539,6 @@ function contentTokenFromHost(
   return {isContentHost: true, token: /^[A-Za-z0-9_-]{16,100}$/u.test(label) ? label : null};
 }
 
-function isForbiddenContentHostPath(pathname: string): boolean {
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    return true;
-  }
-  return /^\/(?:api(?:\/|$)|mcp(?:\/|$)|review(?:\/|$)|o(?:\/|$)|auth(?:\/|$)|embed(?:\/|$)|review-frame(?:\/|$))/iu.test(decoded);
-}
 
 function legacyOrganizationPath(pathname: string): string | null {
   return /^\/(?:api(?:\/|$)|mcp(?:\/|$)|review(?:\/|$))/u.test(pathname)
