@@ -16,11 +16,15 @@ import type {GroupRoleSeedResult} from "../application/installation-access.js";
 import type {
   DirectoryGroupSyncReport,
   DirectorySyncReport,
+  OrganizationDirectorySyncResult,
   GroupDirectory,
 } from "../application/directory-sync.js";
+import type {DirectoryOrganization, OrganizationDirectory} from
+  "../identity/keycloak-directory.js";
 import {
   runDirectoryGroupSyncPass,
   runDirectorySyncPass,
+  runOrganizationDirectorySyncPass,
   runIsGroupRoleSeedApplied,
   runGroupRoleSeed,
 } from "../lifecycle/directory-sync.js";
@@ -129,6 +133,11 @@ export interface ExternalStorageRuntime {
   close(): Promise<void>;
   /** Make the members match the directory under the stored group roles. */
   syncDirectory(directory: GroupDirectory): Promise<DirectorySyncReport>;
+  /** Sync one Keycloak organization's complete member snapshot. */
+  syncOrganizationMembers(
+    directory: OrganizationDirectory,
+    organization: DirectoryOrganization,
+  ): Promise<OrganizationDirectorySyncResult>;
   /** Store the configured starting group roles, the first time only. */
   seedGroupRoles(seed: readonly GroupRoleSeedEntry[]): Promise<GroupRoleSeedResult>;
   /** Check whether starting group roles have been seeded for this installation. */
@@ -149,6 +158,7 @@ export interface ExternalStorageOrgConfig {
   readonly bootstrapAdministratorEmail?: string | null;
   readonly bootstrapApiToken?: Redacted.Redacted;
   readonly cookieRouteId: string;
+  readonly keycloakOrganizationId?: string | null;
   readonly slug?: string;
 }
 
@@ -200,7 +210,8 @@ export async function createOrgRuntime(
   const runtimeClock = config.clock ?? new SystemClock();
   const isOrvex = orgConfig.slug === undefined || orgConfig.slug === "orvex";
   const mayUseHostedOAuth = isOrvex || (
-    orgConfig.admissionPolicy !== undefined && orgConfig.admissionPolicy !== null
+    orgConfig.keycloakOrganizationId !== undefined && orgConfig.keycloakOrganizationId !== null ||
+    (orgConfig.admissionPolicy !== undefined && orgConfig.admissionPolicy !== null)
   );
   const applicationOrigin = orgConfig.applicationOrigin ?? config.applicationOrigin ?? null;
   const groupRolePolicy = isOrvex
@@ -214,14 +225,27 @@ export async function createOrgRuntime(
     };
   const scopedOAuthVerifier = (verifier: ExternalMcpBearerVerifier | undefined) => {
     if (verifier === undefined) return null;
-    if (organizationOAuthResources === null) return verifier;
-    if (verifier.forApplicationResources === undefined) {
-      if (mayUseHostedOAuth) {
-        throw new Error("This identity provider cannot scope OAuth resources to an organization.");
+    let scoped = verifier;
+    if (organizationOAuthResources !== null) {
+      if (scoped.forApplicationResources === undefined) {
+        if (mayUseHostedOAuth) {
+          throw new Error("This identity provider cannot scope OAuth resources to an organization.");
+        }
+        return null;
       }
-      return null;
+      scoped = scoped.forApplicationResources(organizationOAuthResources);
     }
-    return verifier.forApplicationResources(organizationOAuthResources);
+    if (!isOrvex && orgConfig.keycloakOrganizationId !== undefined &&
+      orgConfig.keycloakOrganizationId !== null && orgConfig.slug !== undefined) {
+      if (scoped.forOrganization === undefined) {
+        throw new Error("This identity provider cannot validate Keycloak organization claims.");
+      }
+      scoped = scoped.forOrganization({
+        alias: orgConfig.slug,
+        id: orgConfig.keycloakOrganizationId,
+      });
+    }
+    return scoped;
   };
   const stagingCleanupPolicy = config.stagingCleanupPolicy ??
     defaultStagingCleanupPolicy;
@@ -295,10 +319,12 @@ export async function createOrgRuntime(
       gitHistory: {read: () => applicationGitHistory.read()},
       interactiveIdentityProvider: config.interactiveIdentityProvider === undefined
         ? null
-        : orgConfig.slug === undefined || config.interactiveIdentityProvider.forApplicationOrigin === undefined
+        : orgConfig.slug === undefined
         ? config.interactiveIdentityProvider
-        : config.interactiveIdentityProvider.forApplicationOrigin(
+        : organizationIdentityProvider(
+          config.interactiveIdentityProvider,
           isOrvex ? config.applicationOrigin ?? applicationOrigin ?? "" : applicationOrigin ?? "",
+          orgConfig,
         ),
       localBootstrapCredential: config.localBootstrapCredential ?? null,
       protectBootstrapAdministrator: false,
@@ -306,6 +332,15 @@ export async function createOrgRuntime(
       staging,
       stagingCleanupPolicy,
     };
+    if (!isOrvex && orgConfig.keycloakOrganizationId !== undefined &&
+      orgConfig.keycloakOrganizationId !== null && orgConfig.slug !== undefined) {
+      Object.assign(applicationAdapters, {
+        organizationAdmission: {
+          alias: orgConfig.slug,
+          id: orgConfig.keycloakOrganizationId,
+        },
+      });
+    }
     if (config.uploadUrlLifetimeMilliseconds !== undefined) {
       Object.assign(applicationAdapters, {
         uploadUrlLifetimeMilliseconds: config.uploadUrlLifetimeMilliseconds,
@@ -379,6 +414,16 @@ export async function createOrgRuntime(
         organizationCookieSuffix: `-${orgConfig.cookieRouteId}`,
       };
     }
+    if (!isOrvex && orgConfig.keycloakOrganizationId !== null &&
+      orgConfig.keycloakOrganizationId !== undefined && orgConfig.slug !== undefined) {
+      configuredAppDependencies = {
+        ...configuredAppDependencies,
+        organizationAdmission: {
+          alias: orgConfig.slug,
+          id: orgConfig.keycloakOrganizationId,
+        },
+      };
+    }
     if (config.embedOrigins !== undefined) {
       configuredAppDependencies = {...configuredAppDependencies, embedOrigins: config.embedOrigins};
     }
@@ -437,6 +482,8 @@ export async function createOrgRuntime(
       seedGroupRoles: (seed) => runGroupRoleSeed(readyRuntime, seed),
       isGroupRoleSeedApplied: () => runIsGroupRoleSeedApplied(readyRuntime),
       syncDirectory: (directory) => runDirectorySyncPass(readyRuntime, directory),
+      syncOrganizationMembers: (directory, organization) =>
+        runOrganizationDirectorySyncPass(readyRuntime, directory, organization),
       syncDirectoryGroups: (directory, syncedAt, provider, recomputeRoles) =>
         runDirectoryGroupSyncPass(readyRuntime, directory, syncedAt, provider, recomputeRoles),
       close: async () => {
@@ -456,6 +503,26 @@ export async function createOrgRuntime(
     }
     throw cause;
   }
+}
+
+function organizationIdentityProvider(
+  provider: InteractiveIdentityProvider,
+  applicationOrigin: string | null,
+  orgConfig: ExternalStorageOrgConfig,
+): InteractiveIdentityProvider {
+  let scoped = provider;
+  if (provider.forApplicationOrigin !== undefined && applicationOrigin !== null) {
+    scoped = provider.forApplicationOrigin(applicationOrigin);
+  }
+  if (orgConfig.keycloakOrganizationId !== undefined &&
+    orgConfig.keycloakOrganizationId !== null && orgConfig.slug !== undefined &&
+    scoped.forOrganization !== undefined) {
+    scoped = scoped.forOrganization({
+      alias: orgConfig.slug,
+      id: orgConfig.keycloakOrganizationId,
+    });
+  }
+  return scoped;
 }
 
 function appendApplicationPath(base: string, path: string): string {

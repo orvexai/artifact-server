@@ -74,6 +74,7 @@ export interface McpHttpAdapterDependencies {
   readonly gitHistory: GitHistoryCapabilityReader;
   readonly linkedArtifacts?: boolean;
   readonly mode: ArtifactMcpServerDependencies["mode"];
+  readonly organizationTenancy?: boolean;
   /** The OAuth protected resource in force for this request, if any. */
   readonly oauthResource: () => string | null;
 }
@@ -112,6 +113,7 @@ export function createMcpHttpAdapter(
         gitHistory: dependencies.gitHistory.read(),
         linkedArtifacts: dependencies.linkedArtifacts === true,
         mode: dependencies.mode,
+        organizationTenancy: dependencies.organizationTenancy === true,
         requestId: requestIdFrom(context.requestInfo),
       };
       return createArtifactMcpServer(

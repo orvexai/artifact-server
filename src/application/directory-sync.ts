@@ -6,6 +6,8 @@ import type {
 } from "../core/directory-groups.js";
 import {membershipRolePrecedence} from "../core/group-role-policy.js";
 import type {MembershipRole} from "../core/identity.js";
+import type {DirectoryOrganization} from "../identity/keycloak-directory.js";
+import type {OrganizationDirectory} from "../identity/keycloak-directory.js";
 import {
   type DirectoryMemberEntry,
   InstallationAccessService,
@@ -70,6 +72,11 @@ export interface DirectorySyncReport {
   readonly skipped: number;
   readonly unchanged: number;
 }
+
+export type OrganizationDirectorySyncResult = DirectorySyncReport | {
+  readonly kind: "emptied";
+  readonly reason: string;
+};
 
 /**
  * Read the members of every group that holds an installation role, then make
@@ -146,6 +153,66 @@ export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
     skipped,
   };
   return report;
+});
+
+/** Sync one Keycloak Organization into only the current installation. */
+export const syncOrganizationDirectoryMembers = Effect.fn(
+  "syncOrganizationDirectoryMembers",
+)(function*(
+  directory: OrganizationDirectory,
+  organization: DirectoryOrganization,
+  maximumDeactivations: number,
+) {
+  const members = yield* directory.listOrganizationMembers(organization);
+  if (members.length === 0) {
+    return {
+      kind: "emptied",
+      reason: "Keycloak organization has no enabled members.",
+    } as const;
+  }
+  const desired = new Map<string, DirectoryMemberEntry>();
+  let skipped = 0;
+  for (const user of members) {
+    const email = user.enabled && user.emailVerified && user.email !== null
+      ? normalizeMemberEmail(user.email)
+      : null;
+    if (email === null || user.role === null) {
+      skipped += 1;
+      continue;
+    }
+    const role: MembershipRole = user.role === "owner"
+      ? "owner"
+      : user.role === "editor"
+      ? "member"
+      : "viewer";
+    const entry: DirectoryMemberEntry = {
+      displayName: displayName(user, email),
+      email,
+      role,
+    };
+    const previous = desired.get(email);
+    if (previous === undefined || membershipRolePrecedence(role) > membershipRolePrecedence(previous.role)) {
+      desired.set(email, entry);
+    }
+  }
+  if (desired.size === 0) {
+    return yield* new DirectoryUnavailable({
+      message: `Keycloak organization ${organization.alias} has no eligible members; nothing was changed.`,
+    });
+  }
+  const reconciliation = yield* InstallationAccessService.use((access) =>
+    access.reconcileDirectoryMembers([...desired.values()], maximumDeactivations)
+  );
+  return {
+    groups: 1,
+    directoryUsers: members.length,
+    admitted: reconciliation.admitted,
+    reactivated: reconciliation.reactivated,
+    roleChanged: reconciliation.roleChanged,
+    deactivated: reconciliation.deactivated,
+    unchanged: reconciliation.unchanged,
+    skipped,
+  } satisfies DirectorySyncReport;
 });
 
 const displayNameLimit = 200;

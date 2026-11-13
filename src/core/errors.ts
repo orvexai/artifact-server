@@ -487,6 +487,7 @@ export class IdentityRepositoryFailure extends Schema.TaggedError<IdentityReposi
     message: Schema.String,
     operation: Schema.Literals([
       "admitMember",
+      "applyOrganizationMemberSnapshot",
       "applyDirectoryGroups",
       "bindExternalIdentity",
       "consumeLoginAttempt",
@@ -494,6 +495,7 @@ export class IdentityRepositoryFailure extends Schema.TaggedError<IdentityReposi
       "createApplicationSession",
       "createLoginAttempt",
       "deactivateMember",
+      "reactivateMember",
       "findActiveMemberByEmail",
       "findActiveMemberByExternalIdentity",
       "findMember",
@@ -515,6 +517,7 @@ export class IdentityRepositoryFailure extends Schema.TaggedError<IdentityReposi
       "seedGroupRoles",
       "setGroupRole",
       "setMemberRole",
+      "setOrganizationMemberRole",
       "setProjectAccessMode",
     ]),
   },

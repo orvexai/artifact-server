@@ -9,7 +9,7 @@ import {
   type ToolAnnotations,
   type ToolCallback,
 } from "@modelcontextprotocol/server";
-import {type Effect, Redacted} from "effect";
+import {Effect, Redacted} from "effect";
 import {z} from "zod";
 
 import {AgentDispatchService} from "../application/agent-dispatch.js";
@@ -444,6 +444,7 @@ export interface ArtifactMcpServerDependencies {
   readonly gitHistory: GitHistoryCapability;
   /** Advertises the local linked-artifact capability in discovery. */
   readonly linkedArtifacts?: boolean;
+  readonly organizationTenancy?: boolean;
   readonly mode: "local" | "remote";
   readonly requestId: string;
 }
@@ -722,6 +723,27 @@ export function createArtifactMcpServer(
         dependencies.gitHistory,
       ),
       "Artifact Server publishes actual files through an upload plan. It does not accept inline HTML, CSS, JavaScript, or base64 content."),
+  );
+
+  if (dependencies.organizationTenancy === true) registerNudgedTool(
+    "member_reactivate",
+    {
+      title: "Reactivate organization member",
+      description: "Clear an administrator's manual deactivation for one organization member. Organization suspension can only be reversed with org resume.",
+      inputSchema: z.object({memberId: z.string().min(1)}).strict(),
+      outputSchema: z.object({memberId: z.string(), status: z.string()}).strict(),
+      annotations: destructiveWriteAnnotations,
+    },
+    ({memberId}) => toolResult(async () => {
+      const member = await runMcpApplicationEffect(
+        dependencies,
+        InstallationAccessService.use((access) =>
+          access.reactivateMember?.(identity.principal, memberId) ??
+            Effect.fail(new AuthorizationDenied({message: "Member reactivation is unavailable."}))
+        ),
+      );
+      return {memberId: member.id, status: member.status};
+    }),
   );
 
   registerNudgedTool(

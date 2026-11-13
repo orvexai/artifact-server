@@ -18,8 +18,8 @@ describe("postgres migration history", () => {
     expect(expectedPostgresMigrationHistory.every((entry) => entry.name.length > 0))
       .toBe(true);
     expect(expectedPostgresMigrationHistory.at(-1)).toEqual({
-      migration_id: 29,
-      name: "project_provisioner_audit_events",
+      migration_id: 32,
+      name: "org_tenancy_identity_fields",
     });
   });
 });

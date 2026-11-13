@@ -8,6 +8,7 @@ import {
 } from "@aws-sdk/client-s3";
 import {Effect, Redacted} from "effect";
 import {SqlClient} from "effect/unstable/sql/SqlClient";
+import {PostgresIdentityRepository} from "../../src/storage/postgres-identity-repository.js";
 import {afterAll, beforeAll, describe, expect, test} from "vitest";
 import {z} from "zod";
 
@@ -28,6 +29,8 @@ import {
   OrganizationRegistry,
   type OrganizationAdmissionPolicy,
 } from "../../src/external-storage/organization-registry.js";
+import {findDisappearedOrganizations} from
+  "../../src/external-storage/organization-registry.js";
 import {startExternalStorageServer} from
   "../../src/external-storage/start-external-storage-server.js";
 import {
@@ -40,6 +43,12 @@ import {WorkOsMcpBearerVerifier} from
   "../../src/identity/workos-mcp-bearer-verifier.js";
 import type {ExternalMcpBearerVerifier} from
   "../../src/application/authentication.js";
+import type {
+  DirectoryOrganization,
+  DirectoryOrganizationMember,
+  OrganizationDirectory,
+} from "../../src/identity/keycloak-directory.js";
+import {DirectoryUnavailable} from "../../src/application/directory-sync.js";
 import {startStubOidcProvider} from "../support/stub-oidc-provider.js";
 import {createS3ObjectStorageProviderFactory} from
   "../../src/storage/s3-object-storage.js";
@@ -58,6 +67,8 @@ const crossOrgMatrix = [
   {surface: "hono", identifier: "GET /api/v1/session", coverage: "Org A session cookie is ignored by Org B"},
   {surface: "hono", identifier: "GET /auth/login", coverage: "org-scoped login handshake cookie"},
   {surface: "hono", identifier: "GET /auth/callback", coverage: "shared callback selects org from handshake cookie"},
+  {surface: "hono", identifier: "POST /api/v1/members/:memberId/reactivate", coverage: "admin-only per-org reactivation cannot cross installations"},
+  {surface: "mcp", identifier: "member_reactivate", coverage: "org-only admin reactivation tool rejects service principals"},
 ] as const;
 
 const pendingCrossOrgCases = [
@@ -178,6 +189,7 @@ const pendingCrossOrgCases = [
   "hono:POST /api/v1/embed/artifacts/:artifactId/binding",
   "hono:POST /api/v1/members",
   "hono:POST /api/v1/members/:memberId/deactivate",
+  "hono:POST /api/v1/members/:memberId/reactivate",
   "hono:POST /api/v1/projects",
   "hono:POST /api/v1/projects/:projectId/archive",
   "hono:POST /api/v1/projects/:projectId/artifacts/:artifactId/comments/clear",
@@ -239,6 +251,7 @@ const pendingCrossOrgCases = [
   "mcp:comment_update",
   "mcp:dispatch_inbox",
   "mcp:group_list",
+  "mcp:member_reactivate",
   "mcp:group_set_role",
   "mcp:project_archive",
   "mcp:project_create",
@@ -357,6 +370,7 @@ describe.sequential("organization tenancy security boundary", () => {
       }).nullable(),
       displayName: z.string(),
       id: z.string(),
+      keycloakId: z.string().nullable(),
       routeId: z.string(),
       slug: z.string(),
       status: z.enum(["active", "suspended"]),
@@ -385,6 +399,7 @@ describe.sequential("organization tenancy security boundary", () => {
     let testMcpVerifier!: ExternalMcpBearerVerifier;
     testMcpVerifier = {
       forApplicationResources: () => testMcpVerifier,
+      forOrganization: () => testMcpVerifier,
       verify: () => Effect.succeed({
         clientId: "orgvex-service",
         expiresAt: Math.floor(Date.now() / 1_000) + 60,
@@ -926,6 +941,435 @@ describe.sequential("organization tenancy security boundary", () => {
     })).rejects.toBeInstanceOf(IntegrityCheckError);
     expect(failedFactoryCloseCount).toBe(1);
   }, 60_000);
+
+  test("an org member removal deactivates only that installation's member", async () => {
+    const registry = new OrganizationRegistry(database);
+    const aliasA = `org-a-${randomUUID().slice(0, 8)}`;
+    const aliasB = `org-b-${randomUUID().slice(0, 8)}`;
+    const idA = randomUUID();
+    const idB = randomUUID();
+    const orgAResult = await registry.syncKeycloakOrganization(aliasA, "Org A", idA);
+    const orgBResult = await registry.syncKeycloakOrganization(aliasB, "Org B", idB);
+    if (orgAResult.kind !== "synced" || orgBResult.kind !== "synced") {
+      throw new Error("New Keycloak organizations were not registered.");
+    }
+    const orgA = orgAResult.organization;
+    const orgBRecord = orgBResult.organization;
+    const organizationA: DirectoryOrganization = {alias: aliasA, id: idA, name: "Org A"};
+    const organizationB: DirectoryOrganization = {alias: aliasB, id: idB, name: "Org B"};
+    const usersA = [
+      {id: "owner-a", username: "owner-a", email: "owner-a@example.test", emailVerified: true, enabled: true, firstName: null, lastName: null, role: "owner" as const},
+      {id: "owner-a-two", username: "owner-a-two", email: "owner-a-two@example.test", emailVerified: true, enabled: true, firstName: null, lastName: null, role: "owner" as const},
+      {id: "editor-a", username: "editor-a", email: "editor-a@example.test", emailVerified: true, enabled: true, firstName: null, lastName: null, role: "editor" as const},
+    ];
+    const usersB = [
+      {id: "owner-b", username: "owner-b", email: "owner-b@example.test", emailVerified: true, enabled: true, firstName: null, lastName: null, role: "owner" as const},
+      {id: "editor-b", username: "editor-b", email: "editor-b@example.test", emailVerified: true, enabled: true, firstName: null, lastName: null, role: "editor" as const},
+    ];
+    let snapshotA: readonly DirectoryOrganizationMember[] = usersA;
+    const directory: OrganizationDirectory = {
+      listOrganizations: () => Effect.succeed([organizationA, organizationB]),
+      listOrganizationMembers: (organization) =>
+        Effect.succeed(organization.id === idA ? snapshotA : usersB),
+    };
+    const openOrgRuntime = (record: typeof orgA) =>
+      createOrgRuntime(record.id, {
+        cookieRouteId: record.routeId,
+        keycloakOrganizationId: record.keycloakId,
+        slug: record.slug,
+      }, config, database);
+    const runtimeA = await openOrgRuntime(orgA);
+    const runtimeB = await openOrgRuntime(orgBRecord);
+    try {
+      await runtimeA.syncOrganizationMembers(directory, organizationA);
+      await runtimeB.syncOrganizationMembers(directory, organizationB);
+      const roleLogin = async (
+        email: string,
+        subject: string,
+        groups: readonly string[],
+      ) => {
+        oidc.claims.email = email;
+        oidc.claims.emailVerified = true;
+        oidc.claims.identityProvider = "google";
+        oidc.claims.organization = {[aliasA]: {id: idA, groups}};
+        oidc.claims.subject = subject;
+        const baseUrl = `http://${router.hostname}:${router.port}`;
+        const login = await startRoutedOidcLogin(baseUrl, aliasA);
+        const response = await fetch(login.callbackUrl, {
+          headers: {Cookie: login.handshakeCookie},
+          redirect: "manual",
+        });
+        return response;
+      };
+      const editorLogin = await roleLogin(
+        "editor-a@example.test", "editor-a", ["/editor"],
+      );
+      expect(editorLogin.status).toBe(303);
+      const promotedLogin = await roleLogin(
+        "editor-a@example.test", "editor-a", ["/owner"],
+      );
+      expect(promotedLogin.status).toBe(303);
+      let editorRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT role FROM installation_members
+          WHERE installation_id = ${orgA.id} AND email = 'editor-a@example.test'`;
+      }));
+      expect(editorRows[0]?.["role"]).toBe("owner");
+      const demotedLogin = await roleLogin(
+        "editor-a@example.test", "editor-a", ["/editor"],
+      );
+      expect(demotedLogin.status).toBe(303);
+      editorRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT role FROM installation_members
+          WHERE installation_id = ${orgA.id} AND email = 'editor-a@example.test'`;
+      }));
+      expect(editorRows[0]?.["role"]).toBe("member");
+      const ownerA = usersA.at(0);
+      const secondOwnerA = usersA.at(1);
+      if (ownerA === undefined || secondOwnerA === undefined) throw new Error("The Org A owner fixtures are missing.");
+      snapshotA = [ownerA, secondOwnerA];
+      const removed = await runtimeA.syncOrganizationMembers(directory, organizationA);
+      if ("kind" in removed) {
+        throw new Error("Org A's non-empty snapshot was skipped.");
+      }
+      expect(removed.deactivated).toBe(1);
+      const rows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT installation_id, email, status FROM installation_members
+          WHERE email IN ('editor-a@example.test', 'editor-b@example.test')`;
+      }));
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({installation_id: orgA.id, email: "editor-a@example.test", status: "inactive"}),
+        expect.objectContaining({installation_id: orgBRecord.id, email: "editor-b@example.test", status: "active"}),
+      ]));
+      const editorIdRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT id FROM installation_members
+          WHERE installation_id = ${orgA.id} AND email = 'editor-a@example.test'`;
+      }));
+      const editorId = z.string().parse(editorIdRows[0]?.["id"]);
+      await expect(new PostgresIdentityRepository(database, orgA.id).reactivateMember(orgA.id, editorId))
+        .rejects.toThrow("Only a manually deactivated organization member");
+      const reactivatedLogin = await roleLogin(
+        "editor-a@example.test", "editor-a", ["/editor"],
+      );
+      expect(reactivatedLogin.status).toBe(303);
+      const reactivatedRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT status FROM installation_members
+          WHERE installation_id = ${orgA.id} AND email = 'editor-a@example.test'`;
+      }));
+      expect(reactivatedRows[0]?.["status"]).toBe("active");
+      const memberRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT id FROM installation_members
+          WHERE installation_id = ${orgA.id}
+            AND email IN ('owner-a@example.test', 'owner-a-two@example.test')`;
+      }));
+      const ownerRepo = new PostgresIdentityRepository(database, orgA.id);
+      const ownerIds = z.array(z.string()).parse(memberRows.map((row) => row["id"]));
+      expect(ownerIds).toHaveLength(2);
+      const secondOwnerRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT id FROM installation_members
+          WHERE installation_id = ${orgA.id} AND email = 'owner-a-two@example.test'`;
+      }));
+      const secondOwnerId = z.string().parse(secondOwnerRows[0]?.["id"]);
+      await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        yield* sql`UPDATE installation_members SET status = 'inactive',
+          manual_deactivation = TRUE WHERE installation_id = ${orgA.id} AND id = ${secondOwnerId}`;
+      }));
+      snapshotA = [
+        {...ownerA, role: "editor" as const},
+        {...secondOwnerA, role: "owner" as const},
+      ];
+      await runtimeA.syncOrganizationMembers(directory, organizationA);
+      const protectedOwner = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT role FROM installation_members
+          WHERE installation_id = ${orgA.id} AND email = 'owner-a@example.test'`;
+      }));
+      expect(protectedOwner[0]?.["role"]).toBe("owner");
+      await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        yield* sql`UPDATE installation_members SET status = 'active',
+          manual_deactivation = FALSE WHERE installation_id = ${orgA.id} AND id = ${secondOwnerId}`;
+      }));
+      snapshotA = [ownerA];
+      await runtimeA.syncOrganizationMembers(directory, organizationA);
+      await expect(ownerRepo.reactivateMember(orgA.id, secondOwnerId))
+        .rejects.toThrow("Only a manually deactivated organization member");
+      const ownerAfterRejectedReactivation = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT role, status FROM installation_members
+          WHERE installation_id = ${orgA.id} AND id = ${secondOwnerId}`;
+      }));
+      expect(ownerAfterRejectedReactivation[0]).toMatchObject({role: "owner", status: "inactive"});
+      const activeOwnerCountAfterRejectedReactivation = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_members
+          WHERE installation_id = ${orgA.id} AND status = 'active' AND role = 'owner'`;
+      }));
+      expect(activeOwnerCountAfterRejectedReactivation[0]?.["count"]).toBe(1);
+      snapshotA = usersA;
+      await runtimeA.syncOrganizationMembers(directory, organizationA);
+      await Promise.all(ownerIds.map((memberId) => ownerRepo.setOrganizationMemberRole(
+        orgA.id, memberId, "member", new Date().toISOString(),
+      )));
+      const remainingOwners = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_members
+          WHERE installation_id = ${orgA.id} AND status = 'active' AND role = 'owner'`;
+      }));
+      expect(remainingOwners[0]?.["count"]).toBe(1);
+      snapshotA = usersA;
+      oidc.claims.email = "owner-a@example.test";
+      oidc.claims.emailVerified = true;
+      oidc.claims.identityProvider = "google";
+      oidc.claims.subject = "owner-a";
+      oidc.claims.organization = {
+        [aliasA]: {id: idA, groups: ["/owner"]},
+      };
+      const baseUrl = `http://${router.hostname}:${router.port}`;
+      const loginA = await startRoutedOidcLogin(baseUrl, aliasA);
+      expect(new URLSearchParams(loginA.authorizationUrl.search).get("scope"))
+        .toContain("organization:*");
+      const completedA = await fetch(loginA.callbackUrl, {
+        headers: {Cookie: loginA.handshakeCookie},
+        redirect: "manual",
+      });
+      expect(completedA.status).toBe(303);
+      const cookieA = completedA.headers.getSetCookie()
+        .map((value) => value.split(";", 1)[0])
+        .filter((value): value is string => value !== undefined)
+        .join("; ");
+      const sessionA = await fetch(`${baseUrl}/o/${aliasA}/api/v1/session`, {
+        headers: {Cookie: cookieA, Host: "artifacts.example.com"},
+      });
+      expect(sessionA.status).toBe(200);
+      const csrfPair = cookieA.split("; ").find((pair) =>
+        pair.slice(0, pair.indexOf("=")).toLowerCase().includes("csrf"),
+      );
+      const csrfCookie = csrfPair?.slice(csrfPair.indexOf("=") + 1);
+      if (csrfCookie === undefined) throw new Error("The org session has no CSRF cookie.");
+      const editorBIdRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT id FROM installation_members
+          WHERE installation_id = ${orgBRecord.id} AND email = 'editor-b@example.test'`;
+      }));
+      const editorBId = z.string().parse(editorBIdRows[0]?.["id"]);
+      const crossOrgReactivation = await fetch(
+        `${baseUrl}/o/${aliasA}/api/v1/members/${editorBId}/reactivate`,
+        {method: "POST", headers: {
+          Cookie: cookieA, Host: "artifacts.example.com",
+          Origin: "https://artifacts.example.com", "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json",
+          "X-CSRF-Token": csrfCookie,
+        }, body: "{}"},
+      );
+      expect(crossOrgReactivation.status).toBe(404);
+
+      const viewerLogin = await roleLogin("editor-a@example.test", "editor-a", ["/viewer"]);
+      expect(viewerLogin.status).toBe(303);
+      const viewerCookie = viewerLogin.headers.getSetCookie()
+        .map((value) => value.split(";", 1)[0])
+        .filter((value): value is string => value !== undefined)
+        .join("; ");
+      const viewerCsrfPair = viewerCookie.split("; ").find((pair) =>
+        pair.slice(0, pair.indexOf("=")).toLowerCase().includes("csrf"),
+      );
+      const viewerCsrf = viewerCsrfPair?.slice(viewerCsrfPair.indexOf("=") + 1);
+      if (viewerCsrf === undefined) throw new Error("The viewer session has no CSRF cookie.");
+      const viewerReactivation = await fetch(
+        `${baseUrl}/o/${aliasA}/api/v1/members/${editorId}/reactivate`,
+        {method: "POST", headers: {
+          Cookie: viewerCookie, Host: "artifacts.example.com",
+          Origin: "https://artifacts.example.com", "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json",
+          "X-CSRF-Token": viewerCsrf,
+        }, body: "{}"},
+      );
+      expect(viewerReactivation.status).toBe(403);
+      expect((await roleLogin("editor-a@example.test", "editor-a", ["/editor"])).status).toBe(303);
+
+      const rejectedServicePrincipals = await Promise.all(["oidc-service-account", "oidc-provisioner"]
+        .map(async (bearer) => fetchWithHost(`${baseUrl}/o/${aliasA}/mcp`, {
+          body: JSON.stringify({
+            id: 20, jsonrpc: "2.0", method: "tools/call",
+            params: {name: "member_reactivate", arguments: {memberId: editorId}},
+          }),
+          headers: {
+            Accept: "application/json, text/event-stream", Authorization: `Bearer ${bearer}`,
+            "Content-Type": "application/json", Host: "artifacts.example.com",
+          },
+          method: "POST",
+        }, router.hostname, router.port)));
+      expect(rejectedServicePrincipals.map(({status}) => status)).toEqual([401, 401]);
+      const deactivated = await fetch(`${baseUrl}/o/${aliasA}/api/v1/members/${editorId}/deactivate`, {
+        method: "POST",
+        headers: {
+          Cookie: cookieA,
+          Host: "artifacts.example.com",
+          Origin: "https://artifacts.example.com",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfCookie,
+        },
+        body: "{}",
+      });
+      expect(deactivated.status).toBe(200);
+      const manualRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT status, manual_deactivation FROM installation_members
+          WHERE installation_id = ${orgA.id} AND id = ${editorId}`;
+      }));
+      expect(manualRows[0]).toMatchObject({status: "inactive", manual_deactivation: true});
+      const manuallyDeactivatedLogin = await roleLogin(
+        "editor-a@example.test", "editor-a", ["/owner"],
+      );
+      expect(manuallyDeactivatedLogin.status).toBe(403);
+      const activeManualSessions = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT COUNT(*)::integer AS count FROM application_sessions
+          WHERE installation_id = ${orgA.id} AND member_id = ${editorId}
+            AND revoked_at IS NULL`;
+      }));
+      expect(activeManualSessions[0]?.["count"]).toBe(0);
+      await runtimeA.syncOrganizationMembers(directory, organizationA);
+      const stillManualRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT status, manual_deactivation FROM installation_members
+          WHERE installation_id = ${orgA.id} AND id = ${editorId}`;
+      }));
+      expect(stillManualRows[0]).toMatchObject({status: "inactive", manual_deactivation: true});
+      const reactivated = await fetch(`${baseUrl}/o/${aliasA}/api/v1/members/${editorId}/reactivate`, {
+        method: "POST",
+        headers: {
+          Cookie: cookieA,
+          Host: "artifacts.example.com",
+          Origin: "https://artifacts.example.com",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfCookie,
+        },
+        body: "{}",
+      });
+      expect(reactivated.status).toBe(200);
+      const reactivatedManualRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT status, manual_deactivation FROM installation_members
+          WHERE installation_id = ${orgA.id} AND id = ${editorId}`;
+      }));
+      expect(reactivatedManualRows[0]).toMatchObject({status: "inactive", manual_deactivation: false});
+      const loginB = await startRoutedOidcLogin(baseUrl, aliasB);
+      const completedB = await fetch(loginB.callbackUrl, {
+        headers: {Cookie: loginB.handshakeCookie},
+        redirect: "manual",
+      });
+      expect(completedB.status).not.toBe(303);
+      const identityRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT identity_provider FROM external_identities
+          WHERE installation_id = ${orgA.id} AND email = 'owner-a@example.test'`;
+      }));
+      expect(identityRows[0]?.["identity_provider"]).toBe("google");
+      // The discovered organizations remain registered even when omitted from
+      // a later complete Keycloak organization listing.
+      expect((await registry.list()).map(({id}) => id)).toContain(orgA.id);
+      const registryRows = await registry.list();
+      expect(findDisappearedOrganizations(registryRows, [organizationB]))
+        .toContainEqual({alias: aliasA, id: idA});
+      expect(await registry.find(aliasA)).toMatchObject({keycloakId: idA});
+      expect(await registry.syncKeycloakOrganization("orvex", "Takeover", randomUUID()))
+        .toMatchObject({kind: "conflict"});
+      const unbound = await registry.create(`manual-${randomUUID().slice(0, 8)}`, "Manual org");
+      expect(await registry.syncKeycloakOrganization(unbound.slug, "Manual org", randomUUID()))
+        .toMatchObject({kind: "conflict"});
+      const linked = await registry.linkKeycloakOrganization(unbound.slug, randomUUID());
+      const linkedId = linked.keycloakId;
+      if (linkedId === null) throw new Error("The deliberate organization link was not stored.");
+      expect(await registry.syncKeycloakOrganization(unbound.slug, "Renamed", linkedId))
+        .toMatchObject({kind: "synced", organization: {id: unbound.id}});
+      expect(await registry.syncKeycloakOrganization(unbound.slug, "Recreated", randomUUID()))
+        .toMatchObject({kind: "conflict"});
+      expect(await registry.syncKeycloakOrganization(`${unbound.slug}-renamed`, "Alias rename", linkedId))
+        .toMatchObject({kind: "conflict"});
+      await expect(registry.syncKeycloakOrganization("Invalid Slug", "Invalid", randomUUID()))
+        .rejects.toThrow(/slug/u);
+      const manuallyDeactivatedAgain = await fetch(`${baseUrl}/o/${aliasA}/api/v1/members/${editorId}/deactivate`, {
+        method: "POST",
+        headers: {
+          Cookie: cookieA,
+          Host: "artifacts.example.com",
+          Origin: "https://artifacts.example.com",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfCookie,
+        },
+        body: "{}",
+      });
+      expect(manuallyDeactivatedAgain.status).toBe(200);
+      snapshotA = usersA.map((user) => user.id === "owner-a-two"
+        ? {...user, role: "editor" as const}
+        : user);
+      await runtimeA.syncOrganizationMembers(directory, organizationA);
+      snapshotA = [];
+      expect(await runtimeA.syncOrganizationMembers(directory, organizationA))
+        .toMatchObject({kind: "emptied"});
+      expect(await registry.suspend(aliasA)).toMatchObject({status: "suspended"});
+      await expect(ownerRepo.reactivateMember(orgA.id, editorId))
+        .rejects.toThrow("Only a manually deactivated organization member");
+      const suspendedRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_members
+          WHERE installation_id = ${orgA.id} AND suspended_by_org_at IS NOT NULL
+            AND status = 'inactive' AND manual_deactivation = TRUE`;
+      }));
+      const allOrgMembers = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_members
+          WHERE installation_id = ${orgA.id}`;
+      }));
+      expect(suspendedRows[0]?.["count"]).toBe(allOrgMembers[0]?.["count"]);
+      snapshotA = usersA;
+      await expect(runtimeA.syncOrganizationMembers(directory, organizationA))
+        .rejects.toThrow("suspended organization installation");
+      expect(await registry.resume(aliasA)).toMatchObject({status: "active"});
+      const resumedEditor = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT status, manual_deactivation, suspended_by_org_at
+          FROM installation_members WHERE installation_id = ${orgA.id} AND id = ${editorId}`;
+      }));
+      expect(resumedEditor[0]).toMatchObject({
+        status: "inactive", manual_deactivation: true, suspended_by_org_at: null,
+      });
+      const resumedSync = await runtimeA.syncOrganizationMembers(directory, organizationA);
+      expect(resumedSync).toMatchObject({roleChanged: 1});
+      const resumedOwner = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT role, status FROM installation_members
+          WHERE installation_id = ${orgA.id} AND id = ${secondOwnerId}`;
+      }));
+      expect(resumedOwner[0]).toMatchObject({role: "owner", status: "active"});
+
+      const failingDirectory: OrganizationDirectory = {
+        listOrganizations: directory.listOrganizations,
+        listOrganizationMembers: () => Effect.fail(new DirectoryUnavailable({
+          message: "The Keycloak organization member read failed.",
+        })),
+      };
+      await expect(runtimeA.syncOrganizationMembers(failingDirectory, organizationA))
+        .rejects.toThrow("Keycloak organization member read failed");
+      expect(await registry.find(aliasA)).toMatchObject({status: "active"});
+    } finally {
+      await Promise.all([runtimeA.close(), runtimeB.close()]);
+    }
+  }, 60_000);
 });
 
 function trackedObjectStorageFactory(
@@ -1074,6 +1518,39 @@ function runtimeAdmissionPolicy(
   };
   if (policy.guestGroupPrefixes === undefined) return groupRolePolicy;
   return {...groupRolePolicy, guestGroupPrefixes: policy.guestGroupPrefixes};
+}
+
+async function startRoutedOidcLogin(baseUrl: string, slug: string) {
+  const loginResponse = await fetch(`${baseUrl}/o/${slug}/auth/login`, {
+    headers: {Host: "artifacts.example.com"},
+    redirect: "manual",
+  });
+  const authorization = loginResponse.headers.get("location");
+  if (authorization === null) {
+    throw new Error(`Organization login answered HTTP ${loginResponse.status} without a redirect.`);
+  }
+  const authorizationUrl = new URL(authorization);
+  const authorizationResponse = await fetch(authorizationUrl, {redirect: "manual"});
+  const callback = authorizationResponse.headers.get("location");
+  if (callback === null) {
+    throw new Error(`Stub authorization answered HTTP ${authorizationResponse.status} without a callback.`);
+  }
+  const callbackUrl = new URL(callback);
+  callbackUrl.host = new URL(baseUrl).host;
+  callbackUrl.protocol = new URL(baseUrl).protocol;
+  return {
+    authorizationUrl,
+    callbackUrl,
+    handshakeCookie: routedLoginHandshakeCookie(loginResponse),
+  };
+}
+
+function routedLoginHandshakeCookie(response: Response): string {
+  const cookie = response.headers.getSetCookie().find((value) =>
+    /^(?:__Host-)?artifact_login(?:-|=)/u.test(value),
+  );
+  if (cookie === undefined) throw new Error("Organization login did not set its handshake cookie.");
+  return cookie.split(";", 1)[0] ?? "";
 }
 
 async function mcpToolNames(response: Response): Promise<string[]> {

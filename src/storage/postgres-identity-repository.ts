@@ -90,6 +90,9 @@ const memberRowSchema = z.object({
   status: memberStatusSchema,
   updatedAt: z.string(),
 });
+const organizationMemberRowSchema = memberRowSchema.extend({
+  manualDeactivation: z.boolean(),
+});
 const sessionRowSchema = z.object({
   createdAt: z.string(),
   csrfDigest: z.string(),
@@ -373,6 +376,200 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
           previousRoles.has(member.id) && previousRoles.get(member.id) !== member.role
         ).length;
         return roleChanged === 0 ? plan.result : {...plan.result, roleChanged};
+      }));
+    }));
+  }
+
+  async applyOrganizationMemberSnapshot(
+    installationId: string,
+    entries: readonly {
+      readonly displayName: string;
+      readonly email: string;
+      readonly id: string;
+      readonly role: MembershipRole;
+    }[],
+    updatedAt: string,
+    maximumDeactivations: number,
+  ): Promise<{
+    readonly admitted: number;
+    readonly deactivated: number;
+    readonly directoryUsers: number;
+    readonly groups: number;
+    readonly reactivated: number;
+    readonly roleChanged: number;
+    readonly skipped: number;
+    readonly unchanged: number;
+  }> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        if (entries.length === 0) {
+          return yield* Effect.fail(new IdentityConflict({
+            message: "Directory sync refuses an empty organization snapshot.",
+          }));
+        }
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:directory-groups:${installationId}`}, 0)
+        )`;
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:member-policy:${installationId}`}, 0)
+        )`;
+        const installationRows = yield* sql.unsafe<{status: string}>(
+          `SELECT status FROM artifact_installations WHERE id = $1 FOR UPDATE`,
+          [installationId],
+        );
+        if (installationRows[0]?.status !== "active") {
+          return yield* Effect.fail(new IdentityConflict({
+            message: "Directory sync cannot update a suspended organization installation.",
+          }));
+        }
+        const rows = yield* sql.unsafe<object>(
+          `SELECT id, installation_id AS "installationId", email,
+             display_name AS "displayName", role, status,
+             created_at AS "createdAt", updated_at AS "updatedAt",
+             manual_deactivation AS "manualDeactivation"
+           FROM installation_members WHERE installation_id = $1 FOR UPDATE`,
+          [installationId],
+        );
+        const existing = z.array(organizationMemberRowSchema).parse(rows);
+        const byEmail = new Map(existing.map((member) => [member.email, member]));
+        const desired = new Map(entries.map((entry) => [entry.email, entry]));
+        const willBeActive = (entry: typeof entries[number]) => {
+          const current = byEmail.get(entry.email);
+          return current === undefined || current.status === memberStatuses.active ||
+            !current.manualDeactivation;
+        };
+        const hasDesiredAdministrator = entries.some((entry) =>
+          willBeActive(entry) && isAdministratorRole(entry.role)
+        );
+        const hasDesiredOwner = entries.some((entry) =>
+          willBeActive(entry) && entry.role === membershipRoles.owner
+        );
+        const protectedIds = new Set(existing.filter((member) =>
+          member.status === memberStatuses.active && (
+            (!hasDesiredAdministrator && isAdministratorRole(member.role)) ||
+            (!hasDesiredOwner && member.role === membershipRoles.owner)
+          )
+        ).map((member) => member.id));
+        const removals = existing.filter((member) =>
+          member.status === memberStatuses.active && !desired.has(member.email) &&
+          !protectedIds.has(member.id)
+        );
+        if (removals.length > maximumDeactivations) {
+          return yield* Effect.fail(new IdentityConflict({
+            message: `Directory sync would deactivate ${removals.length} members, above the configured maximum of ${maximumDeactivations}; nothing was changed.`,
+          }));
+        }
+        let admitted = 0;
+        let reactivated = 0;
+        let roleChanged = 0;
+        let unchanged = 0;
+        for (const entry of [...entries].toSorted((left, right) =>
+          Number(isAdministratorRole(right.role)) - Number(isAdministratorRole(left.role)) ||
+          left.email.localeCompare(right.email)
+        )) {
+          const member = byEmail.get(entry.email);
+          if (member === undefined) {
+            yield* sql`INSERT INTO installation_members (
+              id, installation_id, email, display_name, role, status, created_at, updated_at
+            ) VALUES (
+              ${entry.id}, ${installationId}, ${entry.email}, ${entry.displayName},
+              ${entry.role}, ${memberStatuses.active}, ${updatedAt}, ${updatedAt}
+            )`;
+            admitted += 1;
+          } else if (member.status !== memberStatuses.active && member.manualDeactivation) {
+            unchanged += 1;
+          } else if (member.status !== memberStatuses.active) {
+            yield* sql`UPDATE installation_members SET display_name = ${entry.displayName},
+              role = ${entry.role}, status = ${memberStatuses.active}, updated_at = ${updatedAt}
+              WHERE installation_id = ${installationId} AND id = ${member.id}`;
+            reactivated += 1;
+          } else if (member.role !== entry.role && !protectedIds.has(member.id)) {
+            yield* sql`UPDATE installation_members SET display_name = ${entry.displayName},
+              role = ${entry.role}, updated_at = ${updatedAt}
+              WHERE installation_id = ${installationId} AND id = ${member.id}`;
+            roleChanged += 1;
+          } else {
+            unchanged += 1;
+          }
+        }
+        for (const member of removals) {
+          yield* sql`UPDATE installation_members SET status = ${memberStatuses.inactive},
+            updated_at = ${updatedAt}
+            WHERE installation_id = ${installationId} AND id = ${member.id}`;
+          yield* sql`UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, ${updatedAt})
+            WHERE installation_id = ${installationId} AND member_id = ${member.id}`;
+          yield* sql`UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ${updatedAt})
+            WHERE installation_id = ${installationId} AND principal_kind = ${principalKinds.human}
+              AND principal_id = ${member.id}`;
+        }
+        return {
+          admitted,
+          deactivated: removals.length,
+          directoryUsers: entries.length,
+          groups: 0,
+          reactivated,
+          roleChanged,
+          skipped: 0,
+          unchanged,
+        };
+      }));
+    }));
+  }
+
+  async setOrganizationMemberRole(
+    installationId: string,
+    memberId: string,
+    role: InstallationMember["role"],
+    updatedAt: string,
+  ): Promise<InstallationMember | null> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen({self: this}, function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen({self: this}, function*() {
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:member-policy:${installationId}`}, 0)
+        )`;
+        const rows = yield* sql.unsafe<object>(
+          `SELECT id, installation_id AS "installationId", email,
+             display_name AS "displayName", role, status,
+             created_at AS "createdAt", updated_at AS "updatedAt",
+             manual_deactivation AS "manualDeactivation"
+           FROM installation_members WHERE installation_id = $1 AND id = $2 FOR UPDATE`,
+          [installationId, memberId],
+        );
+        const row = rows[0];
+        if (row === undefined) {
+          return yield* new IdentityNotFound({message: "The member does not exist."});
+        }
+        const {manualDeactivation, ...existing} = organizationMemberRowSchema.parse(row);
+        if (manualDeactivation) return null;
+        let effectiveRole = role;
+        if (isAdministratorRole(existing.role) && !isAdministratorRole(role)) {
+          const otherRows = yield* sql.unsafe<object>(
+            `SELECT COUNT(*)::integer AS count FROM installation_members
+             WHERE installation_id = $1 AND id <> $2 AND status = $3
+               AND role IN ($4, $5)`,
+            [installationId, memberId, memberStatuses.active,
+              membershipRoles.administrator, membershipRoles.owner],
+          );
+          if (countRowSchema.parse(otherRows[0]).count === 0) effectiveRole = existing.role;
+        }
+        if (existing.role === membershipRoles.owner && role !== membershipRoles.owner) {
+          const otherOwnerRows = yield* sql.unsafe<object>(
+            `SELECT COUNT(*)::integer AS count FROM installation_members
+             WHERE installation_id = $1 AND id <> $2 AND status = $3 AND role = $4`,
+            [installationId, memberId, memberStatuses.active, membershipRoles.owner],
+          );
+          if (countRowSchema.parse(otherOwnerRows[0]).count === 0) {
+            effectiveRole = membershipRoles.owner;
+          }
+        }
+        yield* sql`UPDATE installation_members SET role = ${effectiveRole},
+          status = ${memberStatuses.active}, updated_at = ${updatedAt}
+          WHERE installation_id = ${installationId} AND id = ${memberId}`;
+        return {...existing, role: effectiveRole, status: memberStatuses.active, updatedAt};
       }));
     }));
   }
@@ -871,14 +1068,17 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
       const changed = await this.#database.run(Effect.gen({self: this}, function*() {
         const sql = yield* SqlClient;
         return yield* sql`INSERT INTO external_identities (
-          installation_id, provider, subject, member_id, email, bound_at
+          installation_id, provider, subject, member_id, email, bound_at,
+          identity_provider
         ) VALUES (
           ${installationId}, ${command.provider}, ${command.subject},
-          ${command.memberId}, ${command.email}, ${command.boundAt}
+          ${command.memberId}, ${command.email}, ${command.boundAt},
+          ${command.identityProvider ?? null}
         )
         ON CONFLICT (installation_id, provider, subject) DO UPDATE SET
           email = EXCLUDED.email,
-          bound_at = EXCLUDED.bound_at
+          bound_at = EXCLUDED.bound_at,
+          identity_provider = COALESCE(EXCLUDED.identity_provider, external_identities.identity_provider)
         WHERE external_identities.member_id = EXCLUDED.member_id
         RETURNING member_id`;
       }));
@@ -894,6 +1094,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     installationId: string,
     memberId: string,
     updatedAt: string,
+    manualDeactivation = false,
   ): Promise<InstallationMember> {
     this.#assertInstallationScope(installationId);
     return this.#database.run(Effect.gen({self: this}, function*() {
@@ -926,9 +1127,18 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
             });
           }
         }
-        yield* sql`UPDATE installation_members
-          SET status = ${memberStatuses.inactive}, updated_at = ${updatedAt}
-          WHERE installation_id = ${installationId} AND id = ${memberId}`;
+        if (manualDeactivation) {
+          yield* sql`UPDATE installation_members
+            SET status = ${memberStatuses.inactive}, manual_deactivation = TRUE,
+              updated_at = ${updatedAt}
+            WHERE installation_id = ${installationId} AND id = ${memberId}`;
+        } else {
+          // Keep the Orvex/flag-off path compatible with databases that have
+          // not applied the optional org-tenancy migration.
+          yield* sql`UPDATE installation_members
+            SET status = ${memberStatuses.inactive}, updated_at = ${updatedAt}
+            WHERE installation_id = ${installationId} AND id = ${memberId}`;
+        }
         yield* sql`UPDATE application_sessions
           SET revoked_at = COALESCE(revoked_at, ${updatedAt})
           WHERE installation_id = ${installationId} AND member_id = ${memberId}`;
@@ -938,6 +1148,37 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
             AND principal_kind = ${principalKinds.human}
             AND principal_id = ${memberId}`;
         return {...existing, status: memberStatuses.inactive, updatedAt};
+      }));
+    }));
+  }
+
+  async reactivateMember(
+    installationId: string,
+    memberId: string,
+  ): Promise<InstallationMember> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:member-policy:${installationId}`}, 0)
+        )`;
+        const rows = yield* sql.unsafe<object>(
+          `UPDATE installation_members SET manual_deactivation = FALSE
+           WHERE installation_id = $1 AND id = $2 AND manual_deactivation = TRUE
+             AND suspended_by_org_at IS NULL
+           RETURNING id, installation_id AS "installationId", email,
+             display_name AS "displayName", role, status,
+             created_at AS "createdAt", updated_at AS "updatedAt"`,
+          [installationId, memberId],
+        );
+        if (rows[0] !== undefined) return memberRowSchema.parse(rows[0]);
+        const existing = yield* sql.unsafe<{id: string}>(
+          `SELECT id FROM installation_members WHERE installation_id = $1 AND id = $2`,
+          [installationId, memberId],
+        );
+        if (existing.length === 0) return yield* new IdentityNotFound({message: "The member does not exist."});
+        return yield* new IdentityConflict({message: "Only a manually deactivated organization member can be reactivated; sync-deactivated or organization-suspended members are not eligible."});
       }));
     }));
   }

@@ -1,7 +1,8 @@
+import {readFileSync} from "node:fs";
 import path from "node:path";
 import {DatabaseSync} from "node:sqlite";
 
-import {Redacted} from "effect";
+import {Effect, Redacted} from "effect";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
 
@@ -31,6 +32,7 @@ import {
 import {
   keycloakUser,
   startStubKeycloak,
+  type StubKeycloakUser,
   type RunningStubKeycloak,
 } from "../support/stub-keycloak-directory.js";
 import {
@@ -117,6 +119,160 @@ describe("Keycloak directory sync", () => {
 
     // A second pass with nothing changed writes nothing.
     expect(await sync()).toEqual(report({directoryUsers: 207, unchanged: 207}));
+  });
+
+  test("reads organization registry and per-org members through bounded admin pages", async () => {
+    const fixture = z.object({
+      organization: z.object({alias: z.string(), enabled: z.boolean(), id: z.string(), name: z.string()}),
+      groups: z.array(z.object({id: z.string(), path: z.string()})),
+      members: z.array(z.object({
+        email: z.string().optional(),
+        emailVerified: z.boolean(),
+        enabled: z.boolean(),
+        firstName: z.string().optional(),
+        id: z.string(),
+        lastName: z.string().optional(),
+        username: z.string(),
+      })),
+      groupMembers: z.record(z.string(), z.array(z.string())),
+    }).parse(JSON.parse(readFileSync(new URL("../fixtures/keycloak-26.8.2-organizations-api.json", import.meta.url), "utf8")));
+    const organization = fixture.organization;
+    const fixtureMembers: StubKeycloakUser[] = fixture.members.map((member) => {
+      const normalized: StubKeycloakUser = {
+        emailVerified: member.emailVerified,
+        enabled: member.enabled,
+        id: member.id,
+        username: member.username,
+      };
+      if (member.email !== undefined) Object.assign(normalized, {email: member.email});
+      if (member.firstName !== undefined) Object.assign(normalized, {firstName: member.firstName});
+      if (member.lastName !== undefined) Object.assign(normalized, {lastName: member.lastName});
+      return normalized;
+    });
+    keycloak.organizations.set(organization.id, organization);
+    keycloak.organizationMembers.set(organization.id, fixtureMembers);
+    const membersById = new Map(fixtureMembers.map((member) => [member.id, member]));
+    keycloak.organizationRoleGroupIds.set(organization.id, new Map(
+      fixture.groups.map((group) => [group.path, group.id]),
+    ));
+    keycloak.organizationRoleGroups.set(organization.id, new Map(
+      Object.entries(fixture.groupMembers).map(([groupPath, memberIds]) => [
+        groupPath,
+        memberIds.map((memberId) => {
+          const member = membersById.get(memberId);
+          if (member === undefined) throw new Error(`Fixture member ${memberId} is missing.`);
+          return member;
+        }),
+      ]),
+    ));
+    const adminBaseUrl = keycloakAdminBaseUrl(keycloak.issuer);
+    if (adminBaseUrl === null) throw new Error("The stub issuer is not a realm.");
+    const directory = new KeycloakDirectory({
+      adminBaseUrl,
+      clientId: keycloak.clientId,
+      clientSecret: Redacted.make(keycloak.clientSecret),
+      issuer: keycloak.issuer,
+      retryBaseDelayMilliseconds: 0,
+    });
+
+    expect(await Effect.runPromise(directory.listOrganizations())).toEqual([organization]);
+    expect(await Effect.runPromise(directory.listOrganizationMembers(organization)))
+      .toMatchObject([
+        {email: "org-viewer@example.test", role: "viewer"},
+        {email: "org-editor@example.test", role: "editor"},
+        {email: "org-owner@example.test", role: "owner"},
+      ]);
+    expect(keycloak.adminRequests().map(({path: requestPath}) => requestPath)).toEqual(
+      expect.arrayContaining([
+        `/organizations/${organization.id}/groups`,
+        `/organizations/${organization.id}/groups/${fixture.groups[0]?.id}/members`,
+        `/organizations/${organization.id}/members`,
+      ]),
+    );
+    expect(keycloak.adminRequests().some(({path: requestPath}) =>
+      requestPath.includes("/fixture-disabled/"),
+    )).toBe(false);
+
+    const driftedOrganization = {
+      alias: "org-drift",
+      enabled: true,
+      id: crypto.randomUUID(),
+      name: "Drifting membership",
+    };
+    const firstMember = keycloakUser("drift-first");
+    const secondMember = keycloakUser("drift-second");
+    keycloak.organizations.set(driftedOrganization.id, driftedOrganization);
+    const replacedMember = keycloakUser("drift-replaced");
+    keycloak.organizationMembers.set(driftedOrganization.id, [firstMember, secondMember]);
+    keycloak.organizationRoleGroups.set(driftedOrganization.id, new Map());
+    keycloak.replaceOrganizationMembersAfterNextRead(driftedOrganization.id, [
+      firstMember,
+      replacedMember,
+    ]);
+    expect(await Effect.runPromise(directory.listOrganizationMembers(driftedOrganization)))
+      .toMatchObject([
+        {id: "user-drift-first", role: "viewer"},
+        {id: "user-drift-replaced", role: "viewer"},
+      ]);
+
+    const roleDriftOrganization = {
+      alias: "org-role-drift",
+      enabled: true,
+      id: crypto.randomUUID(),
+      name: "Drifting role group",
+    };
+    const roleBefore = keycloakUser("role-before");
+    const roleAfter = keycloakUser("role-after");
+    keycloak.organizations.set(roleDriftOrganization.id, roleDriftOrganization);
+    keycloak.organizationMembers.set(roleDriftOrganization.id, [roleBefore, roleAfter]);
+    keycloak.organizationRoleGroups.set(roleDriftOrganization.id, new Map([
+      ["/owner", [roleBefore]],
+    ]));
+    keycloak.replaceOrganizationRoleGroupAfterNextRead(
+      roleDriftOrganization.id, "/owner", [roleAfter],
+    );
+    expect(await Effect.runPromise(directory.listOrganizationMembers(roleDriftOrganization)))
+      .toMatchObject([
+        {id: "user-role-before", role: "viewer"},
+        {id: "user-role-after", role: "owner"},
+      ]);
+
+    const continuouslyChangingOrganization = {
+      ...driftedOrganization,
+      alias: "org-drift-again",
+      id: crypto.randomUUID(),
+    };
+    keycloak.organizations.set(continuouslyChangingOrganization.id, continuouslyChangingOrganization);
+    keycloak.organizationMembers.set(continuouslyChangingOrganization.id, [firstMember]);
+    keycloak.organizationRoleGroups.set(continuouslyChangingOrganization.id, new Map());
+    keycloak.changeOrganizationMembersAfterReads(continuouslyChangingOrganization.id, [
+      [secondMember],
+      [firstMember],
+      [secondMember],
+    ]);
+    await expect(Effect.runPromise(directory.listOrganizationMembers(continuouslyChangingOrganization)))
+      .rejects.toThrow("membership changed during both sync attempts");
+  });
+
+  test("an incomplete organization role-group page fails closed", async () => {
+    const orgId = crypto.randomUUID();
+    const organization = {alias: "org-partial", enabled: true, id: orgId, name: "Partial"};
+    keycloak.organizations.set(organization.alias, organization);
+    const owner = keycloakUser("partial-owner");
+    keycloak.organizationMembers.set(orgId, [owner]);
+    keycloak.organizationRoleGroups.set(orgId, new Map([["/owner", [owner]]]));
+    const adminBaseUrl = keycloakAdminBaseUrl(keycloak.issuer);
+    if (adminBaseUrl === null) throw new Error("The stub issuer is not a realm.");
+    const directory = new KeycloakDirectory({
+      adminBaseUrl,
+      clientId: keycloak.clientId,
+      clientSecret: Redacted.make(keycloak.clientSecret),
+      issuer: keycloak.issuer,
+      retryBaseDelayMilliseconds: 0,
+    });
+    keycloak.failMembersPage(0, 503);
+    await expect(Effect.runPromise(directory.listOrganizationMembers(organization)))
+      .rejects.toThrow("returned HTTP 503");
   });
 
   test("guest wins over viewer when member sync collects overlapping groups", async () => {

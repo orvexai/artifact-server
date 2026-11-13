@@ -38,12 +38,32 @@ clients; Orvex continues using that legacy callback.
 
 Each non-Orvex organization has separate protected-resource URLs and token
 audiences: `https://<application-host>/o/<slug>/api` for the HTTP API and
-`https://<application-host>/o/<slug>/mcp` for MCP. Provisioner service-account
-tokens use that organization's `/api` audience as well. Orvex keeps its
+`https://<application-host>/o/<slug>/mcp` for MCP. Orvex keeps its
 configured API resource override, or the legacy `<application-origin>/api`
 and `<application-origin>/mcp` defaults. Configure the matching Keycloak
 audience mapper for each organization's resources before enabling its OAuth
 admission policy.
+
+Run `artifact-server org sync` (or the `maintenance org-sync --once` CronJob
+path) to discover organizations and reconcile each organization's members.
+The sync command reports disappeared organizations but never deletes or
+suspends them. An enabled organization with zero members is reported as
+`emptied` and makes the command exit non-zero to raise an alert. Investigate
+the Keycloak membership first; when suspension is intended, run
+`artifact-server org suspend <slug> --yes`. This deactivates every member,
+revokes their sessions and human API keys, and suspends its route. Suspension
+is reversible only with `artifact-server org resume <slug>`, which restores
+members to their prior active/inactive and manual-deactivation state, then
+immediately reads the current Keycloak membership and roles. If that sync
+fails, the organization remains resumed with members at their restored
+statuses; investigate the reported error and rerun `artifact-server org sync`.
+Resume does not restore browser sessions or API keys revoked by suspension;
+affected members must sign in again and any required API keys must be reissued.
+Artifact Server administrator deactivations are sticky; only a
+Keycloak-driven deactivation is automatically reversed when the member returns.
+
+Org installations currently reject provisioner and service-account tokens;
+use an admitted human's organization-scoped token.
 
 ## Select storage
 

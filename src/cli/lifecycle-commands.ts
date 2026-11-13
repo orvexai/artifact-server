@@ -6,6 +6,8 @@ import {Redacted} from "effect";
 
 import {
   createExternalStorageRuntime,
+  createOrgRuntime,
+  openExternalStorageDatabase,
   type ExternalStorageRuntimeConfig,
 } from "../external-storage/create-external-storage-runtime.js";
 import {
@@ -51,6 +53,7 @@ import {
 import {PostgresDatabase} from "../storage/postgres-database.js";
 import {
   OrganizationRegistry,
+  findDisappearedOrganizations,
   parseOrganizationAdmissionPolicyJson,
   type OrganizationAdmissionPolicy,
 } from "../external-storage/organization-registry.js";
@@ -149,6 +152,22 @@ function configureMaintenance(program: Command): void {
       }
     });
   maintenance
+    .command("org-sync")
+    .description("Discover Keycloak organizations and sync their members.")
+    .requiredOption("--once", "run one complete pass and exit")
+    .addOption(new Option("--mode <mode>", "external-storage only").choices(["external-storage"]).default("external-storage"))
+    .addOption(dataOption())
+    .addOption(hostOption())
+    .addOption(portOption())
+    .action(async (options: SyncDirectoryOptions) => {
+      const configuration = await lifecycleConfiguration(options);
+      if (configuration.deploymentMode !== "external-storage") {
+        throw new Error("Keycloak organization sync requires external-storage mode.");
+      }
+      const report = await syncKeycloakOrganizations(configuration);
+      printOrganizationSyncReport(report);
+    });
+  maintenance
     .command("sync-directory")
     .description(
       "Make installation members match the OIDC issuer's directory groups.",
@@ -231,6 +250,13 @@ function configureMaintenance(program: Command): void {
             unchanged: Math.max(0, memberSync.unchanged - roleChangedDuringRecompute),
             roleChanged: memberSync.roleChanged + roleChangedDuringRecompute,
           }));
+        if (parseOrganizationTenancy(process.env["ARTIFACT_SERVER_ORG_TENANCY"])) {
+          if (configuration.deploymentMode !== "external-storage") {
+            throw new Error("Keycloak organization sync requires external-storage mode.");
+          }
+          const organizationSync = await syncKeycloakOrganizations(configuration);
+          printOrganizationSyncReport(organizationSync);
+        }
       } finally {
         await runtime.close();
       }
@@ -289,6 +315,212 @@ function configureOrganizations(program: Command): void {
         await database.close();
       }
     });
+  organization.command("sync")
+    .description("Discover Keycloak organizations and sync their members.")
+    .addOption(new Option("--mode <mode>", "external-storage only").choices(["external-storage"]).default("external-storage"))
+    .addOption(hostOption())
+    .addOption(portOption())
+    .action(async (options: StartExternalStorageOptions) => {
+      const configuration = await parseExternalConfiguration(options.host, options.port);
+      const report = await syncKeycloakOrganizations(configuration);
+      printOrganizationSyncReport(report);
+    });
+  organization.command("link")
+    .description("Deliberately link a registered organization to a Keycloak organization id.")
+    .argument("<slug>", "registered Artifact Server organization slug")
+    .argument("<keycloak-id>", "Keycloak organization UUID")
+    .action(async (slug: string, keycloakId: string) => {
+      const configuration = await runCliEffect(
+        parseExternalMigrationConfiguration(process.env),
+      );
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-org-link:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        console.log(JSON.stringify(
+          await new OrganizationRegistry(database).linkKeycloakOrganization(slug, keycloakId),
+          null,
+          2,
+        ));
+      } finally {
+        await database.close();
+      }
+    });
+  organization.command("suspend")
+    .description("Suspend an organization and deactivate its members; reversible only with org resume.")
+    .argument("<slug>", "registered Artifact Server organization slug")
+    .option("--yes", "confirm suspension of this organization")
+    .action(async (slug: string, options: {readonly yes?: boolean}) => {
+      if (options.yes !== true) throw new Error("Organization suspension requires --yes.");
+      const configuration = await runCliEffect(
+        parseExternalMigrationConfiguration(process.env),
+      );
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-org-suspend:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        console.log(JSON.stringify(await new OrganizationRegistry(database).suspend(slug), null, 2));
+      } finally {
+        await database.close();
+      }
+    });
+  organization.command("resume")
+    .description("Resume an organization and immediately sync its Keycloak members.")
+    .argument("<slug>", "registered Artifact Server organization slug")
+    .action(async (slug: string) => {
+      const configuration = await parseExternalConfiguration();
+      try {
+        const database = await openExternalStorageDatabase(externalMaintenanceConfig(configuration));
+        try {
+          const resumed = await new OrganizationRegistry(database).resume(slug);
+          console.log(JSON.stringify(resumed, null, 2));
+        } finally {
+          await database.close();
+        }
+        try {
+          printOrganizationSyncReport(await syncKeycloakOrganizations(configuration, slug, false));
+        } catch (error) {
+          console.error(JSON.stringify({
+            alias: slug,
+            error: error instanceof Error ? error.message : String(error),
+            operation: "member-sync-after-resume",
+          }, null, 2));
+          process.exitCode = 2;
+        }
+      } finally {
+        await configuration.objectStorage.close?.();
+      }
+    });
+}
+
+interface OrganizationSyncReport {
+  readonly discovered: readonly string[];
+  readonly disappeared: readonly {readonly alias: string; readonly id: string}[];
+  readonly emptied: readonly {readonly alias: string; readonly reason: string}[];
+  readonly skipped: readonly {readonly alias: string; readonly reason: string}[];
+  readonly errors: readonly {readonly alias: string; readonly error: string}[];
+  readonly memberSync: readonly {readonly alias: string; readonly report: unknown}[];
+}
+
+function printOrganizationSyncReport(report: OrganizationSyncReport): void {
+  console.log(JSON.stringify(report, null, 2));
+  if (report.errors.length > 0 || report.emptied.length > 0) process.exitCode = 2;
+}
+
+async function syncKeycloakOrganizations(
+  configuration: ExternalStorageRuntimeConfiguration,
+  onlyAlias?: string,
+  closeObjectStorage = true,
+): Promise<OrganizationSyncReport> {
+  if (configuration.deploymentMode !== "external-storage") {
+    throw new Error("Keycloak organization sync requires external-storage mode.");
+  }
+  if (!parseOrganizationTenancy(process.env["ARTIFACT_SERVER_ORG_TENANCY"])) {
+    throw new Error("Keycloak organization sync requires ARTIFACT_SERVER_ORG_TENANCY=on.");
+  }
+  assertAtMostOneBrowserLoginProvider(process.env);
+  const oidc = await loadOidcConfiguration({
+    ...process.env,
+    ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL: configuration.bootstrapAdministratorEmail,
+    ARTIFACT_SERVER_ORIGIN: configuration.applicationOrigin,
+  });
+  const directorySettings = oidc?.directory ?? null;
+  if (oidc === null || directorySettings === null) {
+    throw new Error("Keycloak organization sync requires OIDC and ARTIFACT_SERVER_OIDC_DIRECTORY_* settings.");
+  }
+  const directoryConfig: KeycloakDirectoryConfig = {
+    adminBaseUrl: directorySettings.adminBaseUrl,
+    clientId: directorySettings.clientId,
+    clientSecret: directorySettings.clientSecret,
+    issuer: oidc.issuer,
+  };
+  const directory = new KeycloakDirectory(directorySettings.tokenEndpoint === undefined
+    ? directoryConfig
+    : {...directoryConfig, tokenEndpoint: directorySettings.tokenEndpoint});
+  const database = await openExternalStorageDatabase(externalMaintenanceConfig(configuration));
+  try {
+    const registry = new OrganizationRegistry(database);
+    await registry.ensureOrvex(configuration.installationId);
+    const before = await registry.list();
+    const keycloakOrganizations = await runCliEffect(directory.listOrganizations());
+    const discovered: string[] = [];
+    const skipped: {alias: string; reason: string}[] = [];
+    const emptied: {alias: string; reason: string}[] = [];
+    const errors: {alias: string; error: string}[] = [];
+    const memberSync: {alias: string; report: unknown}[] = [];
+    let foundRequestedAlias = false;
+    for (const keycloakOrganization of keycloakOrganizations) {
+      if (onlyAlias !== undefined && keycloakOrganization.alias !== onlyAlias) continue;
+      if (keycloakOrganization.alias === onlyAlias) foundRequestedAlias = true;
+      try {
+        if (keycloakOrganization.enabled === false) {
+          const reason = "Keycloak organization is disabled.";
+          if (keycloakOrganization.alias === onlyAlias) errors.push({alias: onlyAlias, error: reason});
+          else skipped.push({alias: keycloakOrganization.alias, reason});
+          continue;
+        }
+        // Keep each tenant operation sequential: the per-org catch below
+        // records failures independently and shared connections are bounded.
+        // oxlint-disable-next-line eslint/no-await-in-loop
+        const result = await registry.syncKeycloakOrganization(
+          keycloakOrganization.alias,
+          keycloakOrganization.name,
+          keycloakOrganization.id,
+        );
+        if (result.kind === "conflict") {
+          errors.push({alias: keycloakOrganization.alias, error: result.reason});
+          continue;
+        }
+        const organization = result.organization;
+        discovered.push(organization.slug);
+        if (organization.status !== "active") {
+          skipped.push({alias: keycloakOrganization.alias, reason: "Artifact Server organization is suspended."});
+          continue;
+        }
+        // Orvex remains governed by the existing issuer-group policy.
+        if (keycloakOrganization.alias === "orvex") continue;
+        // oxlint-disable-next-line eslint/no-await-in-loop
+        const orgRuntime = await createOrgRuntime(organization.id, {
+          cookieRouteId: organization.routeId,
+          keycloakOrganizationId: keycloakOrganization.id,
+          slug: organization.slug,
+          applicationOrigin: new URL(`/o/${organization.slug}`, configuration.applicationOrigin).toString(),
+        }, externalMaintenanceConfig(configuration), database);
+        try {
+          // oxlint-disable-next-line eslint/no-await-in-loop
+          const memberReport = await orgRuntime.syncOrganizationMembers(directory, keycloakOrganization);
+          if ("kind" in memberReport && memberReport.kind === "emptied") {
+            emptied.push({alias: keycloakOrganization.alias, reason: memberReport.reason});
+          } else {
+            memberSync.push({alias: keycloakOrganization.alias, report: memberReport});
+          }
+        } finally {
+          // oxlint-disable-next-line eslint/no-await-in-loop
+          await orgRuntime.close();
+        }
+      } catch (error) {
+        errors.push({
+          alias: keycloakOrganization.alias,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (onlyAlias !== undefined && !foundRequestedAlias) {
+      errors.push({alias: onlyAlias, error: "The organization is not present in the current Keycloak organization listing."});
+    }
+    const disappeared = findDisappearedOrganizations(before, keycloakOrganizations);
+    return {discovered, disappeared, skipped, emptied, errors, memberSync};
+  } finally {
+    if (closeObjectStorage) {
+      await Promise.all([configuration.objectStorage.close?.(), database.close()]);
+    } else {
+      await database.close();
+    }
+  }
 }
 
 function configureInitialization(program: Command): void {

@@ -276,6 +276,18 @@ class DiscoveredOidcBearerVerifier implements ExternalMcpBearerVerifier {
     this.#unconfiguredMessage,
   );
 
+  readonly forOrganization = (organization: {
+    readonly alias: string;
+    readonly id: string;
+  }): DiscoveredOidcBearerVerifier => new DiscoveredOidcBearerVerifier(
+    this.#discovery,
+    (hosted) => {
+      const verifier = this.#select(hosted);
+      return verifier.forOrganization?.(organization) ?? verifier;
+    },
+    this.#unconfiguredMessage,
+  );
+
   readonly verify = (
     credential: Redacted.Redacted,
   ): Effect.Effect<
