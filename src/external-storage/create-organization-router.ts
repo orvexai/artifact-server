@@ -98,6 +98,7 @@ export async function createOrganizationRouter(
       const securityFingerprint = JSON.stringify({
         admissionPolicy: organization.admissionPolicy,
         embedOrigins: organization.embedOrigins,
+        keycloakId: organization.keycloakId,
         routeId: organization.routeId,
         slug: organization.slug,
         status: organization.status,

@@ -2575,6 +2575,10 @@ describe.sequential("organization tenancy security boundary", () => {
     }
     const orgA = orgAResult.organization;
     const orgBRecord = orgBResult.organization;
+    const unchangedSync = await registry.syncKeycloakOrganization(aliasA, "Org A", idA);
+    expect(unchangedSync.kind).toBe("synced");
+    if (unchangedSync.kind !== "synced") throw new Error("The unchanged Keycloak organization sync was rejected.");
+    expect(unchangedSync.organization.registryVersion).toBe(orgA.registryVersion);
     const organizationA: DirectoryOrganization = {alias: aliasA, id: idA, name: "Org A"};
     const organizationB: DirectoryOrganization = {alias: aliasB, id: idB, name: "Org B"};
     const usersA = [

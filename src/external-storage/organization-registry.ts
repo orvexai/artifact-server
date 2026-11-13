@@ -272,6 +272,7 @@ export class OrganizationRegistry {
   ): Promise<KeycloakOrganizationSyncResult> {
     const slug = organizationSlugSchema.parse(alias);
     const id = keycloakOrganizationIdSchema.parse(keycloakId);
+    const displayName = organizationNameSchema.parse(name);
     if (isReservedOrganizationSlug(slug)) {
       return {kind: "conflict", alias, reason: `Organization alias '${alias}' is reserved.`};
     }
@@ -287,10 +288,13 @@ export class OrganizationRegistry {
       if (existing.keycloakId !== id) {
         return {kind: "conflict", alias, reason: `Organization '${alias}' is linked to a different Keycloak id.`};
       }
+      if (existing.displayName === displayName) {
+        return {kind: "synced", organization: existing};
+      }
       const rows = await this.#database.run(Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`UPDATE artifact_installations
-          SET display_name = ${organizationNameSchema.parse(name)},
+          SET display_name = ${displayName},
             keycloak_organization_id = ${id}
           WHERE id = ${existing.id}
           RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
