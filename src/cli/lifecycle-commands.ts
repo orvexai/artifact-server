@@ -61,7 +61,9 @@ import {
   type OrganizationAdmissionPolicy,
 } from "../external-storage/organization-registry.js";
 import {
+  organizationStaffEmailDomainsVariable,
   organizationStaffGroupsVariable,
+  parseOrganizationStaffEmailDomains,
   parseOrganizationStaffGroups,
   requireOrganizationStaffGroups,
 } from "../external-storage/organization-staff-groups.js";
@@ -474,6 +476,9 @@ async function syncKeycloakOrganizations(
   const organizationStaffGroups = requireOrganizationStaffGroups(
     parseOrganizationStaffGroups(process.env[organizationStaffGroupsVariable]),
   );
+  const organizationStaffEmailDomains = parseOrganizationStaffEmailDomains(
+    process.env[organizationStaffEmailDomainsVariable],
+  );
   assertAtMostOneBrowserLoginProvider(process.env);
   const oidc = await loadOidcConfiguration({
     ...process.env,
@@ -552,7 +557,7 @@ async function syncKeycloakOrganizations(
           keycloakOrganizationId: keycloakOrganization.id,
           slug: organization.slug,
           applicationOrigin: new URL(`/o/${organization.slug}`, configuration.applicationOrigin).toString(),
-        }, {...externalMaintenanceConfig(configuration), organizationStaffGroups}, database);
+        }, {...externalMaintenanceConfig(configuration), organizationStaffEmailDomains, organizationStaffGroups}, database);
         try {
           // oxlint-disable-next-line eslint/no-await-in-loop
           const memberReport = await orgRuntime.syncOrganizationMembers(directory, keycloakOrganization);
@@ -768,6 +773,9 @@ function configureExternalStorageStart(
         process.env[organizationStaffGroupsVariable],
       );
       if (organizationTenancy) requireOrganizationStaffGroups(organizationStaffGroups);
+      const organizationStaffEmailDomains = parseOrganizationStaffEmailDomains(
+        process.env[organizationStaffEmailDomainsVariable],
+      );
       const parsed = await parseExternalConfiguration(options.host, options.port);
       const embedOrigins = loadEmbedOrigins(process.env);
       writeGitHistoryConfigurationWarnings(parsed.gitHistory);
@@ -799,6 +807,7 @@ function configureExternalStorageStart(
         gitHistory: parsed.gitHistory,
         hostname: parsed.hostname,
         installationId: parsed.installationId,
+        organizationStaffEmailDomains,
         organizationStaffGroups,
         organizationTenancy,
         objectStorage: parsed.objectStorage,

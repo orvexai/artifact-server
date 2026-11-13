@@ -174,6 +174,8 @@ export interface ApplicationAdapters {
   readonly organizationDirectoryVisibility?: boolean | undefined;
   /** Exact group paths whose members are Orvex staff in this tenant. */
   readonly tenantStaffGroups?: readonly string[] | undefined;
+  /** Verified-email domains whose members are Orvex staff in this tenant. */
+  readonly tenantStaffEmailDomains?: readonly string[] | undefined;
   readonly interactiveIdentityProvider: InteractiveIdentityProvider | null;
   readonly uploadUrlLifetimeMilliseconds?: number;
   /** Live optional-provider state used to guard project enablement. */
@@ -850,6 +852,7 @@ export function createApplicationLayer(
     installationId: adapters.installationId,
     staffHandleSecret: adapters.staffHandleSecret ?? Redacted.make(""),
     organizationDirectoryVisibility: adapters.organizationDirectoryVisibility,
+    tenantStaffEmailDomains: adapters.tenantStaffEmailDomains ?? [],
     tenantStaffGroups: adapters.tenantStaffGroups ?? [],
     localBootstrapCredential: adapters.localBootstrapCredential,
     localLoginAttemptLifetimeMilliseconds: 60 * 1_000,

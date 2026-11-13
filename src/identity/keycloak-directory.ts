@@ -88,8 +88,8 @@ export interface OrganizationDirectory {
     organization: DirectoryOrganization,
   ) => Effect.Effect<readonly DirectoryOrganizationMember[], DirectoryUnavailable>;
   /**
-   * Keycloak user ids that are direct members of the realm group at one full
-   * path. Org sync uses it to mark admission-policy staff selectors.
+   * Keycloak user ids that are members of the realm group at one full path or
+   * of any subgroup beneath it. Org sync uses it to mark staff groups.
    */
   readonly listGroupMemberIdsByPath?: (
     path: string,
@@ -467,7 +467,8 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
   );
 
   /**
-   * Read the direct members of the realm group at one full path. A missing
+   * Read the members of the realm group at one full path and of every
+   * subgroup beneath it. A missing
    * group fails the pass: a staff selector that cannot be resolved must never
    * silently admit staff unmasked.
    */
@@ -488,8 +489,38 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
       if (group.path !== path) {
         return yield* unavailable(`The Keycloak staff group ${path} resolved to a different path.`);
       }
-      const users = yield* this.#groupMembers(token, path, group.id);
-      return users.map(({id}) => id);
+      // A staff group covers its subgroups: collect every descendant group
+      // through Keycloak's paged children listing, then read each one's members.
+      const groupIds = [group.id];
+      const pending = [group.id];
+      for (let parentId = pending.shift(); parentId !== undefined; parentId = pending.shift()) {
+        for (let page = 0; ; page += 1) {
+          if (page >= maximumPagesPerGroup) {
+            return yield* unavailable(`The subgroups of staff group ${path} have too many pages.`);
+          }
+          const childrenUrl = new URL(`${this.#adminBaseUrl}/groups/${encodeURIComponent(parentId)}/children`);
+          childrenUrl.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+          childrenUrl.searchParams.set("max", String(keycloakDirectoryPageSize));
+          childrenUrl.searchParams.set("briefRepresentation", "true");
+          const childrenBody = yield* this.#adminGet(token, childrenUrl, `The subgroups of staff group ${path}`);
+          const children = yield* decodeGroupTree(childrenBody).pipe(
+            Effect.mapError(() => unavailable(`The subgroups of staff group ${path} returned an invalid list.`)),
+          );
+          for (const child of children) {
+            groupIds.push(child.id);
+            if (groupIds.length > maximumGroups) {
+              return yield* unavailable(`Staff group ${path} has more subgroups than one sync reads.`);
+            }
+            if (child.subGroupCount !== 0) pending.push(child.id);
+          }
+          if (children.length < keycloakDirectoryPageSize) break;
+        }
+      }
+      const ids = new Set<string>();
+      for (const groupId of groupIds) {
+        for (const user of yield* this.#groupMembers(token, path, groupId)) ids.add(user.id);
+      }
+      return [...ids];
     },
   );
 

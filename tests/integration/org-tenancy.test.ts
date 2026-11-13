@@ -2599,7 +2599,7 @@ describe.sequential("organization tenancy security boundary", () => {
     try {
       const report = await runtime.syncOrganizationMembers(directory, organization);
       expect("kind" in report).toBe(false);
-      expect(staffLookups).toEqual([`${groupRoot}support`]);
+      expect(staffLookups).toEqual(["/Developers", `${groupRoot}support`]);
       const rows = await database.run(Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT email, staff FROM installation_members

@@ -214,6 +214,10 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 - name: ARTIFACT_SERVER_ORG_STAFF_GROUPS
   value: {{ join "," .Values.configuration.organizationStaffGroups | quote }}
 {{- end }}
+{{- if .Values.configuration.organizationStaffEmailDomains }}
+- name: ARTIFACT_SERVER_ORG_STAFF_EMAIL_DOMAINS
+  value: {{ join "," .Values.configuration.organizationStaffEmailDomains | quote }}
+{{- end }}
 - name: ARTIFACT_SERVER_OBJECT_STORAGE_PROVIDER
   value: "s3"
 - name: ARTIFACT_SERVER_POSTGRES_MAX_CONNECTIONS

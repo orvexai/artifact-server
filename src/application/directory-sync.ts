@@ -5,6 +5,7 @@ import type {
   DirectoryGroupRecord,
 } from "../core/directory-groups.js";
 import {membershipRolePrecedence} from "../core/group-role-policy.js";
+import {emailHasStaffDomain} from "../core/tenant-staff.js";
 import type {MembershipRole} from "../core/identity.js";
 import type {DirectoryOrganization} from "../identity/keycloak-directory.js";
 import type {OrganizationDirectory} from "../identity/keycloak-directory.js";
@@ -188,6 +189,7 @@ export const readOrganizationDirectorySnapshot = Effect.fn(
   directory: OrganizationDirectory,
   organization: DirectoryOrganization,
   staffSelectors: readonly string[] = [],
+  staffEmailDomains: readonly string[] = [],
 ) {
   const members = yield* directory.listOrganizationMembers(organization);
   if (members.length === 0) {
@@ -223,7 +225,8 @@ export const readOrganizationDirectorySnapshot = Effect.fn(
       ? "member"
       : "viewer";
     const previous = desired.get(email);
-    const staff = staffUserIds.has(user.id) || previous?.staff === true;
+    const staff = staffUserIds.has(user.id) || previous?.staff === true ||
+      emailHasStaffDomain(email, user.emailVerified, staffEmailDomains);
     const entry: DirectoryMemberEntry = staff
       ? {displayName: displayName(user, email), email, role, staff: true}
       : {displayName: displayName(user, email), email, role};
@@ -253,8 +256,9 @@ export const syncOrganizationDirectoryMembers = Effect.fn(
   organization: DirectoryOrganization,
   maximumDeactivations: number,
   staffSelectors: readonly string[] = [],
+  staffEmailDomains: readonly string[] = [],
 ) {
-  const snapshot = yield* readOrganizationDirectorySnapshot(directory, organization, staffSelectors);
+  const snapshot = yield* readOrganizationDirectorySnapshot(directory, organization, staffSelectors, staffEmailDomains);
   if (snapshot.kind === "emptied") return {kind: snapshot.kind, reason: snapshot.reason} as const;
   const reconciliation = yield* InstallationAccessService.use((access) =>
     access.reconcileDirectoryMembers(snapshot.desired, maximumDeactivations)

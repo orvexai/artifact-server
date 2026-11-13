@@ -9,6 +9,7 @@ import type {InteractiveIdentityProvider} from "../application/interactive-login
 import type {ExternalIdentity} from "../core/installation-identity.js";
 import type {OrganizationMembershipResolver} from "./organization-memberships.js";
 import type {OrganizationAdmissionPolicy} from "./organization-registry.js";
+import {expandOrganizationStaffGroups} from "./organization-staff-groups.js";
 import type {Clock} from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
 import type {
@@ -123,6 +124,11 @@ export interface ExternalStorageRuntimeConfig {
    * exact group paths masked as staff in every non-Orvex organization.
    */
   readonly organizationStaffGroups?: readonly string[];
+  /**
+   * Verified-email domains of Orvex staff (ARTIFACT_SERVER_ORG_STAFF_EMAIL_DOMAINS),
+   * matched exactly in every non-Orvex organization.
+   */
+  readonly organizationStaffEmailDomains?: readonly string[];
   readonly installationId: string;
   /** Verified Keycloak org claims; composed by the identity provider layer. */
   readonly organizationMemberships?: OrganizationMembershipResolver;
@@ -237,9 +243,10 @@ export async function createOrgRuntime(
     ? config.groupRolePolicy ?? null
     : orgConfig.admissionPolicy ?? null;
   // One staff definition per tenant, used by login and by org sync alike.
-  const tenantStaffGroups = isOrvex
+  const tenantStaffGroups = isOrvex || orgConfig.slug === undefined
     ? []
-    : tenantStaffGroupPaths(config.organizationStaffGroups ?? [], groupRolePolicy);
+    : tenantStaffGroupPaths(config.organizationStaffGroups ?? [], groupRolePolicy, orgConfig.slug);
+  const tenantStaffEmailDomains = isOrvex ? [] : config.organizationStaffEmailDomains ?? [];
   const organizationOAuthResources = orgConfig.slug === undefined || isOrvex || applicationOrigin === null
     ? null
     : {
@@ -350,6 +357,7 @@ export async function createOrgRuntime(
       identityRepository,
       installationId,
       organizationDirectoryVisibility: !isOrvex && orgConfig.slug !== undefined,
+      tenantStaffEmailDomains,
       tenantStaffGroups,
       gitHistory: {read: () => applicationGitHistory.read()},
       interactiveIdentityProvider: config.interactiveIdentityProvider === undefined
@@ -551,6 +559,7 @@ export async function createOrgRuntime(
           directory,
           organization,
           tenantStaffGroups,
+          tenantStaffEmailDomains,
         ),
       syncDirectoryGroups: (directory, syncedAt, provider, recomputeRoles) =>
         runDirectoryGroupSyncPass(readyRuntime, directory, syncedAt, provider, recomputeRoles),
@@ -589,8 +598,12 @@ export function organizationStaffSelectors(policy: GroupRolePolicy | null): read
 export function tenantStaffGroupPaths(
   platformStaffGroups: readonly string[],
   policy: GroupRolePolicy | null,
+  slug: string,
 ): readonly string[] {
-  return [...new Set([...platformStaffGroups, ...organizationStaffSelectors(policy)])];
+  return [...new Set([
+    ...expandOrganizationStaffGroups(platformStaffGroups, slug),
+    ...organizationStaffSelectors(policy),
+  ])];
 }
 
 /** The runtime admission policy for one registered organization record. */

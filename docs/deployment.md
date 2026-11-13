@@ -55,7 +55,19 @@ the cleanup CronJob and the directory-sync CronJob. Before you switch it on:
   admission policy, in addition to any per-organization `"staff": true`
   selectors. With tenancy on and this variable empty, the server refuses to
   start and every `org sync` fails, and the Helm chart refuses to render.
+  Write `{slug}` to name a per-organization group, for example
+  `/TenantWorkspaces/{slug}/{slug}-staff`; it expands to each organization's
+  slug and must still form an exact path. Every staff path also covers its
+  subgroups, at sign-in and in `org sync`.
   The OIDC groups claim must carry full group paths so sign-in can match them.
+- **Optionally name staff email domains.** Set
+  `ARTIFACT_SERVER_ORG_STAFF_EMAIL_DOMAINS` (Helm:
+  `configuration.organizationStaffEmailDomains`) to comma-separated domains
+  such as `orvex.ai`. A tenant member whose email is verified and whose domain
+  matches one exactly (case-insensitive, no subdomains) is staff: at sign-in
+  the token's `email_verified` must be true, and in `org sync` Keycloak's
+  `emailVerified` must be true. An unverified email never counts. This adds
+  to the staff groups; it does not replace them.
 - **Keycloak must send the `organization` claim.** Add Keycloak's built-in
   `organization` client scope to the Artifact Server OIDC client as a default
   scope. Without it no token carries organization memberships: no Keycloak

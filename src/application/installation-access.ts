@@ -53,6 +53,7 @@ import {
   groupMembershipRole,
   membershipRolePrecedence,
 } from "../core/group-role-policy.js";
+import {staffPathCovers, tenantLoginIsStaff} from "../core/tenant-staff.js";
 import {
   isAdministratorRole,
   isHumanAdministrator,
@@ -310,6 +311,8 @@ export interface InstallationAccessDependencies {
    * platform-wide staff groups plus the org's own staff selectors.
    */
   readonly tenantStaffGroups?: readonly string[] | undefined;
+  /** Verified-email domains whose members are Orvex staff in this tenant. */
+  readonly tenantStaffEmailDomains?: readonly string[] | undefined;
   readonly localBootstrapCredential: Redacted.Redacted | null;
   readonly localLoginAttemptLifetimeMilliseconds: number;
   /** Keep the installation's local-owner member permanently active. */
@@ -779,7 +782,7 @@ function makeInstallationAccessService(
     );
     if (dependencies.organizationDirectoryVisibility !== true) return groups;
     const tenantStaffGroups = dependencies.tenantStaffGroups ?? [];
-    return groups.filter((group) => !tenantStaffGroups.includes(group.path) &&
+    return groups.filter((group) => !tenantStaffGroups.some((path) => staffPathCovers(path, group.path)) &&
       (groupRolePolicy === null || !groupRoleSeedMarksStaff(group, groupRolePolicy.seed)));
   });
 
@@ -1353,15 +1356,21 @@ function makeInstallationAccessService(
     }
     yield* dependencies.repository.bindExternalIdentity(binding);
     const tenantStaffGroups = dependencies.tenantStaffGroups ?? [];
-    if (dependencies.organizationDirectoryVisibility === true && (groupRolePolicy !== null || tenantStaffGroups.length > 0)) {
+    const tenantStaffEmailDomains = dependencies.tenantStaffEmailDomains ?? [];
+    if (dependencies.organizationDirectoryVisibility === true &&
+      (groupRolePolicy !== null || tenantStaffGroups.length > 0 || tenantStaffEmailDomains.length > 0)) {
       const fullPathGroups = (identity.groups ?? []).filter((group) => group.startsWith("/"));
       if (fullPathGroups.length === 0) yield* Effect.logWarning("Tenant login carried no full-path groups; retaining sticky staff privacy marker.");
-      const matchedStaffSelector = fullPathGroups.length > 0 && (
-        tenantStaffGroups.some((group) => fullPathGroups.includes(group)) ||
-        (groupRolePolicy?.seed.some(({selector, staff: isStaff}) =>
-          isStaff === true && selector.startsWith("/") && fullPathGroups.includes(selector)
-        ) ?? false)
-      );
+      // Only a provider-verified email may mark staff by domain; a staff
+      // group covers its subgroups.
+      const matchedStaffSelector = tenantLoginIsStaff({
+        email,
+        emailVerified: identity.emailVerified,
+        groups: fullPathGroups,
+        seed: groupRolePolicy?.seed ?? [],
+        staffEmailDomains: tenantStaffEmailDomains,
+        staffGroups: tenantStaffGroups,
+      });
       // This persisted marker is intentionally sticky: old authored content
       // must not become attributable after an admission-policy change.
       const staff = member.staff === true || matchedStaffSelector;

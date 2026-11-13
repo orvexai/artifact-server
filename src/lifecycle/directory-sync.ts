@@ -35,6 +35,7 @@ export function runOrganizationDirectorySyncPass(
   directory: OrganizationDirectory,
   organization: DirectoryOrganization,
   staffSelectors: readonly string[] = [],
+  staffEmailDomains: readonly string[] = [],
 ): Promise<OrganizationDirectorySyncResult> {
   const configured = process.env["ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS"];
   if (configured !== undefined && !/^[0-9]+$/u.test(configured)) {
@@ -49,6 +50,7 @@ export function runOrganizationDirectorySyncPass(
     organization,
     maximumDeactivations,
     staffSelectors,
+    staffEmailDomains,
   ).pipe(Effect.mapError((error) => new Error(`${error._tag}: ${error.message}`))));
 }
 

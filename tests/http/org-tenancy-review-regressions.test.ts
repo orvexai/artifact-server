@@ -14,9 +14,17 @@ import {
   tenantStaffGroupPaths,
 } from "../../src/external-storage/create-external-storage-runtime.js";
 import {
+  expandOrganizationStaffGroups,
+  parseOrganizationStaffEmailDomains,
   parseOrganizationStaffGroups,
   requireOrganizationStaffGroups,
 } from "../../src/external-storage/organization-staff-groups.js";
+import {
+  emailHasStaffDomain,
+  staffPathCovers,
+  tenantLoginIsStaff,
+  type TenantLoginStaffInput,
+} from "../../src/core/tenant-staff.js";
 import {prefixOrganizationRedirect} from "../../src/external-storage/create-organization-router.js";
 import {
   createKeycloakOrganizationMembershipResolver,
@@ -132,7 +140,7 @@ describe("H1: org sync marks staff from the admission policy", () => {
     expect(organizationStaffSelectors(organizationRuntimeAdmissionPolicy(null))).toEqual([]);
   });
 
-  test("the Keycloak directory resolves a staff selector by exact group path", async () => {
+  test("the Keycloak directory resolves a staff path and every nested subgroup's members (M-A)", async () => {
     const requested: string[] = [];
     const directory = new KeycloakDirectory({
       adminBaseUrl: "https://keycloak.example.test/admin/realms/test",
@@ -148,13 +156,23 @@ describe("H1: org sync marks staff from the admission policy", () => {
         if (url.pathname.endsWith("/groups/group-support/members")) {
           return Response.json([{id: "kc-staff", username: "staff"}]);
         }
+        if (url.pathname.endsWith("/groups/group-support/children")) {
+          return Response.json([{id: "group-oncall", name: "oncall", subGroupCount: 1}]);
+        }
+        if (url.pathname.endsWith("/groups/group-oncall/children")) {
+          return Response.json([{id: "group-nights", name: "nights", subGroupCount: 0}]);
+        }
+        if (url.pathname.endsWith("/groups/group-oncall/members")) return Response.json([]);
+        if (url.pathname.endsWith("/groups/group-nights/members")) {
+          return Response.json([{id: "kc-nested", username: "nested"}, {id: "kc-staff", username: "staff"}]);
+        }
         return new Response(null, {status: 404});
       },
       issuer: "https://keycloak.example.test/realms/test",
       retryBaseDelayMilliseconds: 0,
       tokenEndpoint: "https://keycloak.example.test/realms/test/protocol/openid-connect/token",
     });
-    expect(await Effect.runPromise(directory.listGroupMemberIdsByPath("/teams/acme/support"))).toEqual(["kc-staff"]);
+    expect(await Effect.runPromise(directory.listGroupMemberIdsByPath("/teams/acme/support"))).toEqual(["kc-staff", "kc-nested"]);
     expect(requested).toContain("/admin/realms/test/group-by-path/teams/acme/support");
     await expect(Effect.runPromise(directory.listGroupMemberIdsByPath("/teams/acme/missing"))).rejects.toThrow("HTTP 404");
   });
@@ -164,7 +182,7 @@ describe("H1: platform-wide staff groups (ARTIFACT_SERVER_ORG_STAFF_GROUPS)", ()
   const organization: DirectoryOrganization = {alias: "synced", id: "55555555-5555-4555-8555-555555555555", name: "Synced"};
 
   test("a sync-created org with no policy masks a member of /Developers", async () => {
-    const staffGroups = tenantStaffGroupPaths(parseOrganizationStaffGroups("/Administrators, /Developers"), organizationRuntimeAdmissionPolicy(null));
+    const staffGroups = tenantStaffGroupPaths(parseOrganizationStaffGroups("/Administrators, /Developers"), organizationRuntimeAdmissionPolicy(null), "synced");
     expect(staffGroups).toEqual(["/Administrators", "/Developers"]);
     const directory: OrganizationDirectory = {
       listGroupMemberIdsByPath: (path) => Effect.succeed(path === "/Developers" ? ["kc-dev"] : []),
@@ -186,7 +204,90 @@ describe("H1: platform-wide staff groups (ARTIFACT_SERVER_ORG_STAFF_GROUPS)", ()
     expect(tenantStaffGroupPaths(["/Developers"], organizationRuntimeAdmissionPolicy({
       groupRoots: ["/teams/acme/"],
       seed: [{role: "administrator", selector: "/teams/acme/support", staff: true}],
-    }))).toEqual(["/Developers", "/teams/acme/support"]);
+    }), "acme")).toEqual(["/Developers", "/teams/acme/support"]);
+  });
+
+  test("{slug} expands to each org's slug at login and sync, and must stay an exact path", async () => {
+    const platform = parseOrganizationStaffGroups("/TenantWorkspaces/{slug}/{slug}-staff");
+    const staffGroups = tenantStaffGroupPaths(platform, organizationRuntimeAdmissionPolicy(null), "acme");
+    expect(staffGroups).toEqual(["/TenantWorkspaces/acme/acme-staff"]);
+    expect(tenantStaffGroupPaths(platform, null, "globex")).toEqual(["/TenantWorkspaces/globex/globex-staff"]);
+    const lookups: string[] = [];
+    const directory: OrganizationDirectory = {
+      listGroupMemberIdsByPath: (path) => {
+        lookups.push(path);
+        return Effect.succeed(["kc-staff"]);
+      },
+      listOrganizationMembers: () => Effect.succeed([
+        {email: "staff@orvex.test", emailVerified: true, enabled: true, firstName: null, id: "kc-staff", lastName: null, role: "viewer", username: "staff"},
+      ]),
+      listOrganizations: () => Effect.succeed([organization]),
+    };
+    const result = await Effect.runPromise(Effect.result(readOrganizationDirectorySnapshot(directory, organization, staffGroups)));
+    expect(lookups).toEqual(["/TenantWorkspaces/acme/acme-staff"]);
+    if (result._tag !== "Success" || result.success.kind === "emptied") throw new Error("The snapshot was not read.");
+    expect(result.success.desired.at(0)?.staff).toBe(true);
+    expect(() => parseOrganizationStaffGroups("/Tenant/{org}")).toThrow("exact group paths");
+    expect(() => parseOrganizationStaffGroups("/Tenant/{slug")).toThrow("exact group paths");
+    expect(() => expandOrganizationStaffGroups(["/Tenant/{slug}"], "bad slug")).toThrow("not an exact group path");
+  });
+});
+
+describe("H1: staff email domains (ARTIFACT_SERVER_ORG_STAFF_EMAIL_DOMAINS)", () => {
+  const organization: DirectoryOrganization = {alias: "acme", id: "66666666-6666-4666-8666-666666666666", name: "Acme"};
+
+  test("only a verified email on an exact staff domain marks staff", () => {
+    const domains = parseOrganizationStaffEmailDomains(" Orvex.AI ");
+    expect(domains).toEqual(["orvex.ai"]);
+    expect(emailHasStaffDomain("Person@ORVEX.ai", true, domains)).toBe(true);
+    expect(emailHasStaffDomain("person@orvex.ai", false, domains)).toBe(false);
+    expect(emailHasStaffDomain("person@eu.orvex.ai", true, domains)).toBe(false);
+    expect(emailHasStaffDomain("person@notorvex.ai", true, domains)).toBe(false);
+    expect(emailHasStaffDomain("orvex.ai@example.test", true, domains)).toBe(false);
+    expect(() => parseOrganizationStaffEmailDomains("@orvex.ai")).toThrow("bare domains");
+  });
+
+  test("org sync marks Keycloak-verified staff-domain members and nobody else", async () => {
+    const directory: OrganizationDirectory = {
+      listOrganizationMembers: () => Effect.succeed([
+        {email: "staff@orvex.ai", emailVerified: true, enabled: true, firstName: null, id: "kc-staff", lastName: null, role: "viewer", username: "staff"},
+        {email: "sub@eu.orvex.ai", emailVerified: true, enabled: true, firstName: null, id: "kc-sub", lastName: null, role: "viewer", username: "sub"},
+        {email: "client@acme.test", emailVerified: true, enabled: true, firstName: null, id: "kc-client", lastName: null, role: "owner", username: "client"},
+      ]),
+      listOrganizations: () => Effect.succeed([organization]),
+    };
+    const result = await Effect.runPromise(Effect.result(
+      readOrganizationDirectorySnapshot(directory, organization, [], ["orvex.ai"]),
+    ));
+    if (result._tag !== "Success" || result.success.kind === "emptied") throw new Error("The snapshot was not read.");
+    expect(result.success.desired.filter(({staff}) => staff === true).map(({email}) => email)).toEqual(["staff@orvex.ai"]);
+  });
+});
+
+describe("tenant login staff decision", () => {
+  const base: TenantLoginStaffInput = {
+    email: "person@example.test", emailVerified: true, groups: [],
+    seed: [], staffEmailDomains: ["orvex.ai"], staffGroups: ["/TenantWorkspaces/acme/acme-staff", "/Developers"],
+  };
+
+  test("a verified staff-domain email marks staff; an unverified one never does", () => {
+    expect(tenantLoginIsStaff({...base, email: "dev@Orvex.AI"})).toBe(true);
+    expect(tenantLoginIsStaff({...base, email: "dev@orvex.ai", emailVerified: false})).toBe(false);
+    expect(tenantLoginIsStaff({...base, email: "dev@eu.orvex.ai"})).toBe(false);
+  });
+
+  test("a staff group covers its subgroups, including {slug}-expanded paths (M-A)", () => {
+    expect(tenantLoginIsStaff({...base, groups: ["/Developers"]})).toBe(true);
+    expect(tenantLoginIsStaff({...base, groups: ["/Developers/backend/oncall"]})).toBe(true);
+    expect(tenantLoginIsStaff({...base, groups: ["/TenantWorkspaces/acme/acme-staff/support"]})).toBe(true);
+    expect(tenantLoginIsStaff({...base, groups: ["/DevelopersGuild"]})).toBe(false);
+    expect(tenantLoginIsStaff({...base, groups: ["/TenantWorkspaces/acme/acme-staffing"]})).toBe(false);
+    expect(tenantLoginIsStaff({...base, groups: ["Developers"]})).toBe(false);
+    expect(tenantLoginIsStaff({
+      ...base, groups: ["/teams/acme/support/tier2"], staffGroups: [],
+      seed: [{role: "administrator", selector: "/teams/acme/support", staff: true}],
+    })).toBe(true);
+    expect(staffPathCovers("/Developers", "/Developers/x")).toBe(true);
   });
 
   test("tenancy without a staff definition fails closed, and entries must be exact paths", () => {
