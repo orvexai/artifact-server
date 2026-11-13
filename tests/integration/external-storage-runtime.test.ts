@@ -1228,6 +1228,14 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         installationId: scopedInstallation,
         role: "member",
       });
+      await repository.bindExternalIdentity({
+        boundAt: firstSyncAt,
+        email: "tenant-staff@example.test",
+        identityProvider: provider,
+        memberId: "tenant-staff-member",
+        provider,
+        subject: "tenant-staff-subject",
+      });
 
       const explicitBefore = (await repository.listGroupRoles(scopedInstallation))
         .find(({groupId}) => groupId === "smoketest");
