@@ -393,6 +393,7 @@ describe.sequential("organization tenancy security boundary", () => {
     let testMcpVerifier!: ExternalMcpBearerVerifier;
     testMcpVerifier = {
       forApplicationResources: () => testMcpVerifier,
+      forOrganization: () => testMcpVerifier,
       verify: () => Effect.succeed({
         clientId: "orgvex-service",
         expiresAt: Math.floor(Date.now() / 1_000) + 60,
@@ -941,8 +942,13 @@ describe.sequential("organization tenancy security boundary", () => {
     const aliasB = `org-b-${randomUUID().slice(0, 8)}`;
     const idA = randomUUID();
     const idB = randomUUID();
-    const orgA = await registry.syncKeycloakOrganization(aliasA, "Org A", idA);
-    const orgBRecord = await registry.syncKeycloakOrganization(aliasB, "Org B", idB);
+    const orgAResult = await registry.syncKeycloakOrganization(aliasA, "Org A", idA);
+    const orgBResult = await registry.syncKeycloakOrganization(aliasB, "Org B", idB);
+    if (orgAResult.kind !== "synced" || orgBResult.kind !== "synced") {
+      throw new Error("New Keycloak organizations were not registered.");
+    }
+    const orgA = orgAResult.organization;
+    const orgBRecord = orgBResult.organization;
     const organizationA: DirectoryOrganization = {alias: aliasA, id: idA, name: "Org A"};
     const organizationB: DirectoryOrganization = {alias: aliasB, id: idB, name: "Org B"};
     const usersA = [
@@ -970,10 +976,55 @@ describe.sequential("organization tenancy security boundary", () => {
     try {
       await runtimeA.syncOrganizationMembers(directory, organizationA);
       await runtimeB.syncOrganizationMembers(directory, organizationB);
+      const roleLogin = async (
+        email: string,
+        subject: string,
+        groups: readonly string[],
+      ) => {
+        oidc.claims.email = email;
+        oidc.claims.emailVerified = true;
+        oidc.claims.identityProvider = "google";
+        oidc.claims.organization = {[aliasA]: {id: idA, groups}};
+        oidc.claims.subject = subject;
+        const baseUrl = `http://${router.hostname}:${router.port}`;
+        const login = await startRoutedOidcLogin(baseUrl, aliasA);
+        const response = await fetch(login.callbackUrl, {
+          headers: {Cookie: login.handshakeCookie},
+          redirect: "manual",
+        });
+        return response;
+      };
+      const editorLogin = await roleLogin(
+        "editor-a@example.test", "editor-a", ["/editor"],
+      );
+      expect(editorLogin.status).toBe(303);
+      const promotedLogin = await roleLogin(
+        "editor-a@example.test", "editor-a", ["/owner"],
+      );
+      expect(promotedLogin.status).toBe(303);
+      let editorRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT role FROM installation_members
+          WHERE installation_id = ${orgA.id} AND email = 'editor-a@example.test'`;
+      }));
+      expect(editorRows[0]?.["role"]).toBe("owner");
+      const demotedLogin = await roleLogin(
+        "editor-a@example.test", "editor-a", ["/editor"],
+      );
+      expect(demotedLogin.status).toBe(303);
+      editorRows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT role FROM installation_members
+          WHERE installation_id = ${orgA.id} AND email = 'editor-a@example.test'`;
+      }));
+      expect(editorRows[0]?.["role"]).toBe("member");
       const ownerA = usersA.at(0);
       if (ownerA === undefined) throw new Error("The Org A owner fixture is missing.");
       snapshotA = [ownerA];
       const removed = await runtimeA.syncOrganizationMembers(directory, organizationA);
+      if ("kind" in removed) {
+        throw new Error("Org A's non-empty snapshot was skipped.");
+      }
       expect(removed.deactivated).toBe(1);
       const rows = await database.run(Effect.gen(function*() {
         const sql = yield* SqlClient;
@@ -987,6 +1038,7 @@ describe.sequential("organization tenancy security boundary", () => {
       oidc.claims.email = "owner-a@example.test";
       oidc.claims.emailVerified = true;
       oidc.claims.identityProvider = "google";
+      oidc.claims.subject = "owner-a";
       oidc.claims.organization = {
         [aliasA]: {id: idA, groups: ["/owner"]},
       };
@@ -1026,6 +1078,22 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(findDisappearedOrganizations(registryRows, [organizationB]))
         .toContainEqual({alias: aliasA, id: idA});
       expect(await registry.find(aliasA)).toMatchObject({keycloakId: idA});
+      expect(await registry.syncKeycloakOrganization("orvex", "Takeover", randomUUID()))
+        .toMatchObject({kind: "conflict"});
+      const unbound = await registry.create(`manual-${randomUUID().slice(0, 8)}`, "Manual org");
+      expect(await registry.syncKeycloakOrganization(unbound.slug, "Manual org", randomUUID()))
+        .toMatchObject({kind: "conflict"});
+      const linked = await registry.linkKeycloakOrganization(unbound.slug, randomUUID());
+      const linkedId = linked.keycloakId;
+      if (linkedId === null) throw new Error("The deliberate organization link was not stored.");
+      expect(await registry.syncKeycloakOrganization(unbound.slug, "Renamed", linkedId))
+        .toMatchObject({kind: "synced", organization: {id: unbound.id}});
+      expect(await registry.syncKeycloakOrganization(unbound.slug, "Recreated", randomUUID()))
+        .toMatchObject({kind: "conflict"});
+      expect(await registry.syncKeycloakOrganization(`${unbound.slug}-renamed`, "Alias rename", linkedId))
+        .toMatchObject({kind: "conflict"});
+      await expect(registry.syncKeycloakOrganization("Invalid Slug", "Invalid", randomUUID()))
+        .rejects.toThrow(/slug/u);
     } finally {
       await Promise.all([runtimeA.close(), runtimeB.close()]);
     }

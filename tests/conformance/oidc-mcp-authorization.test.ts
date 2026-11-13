@@ -216,6 +216,35 @@ describe("generic OIDC MCP authorization", () => {
       .rejects.toThrow("another resource");
   });
 
+  test("organization OAuth admission is checked from every current access token", async () => {
+    const alias = "smoketest";
+    const id = "1f91f545-13d4-448f-839c-485274165908";
+    const verifier = new OidcMcpBearerVerifier({
+      audience: resource,
+      issuer,
+      jwksUri: `${issuer}/protocol/openid-connect/certs`,
+    }).forOrganization({alias, id});
+    const tokenFor = (groups: readonly string[] | undefined, organizationId = id) =>
+      issueToken({
+        extraClaims: {
+          organization: {[alias]: {id: organizationId, groups}},
+        },
+      });
+    const resolve = async (token: string) => {
+      const verified = await Effect.runPromise(verifier.verify(Redacted.make(token)));
+      return Effect.runPromise(verifier.resolveIdentity(verified, Redacted.make(token)));
+    };
+
+    const owner = await resolve(await tokenFor(["/owner"]));
+    expect(owner.organizationMembership?.role).toBe("owner");
+    const editorAfterDemotion = await resolve(await tokenFor(["/editor"]));
+    expect(editorAfterDemotion.organizationMembership?.role).toBe("member");
+    const removed = await tokenFor(undefined);
+    await expect(resolve(removed)).rejects.toThrow("not admitted to this organization");
+    const replacedOrganization = await tokenFor(["/owner"], crypto.randomUUID());
+    await expect(resolve(replacedOrganization)).rejects.toThrow("not admitted to this organization");
+  });
+
   test("memoizes the org-rebound verifier and its JWKS set", async () => {
     const hosted = await startOidcHostedAuthentication({
       applicationOrigin: "https://staging.artifactserver.test",
@@ -788,9 +817,10 @@ describe("generic OIDC MCP authorization", () => {
       expect(admitted).toMatchObject({role: "member", status: "active"});
 
       // Promotion and demotion follow the groups of each presented token.
-      expect((await mcpDiscovery(await issueToken({
+      const promotedResponse = await mcpDiscovery(await issueToken({
         groups: [memberGroup, administratorGroup],
-      }))).status).toBe(200);
+      }));
+      expect(promotedResponse.status).toBe(200);
       expect(members(installation)).toEqual([
         {...admitted, role: "administrator"},
       ]);
@@ -878,7 +908,7 @@ describe("generic OIDC MCP authorization", () => {
     /** `null` leaves the claim out. */
     readonly emailVerified?: boolean | null;
     readonly expiresAt?: number;
-    readonly extraClaims?: Readonly<Record<string, number | string>>;
+    readonly extraClaims?: Readonly<JWTPayload>;
     /** The `groups` claim, malformed shapes included; left out unless given. */
     readonly groups?: readonly (number | string)[] | string;
     readonly idToken?: boolean;

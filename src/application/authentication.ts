@@ -45,6 +45,10 @@ export interface ExternalMcpBearerVerifier {
     readonly apiResource: string;
     readonly mcpResource: string;
   }) => ExternalMcpBearerVerifier;
+  readonly forOrganization?: (organization: {
+    readonly alias: string;
+    readonly id: string;
+  }) => ExternalMcpBearerVerifier;
   /** The credential travels along so a provider can read the profile it carries. */
   readonly resolveIdentity: (
     verified: VerifiedExternalMcpBearer,

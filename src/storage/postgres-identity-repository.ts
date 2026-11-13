@@ -377,6 +377,113 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     }));
   }
 
+  async applyOrganizationMemberSnapshot(
+    installationId: string,
+    entries: readonly {
+      readonly displayName: string;
+      readonly email: string;
+      readonly id: string;
+      readonly role: MembershipRole;
+    }[],
+    updatedAt: string,
+    maximumDeactivations: number,
+  ): Promise<{
+    readonly admitted: number;
+    readonly deactivated: number;
+    readonly reactivated: number;
+    readonly roleChanged: number;
+    readonly unchanged: number;
+  }> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        if (entries.length === 0) {
+          return yield* Effect.fail(new IdentityConflict({
+            message: "Directory sync refuses an empty organization snapshot.",
+          }));
+        }
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:directory-groups:${installationId}`}, 0)
+        )`;
+        yield* sql`SELECT pg_advisory_xact_lock(
+          hashtextextended(${`artifact-server:member-policy:${installationId}`}, 0)
+        )`;
+        const rows = yield* sql.unsafe<object>(
+          `SELECT id, installation_id AS "installationId", email,
+             display_name AS "displayName", role, status,
+             created_at AS "createdAt", updated_at AS "updatedAt"
+           FROM installation_members WHERE installation_id = $1 FOR UPDATE`,
+          [installationId],
+        );
+        const existing = z.array(memberRowSchema).parse(rows);
+        const byEmail = new Map(existing.map((member) => [member.email, member]));
+        const desired = new Map(entries.map((entry) => [entry.email, entry]));
+        const hasDesiredAdministrator = entries.some((entry) =>
+          isAdministratorRole(entry.role)
+        );
+        const hasDesiredOwner = entries.some((entry) => entry.role === membershipRoles.owner);
+        const protectedIds = new Set(existing.filter((member) =>
+          member.status === memberStatuses.active && (
+            (!hasDesiredAdministrator && isAdministratorRole(member.role)) ||
+            (!hasDesiredOwner && member.role === membershipRoles.owner)
+          )
+        ).map((member) => member.id));
+        const removals = existing.filter((member) =>
+          member.status === memberStatuses.active && !desired.has(member.email) &&
+          !protectedIds.has(member.id)
+        );
+        if (removals.length > maximumDeactivations) {
+          return yield* Effect.fail(new IdentityConflict({
+            message: `Directory sync would deactivate ${removals.length} members, above the configured maximum of ${maximumDeactivations}; nothing was changed.`,
+          }));
+        }
+        let admitted = 0;
+        let reactivated = 0;
+        let roleChanged = 0;
+        let unchanged = 0;
+        for (const entry of [...entries].toSorted((left, right) =>
+          Number(isAdministratorRole(right.role)) - Number(isAdministratorRole(left.role)) ||
+          left.email.localeCompare(right.email)
+        )) {
+          const member = byEmail.get(entry.email);
+          if (member === undefined) {
+            yield* sql`INSERT INTO installation_members (
+              id, installation_id, email, display_name, role, status, created_at, updated_at
+            ) VALUES (
+              ${entry.id}, ${installationId}, ${entry.email}, ${entry.displayName},
+              ${entry.role}, ${memberStatuses.active}, ${updatedAt}, ${updatedAt}
+            )`;
+            admitted += 1;
+          } else if (member.status !== memberStatuses.active) {
+            yield* sql`UPDATE installation_members SET display_name = ${entry.displayName},
+              role = ${entry.role}, status = ${memberStatuses.active}, updated_at = ${updatedAt}
+              WHERE installation_id = ${installationId} AND id = ${member.id}`;
+            reactivated += 1;
+          } else if (member.role !== entry.role && !protectedIds.has(member.id)) {
+            yield* sql`UPDATE installation_members SET display_name = ${entry.displayName},
+              role = ${entry.role}, updated_at = ${updatedAt}
+              WHERE installation_id = ${installationId} AND id = ${member.id}`;
+            roleChanged += 1;
+          } else {
+            unchanged += 1;
+          }
+        }
+        for (const member of removals) {
+          yield* sql`UPDATE installation_members SET status = ${memberStatuses.inactive},
+            updated_at = ${updatedAt}
+            WHERE installation_id = ${installationId} AND id = ${member.id}`;
+          yield* sql`UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, ${updatedAt})
+            WHERE installation_id = ${installationId} AND member_id = ${member.id}`;
+          yield* sql`UPDATE managed_api_keys SET revoked_at = COALESCE(revoked_at, ${updatedAt})
+            WHERE installation_id = ${installationId} AND principal_kind = ${principalKinds.human}
+              AND principal_id = ${member.id}`;
+        }
+        return {admitted, deactivated: removals.length, reactivated, roleChanged, unchanged};
+      }));
+    }));
+  }
+
   async listDirectoryGroups(
     installationId: string,
   ): Promise<readonly StoredDirectoryGroup[]> {
@@ -881,7 +988,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         ON CONFLICT (installation_id, provider, subject) DO UPDATE SET
           email = EXCLUDED.email,
           bound_at = EXCLUDED.bound_at,
-          identity_provider = EXCLUDED.identity_provider
+          identity_provider = COALESCE(EXCLUDED.identity_provider, external_identities.identity_provider)
         WHERE external_identities.member_id = EXCLUDED.member_id
         RETURNING member_id`;
       }));

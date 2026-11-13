@@ -165,7 +165,7 @@ function configureMaintenance(program: Command): void {
         throw new Error("Keycloak organization sync requires external-storage mode.");
       }
       const report = await syncKeycloakOrganizations(configuration);
-      console.log(JSON.stringify(report, null, 2));
+      printOrganizationSyncReport(report);
     });
   maintenance
     .command("sync-directory")
@@ -255,7 +255,7 @@ function configureMaintenance(program: Command): void {
             throw new Error("Keycloak organization sync requires external-storage mode.");
           }
           const organizationSync = await syncKeycloakOrganizations(configuration);
-          console.log(JSON.stringify({organizationSync}));
+          printOrganizationSyncReport(organizationSync);
         }
       } finally {
         await runtime.close();
@@ -323,14 +323,44 @@ function configureOrganizations(program: Command): void {
     .action(async (options: StartExternalStorageOptions) => {
       const configuration = await parseExternalConfiguration(options.host, options.port);
       const report = await syncKeycloakOrganizations(configuration);
-      console.log(JSON.stringify(report, null, 2));
+      printOrganizationSyncReport(report);
+    });
+  organization.command("link")
+    .description("Deliberately link a registered organization to a Keycloak organization id.")
+    .argument("<slug>", "registered Artifact Server organization slug")
+    .argument("<keycloak-id>", "Keycloak organization UUID")
+    .action(async (slug: string, keycloakId: string) => {
+      const configuration = await runCliEffect(
+        parseExternalMigrationConfiguration(process.env),
+      );
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-org-link:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        console.log(JSON.stringify(
+          await new OrganizationRegistry(database).linkKeycloakOrganization(slug, keycloakId),
+          null,
+          2,
+        ));
+      } finally {
+        await database.close();
+      }
     });
 }
 
 interface OrganizationSyncReport {
   readonly discovered: readonly string[];
   readonly disappeared: readonly {readonly alias: string; readonly id: string}[];
+  readonly skipped: readonly {readonly alias: string; readonly reason: string}[];
+  readonly errors: readonly {readonly alias: string; readonly error: string}[];
   readonly memberSync: readonly {readonly alias: string; readonly report: unknown}[];
+}
+
+function printOrganizationSyncReport(report: OrganizationSyncReport): void {
+  console.log(JSON.stringify(report, null, 2));
+  if (report.errors.length > 0) process.exitCode = 2;
 }
 
 async function syncKeycloakOrganizations(
@@ -368,34 +398,59 @@ async function syncKeycloakOrganizations(
     const before = await registry.list();
     const keycloakOrganizations = await runCliEffect(directory.listOrganizations());
     const discovered: string[] = [];
+    const skipped: {alias: string; reason: string}[] = [];
+    const errors: {alias: string; error: string}[] = [];
     const memberSync: {alias: string; report: unknown}[] = [];
-    await keycloakOrganizations.reduce(async (previous, keycloakOrganization) => {
-        await previous;
-      const organization = await registry.syncKeycloakOrganization(
-        keycloakOrganization.alias,
-        keycloakOrganization.name,
-        keycloakOrganization.id,
-      );
-      discovered.push(organization.slug);
-      // Orvex remains governed by the existing issuer-group policy.
-      if (keycloakOrganization.alias === "orvex") return;
-      const orgRuntime = await createOrgRuntime(organization.id, {
-        cookieRouteId: organization.routeId,
-        keycloakOrganizationId: keycloakOrganization.id,
-        slug: organization.slug,
-        applicationOrigin: new URL(`/o/${organization.slug}`, configuration.applicationOrigin).toString(),
-      }, externalMaintenanceConfig(configuration), database);
+    for (const keycloakOrganization of keycloakOrganizations) {
       try {
-        memberSync.push({
+        if (keycloakOrganization.enabled === false) {
+          skipped.push({alias: keycloakOrganization.alias, reason: "Keycloak organization is disabled."});
+          continue;
+        }
+        // Keep each tenant operation sequential: the per-org catch below
+        // records failures independently and shared connections are bounded.
+        // oxlint-disable-next-line eslint/no-await-in-loop
+        const result = await registry.syncKeycloakOrganization(
+          keycloakOrganization.alias,
+          keycloakOrganization.name,
+          keycloakOrganization.id,
+        );
+        if (result.kind === "conflict") {
+          errors.push({alias: keycloakOrganization.alias, error: result.reason});
+          continue;
+        }
+        const organization = result.organization;
+        discovered.push(organization.slug);
+        // Orvex remains governed by the existing issuer-group policy.
+        if (keycloakOrganization.alias === "orvex") continue;
+        // oxlint-disable-next-line eslint/no-await-in-loop
+        const orgRuntime = await createOrgRuntime(organization.id, {
+          cookieRouteId: organization.routeId,
+          keycloakOrganizationId: keycloakOrganization.id,
+          slug: organization.slug,
+          applicationOrigin: new URL(`/o/${organization.slug}`, configuration.applicationOrigin).toString(),
+        }, externalMaintenanceConfig(configuration), database);
+        try {
+          // oxlint-disable-next-line eslint/no-await-in-loop
+          const memberReport = await orgRuntime.syncOrganizationMembers(directory, keycloakOrganization);
+          if ("kind" in memberReport && memberReport.kind === "skipped") {
+            skipped.push({alias: keycloakOrganization.alias, reason: memberReport.reason});
+          } else {
+            memberSync.push({alias: keycloakOrganization.alias, report: memberReport});
+          }
+        } finally {
+          // oxlint-disable-next-line eslint/no-await-in-loop
+          await orgRuntime.close();
+        }
+      } catch (error) {
+        errors.push({
           alias: keycloakOrganization.alias,
-          report: await orgRuntime.syncOrganizationMembers(directory, keycloakOrganization),
+          error: error instanceof Error ? error.message : String(error),
         });
-      } finally {
-        await orgRuntime.close();
       }
-      }, Promise.resolve());
+    }
     const disappeared = findDisappearedOrganizations(before, keycloakOrganizations);
-    return {discovered, disappeared, memberSync};
+    return {discovered, disappeared, skipped, errors, memberSync};
   } finally {
     await Promise.all([configuration.objectStorage.close?.(), database.close()]);
   }

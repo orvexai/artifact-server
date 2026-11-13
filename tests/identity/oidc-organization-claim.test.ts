@@ -48,14 +48,33 @@ describe("Keycloak Organizations claim", () => {
     [null, "organization must be an alias-keyed object."],
     [[], "organization must be an alias-keyed object."],
     ["smoketest", "organization must be an alias-keyed object."],
-    [{smoketest: null}, "organization membership entries must be objects with aliases."],
-    [{smoketest: {groups: []}}, "organization smoketest must have a UUID id."],
-    [{smoketest: {id: "not-a-uuid", groups: []}}, "organization smoketest must have a UUID id."],
-    [{smoketest: {id: orgId, groups: [], ignored: true}}, "organization smoketest has unsupported membership fields."],
-    [{smoketest: {id: orgId, groups: "/owner"}}, "organization smoketest groups must be a list of strings."],
-    [{smoketest: {id: orgId, groups: ["/owner", 3]}}, "organization smoketest groups must be a list of strings."],
+    [{smoketest: null}, null],
+    [{smoketest: {groups: []}}, null],
+    [{smoketest: {id: "not-a-uuid", groups: []}}, null],
+    [{smoketest: {id: orgId, groups: [], ignored: true}}, null],
+    [{smoketest: {id: orgId, groups: "/owner"}}, null],
+    [{smoketest: {id: orgId, groups: ["/owner", 3]}}, null],
   ])("rejects malformed claim %j", (claim, reason) => {
-    expect(parseKeycloakOrganizationClaims(claim)).toEqual({ok: false, reason});
+    const expected = reason === null
+      ? {
+        ok: true,
+        value: {identityProvider: null, organizations: []},
+      }
+      : {ok: false, reason};
+    expect(parseKeycloakOrganizationClaims(claim)).toEqual(expected);
+  });
+
+  test("skips a malformed sibling while preserving valid memberships", () => {
+    expect(parseKeycloakOrganizationClaims({
+      bad: {id: "not-a-uuid", groups: []},
+      smoketest: {id: orgId, groups: ["/editor"]},
+    })).toEqual({
+      ok: true,
+      value: {
+        identityProvider: null,
+        organizations: [{alias: "smoketest", id: orgId, role: "editor"}],
+      },
+    });
   });
 
   test("rejects a malformed broker claim", () => {

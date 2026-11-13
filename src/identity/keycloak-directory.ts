@@ -22,6 +22,7 @@ const maximumGroups = 10_000;
 const requestTimeoutMilliseconds = 10_000;
 /** Reuse one admin token this long; Keycloak's default lifetime is 5 minutes. */
 const tokenReuseMilliseconds = 30_000;
+const organizationRolePrecedence = {viewer: 0, editor: 1, owner: 2} as const;
 /** Attempts per request; only a timeout, network fault or HTTP 5xx is retried. */
 const requestAttempts = 3;
 const retryBaseDelayMilliseconds = 500;
@@ -50,28 +51,24 @@ const userList = Schema.Array(Schema.Struct({
 }));
 const organizationList = Schema.Array(Schema.Struct({
   alias: Schema.NonEmptyString,
+  enabled: Schema.optionalKey(Schema.Boolean),
   id: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
 }));
-const organizationMemberList = Schema.Array(Schema.Struct({
-  email: Schema.optionalKey(Schema.String),
-  emailVerified: Schema.optionalKey(Schema.Boolean),
-  enabled: Schema.optionalKey(Schema.Boolean),
-  firstName: Schema.optionalKey(Schema.String),
-  groups: Schema.optionalKey(Schema.Array(Schema.String)),
+const organizationGroupList = Schema.Array(Schema.Struct({
   id: Schema.NonEmptyString,
-  lastName: Schema.optionalKey(Schema.String),
-  username: Schema.String,
+  path: Schema.String,
 }));
 const decodeTokenResponse = Schema.decodeUnknownEffect(tokenResponse);
 const decodeGroupList = Schema.decodeUnknownEffect(groupList);
 const decodeGroupTree = Schema.decodeUnknownEffect(groupTree);
 const decodeUserList = Schema.decodeUnknownEffect(userList);
 const decodeOrganizationList = Schema.decodeUnknownEffect(organizationList);
-const decodeOrganizationMemberList = Schema.decodeUnknownEffect(organizationMemberList);
+const decodeOrganizationGroupList = Schema.decodeUnknownEffect(organizationGroupList);
 
 export interface DirectoryOrganization {
   readonly alias: string;
+  readonly enabled?: boolean;
   readonly id: string;
   readonly name: string;
 }
@@ -235,7 +232,10 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
         const listed = yield* decodeOrganizationList(body).pipe(
           Effect.mapError(() => unavailable("The Keycloak organization listing returned an invalid list.")),
         );
-        organizations.push(...listed);
+        organizations.push(...listed.map((organization) => ({
+          ...organization,
+          enabled: organization.enabled ?? true,
+        })));
         if (organizations.length > maximumGroups) {
           return yield* unavailable("Keycloak lists more organizations than one sync reads.");
         }
@@ -248,7 +248,59 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
   readonly listOrganizationMembers = Effect.fn("KeycloakDirectory.listOrganizationMembers")(
     function*(this: KeycloakDirectory, organization: DirectoryOrganization) {
       const token = yield* this.#accessToken();
+      const roleByUserId = new Map<string, KeycloakOrganizationRole>();
+      const groups: {id: string; path: string}[] = [];
+      for (let page = 0; page < maximumPagesPerGroup; page += 1) {
+        const url = new URL(
+          `${this.#adminBaseUrl}/organizations/${encodeURIComponent(organization.id)}/groups`,
+        );
+        url.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+        url.searchParams.set("max", String(keycloakDirectoryPageSize));
+        const body = yield* this.#adminGet(token, url, `The Keycloak groups of ${organization.alias}`);
+        const listed = yield* decodeOrganizationGroupList(body).pipe(
+          Effect.mapError(() => unavailable(`The Keycloak groups of ${organization.alias} returned an invalid list.`)),
+        );
+        groups.push(...listed);
+        if (groups.length > maximumGroups) {
+          return yield* unavailable(`Keycloak lists too many groups for ${organization.alias}.`);
+        }
+        if (listed.length < keycloakDirectoryPageSize) break;
+        if (page === maximumPagesPerGroup - 1) {
+          return yield* unavailable(`The Keycloak groups of ${organization.alias} have too many pages.`);
+        }
+      }
+      const roleGroups = groups.flatMap((group) => {
+        const role = mapKeycloakOrganizationGroups([group.path]);
+        return role === null ? [] : [{...group, role}];
+      });
+      for (const group of roleGroups) {
+        for (let page = 0; page < maximumPagesPerGroup; page += 1) {
+          const url = new URL(
+            `${this.#adminBaseUrl}/organizations/${encodeURIComponent(organization.id)}` +
+              `/groups/${encodeURIComponent(group.id)}/members`,
+          );
+          url.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+          url.searchParams.set("max", String(keycloakDirectoryPageSize));
+          const body = yield* this.#adminGet(token, url,
+            `The Keycloak members of ${group.path} in ${organization.alias}`);
+          const listed = yield* decodeUserList(body).pipe(
+            Effect.mapError(() => unavailable(`The Keycloak members of ${group.path} in ${organization.alias} returned an invalid list.`)),
+          );
+          for (const member of listed) {
+            const current = roleByUserId.get(member.id);
+            if (current === undefined ||
+              organizationRolePrecedence[group.role] > organizationRolePrecedence[current]) {
+              roleByUserId.set(member.id, group.role);
+            }
+          }
+          if (listed.length < keycloakDirectoryPageSize) break;
+          if (page === maximumPagesPerGroup - 1) {
+            return yield* unavailable(`The Keycloak members of ${group.path} in ${organization.alias} have too many pages.`);
+          }
+        }
+      }
       const members: DirectoryOrganizationMember[] = [];
+      const seenMemberIds = new Set<string>();
       for (let page = 0; page < maximumPagesPerGroup; page += 1) {
         const url = new URL(
           `${this.#adminBaseUrl}/organizations/${encodeURIComponent(organization.id)}/members`,
@@ -256,25 +308,35 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
         url.searchParams.set("first", String(page * keycloakDirectoryPageSize));
         url.searchParams.set("max", String(keycloakDirectoryPageSize));
         const body = yield* this.#adminGet(token, url, `The Keycloak members of ${organization.alias}`);
-        const listed = yield* decodeOrganizationMemberList(body).pipe(
+        const listed = yield* decodeUserList(body).pipe(
           Effect.mapError(() => unavailable(`The Keycloak members of ${organization.alias} returned an invalid list.`)),
         );
         for (const member of listed) {
+          seenMemberIds.add(member.id);
+          if (member.enabled !== true) continue;
           members.push({
             email: member.email ?? null,
             emailVerified: member.emailVerified === true,
-            enabled: member.enabled === true,
+            enabled: true,
             firstName: member.firstName ?? null,
             id: member.id,
             lastName: member.lastName ?? null,
-            role: mapKeycloakOrganizationGroups(member.groups ?? []),
+            role: roleByUserId.get(member.id) ?? "viewer",
             username: member.username,
           });
         }
         if (members.length > maximumGroups * keycloakDirectoryPageSize) {
           return yield* unavailable(`The Keycloak organization ${organization.alias} has too many members.`);
         }
-        if (listed.length < keycloakDirectoryPageSize) return members;
+        if (listed.length < keycloakDirectoryPageSize) {
+          if ([...roleByUserId.keys()].some((id) => !seenMemberIds.has(id))) {
+            return yield* unavailable(`Keycloak returned a role-group member missing from organization ${organization.alias}.`);
+          }
+          return members;
+        }
+        if (page === maximumPagesPerGroup - 1) {
+          return yield* unavailable(`The Keycloak organization ${organization.alias} has too many member pages.`);
+        }
       }
       return yield* unavailable(`The Keycloak organization ${organization.alias} has too many member pages.`);
     },

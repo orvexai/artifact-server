@@ -18,7 +18,9 @@ import {
   IdentityProviderFailure,
 } from "../core/errors.js";
 import type {ExternalIdentity} from "../core/installation-identity.js";
+import {membershipRoles} from "../core/identity.js";
 import {readOidcGroupsClaim} from "./oidc-groups-claim.js";
+import {parseKeycloakOrganizationClaims} from "./oidc-organization-claim.js";
 import {requireOidcIssuer} from "./oidc-issuer.js";
 
 const defaultAlgorithms = ["RS256", "ES256"];
@@ -44,6 +46,8 @@ const profileClaims = {
   // The configured group-claim reader owns validation so malformed claims are
   // ignored when groups are unused and reported as provider failures when used.
   groups: Schema.optionalKey(Schema.Unknown),
+  identity_provider: Schema.optionalKey(Schema.Json),
+  organization: Schema.optionalKey(Schema.Json),
 };
 const accessTokenClaims = Schema.Struct({
   ...profileClaims,
@@ -92,6 +96,7 @@ export interface OidcMcpBearerVerifierConfig {
   /** Full directory-group path prefixes the provisioners may share with. */
   readonly provisionerGroupPrefixes?: readonly string[];
   readonly userInfoEndpoint?: string | null;
+  readonly organization?: {readonly alias: string; readonly id: string};
 }
 
 /** Verify end-user OIDC access tokens for one protected-resource audience. */
@@ -153,9 +158,18 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
     provisionerAudience: resources.apiResource,
   });
 
+  readonly forOrganization = (organization: {
+    readonly alias: string;
+    readonly id: string;
+  }): OidcMcpBearerVerifier => new OidcMcpBearerVerifier({
+    ...this.#config,
+    organization,
+  });
+
   readonly verify = Effect.fn("OidcMcpBearerVerifier.verify")(
     function*(this: OidcMcpBearerVerifier, credential: Redacted.Redacted) {
       const {claims} = yield* this.#verifiedToken(credential);
+      yield* this.#readOrganizationMembership(claims);
       const clientId = claims.azp ?? claims.client_id;
       if (clientId === undefined || clientId.trim().length === 0) {
         return yield* invalidToken(
@@ -190,6 +204,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
         );
       }
       const groups = yield* readOidcGroupsClaim(payload, this.#groupsClaim);
+      const organizationMembership = yield* this.#readOrganizationMembership(claims);
       const email = emailOf(claims);
       const clientId = claims.azp ?? claims.client_id;
       const provisioner = clientId !== undefined &&
@@ -222,7 +237,16 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
           subject: claims.sub,
         };
       }
-      if (email !== null) return this.#identityOf(claims, email, groups);
+      if (email !== null) {
+        const identity = this.#identityOf(claims, email, groups);
+        if (organizationMembership !== null) {
+          Object.assign(identity, {
+            organizationMembership: organizationMembership.membership,
+            identityProvider: organizationMembership.identityProvider,
+          });
+        }
+        return identity;
+      }
       if (
         clientId !== undefined && this.#serviceClients.has(clientId) &&
         claims.preferred_username === `service-account-${clientId}`
@@ -240,9 +264,47 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
           subject: claims.sub,
         };
       }
-      return yield* this.#userInfoIdentity(credential, claims.sub, groups);
+      const identity = yield* this.#userInfoIdentity(credential, claims.sub, groups);
+      if (organizationMembership !== null) {
+        Object.assign(identity, {
+          organizationMembership: organizationMembership.membership,
+          identityProvider: organizationMembership.identityProvider,
+        });
+      }
+      return identity;
     },
   );
+
+  #readOrganizationMembership(claims: AccessTokenClaims): Effect.Effect<{
+    readonly identityProvider: string | null;
+    readonly membership: NonNullable<ExternalIdentity["organizationMembership"]>;
+  } | null, AuthenticationRequired> {
+    const expected = this.#config.organization;
+    if (expected === undefined) return Effect.succeed(null);
+    const parsed = parseKeycloakOrganizationClaims(
+      claims.organization,
+      claims.identity_provider,
+    );
+    if (!parsed.ok) return Effect.fail(invalidToken("The organization claim is malformed."));
+    const selected = parsed.value.organizations.find((membership) =>
+      membership.alias === expected.alias && membership.id === expected.id,
+    );
+    if (selected === undefined || selected.role === null) {
+      return Effect.fail(invalidToken("The access token is not admitted to this organization."));
+    }
+    return Effect.succeed({
+      identityProvider: parsed.value.identityProvider,
+      membership: {
+        alias: selected.alias,
+        id: selected.id,
+        role: selected.role === "owner"
+          ? membershipRoles.owner
+          : selected.role === "editor"
+          ? membershipRoles.member
+          : membershipRoles.viewer,
+      },
+    });
+  }
 
   /** Verify signature, issuer, audience, and expiry, then read the claims. */
   #verifiedToken(

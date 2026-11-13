@@ -73,6 +73,11 @@ export interface DirectorySyncReport {
   readonly unchanged: number;
 }
 
+export type OrganizationDirectorySyncResult = DirectorySyncReport | {
+  readonly kind: "skipped";
+  readonly reason: string;
+};
+
 /**
  * Read the members of every group that holds an installation role, then make
  * the installation's human members match: each person gets the strongest role
@@ -159,6 +164,12 @@ export const syncOrganizationDirectoryMembers = Effect.fn(
   maximumDeactivations: number,
 ) {
   const members = yield* directory.listOrganizationMembers(organization);
+  if (members.length === 0) {
+    return {
+      kind: "skipped",
+      reason: "Keycloak organization has no enabled members.",
+    } as const;
+  }
   const desired = new Map<string, DirectoryMemberEntry>();
   let skipped = 0;
   for (const user of members) {

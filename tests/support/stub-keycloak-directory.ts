@@ -25,6 +25,7 @@ export interface StubKeycloakUser {
 
 export interface StubKeycloakOrganization {
   readonly alias: string;
+  readonly enabled?: boolean;
   readonly id: string;
   readonly name: string;
 }
@@ -43,6 +44,8 @@ export interface RunningStubKeycloak {
   readonly groups: Map<string, StubKeycloakUser[]>;
   readonly organizations: Map<string, StubKeycloakOrganization>;
   readonly organizationMembers: Map<string, StubKeycloakUser[]>;
+  readonly organizationRoleGroups: Map<string, Map<string, StubKeycloakUser[]>>;
+  readonly organizationRoleGroupIds: Map<string, Map<string, string>>;
   readonly issuer: string;
   adminRequests(): readonly StubKeycloakAdminRequest[];
   /**
@@ -68,6 +71,8 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
   const groups = new Map<string, StubKeycloakUser[]>();
   const organizations = new Map<string, StubKeycloakOrganization>();
   const organizationMembers = new Map<string, StubKeycloakUser[]>();
+  const organizationRoleGroups = new Map<string, Map<string, StubKeycloakUser[]>>();
+  const organizationRoleGroupIds = new Map<string, Map<string, string>>();
   const groupIds = new Map<string, string>();
   const adminRequests: StubKeycloakAdminRequest[] = [];
   const issuedTokens = new Set<string>();
@@ -166,6 +171,47 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
         json(200, JSON.stringify(page(
           [...organizations.values()], query.first, query.max,
         )));
+        return;
+      }
+      const organizationGroupsMatch = /^\/organizations\/([^/]+)\/groups$/u.exec(path);
+      if (organizationGroupsMatch !== null) {
+        const organizationId = decodeURIComponent(organizationGroupsMatch[1] ?? "");
+        const roleGroups = organizationRoleGroups.get(organizationId);
+        if (roleGroups === undefined) {
+          json(404, JSON.stringify({error: "Could not find organization by id"}));
+          return;
+        }
+        const ids = organizationRoleGroupIds.get(organizationId) ?? new Map<string, string>();
+        organizationRoleGroupIds.set(organizationId, ids);
+        const listed = [...roleGroups.keys()].map((pathName) => {
+          const id = ids.get(pathName) ?? randomUUID();
+          ids.set(pathName, id);
+          return {id, name: pathName.slice(1), path: pathName, parentId: null, subGroups: []};
+        });
+        json(200, JSON.stringify(page(listed, query.first, query.max)));
+        return;
+      }
+      const organizationGroupMembersMatch =
+        /^\/organizations\/([^/]+)\/groups\/([^/]+)\/members$/u.exec(path);
+      if (organizationGroupMembersMatch !== null) {
+        const organizationId = decodeURIComponent(organizationGroupMembersMatch[1] ?? "");
+        const groupIdValue = decodeURIComponent(organizationGroupMembersMatch[2] ?? "");
+        const roleGroups = organizationRoleGroups.get(organizationId);
+        const ids = organizationRoleGroupIds.get(organizationId);
+        const pathName = [...(ids ?? new Map()).entries()]
+          .find(([, id]) => id === groupIdValue)?.[0];
+        const users = pathName === undefined ? undefined : roleGroups?.get(pathName);
+        if (users === undefined) {
+          json(404, JSON.stringify({error: "Could not find organization group by id"}));
+          return;
+        }
+        const first = Number(query.first ?? "0");
+        if (failingPage !== null && failingPage.first === first && failingPage.remaining > 0) {
+          failingPage.remaining -= 1;
+          json(failingPage.status, JSON.stringify({error: "server_error"}));
+          return;
+        }
+        json(200, JSON.stringify(page(users, query.first, query.max)));
         return;
       }
       const organizationMembersMatch = /^\/organizations\/([^/]+)\/members$/u.exec(path);
@@ -269,6 +315,8 @@ export async function startStubKeycloak(): Promise<RunningStubKeycloak> {
     groups,
     organizations,
     organizationMembers,
+    organizationRoleGroups,
+    organizationRoleGroupIds,
     issuer,
     setTokenStatus: (status) => {
       tokenStatus = status;

@@ -31,14 +31,16 @@ const rolePrecedence = {
   editor: 1,
   owner: 2,
 } satisfies Record<KeycloakOrganizationRole, number>;
-const organizationClaimSchema = z.record(z.string().min(1), z.object({
+const organizationClaimSchema = z.record(z.string().min(1), z.unknown());
+const organizationMembershipSchema = z.object({
   id: z.string().uuid(),
   groups: z.array(z.string()),
-}).strict());
+}).strict();
 
 /**
  * Parse the pinned Keycloak 26 Organizations claim shape. A missing claim is
- * a valid empty membership set. Malformed present data is rejected wholesale.
+ * a valid empty membership set. Each entry is strict and malformed siblings
+ * are skipped so one bad organization cannot hide valid memberships.
  */
 export function parseKeycloakOrganizationClaims(
   organizationClaim: Schema.Json | undefined,
@@ -66,8 +68,10 @@ export function parseKeycloakOrganizationClaims(
 
   const organizations: KeycloakOrganizationMembership[] = [];
   for (const [alias, rawMembership] of Object.entries(parsedOrganization.data)) {
-    const role = mapKeycloakOrganizationGroups(rawMembership.groups);
-    organizations.push({alias, id: rawMembership.id, role});
+    const parsedMembership = organizationMembershipSchema.safeParse(rawMembership);
+    if (!parsedMembership.success) continue;
+    const role = mapKeycloakOrganizationGroups(parsedMembership.data.groups);
+    organizations.push({alias, id: parsedMembership.data.id, role});
   }
   return {
     ok: true,

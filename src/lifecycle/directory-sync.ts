@@ -5,6 +5,7 @@ import type {ApplicationRuntime} from
 import {
   type DirectoryGroupSyncReport,
   type DirectorySyncReport,
+  type OrganizationDirectorySyncResult,
   type GroupDirectory,
   syncDirectoryGroups,
   syncDirectoryMembers,
@@ -33,7 +34,7 @@ export function runOrganizationDirectorySyncPass(
   runtime: ApplicationRuntime,
   directory: OrganizationDirectory,
   organization: DirectoryOrganization,
-): Promise<DirectorySyncReport> {
+): Promise<OrganizationDirectorySyncResult> {
   const configured = process.env["ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS"];
   if (configured !== undefined && !/^[0-9]+$/u.test(configured)) {
     return Promise.reject(new Error("ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS must contain only decimal digits."));
