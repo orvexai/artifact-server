@@ -8,6 +8,7 @@ import {SqlClient} from "effect/unstable/sql/SqlClient";
 import {
   createExternalStorageRuntime,
   createOrgRuntime,
+  organizationRuntimeAdmissionPolicy,
   openExternalStorageDatabase,
   type ExternalStorageRuntimeConfig,
 } from "../external-storage/create-external-storage-runtime.js";
@@ -55,9 +56,15 @@ import {PostgresDatabase} from "../storage/postgres-database.js";
 import {
   OrganizationRegistry,
   findDisappearedOrganizations,
+  isReservedOrganizationSlug,
   parseOrganizationAdmissionPolicyJson,
   type OrganizationAdmissionPolicy,
 } from "../external-storage/organization-registry.js";
+import {
+  organizationStaffGroupsVariable,
+  parseOrganizationStaffGroups,
+  requireOrganizationStaffGroups,
+} from "../external-storage/organization-staff-groups.js";
 import {runCliEffect} from "./run-cli-effect.js";
 import {waitForProcessSignal} from "./wait-for-process-signal.js";
 import {
@@ -464,6 +471,9 @@ async function syncKeycloakOrganizations(
   if (!parseOrganizationTenancy(process.env["ARTIFACT_SERVER_ORG_TENANCY"])) {
     throw new Error("Keycloak organization sync requires ARTIFACT_SERVER_ORG_TENANCY=on.");
   }
+  const organizationStaffGroups = requireOrganizationStaffGroups(
+    parseOrganizationStaffGroups(process.env[organizationStaffGroupsVariable]),
+  );
   assertAtMostOneBrowserLoginProvider(process.env);
   const oidc = await loadOidcConfiguration({
     ...process.env,
@@ -499,6 +509,16 @@ async function syncKeycloakOrganizations(
       if (onlyAlias !== undefined && keycloakOrganization.alias !== onlyAlias) continue;
       if (keycloakOrganization.alias === onlyAlias) foundRequestedAlias = true;
       try {
+        // Orvex stays governed by its issuer-group admission policy. Skip a
+        // Keycloak org using a reserved alias before the registry sync, whose
+        // reserved-slug conflict would otherwise fail every run.
+        if (isReservedOrganizationSlug(keycloakOrganization.alias)) {
+          skipped.push({
+            alias: keycloakOrganization.alias,
+            reason: "Reserved organization alias; Orvex is governed by its issuer-group admission policy.",
+          });
+          continue;
+        }
         if (keycloakOrganization.enabled === false) {
           const reason = "Keycloak organization is disabled.";
           if (keycloakOrganization.alias === onlyAlias) errors.push({alias: onlyAlias, error: reason});
@@ -523,15 +543,19 @@ async function syncKeycloakOrganizations(
           skipped.push({alias: keycloakOrganization.alias, reason: "Artifact Server organization is suspended."});
           continue;
         }
-        // Orvex remains governed by the existing issuer-group policy.
-        if (keycloakOrganization.alias === "orvex") continue;
         // oxlint-disable-next-line eslint/no-await-in-loop
         const orgRuntime = await createOrgRuntime(organization.id, {
+          // Carry the org's admission policy so its staff selectors mark
+          // synced staff members exactly as interactive login does.
+          admissionPolicy: organizationRuntimeAdmissionPolicy(organization.admissionPolicy),
           cookieRouteId: organization.routeId,
           keycloakOrganizationId: keycloakOrganization.id,
           slug: organization.slug,
           applicationOrigin: new URL(`/o/${organization.slug}`, configuration.applicationOrigin).toString(),
-        }, externalMaintenanceConfig(configuration), database);
+        }, {
+          ...externalMaintenanceConfig(configuration),
+          organizationStaffGroups,
+        }, database);
         try {
           // oxlint-disable-next-line eslint/no-await-in-loop
           const memberReport = await orgRuntime.syncOrganizationMembers(directory, keycloakOrganization);
@@ -539,6 +563,10 @@ async function syncKeycloakOrganizations(
             emptied.push({alias: keycloakOrganization.alias, reason: memberReport.reason});
           } else {
             memberSync.push({alias: keycloakOrganization.alias, report: memberReport});
+            const missing = "staffGroupsMissing" in memberReport ? memberReport.staffGroupsMissing ?? [] : [];
+            if (missing.length > 0) {
+              console.warn(`Organization ${keycloakOrganization.alias}: staff groups not found in Keycloak, counted as having no members: ${missing.join(", ")}`);
+            }
           }
         } finally {
           // oxlint-disable-next-line eslint/no-await-in-loop
@@ -743,6 +771,10 @@ function configureExternalStorageStart(
       const organizationTenancy = parseOrganizationTenancy(
         process.env["ARTIFACT_SERVER_ORG_TENANCY"],
       );
+      const organizationStaffGroups = parseOrganizationStaffGroups(
+        process.env[organizationStaffGroupsVariable],
+      );
+      if (organizationTenancy) requireOrganizationStaffGroups(organizationStaffGroups);
       const parsed = await parseExternalConfiguration(options.host, options.port);
       const embedOrigins = loadEmbedOrigins(process.env);
       writeGitHistoryConfigurationWarnings(parsed.gitHistory);
@@ -774,6 +806,7 @@ function configureExternalStorageStart(
         gitHistory: parsed.gitHistory,
         hostname: parsed.hostname,
         installationId: parsed.installationId,
+        organizationStaffGroups,
         organizationTenancy,
         objectStorage: parsed.objectStorage,
         port: parsed.port,

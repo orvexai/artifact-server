@@ -185,7 +185,7 @@ export function MembersScreen({canAdmit, canManage, showEmails, showRoles}: {
                       </StatusBadge>
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-muted-foreground">
-                      {formatTimestamp(member.createdAt)}
+                      {member.createdAt === undefined ? "" : formatTimestamp(member.createdAt)}
                     </td>
                     {canManage ? <td className="px-4 py-4 text-right">
                       {member.status === "inactive"

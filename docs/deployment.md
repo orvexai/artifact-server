@@ -29,6 +29,50 @@ The application origin serves Artifact Server, its API, and its MCP endpoint. Th
 
 ### Roll out configured organizations
 
+Organization tenancy is off by default. Turn it on with
+`ARTIFACT_SERVER_ORG_TENANCY=on` (`off` or unset keeps the single-installation
+layout; any other value refuses to start). With the Helm chart, set
+`configuration.organizationTenancy: "on"`; the chart passes it to the server,
+the cleanup CronJob and the directory-sync CronJob. Before you switch it on:
+
+- **Everyone signs in again.** Browser session cookies become scoped to each
+  organization's route, so every session from before the switch stops working
+  and each person is sent through sign-in once.
+- **Legacy paths redirect permanently.** `/api/...`, `/mcp` and `/review/...`
+  answer `308 Permanent Redirect` to the same path under `/o/orvex/`, keeping
+  the method and body. Clients that do not follow a 308 on a POST must be
+  pointed at the `/o/orvex/` URLs. Signing in at the root now lands on the
+  organization chooser at `/`, which lists every enabled organization the
+  person is admitted to and goes straight in when there is only one; the
+  in-app organization switcher appears only with more than one.
+- **Name the Orvex staff groups.** Set `ARTIFACT_SERVER_ORG_STAFF_GROUPS` to
+  the comma-separated exact Keycloak group paths of Orvex staff, for example
+  `/Administrators,/Platform Team,/Orvex AI Developers`. Each segment may
+  contain internal spaces but no leading or trailing whitespace, commas or
+  empty segments; spaces around the commas are trimmed (Helm:
+  `configuration.organizationStaffGroups:
+  ["/Administrators", "/Developers"]`). Members of these groups who belong to
+  any non-Orvex organization are stored as staff at sign-in and by
+  `org sync`, and tenants see them only as "Orvex Support". This applies to
+  every tenant, including organizations created by `org sync` that have no
+  admission policy, in addition to any per-organization `"staff": true`
+  selectors. With tenancy on and this variable empty, the server refuses to
+  start and every `org sync` fails, and the Helm chart refuses to render.
+  Write `{slug}` to name a per-organization group, for example
+  `/TenantWorkspaces/{slug}/{slug}-staff`; it expands to each organization's
+  slug and must still form an exact path. A `{slug}` group that does not
+  exist yet in Keycloak counts as having no members; any other missing staff
+  group fails the sync for that organization. Every staff path also covers
+  its subgroups, at sign-in and in `org sync`, so each staff subtree must
+  contain only Orvex staff and only realm administrators may manage it:
+  anyone who can add a user to a staff group or subgroup can hide that user
+  from tenants.
+  The OIDC groups claim must carry full group paths so sign-in can match them.
+- **Keycloak must send the `organization` claim.** Add Keycloak's built-in
+  `organization` client scope to the Artifact Server OIDC client as a default
+  scope. Without it no token carries organization memberships: no Keycloak
+  organization admits anyone and the chooser lists only Orvex.
+
 Organization tenancy is configured on one Artifact Server installation and
 routed by `/o/<slug>`. Configure the Keycloak OIDC client's valid redirect URI
 pattern as `https://<application-host>/o/*` so each non-Orvex organization's
@@ -46,8 +90,24 @@ admission policy.
 
 Run `artifact-server org sync` (or the `maintenance org-sync --once` CronJob
 path) to discover organizations and reconcile each organization's members.
+A member of an `ARTIFACT_SERVER_ORG_STAFF_GROUPS` group, or of an
+organization's own admission-policy staff group (a seed entry with
+`"staff": true`), is stored as Orvex staff by the sync, exactly as at sign-in,
+so tenant member lists show them only as "Orvex Support". The staff marker is
+never cleared automatically. Each organization's report includes
+`staffMarked`, the number of its synced members counted as staff, and
+`staffGroupsMissing`, the `{slug}` staff groups that do not exist in Keycloak
+(the command also prints a warning line naming them). Staff come only from
+staff groups; email addresses never mark anyone as staff. The directory
+client therefore needs to read those groups' members, and a staff group that cannot be read fails that
+organization's sync without changing anything. A Keycloak
+organization using the reserved alias `orvex` is skipped; Orvex keeps its
+issuer-group admission policy.
 The sync command reports disappeared organizations but never deletes or
-suspends them. An enabled organization with zero members is reported as
+suspends them. It also never suspends an organization that is disabled in
+Keycloak: the sync reports it as skipped and leaves its members and sessions
+active. To cut off a disabled organization, run
+`artifact-server org suspend <slug> --yes` yourself. An enabled organization with zero members is reported as
 `emptied` and makes the command exit non-zero to raise an alert. Investigate
 the Keycloak membership first; when suspension is intended, run
 `artifact-server org suspend <slug> --yes`. This deactivates every member,

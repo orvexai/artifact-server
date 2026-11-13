@@ -5,6 +5,10 @@ import type {
   DirectoryGroupRecord,
 } from "../core/directory-groups.js";
 import {membershipRolePrecedence} from "../core/group-role-policy.js";
+import {
+  emptyTenantStaffDefinition,
+  type TenantStaffDefinition,
+} from "../core/tenant-staff.js";
 import type {MembershipRole} from "../core/identity.js";
 import type {DirectoryOrganization} from "../identity/keycloak-directory.js";
 import type {OrganizationDirectory} from "../identity/keycloak-directory.js";
@@ -70,6 +74,10 @@ export interface DirectorySyncReport {
   readonly reactivated: number;
   readonly roleChanged: number;
   readonly skipped: number;
+  /** Org sync only: {slug}-expanded staff group paths missing from Keycloak. */
+  readonly staffGroupsMissing?: readonly string[];
+  /** Org sync only: members the snapshot marks as Orvex staff. */
+  readonly staffMarked?: number;
   readonly unchanged: number;
 }
 
@@ -169,13 +177,29 @@ export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
   return report;
 });
 
-/** Sync one Keycloak Organization into only the current installation. */
-export const syncOrganizationDirectoryMembers = Effect.fn(
-  "syncOrganizationDirectoryMembers",
+/** One Keycloak organization's desired member entries, before reconciliation. */
+export interface OrganizationDirectorySnapshot {
+  readonly desired: readonly DirectoryMemberEntry[];
+  readonly directoryUsers: number;
+  readonly skipped: number;
+  /** {slug}-expanded staff group paths that do not exist in Keycloak. */
+  readonly staffGroupsMissing: readonly string[];
+  /** Members this snapshot marks as Orvex staff. */
+  readonly staffMarked: number;
+}
+
+/**
+ * Read one Keycloak organization's members into desired entries. Staff are
+ * marked from the org's admission-policy staff selectors, exactly as
+ * interactive login marks them, so a synced staff member is masked from
+ * tenant member lists before they ever sign in.
+ */
+export const readOrganizationDirectorySnapshot = Effect.fn(
+  "readOrganizationDirectorySnapshot",
 )(function*(
   directory: OrganizationDirectory,
   organization: DirectoryOrganization,
-  maximumDeactivations: number,
+  staff: TenantStaffDefinition = emptyTenantStaffDefinition,
 ) {
   const members = yield* directory.listOrganizationMembers(organization);
   if (members.length === 0) {
@@ -183,6 +207,16 @@ export const syncOrganizationDirectoryMembers = Effect.fn(
       kind: "emptied",
       reason: "Keycloak organization has no enabled members.",
     } as const;
+  }
+  const staffUserIds = new Set<string>();
+  // A staff group that cannot be read fails the pass before anything changes.
+  const staffGroupsMissing: string[] = [];
+  for (const selector of staff.groups) {
+    const allowMissing = staff.groupsMayBeMissing.includes(selector);
+    const ids = yield* directory.listGroupMemberIdsByPath(selector, {allowMissing});
+    // A {slug}-expanded staff group that does not exist yet has no members.
+    if (ids === null) staffGroupsMissing.push(selector);
+    else for (const id of ids) staffUserIds.add(id);
   }
   const desired = new Map<string, DirectoryMemberEntry>();
   let skipped = 0;
@@ -199,14 +233,15 @@ export const syncOrganizationDirectoryMembers = Effect.fn(
       : user.role === "editor"
       ? "member"
       : "viewer";
-    const entry: DirectoryMemberEntry = {
-      displayName: displayName(user, email),
-      email,
-      role,
-    };
     const previous = desired.get(email);
+    const isStaff = staffUserIds.has(user.id) || previous?.staff === true;
+    const entry: DirectoryMemberEntry = isStaff
+      ? {displayName: displayName(user, email), email, role, staff: true}
+      : {displayName: displayName(user, email), email, role};
     if (previous === undefined || membershipRolePrecedence(role) > membershipRolePrecedence(previous.role)) {
       desired.set(email, entry);
+    } else if (isStaff && previous.staff !== true) {
+      desired.set(email, {...previous, staff: true});
     }
   }
   if (desired.size === 0) {
@@ -214,18 +249,41 @@ export const syncOrganizationDirectoryMembers = Effect.fn(
       message: `Keycloak organization ${organization.alias} has no eligible members; nothing was changed.`,
     });
   }
+  const entries = [...desired.values()];
+  return {
+    desired: entries,
+    directoryUsers: members.length,
+    skipped,
+    staffGroupsMissing,
+    staffMarked: entries.filter((entry) => entry.staff === true).length,
+  } satisfies OrganizationDirectorySnapshot;
+});
+
+/** Sync one Keycloak Organization into only the current installation. */
+export const syncOrganizationDirectoryMembers = Effect.fn(
+  "syncOrganizationDirectoryMembers",
+)(function*(
+  directory: OrganizationDirectory,
+  organization: DirectoryOrganization,
+  maximumDeactivations: number,
+  staff: TenantStaffDefinition = emptyTenantStaffDefinition,
+) {
+  const snapshot = yield* readOrganizationDirectorySnapshot(directory, organization, staff);
+  if (snapshot.kind === "emptied") return {kind: snapshot.kind, reason: snapshot.reason} as const;
   const reconciliation = yield* InstallationAccessService.use((access) =>
-    access.reconcileDirectoryMembers([...desired.values()], maximumDeactivations)
+    access.reconcileDirectoryMembers(snapshot.desired, maximumDeactivations)
   );
   return {
     groups: 1,
-    directoryUsers: members.length,
+    directoryUsers: snapshot.directoryUsers,
     admitted: reconciliation.admitted,
     reactivated: reconciliation.reactivated,
     roleChanged: reconciliation.roleChanged,
     deactivated: reconciliation.deactivated,
     unchanged: reconciliation.unchanged,
-    skipped,
+    skipped: snapshot.skipped,
+    staffGroupsMissing: snapshot.staffGroupsMissing,
+    staffMarked: snapshot.staffMarked,
   } satisfies DirectorySyncReport;
 });
 

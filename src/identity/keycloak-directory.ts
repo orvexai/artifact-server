@@ -65,6 +65,10 @@ const decodeGroupTree = Schema.decodeUnknownEffect(groupTree);
 const decodeUserList = Schema.decodeUnknownEffect(userList);
 const decodeOrganizationList = Schema.decodeUnknownEffect(organizationList);
 const decodeOrganizationGroupList = Schema.decodeUnknownEffect(organizationGroupList);
+const decodeGroupByPath = Schema.decodeUnknownEffect(Schema.Struct({
+  id: Schema.NonEmptyString,
+  path: Schema.String,
+}));
 
 export interface DirectoryOrganization {
   readonly alias: string;
@@ -83,6 +87,14 @@ export interface OrganizationDirectory {
   readonly listOrganizationMembers: (
     organization: DirectoryOrganization,
   ) => Effect.Effect<readonly DirectoryOrganizationMember[], DirectoryUnavailable>;
+  /**
+   * Keycloak user ids that are members of the realm group at one full path or
+   * of any subgroup beneath it. Org sync uses it to mark staff groups.
+   */
+  readonly listGroupMemberIdsByPath: (
+    path: string,
+    options?: {readonly allowMissing?: boolean},
+  ) => Effect.Effect<readonly string[] | null, DirectoryUnavailable>;
 }
 
 /**
@@ -455,6 +467,73 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
     },
   );
 
+  /**
+   * Read the members of the realm group at one full path and of every
+   * subgroup beneath it. A missing
+   * group fails the pass: a staff selector that cannot be resolved must never
+   * silently admit staff unmasked.
+   */
+  readonly listGroupMemberIdsByPath = Effect.fn("KeycloakDirectory.listGroupMemberIdsByPath")(
+    function*(this: KeycloakDirectory, path: string, options?: {readonly allowMissing?: boolean}): Effect.fn.Return<
+      readonly string[] | null,
+      DirectoryUnavailable
+    > {
+      const segments = path.split("/").filter((segment) => segment !== "");
+      if (!path.startsWith("/") || segments.length === 0) {
+        return yield* unavailable(`The staff group selector ${path} is not a full group path.`);
+      }
+      const token = yield* this.#accessToken();
+      const url = new URL(
+        `${this.#adminBaseUrl}/group-by-path/${segments.map((segment) => encodeURIComponent(segment)).join("/")}`,
+      );
+      const body = yield* this.#adminGet(token, url, `The Keycloak staff group ${path}`, true);
+      if (body === null) {
+        // A per-organization ({slug}) staff group that does not exist yet has
+        // no members; any other missing staff group fails closed.
+        if (options?.allowMissing === true) return null;
+        return yield* unavailable(`The Keycloak staff group ${path} does not exist.`);
+      }
+      const group = yield* decodeGroupByPath(body).pipe(
+        Effect.mapError(() => unavailable(`The Keycloak staff group ${path} returned an invalid group.`)),
+      );
+      if (group.path !== path) {
+        return yield* unavailable(`The Keycloak staff group ${path} resolved to a different path.`);
+      }
+      // A staff group covers its subgroups: collect every descendant group
+      // through Keycloak's paged children listing, then read each one's members.
+      const groupIds = [group.id];
+      const pending = [group.id];
+      for (let parentId = pending.shift(); parentId !== undefined; parentId = pending.shift()) {
+        for (let page = 0; ; page += 1) {
+          if (page >= maximumPagesPerGroup) {
+            return yield* unavailable(`The subgroups of staff group ${path} have too many pages.`);
+          }
+          const childrenUrl = new URL(`${this.#adminBaseUrl}/groups/${encodeURIComponent(parentId)}/children`);
+          childrenUrl.searchParams.set("first", String(page * keycloakDirectoryPageSize));
+          childrenUrl.searchParams.set("max", String(keycloakDirectoryPageSize));
+          childrenUrl.searchParams.set("briefRepresentation", "true");
+          const childrenBody = yield* this.#adminGet(token, childrenUrl, `The subgroups of staff group ${path}`);
+          const children = yield* decodeGroupTree(childrenBody).pipe(
+            Effect.mapError(() => unavailable(`The subgroups of staff group ${path} returned an invalid list.`)),
+          );
+          for (const child of children) {
+            groupIds.push(child.id);
+            if (groupIds.length > maximumGroups) {
+              return yield* unavailable(`Staff group ${path} has more subgroups than one sync reads.`);
+            }
+            if (child.subGroupCount !== 0) pending.push(child.id);
+          }
+          if (children.length < keycloakDirectoryPageSize) break;
+        }
+      }
+      const ids = new Set<string>();
+      for (const groupId of groupIds) {
+        for (const user of yield* this.#groupMembers(token, path, groupId)) ids.add(user.id);
+      }
+      return [...ids];
+    },
+  );
+
   /** Read one group's complete direct membership. */
   readonly listGroupMembers = Effect.fn("KeycloakDirectory.listGroupMembers")(
     function*(this: KeycloakDirectory, group: DirectoryGroupRecord) {
@@ -567,6 +646,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
     token: Redacted.Redacted,
     url: URL,
     subject: string,
+    notFoundAsNull = false,
   ): Effect.Effect<Schema.Json, DirectoryUnavailable> {
     return this.#request(url.toString(), {
       headers: {
@@ -574,7 +654,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
         Authorization: `Bearer ${Redacted.value(token)}`,
       },
       method: "GET",
-    }, subject);
+    }, subject, notFoundAsNull);
   }
 
   /**
@@ -586,9 +666,10 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
     url: string,
     init: RequestInit,
     subject: string,
+    notFoundAsNull = false,
   ): Effect.Effect<Schema.Json, DirectoryUnavailable> {
     const attempt = (number: number): Effect.Effect<Schema.Json, DirectoryUnavailable> =>
-      this.#requestOnce(url, init, subject).pipe(
+      this.#requestOnce(url, init, subject, notFoundAsNull).pipe(
         Effect.catch((failure) =>
           failure.retryable && number < requestAttempts
             ? Effect.sleep(this.#retryBaseDelayMilliseconds * 2 ** (number - 1)).pipe(
@@ -604,6 +685,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
     url: string,
     init: RequestInit,
     subject: string,
+    notFoundAsNull = false,
   ): Effect.Effect<Schema.Json, {readonly message: string; readonly retryable: boolean}> {
     return Effect.tryPromise({
       try: async (signal) => {
@@ -616,6 +698,7 @@ export class KeycloakDirectory implements GroupDirectory, MemberDirectory, Organ
             AbortSignal.timeout(requestTimeoutMilliseconds),
           ]),
         });
+        if (response.status === 404 && notFoundAsNull) return null;
         if (response.status !== 200) {
           throw new HttpStatusFailure(
             `${subject} returned HTTP ${response.status}.`,

@@ -8,6 +8,9 @@ import type {
 import type {InteractiveIdentityProvider} from "../application/interactive-login.js";
 import type {ExternalIdentity} from "../core/installation-identity.js";
 import type {OrganizationMembershipResolver} from "./organization-memberships.js";
+import type {OrganizationAdmissionPolicy} from "./organization-registry.js";
+import {expandOrganizationStaffGroups, organizationSlugPlaceholder} from "./organization-staff-groups.js";
+import {emptyTenantStaffDefinition, type TenantStaffDefinition} from "../core/tenant-staff.js";
 import type {Clock} from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
 import type {
@@ -117,6 +120,11 @@ export interface ExternalStorageRuntimeConfig {
   readonly gitHistoryProvider?: GitHistoryProvider;
   /** Issuer groups that admit people and set their role, when configured. */
   readonly groupRolePolicy?: GroupRolePolicy | null;
+  /**
+   * Platform-wide Orvex staff groups (ARTIFACT_SERVER_ORG_STAFF_GROUPS):
+   * exact group paths masked as staff in every non-Orvex organization.
+   */
+  readonly organizationStaffGroups?: readonly string[];
   readonly installationId: string;
   /** Verified Keycloak org claims; composed by the identity provider layer. */
   readonly organizationMemberships?: OrganizationMembershipResolver;
@@ -230,6 +238,10 @@ export async function createOrgRuntime(
   const groupRolePolicy = isOrvex
     ? config.groupRolePolicy ?? null
     : orgConfig.admissionPolicy ?? null;
+  // One staff definition per tenant, used by login and by org sync alike.
+  const tenantStaff = isOrvex || orgConfig.slug === undefined
+    ? emptyTenantStaffDefinition
+    : tenantStaffDefinition(config, groupRolePolicy, orgConfig.slug);
   const organizationOAuthResources = orgConfig.slug === undefined || isOrvex || applicationOrigin === null
     ? null
     : {
@@ -340,6 +352,7 @@ export async function createOrgRuntime(
       identityRepository,
       installationId,
       organizationDirectoryVisibility: !isOrvex && orgConfig.slug !== undefined,
+      tenantStaff,
       gitHistory: {read: () => applicationGitHistory.read()},
       interactiveIdentityProvider: config.interactiveIdentityProvider === undefined
         ? null
@@ -535,7 +548,12 @@ export async function createOrgRuntime(
       isGroupRoleSeedApplied: () => runIsGroupRoleSeedApplied(readyRuntime),
       syncDirectory: (directory) => runDirectorySyncPass(readyRuntime, directory),
       syncOrganizationMembers: (directory, organization) =>
-        runOrganizationDirectorySyncPass(readyRuntime, directory, organization),
+        runOrganizationDirectorySyncPass(
+          readyRuntime,
+          directory,
+          organization,
+          tenantStaff,
+        ),
       syncDirectoryGroups: (directory, syncedAt, provider, recomputeRoles) =>
         runDirectoryGroupSyncPass(readyRuntime, directory, syncedAt, provider, recomputeRoles),
       close: async () => {
@@ -555,6 +573,65 @@ export async function createOrgRuntime(
     }
     throw cause;
   }
+}
+
+/** Full-path staff selectors, the same ones tenant login uses to mark staff. */
+export function organizationStaffSelectors(policy: GroupRolePolicy | null): readonly string[] {
+  if (policy === null) return [];
+  return [...new Set(policy.seed.flatMap(({selector, staff}) =>
+    staff === true && selector.startsWith("/") ? [selector] : []
+  ))];
+}
+
+/**
+ * Every exact group path whose members are Orvex staff in one tenant: the
+ * platform-wide staff groups united with the org's own staff selectors. An
+ * org created by sync has no policy and relies on the platform groups alone.
+ */
+export function tenantStaffGroupPaths(
+  platformStaffGroups: readonly string[],
+  policy: GroupRolePolicy | null,
+  slug: string,
+): readonly string[] {
+  return [...new Set([
+    ...expandOrganizationStaffGroups(platformStaffGroups, slug),
+    ...organizationStaffSelectors(policy),
+  ])];
+}
+
+/**
+ * One tenant's complete staff definition for login and sync. Platform staff
+ * groups have `{slug}` expanded; only those templated paths may be missing.
+ */
+export function tenantStaffDefinition(
+  config: Pick<ExternalStorageRuntimeConfig, "organizationStaffGroups">,
+  policy: GroupRolePolicy | null,
+  slug: string,
+): TenantStaffDefinition {
+  const platform = config.organizationStaffGroups ?? [];
+  return {
+    groups: tenantStaffGroupPaths(platform, policy, slug),
+    groupsMayBeMissing: expandOrganizationStaffGroups(
+      platform.filter((group) => group.includes(organizationSlugPlaceholder)),
+      slug,
+    ),
+  };
+}
+
+/** The runtime admission policy for one registered organization record. */
+export function organizationRuntimeAdmissionPolicy(
+  admissionPolicy: OrganizationAdmissionPolicy | null,
+): GroupRolePolicy | null {
+  if (admissionPolicy === null) return null;
+  const policy = {
+    groupRoots: admissionPolicy.groupRoots,
+    seed: admissionPolicy.seed.map(({role, selector, staff}) =>
+      staff === undefined ? {role, selector} : {role, selector, staff}
+    ),
+  } satisfies GroupRolePolicy;
+  return admissionPolicy.guestGroupPrefixes === undefined
+    ? policy
+    : {...policy, guestGroupPrefixes: admissionPolicy.guestGroupPrefixes};
 }
 
 function organizationIdentityProvider(

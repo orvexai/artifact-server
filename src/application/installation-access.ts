@@ -54,6 +54,12 @@ import {
   membershipRolePrecedence,
 } from "../core/group-role-policy.js";
 import {
+  emptyTenantStaffDefinition,
+  staffPathCovers,
+  tenantLoginIsStaff,
+  type TenantStaffDefinition,
+} from "../core/tenant-staff.js";
+import {
   isAdministratorRole,
   isHumanAdministrator,
   membershipRoles,
@@ -305,6 +311,11 @@ export interface InstallationAccessDependencies {
   readonly installationId: string;
   /** Let non-guest tenant members read their org-scoped directory. */
   readonly organizationDirectoryVisibility?: boolean | undefined;
+  /**
+   * This tenant's Orvex staff definition: platform staff groups ({slug}
+   * expanded) plus the org's own staff selectors.
+   */
+  readonly tenantStaff?: TenantStaffDefinition | undefined;
   readonly localBootstrapCredential: Redacted.Redacted | null;
   readonly localLoginAttemptLifetimeMilliseconds: number;
   /** Keep the installation's local-owner member permanently active. */
@@ -772,8 +783,10 @@ function makeInstallationAccessService(
     const groups = yield* dependencies.repository.listDirectoryGroups(
       dependencies.installationId,
     );
-    if (dependencies.organizationDirectoryVisibility !== true || groupRolePolicy === null) return groups;
-    return groups.filter((group) => !groupRoleSeedMarksStaff(group, groupRolePolicy.seed));
+    if (dependencies.organizationDirectoryVisibility !== true) return groups;
+    const tenantStaffGroups = dependencies.tenantStaff?.groups ?? [];
+    return groups.filter((group) => !tenantStaffGroups.some((path) => staffPathCovers(path, group.path)) &&
+      (groupRolePolicy === null || !groupRoleSeedMarksStaff(group, groupRolePolicy.seed)));
   });
 
   const listGroupRoles = Effect.fn(
@@ -1345,12 +1358,17 @@ function makeInstallationAccessService(
       Object.assign(binding, {identityProvider: identity.identityProvider});
     }
     yield* dependencies.repository.bindExternalIdentity(binding);
-    if (dependencies.organizationDirectoryVisibility === true && groupRolePolicy !== null) {
+    const tenantStaff = dependencies.tenantStaff ?? emptyTenantStaffDefinition;
+    if (dependencies.organizationDirectoryVisibility === true &&
+      (groupRolePolicy !== null || tenantStaff.groups.length > 0)) {
       const fullPathGroups = (identity.groups ?? []).filter((group) => group.startsWith("/"));
       if (fullPathGroups.length === 0) yield* Effect.logWarning("Tenant login carried no full-path groups; retaining sticky staff privacy marker.");
-      const matchedStaffSelector = fullPathGroups.length > 0 && groupRolePolicy.seed.some(({selector, staff: isStaff}) =>
-        isStaff === true && selector.startsWith("/") && fullPathGroups.includes(selector)
-      );
+      // Staff come only from staff groups; each covers its subgroups.
+      const matchedStaffSelector = tenantLoginIsStaff({
+        groups: fullPathGroups,
+        seed: groupRolePolicy?.seed ?? [],
+        staffGroups: tenantStaff.groups,
+      });
       // This persisted marker is intentionally sticky: old authored content
       // must not become attributable after an admission-policy change.
       const staff = member.staff === true || matchedStaffSelector;

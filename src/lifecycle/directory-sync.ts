@@ -14,6 +14,7 @@ import {
 import type {DirectoryOrganization, OrganizationDirectory} from
   "../identity/keycloak-directory.js";
 import type {GroupRoleSeedEntry} from "../core/group-role-policy.js";
+import type {TenantStaffDefinition} from "../core/tenant-staff.js";
 import {
   type GroupRoleSeedResult,
   InstallationAccessService,
@@ -34,6 +35,7 @@ export function runOrganizationDirectorySyncPass(
   runtime: ApplicationRuntime,
   directory: OrganizationDirectory,
   organization: DirectoryOrganization,
+  staff?: TenantStaffDefinition,
 ): Promise<OrganizationDirectorySyncResult> {
   const configured = process.env["ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS"];
   if (configured !== undefined && !/^[0-9]+$/u.test(configured)) {
@@ -47,6 +49,7 @@ export function runOrganizationDirectorySyncPass(
     directory,
     organization,
     maximumDeactivations,
+    staff,
   ).pipe(Effect.mapError((error) => new Error(`${error._tag}: ${error.message}`))));
 }
 

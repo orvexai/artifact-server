@@ -221,6 +221,8 @@ export interface IdentityRepository {
       readonly email: string;
       readonly id: string;
       readonly role: InstallationMember["role"];
+      /** Set from the org's staff selectors; the stored marker is sticky. */
+      readonly staff?: boolean;
     }[],
     updatedAt: string,
     maximumDeactivations: number,

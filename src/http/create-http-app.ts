@@ -549,6 +549,9 @@ interface HttpEnvironment {
   };
 }
 
+/** Internal marker: a platform-login redirect that targets the root chooser. */
+export const platformRootRedirectHeader = "x-artifact-platform-root-redirect";
+
 export interface HttpAppDependencies {
   readonly apiOAuthResource?: ApiOAuthResourceConfiguration;
   readonly applicationRuntime: ApplicationRuntime;
@@ -1548,6 +1551,9 @@ export function createHttpApp(
         context.header("Cache-Control", "private, no-store");
         context.header("Referrer-Policy", "no-referrer");
         clearLoginHandshakeCookie(context, dependencies);
+        // The organization router lands this on the root chooser rather than
+        // prefixing it into the Orvex organization, then strips the marker.
+        context.header(platformRootRedirectHeader, "1");
         return context.redirect("/", 303);
       }
       const completed = await runHttpApplicationEffect(
@@ -1695,7 +1701,7 @@ export function createHttpApp(
         if (principal.membershipRole !== membershipRoles.owner) return context.json({members: projectedMembers});
         const staffMembers = await runHttpApplicationEffect(context, dependencies,
           InstallationAccessService.use((access) => access.listStaffOnlyMembers()));
-        return context.json({members: [...projectedMembers, ...staffMembers.map(({id, status}) => ({id, displayName: "Orvex Support", status}))]});
+        return context.json({members: [...projectedMembers, ...staffMembers.map(maskedTenantStaffMember)]});
       }
       return context.json({members: members.map(({email: _email, role: _role, staff: _staff, ...visible}) => Object.assign({}, visible, {
         displayName: isReservedTenantIdentityName(visible.displayName) ? "Orvex Support (member)" : visible.displayName,
@@ -1734,7 +1740,7 @@ export function createHttpApp(
       ),
     );
     if (tenantOrganization) {
-      return context.json({member: {id: member.id, status: member.status}});
+      return context.json({member: tenantMemberMutationResponse(member)});
     }
     return context.json({member: memberWithoutStaffFlag(member)});
   });
@@ -1751,7 +1757,7 @@ export function createHttpApp(
         ),
       );
       if (tenantOrganization) {
-        return context.json({member: {id: member.id, status: member.status}});
+        return context.json({member: tenantMemberMutationResponse(member)});
       }
       return context.json({member: memberWithoutStaffFlag(member)});
     });
@@ -3636,6 +3642,24 @@ function projectHttpTenantResponses<T extends {readonly items: readonly Artifact
   return {...page, items: page.items.map((item) => projectHttpTenantResponse(item, principal))};
 }
 
+/**
+ * The only fields a tenant sees for an Orvex staff row: an opaque handle, a
+ * fixed name and status. The web member schema treats the rest as optional.
+ */
+export function maskedTenantStaffMember(member: {readonly id: string; readonly status: InstallationMember["status"]}) {
+  return {displayName: "Orvex Support", id: member.id, staff: true, status: member.status};
+}
+
+/**
+ * A tenant member mutation result. Staff rows were already masked by the
+ * access service to their opaque handle; never echo their stored fields.
+ */
+export function tenantMemberMutationResponse(member: InstallationMember) {
+  if (member.staff === true) return maskedTenantStaffMember(member);
+  const displayName = isReservedTenantIdentityName(member.displayName) ? "Orvex Support (member)" : member.displayName;
+  return {displayName, id: member.id, status: member.status};
+}
+
 function memberWithoutStaffFlag<T extends {readonly staff?: boolean}>(member: T): Omit<T, "staff"> {
   const {staff: _staff, ...visible} = member;
   return visible;
@@ -4334,7 +4358,8 @@ function publicLinkMutationResponse(
   };
 }
 
-function registeredAgentResponse(agent: RegisteredAgentRecord, principal?: Principal) {
+/** One registered agent as the API returns it, masking staff agents in tenants. */
+export function registeredAgentResponse(agent: RegisteredAgentRecord, principal?: Principal) {
   const owner = tenantIdentityPresentation(principal, {displayName: agent.principalId, principalId: agent.principalId});
   const hideStaffAgentDetails = principal?.tenantStaffPrincipalIds !== undefined &&
     principal.staff !== true && principal.tenantStaffPrincipalIds.includes(agent.principalId);

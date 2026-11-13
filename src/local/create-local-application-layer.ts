@@ -1,4 +1,5 @@
 import {createHash, randomUUID, timingSafeEqual} from "node:crypto";
+import {emptyTenantStaffDefinition, type TenantStaffDefinition} from "../core/tenant-staff.js";
 
 import { DateTime, Effect, Layer, Redacted } from "effect";
 
@@ -172,6 +173,8 @@ export interface ApplicationAdapters {
   readonly identityRepository: IdentityRepository;
   readonly installationId: string;
   readonly organizationDirectoryVisibility?: boolean | undefined;
+  /** This tenant's Orvex staff definition, shared with org sync. */
+  readonly tenantStaff?: TenantStaffDefinition | undefined;
   readonly interactiveIdentityProvider: InteractiveIdentityProvider | null;
   readonly uploadUrlLifetimeMilliseconds?: number;
   /** Live optional-provider state used to guard project enablement. */
@@ -848,6 +851,7 @@ export function createApplicationLayer(
     installationId: adapters.installationId,
     staffHandleSecret: adapters.staffHandleSecret ?? Redacted.make(""),
     organizationDirectoryVisibility: adapters.organizationDirectoryVisibility,
+    tenantStaff: adapters.tenantStaff ?? emptyTenantStaffDefinition,
     localBootstrapCredential: adapters.localBootstrapCredential,
     localLoginAttemptLifetimeMilliseconds: 60 * 1_000,
     protectBootstrapAdministrator: adapters.protectBootstrapAdministrator,
