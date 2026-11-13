@@ -64,6 +64,7 @@ Keycloak-driven deactivation is automatically reversed when the member returns.
 
 Org installations currently reject provisioner and service-account tokens;
 use an admitted human's organization-scoped token.
+Git history is unavailable in non-Orvex organizations for now; if enabled later, its serializer still omits publisher IDs.
 
 ## Select storage
 
