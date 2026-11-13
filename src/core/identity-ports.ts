@@ -26,6 +26,7 @@ export interface AdmitMemberRecord {
   readonly id: string;
   readonly installationId: string;
   readonly role: InstallationMember["role"];
+  readonly staff?: boolean;
 }
 
 /** Values persisted when binding one external identity to a member. */
@@ -35,6 +36,7 @@ export interface BindExternalIdentityRecord {
   readonly memberId: string;
   readonly provider: string;
   readonly subject: string;
+  readonly identityProvider?: string | null;
 }
 
 /** Values persisted when creating one browser application session. */
@@ -75,6 +77,11 @@ export interface IdentityRepository {
     installationId: string,
     memberId: string,
     updatedAt: string,
+    manualDeactivation?: boolean,
+  ): Promise<InstallationMember>;
+  reactivateMember?(
+    installationId: string,
+    memberId: string,
   ): Promise<InstallationMember>;
   findActiveMemberByEmail(
     installationId: string,
@@ -166,6 +173,11 @@ export interface IdentityRepository {
     accessMode: ProjectAccessMode,
   ): Promise<void>;
   listMembers(installationId: string): Promise<readonly InstallationMember[]>;
+  /** Member ids whose only mirrored directory memberships are staff groups. */
+  listStaffOnlyMemberIds?(
+    installationId: string,
+    staffGroupIds: readonly string[],
+  ): Promise<readonly string[]>;
   revokeApiKey(
     installationId: string,
     keyId: string,
@@ -193,6 +205,38 @@ export interface IdentityRepository {
     updatedAt: string,
     recomputeFromCurrentGroups?: boolean,
   ): Promise<InstallationMember | null>;
+  /** Organization role changes serialize with directory reconciliation and
+   * refuse to revive a manually deactivated member. */
+  setOrganizationMemberRole?(
+    installationId: string,
+    memberId: string,
+    role: InstallationMember["role"],
+    updatedAt: string,
+  ): Promise<InstallationMember | null>;
+  /** Reconcile a complete Keycloak organization snapshot in one transaction. */
+  applyOrganizationMemberSnapshot?(
+    installationId: string,
+    entries: readonly {
+      readonly displayName: string;
+      readonly email: string;
+      readonly id: string;
+      readonly role: InstallationMember["role"];
+    }[],
+    updatedAt: string,
+    maximumDeactivations: number,
+  ): Promise<{
+    readonly admitted: number;
+    readonly deactivated: number;
+    readonly directoryUsers: number;
+    readonly groups: number;
+    readonly reactivated: number;
+    readonly roleChanged: number;
+    readonly skipped: number;
+    readonly unchanged: number;
+  }>;
+  setMemberStaff(installationId: string, memberId: string, staff: boolean): Promise<void>;
+  isMemberManuallyDeactivated?(installationId: string, email: string): Promise<boolean>;
+  listManuallyDeactivatedMemberEmails?(installationId: string, emails: readonly string[]): Promise<readonly string[]>;
 }
 
 /** Atomic first-key operation required by private-team composition roots. */

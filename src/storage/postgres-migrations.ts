@@ -954,6 +954,131 @@ const addProjectProvisionerAuditEvents = Effect.gen(function*() {
     ON project_provisioner_audit_events (installation_id, project_id, created_at DESC, id DESC)`);
 });
 
+const addOrganizationRegistry = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN slug TEXT,
+    ADD COLUMN display_name TEXT,
+    ADD COLUMN status TEXT,
+    ADD COLUMN route_id TEXT`);
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD CONSTRAINT artifact_installations_org_slug_check
+      CHECK (slug IS NULL OR slug ~ '^[a-z0-9][a-z0-9-]{1,38}$'),
+    ADD CONSTRAINT artifact_installations_org_status_check
+      CHECK (status IS NULL OR status IN ('active', 'suspended')),
+    ADD CONSTRAINT artifact_installations_org_route_id_check
+      CHECK (route_id IS NULL OR route_id ~ '^[a-z0-9]{8}$')`);
+  yield* sql.unsafe(`CREATE UNIQUE INDEX artifact_installations_slug_unique
+    ON artifact_installations (slug) WHERE slug IS NOT NULL`);
+  yield* sql.unsafe(`CREATE UNIQUE INDEX artifact_installations_route_id_unique
+    ON artifact_installations (route_id) WHERE route_id IS NOT NULL`);
+  yield* sql.unsafe(`DO $$
+    BEGIN
+      IF (SELECT COUNT(*) FROM artifact_installations) = 1 THEN
+        UPDATE artifact_installations SET slug = 'orvex', display_name = 'Orvex',
+          status = 'active', route_id = substr(
+            md5(random()::text || clock_timestamp()::text || id), 1, 8
+          );
+      END IF;
+    END
+    $$`);
+});
+
+const addOrganizationAdmissionPolicy = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN admission_policy JSONB`);
+});
+
+const addOrgTenancyIdentityFields = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE installation_members
+    ADD COLUMN IF NOT EXISTS manual_deactivation BOOLEAN NOT NULL DEFAULT FALSE`);
+  yield* sql.unsafe(`ALTER TABLE installation_members
+    ADD COLUMN IF NOT EXISTS suspended_by_org_at TIMESTAMPTZ`);
+  yield* sql.unsafe(`ALTER TABLE installation_members
+    ADD COLUMN IF NOT EXISTS pre_suspend_status TEXT`);
+  yield* sql.unsafe(`ALTER TABLE installation_members
+    ADD COLUMN IF NOT EXISTS pre_suspend_manual_deactivation BOOLEAN`);
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN keycloak_organization_id TEXT`);
+  yield* sql.unsafe(`CREATE UNIQUE INDEX artifact_installations_keycloak_org_unique
+    ON artifact_installations (keycloak_organization_id)
+    WHERE keycloak_organization_id IS NOT NULL`);
+  yield* sql.unsafe(`ALTER TABLE external_identities
+    ADD COLUMN identity_provider TEXT`);
+});
+
+const addOrganizationEmbedOrigins = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN IF NOT EXISTS embed_origins JSONB NOT NULL DEFAULT '[]'::jsonb`);
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN IF NOT EXISTS registry_version BIGINT NOT NULL DEFAULT 1`);
+  yield* sql.unsafe(`CREATE OR REPLACE FUNCTION bump_artifact_installation_registry_version()
+    RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      NEW.registry_version := OLD.registry_version + 1;
+      RETURN NEW;
+    END
+    $$`);
+  yield* sql.unsafe(`DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'artifact_installations_registry_version_trigger'
+          AND tgrelid = 'artifact_installations'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER artifact_installations_registry_version_trigger
+          BEFORE UPDATE ON artifact_installations
+          FOR EACH ROW EXECUTE FUNCTION bump_artifact_installation_registry_version();
+      END IF;
+    END
+    $$`);
+  yield* sql.unsafe(`DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'artifact_installations_embed_origins_check'
+          AND conrelid = 'artifact_installations'::regclass
+      ) THEN
+        ALTER TABLE artifact_installations
+          ADD CONSTRAINT artifact_installations_embed_origins_check
+          CHECK (jsonb_typeof(embed_origins) = 'array');
+      END IF;
+    END
+    $$`);
+});
+
+const addPlatformSessions = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE installation_members ADD COLUMN staff BOOLEAN NOT NULL DEFAULT FALSE`);
+  yield* sql.unsafe(`CREATE TABLE artifact_platform_sessions (
+    token_digest TEXT PRIMARY KEY,
+    organizations_json JSONB NOT NULL,
+    last_org TEXT,
+    identity_json JSONB NOT NULL,
+    provider TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  )`);
+  yield* sql.unsafe(`CREATE INDEX artifact_platform_sessions_expiry
+    ON artifact_platform_sessions (expires_at)`);
+  yield* sql.unsafe(`CREATE TABLE installation_member_staff_audit (
+    id BIGSERIAL PRIMARY KEY,
+    installation_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    member_email TEXT NOT NULL,
+    actor TEXT NOT NULL CHECK (actor = 'operator_cli'),
+    action TEXT NOT NULL CHECK (action = 'clear_staff'),
+    created_at TEXT NOT NULL
+  )`);
+  yield* sql.unsafe(`CREATE INDEX installation_member_staff_audit_recent
+    ON installation_member_staff_audit (installation_id, created_at DESC, id DESC)`);
+});
+
 const postgresMigrations = {
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -984,6 +1109,11 @@ const postgresMigrations = {
   "0027_guest_role_rule_backfill": addGuestRoleRuleBackfill,
   "0028_project_principal_creator": addProjectPrincipalCreator,
   "0029_project_provisioner_audit_events": addProjectProvisionerAuditEvents,
+  "0030_organization_registry": addOrganizationRegistry,
+  "0031_organization_admission_policy": addOrganizationAdmissionPolicy,
+  "0032_org_tenancy_identity_fields": addOrgTenancyIdentityFields,
+  "0033_platform_sessions": addPlatformSessions,
+  "0034_organization_embed_origins": addOrganizationEmbedOrigins,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

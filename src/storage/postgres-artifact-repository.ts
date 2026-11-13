@@ -3650,6 +3650,19 @@ export class PostgresArtifactRepository implements
     }));
   }
 
+  async findAgentsByIds(installationId: string, agentIds: readonly string[]): Promise<readonly RegisteredAgentRecord[]> {
+    this.#assertInstallationScope(installationId);
+    if (agentIds.length === 0) return [];
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(
+        `${registeredAgentColumns} WHERE agent.installation_id = $1 AND agent.id = ANY($2::text[])`,
+        [installationId, [...agentIds]],
+      );
+      return z.array(registeredAgentRowSchema).parse(rows);
+    }));
+  }
+
   createDispatch(command: CreateAgentDispatch): Promise<AgentDispatchCreation> {
     this.#assertInstallationScope(command.installationId);
     const installationId = this.#installationId;

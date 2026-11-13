@@ -18,15 +18,25 @@ export interface WorkOsIdentityProviderConfig {
 export class WorkOsIdentityProvider implements InteractiveIdentityProvider {
   readonly name = "workos";
   readonly #clientId: string;
+  readonly #apiKey: Redacted.Redacted;
   readonly #redirectUri: string;
   readonly #workos: WorkOS;
 
   constructor(config: WorkOsIdentityProviderConfig) {
     this.#clientId = config.clientId;
+    this.#apiKey = config.apiKey;
     this.#redirectUri = config.redirectUri;
     this.#workos = new WorkOS({
       apiKey: Redacted.value(config.apiKey),
       clientId: config.clientId,
+    });
+  }
+
+  forApplicationOrigin(origin: string): WorkOsIdentityProvider {
+    return new WorkOsIdentityProvider({
+      apiKey: this.#apiKey,
+      clientId: this.#clientId,
+      redirectUri: applicationCallbackUri(origin),
     });
   }
 
@@ -74,6 +84,12 @@ export class WorkOsIdentityProvider implements InteractiveIdentityProvider {
       catch: () => providerFailure(),
     });
   }
+}
+
+function applicationCallbackUri(origin: string): string {
+  const url = new URL(origin);
+  url.pathname = `${url.pathname.replace(/\/$/u, "")}/auth/callback`;
+  return url.toString();
 }
 
 interface WorkOsUserName {

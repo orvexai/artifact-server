@@ -3,7 +3,7 @@ import {createHash} from "node:crypto";
 import {Clock, Duration, Effect, Fiber, Schedule} from "effect";
 
 import type {BlobStore} from "../core/ports.js";
-import type {ArtifactVersion} from "../core/model.js";
+import type {ArtifactVersion, VersionRecord} from "../core/model.js";
 import {
   defaultGitHistoryMaximumCopiedFiles,
   type GitHistoryCapabilityReader,
@@ -72,7 +72,7 @@ export interface GitHistoryCommitRequest {
     readonly installationId: string;
     readonly manifestDigest: string;
     readonly projectId: string;
-    readonly publisherPrincipalId: string;
+    readonly publisherPrincipalId?: string;
     readonly versionId: string;
     readonly versionNumber: number;
   };
@@ -164,6 +164,7 @@ export interface GitHistoryMirrorWorkerDependencies {
   readonly blobs: BlobStore;
   readonly capability: GitHistoryCapabilityReader;
   readonly installationId: string;
+  readonly includePublisherPrincipalId?: boolean | undefined;
   readonly provider: GitHistoryProvider;
   readonly store: GitHistoryMirrorStore;
 }
@@ -335,21 +336,16 @@ const processJob = Effect.fn("GitHistoryMirrorWorker.processJob")(function*(
   const adopted = yield* Effect.tryPromise(() =>
     dependencies.provider.lookupCommit(repositoryCoordinates, versionId)
   );
-  const commit = adopted ?? (yield* Effect.tryPromise(() =>
+    const metadata = gitHistoryVersionMetadata(
+      version.version,
+      dependencies.installationId,
+      dependencies.includePublisherPrincipalId !== false,
+    );
+    const commit = adopted ?? (yield* Effect.tryPromise(() =>
     dependencies.provider.commitVersion({
       coordinates: repositoryCoordinates,
       files: plan.files,
-      metadata: {
-        artifactId: version.version.artifactId,
-        createdAt: version.version.createdAt,
-        entryPath: version.version.entryPath,
-        installationId: dependencies.installationId,
-        manifestDigest: version.version.manifestDigest,
-        projectId: version.version.projectId,
-        publisherPrincipalId: version.version.publisherPrincipalId,
-        versionId: version.version.id,
-        versionNumber: version.version.number,
-      },
+        metadata,
       pointers: plan.pointers,
     })
   ));
@@ -464,6 +460,28 @@ export function gitHistoryMetadataFiles(
       path: ".artifactserver/pointers.json",
     },
   ];
+}
+
+/** Build the immutable public metadata shape for a provider commit. */
+export function gitHistoryVersionMetadata(
+  version: Pick<VersionRecord, "artifactId" | "createdAt" | "entryPath" | "id" | "manifestDigest" | "projectId" | "number" | "publisherPrincipalId">,
+  installationId: string,
+  includePublisherPrincipalId = true,
+): GitHistoryCommitRequest["metadata"] {
+  const metadata: GitHistoryCommitRequest["metadata"] = {
+    artifactId: version.artifactId,
+    createdAt: version.createdAt,
+    entryPath: version.entryPath,
+    installationId,
+    manifestDigest: version.manifestDigest,
+    projectId: version.projectId,
+    versionId: version.id,
+    versionNumber: version.number,
+  };
+  if (includePublisherPrincipalId) {
+    return {...metadata, publisherPrincipalId: version.publisherPrincipalId ?? ""};
+  }
+  return metadata;
 }
 
 async function readExactBytes(

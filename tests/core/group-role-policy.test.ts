@@ -2,7 +2,9 @@ import {describe, expect, test} from "vitest";
 
 import {
   type GroupRoleAssignment,
+  groupRoleEditAllowed,
   groupMembershipRole,
+  groupRoleSeedMarksStaff,
 } from "../../src/core/group-role-policy.js";
 import type {MembershipRole} from "../../src/core/identity.js";
 
@@ -29,6 +31,15 @@ const assignments = [
 ];
 
 describe("stored group roles", () => {
+  test("tenant role edits are owner-only and staff groups stay protected", () => {
+    const staffSeed = [{role: "member" as const, selector: "/Tenant/Support", staff: true}];
+    expect(groupRoleEditAllowed("administrator", true)).toBe(false);
+    expect(groupRoleEditAllowed("owner", true)).toBe(true);
+    expect(groupRoleEditAllowed("owner", false)).toBe(false);
+    expect(groupRoleSeedMarksStaff({name: "Support", path: "/Tenant/Support"}, staffSeed)).toBe(true);
+    expect(groupRoleSeedMarksStaff({name: "Support", path: "/Tenant/Customer/Support"}, staffSeed)).toBe(false);
+  });
+
   test("the strongest role among a person's groups wins", () => {
     expect(groupMembershipRole(assignments, ["Developers", "Administrators"]))
       .toBe("owner");
@@ -43,6 +54,16 @@ describe("stored group roles", () => {
     expect(groupMembershipRole(assignments, ["/temporal/default:read"]))
       .toBe("viewer");
     expect(groupMembershipRole(assignments, ["/Administrators"])).toBe("owner");
+  });
+
+  test("organization group roots admit only reported full paths beneath the configured root", () => {
+    const organizationAssignments = [assignment("/org-b/admins", "administrator")];
+    expect(groupMembershipRole(organizationAssignments, ["/org-a/admins"], ["/org-b/"]))
+      .toBeNull();
+    expect(groupMembershipRole(organizationAssignments, ["admins"], ["/org-b/"]))
+      .toBeNull();
+    expect(groupMembershipRole(organizationAssignments, ["/org-b/admins"], ["/org-b/"]))
+      .toBe("administrator");
   });
 
   test("a name another group shares never stands for the group that has the role", () => {

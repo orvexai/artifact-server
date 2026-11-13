@@ -15,7 +15,7 @@ import {
   type BlobStorageFailure,
   VersionNotFound,
 } from "../core/errors.js";
-import type { Principal } from "../core/identity.js";
+import {tenantVersionRecord, type Principal} from "../core/identity.js";
 import type {
   ArtifactRecord,
   ArtifactVersion,
@@ -230,10 +230,10 @@ function makeCompareArtifactService(
         added: structural.added,
         artifact,
         changed,
-        from: from.version,
+        from: tenantVersionRecord(command.principal, from.version),
         removed: structural.removed,
         renamed: structural.renamed,
-        to: to.version,
+        to: tenantVersionRecord(command.principal, to.version),
         unchangedCount: structural.unchanged.length,
       };
     },

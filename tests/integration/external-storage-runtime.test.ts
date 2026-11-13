@@ -1228,6 +1228,14 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         installationId: scopedInstallation,
         role: "member",
       });
+      await repository.bindExternalIdentity({
+        boundAt: firstSyncAt,
+        email: "tenant-staff@example.test",
+        identityProvider: provider,
+        memberId: "tenant-staff-member",
+        provider,
+        subject: "tenant-staff-subject",
+      });
 
       const explicitBefore = (await repository.listGroupRoles(scopedInstallation))
         .find(({groupId}) => groupId === "smoketest");
@@ -1252,6 +1260,10 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       expect(membersAfterFirst).toContainEqual({
         email: "tenant-staff@example.test", role: "member", status: "active",
       });
+      expect(await repository.listStaffOnlyMemberIds(scopedInstallation, ["tenant-staff"]))
+        .toEqual(["tenant-staff-member"]);
+      expect(await repository.listStaffOnlyMemberIds(scopedInstallation, ["smoketest", "tenant-staff"]))
+        .toEqual(["tenant-staff-member"]);
       expect(firstRuleSync.roleChanged).toBe(1);
 
       const markerRows = await database.run(Effect.gen(function*() {
@@ -1763,6 +1775,26 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       problems: [{code: "blob_missing"}],
       status: "corrupt",
     });
+  });
+
+  test("external-storage integrity errors include the object-storage failure detail", async () => {
+    let factoryCloseCount = 0;
+    const configuration = {
+      databaseUrl: Redacted.make(environment.databaseUrl),
+      installationId: `external-integrity-error-${randomUUID()}`,
+      objectStorage: {
+        close: async () => { factoryCloseCount += 1; },
+        create: () => { throw new Error("S3 credentials were rejected"); },
+        kind: "s3" as const,
+      },
+    };
+
+    await expect(checkExternalStorageIntegrity(configuration)).rejects.toMatchObject({
+      detail: "S3 credentials were rejected",
+      message: "Object storage could not be inspected.",
+      provider: "s3",
+    });
+    expect(factoryCloseCount).toBe(1);
   });
 
   test("external-storage foundation: logical Postgres and object backups restore stable IDs and bytes", async () => {

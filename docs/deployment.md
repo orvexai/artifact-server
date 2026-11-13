@@ -27,6 +27,45 @@ Each remote deployment needs these boundaries:
 
 The application origin serves Artifact Server, its API, and its MCP endpoint. The content domain serves untrusted artifact files.
 
+### Roll out configured organizations
+
+Organization tenancy is configured on one Artifact Server installation and
+routed by `/o/<slug>`. Configure the Keycloak OIDC client's valid redirect URI
+pattern as `https://<application-host>/o/*` so each non-Orvex organization's
+browser callback at `/o/<slug>/auth/callback` is accepted. Keep the exact
+`https://<application-host>/auth/callback` URI registered for Orvex and existing
+clients; Orvex continues using that legacy callback.
+
+Each non-Orvex organization has separate protected-resource URLs and token
+audiences: `https://<application-host>/o/<slug>/api` for the HTTP API and
+`https://<application-host>/o/<slug>/mcp` for MCP. Orvex keeps its
+configured API resource override, or the legacy `<application-origin>/api`
+and `<application-origin>/mcp` defaults. Configure the matching Keycloak
+audience mapper for each organization's resources before enabling its OAuth
+admission policy.
+
+Run `artifact-server org sync` (or the `maintenance org-sync --once` CronJob
+path) to discover organizations and reconcile each organization's members.
+The sync command reports disappeared organizations but never deletes or
+suspends them. An enabled organization with zero members is reported as
+`emptied` and makes the command exit non-zero to raise an alert. Investigate
+the Keycloak membership first; when suspension is intended, run
+`artifact-server org suspend <slug> --yes`. This deactivates every member,
+revokes their sessions and human API keys, and suspends its route. Suspension
+is reversible only with `artifact-server org resume <slug>`, which restores
+members to their prior active/inactive and manual-deactivation state, then
+immediately reads the current Keycloak membership and roles. If that sync
+fails, the organization remains resumed with members at their restored
+statuses; investigate the reported error and rerun `artifact-server org sync`.
+Resume does not restore browser sessions or API keys revoked by suspension;
+affected members must sign in again and any required API keys must be reissued.
+Artifact Server administrator deactivations are sticky; only a
+Keycloak-driven deactivation is automatically reversed when the member returns.
+
+Org installations currently reject provisioner and service-account tokens;
+use an admitted human's organization-scoped token.
+Git history is unavailable in non-Orvex organizations for now; if enabled later, its serializer still omits publisher IDs ([ADR 0031](../project/spec/decisions/0031-no-git-history-in-tenant-orgs.md)).
+
 ## Select storage
 
 Compact Compose uses one SQLite database and one file volume. Run only one application process with this data layer.

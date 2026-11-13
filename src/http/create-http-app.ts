@@ -86,7 +86,7 @@ import {
   isArtifactServerFailure,
   VersionNotFound,
 } from "../core/errors.js";
-import type { IssuedApplicationSession } from "../core/installation-identity.js";
+import type {ExternalIdentity, InstallationMember, IssuedApplicationSession} from "../core/installation-identity.js";
 import {
   browserAccessModes,
   type BrowserAccess,
@@ -95,6 +95,9 @@ import {
   isAdministratorRole,
   membershipRoles,
   principalCapabilities,
+  isReservedTenantIdentityName,
+  tenantVisiblePrincipalId,
+  tenantIdentityPresentation,
   type Principal,
 } from "../core/identity.js";
 import {
@@ -151,6 +154,7 @@ import {
 } from "../manifest/create-manifest.js";
 import {createMcpHttpAdapter} from "../mcp/create-mcp-http-adapter.js";
 import {
+  applicationPathUrl,
   artifactBrowserUrl,
   artifactReviewUrl,
   contentBootstrapBrowserUrl,
@@ -553,6 +557,20 @@ export interface HttpAppDependencies {
   readonly browserAccess: BrowserAccess;
   readonly completedRequestLogSampleRate: number;
   readonly contentDomain: string;
+  /** Reject malformed content-domain hosts before they can reach app routes. */
+  readonly contentHostRoutingEnabled?: boolean;
+  readonly contentTokenPrefix?: string | undefined;
+  readonly installationId?: string;
+  /** Transitional compatibility for pre-slice-4 bindings, Orvex only. */
+  readonly allowLegacyEmbedBinding?: boolean;
+  readonly legacyEmbedBindingExpiresAt?: number;
+  /** Suffix scoped to one configured organization on the shared app host. */
+  readonly organizationCookieSuffix?: string;
+  /** Keycloak organization bound to this installation for token admission. */
+  readonly organizationAdmission?: {readonly alias: string; readonly id: string};
+  readonly organizationSlug?: string | undefined;
+  /** Creates a shared root-platform session after a verified interactive sign-in. */
+  readonly issuePlatformSession?: (identity: ExternalIdentity, existingToken?: string | null) => Promise<string>;
   readonly embedOrigins?: readonly string[];
   readonly embedBindingSecret?: Redacted.Redacted | undefined;
   readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
@@ -600,6 +618,8 @@ export interface McpOAuthResourceConfiguration {
  */
 export interface DiscoveredOAuthResources {
   readonly current: () => DiscoveredOAuthState;
+  /** The `<origin>/api` resource, known before discovery. */
+  readonly apiResource: string;
   /** The `<origin>/mcp` resource, known before discovery, naming its metadata route. */
   readonly mcpResource: string;
   /** Ask for a discovery attempt now; joins or skips one that is running or just ran. */
@@ -667,17 +687,20 @@ export function createHttpApp(
   const gitHistory = dependencies.gitHistory ?? fixedGitHistoryCapabilityReader(
     disabledGitHistoryCapability(),
   );
-  const mcp = createMcpHttpAdapter({
+  const mcpDependencies = Object.assign({
     allowedHostnames: mcpAllowedHostnames,
     allowedOriginHostnames: mcpAllowedHostnames,
     applicationOrigin: dependencies.trustedApplicationOrigin,
     applicationRuntime: dependencies.applicationRuntime,
     contentDomain: dependencies.contentDomain,
+    organizationTenancy: dependencies.organizationAdmission !== undefined,
+    contentTokenPrefix: dependencies.contentTokenPrefix,
     gitHistory,
     linkedArtifacts: dependencies.linkedArtifacts === true,
-    mode: dependencies.trustedApplicationOrigin === null ? "local" : "remote",
+    mode: dependencies.trustedApplicationOrigin === null ? "local" as const : "remote" as const,
     oauthResource: () => currentMcpOAuthResource(dependencies)?.resource ?? null,
-  });
+  }, dependencies.organizationSlug === undefined ? {} : {organizationSlug: dependencies.organizationSlug});
+  const mcp = createMcpHttpAdapter(mcpDependencies);
   const boundedJsonBody = bodyLimit({
     maxSize: maximumJsonRequestBytes,
     onError: (context) =>
@@ -722,8 +745,9 @@ export function createHttpApp(
 
   const discoveredOAuth = dependencies.discoveredOAuth;
   if (discoveredOAuth !== undefined) {
+    const discoveredApiPath = protectedResourceMetadataPath(discoveredOAuth.apiResource);
     const discoveringMetadataPaths = new Set([
-      apiProtectedResourceMetadataPath,
+      discoveredApiPath,
       authorizationServerMetadataPath,
       protectedResourceMetadataPath(discoveredOAuth.mcpResource),
     ]);
@@ -843,12 +867,19 @@ export function createHttpApp(
 
   app.use("*", async (context, next) => {
     const requestUrl = new URL(context.req.url);
+    const isContentDomain = isContentDomainHost(requestUrl.hostname, dependencies.contentDomain);
     const contentToken = tokenFromContentHost(
       requestUrl.hostname,
       dependencies.contentDomain,
     );
+    if (dependencies.contentHostRoutingEnabled === true && isContentDomain) {
+      if (
+        contentToken === null ||
+        (context.req.method !== "GET" && context.req.method !== "HEAD")
+      ) return context.notFound();
+    }
     if (contentToken !== null) {
-      if (isPreviewLeaseToken(contentToken)) {
+      if (isPreviewLeaseToken(contentToken, dependencies.contentTokenPrefix)) {
         return servePreviewLeaseContent(
           context,
           requestUrl,
@@ -868,7 +899,7 @@ export function createHttpApp(
       // current bytes to authenticated local members and never serves any
       // immutable version route. Everywhere the capability is absent the
       // application service answers the stable capability-unavailable shape.
-      if (isLiveContentToken(contentToken)) {
+      if (isLiveContentToken(contentToken, dependencies.contentTokenPrefix)) {
         return serveLiveContent(
           context,
           contentToken,
@@ -1093,8 +1124,9 @@ export function createHttpApp(
     const issued = exchangeResult;
     if (issued === null) return context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404);
     const secure = usesSecureApplicationCookies(dependencies);
-    const sessionName = secure ? secureGuestSessionCookie : guestSessionCookie;
-    const csrfName = secure ? secureGuestCsrfCookie : guestCsrfCookie;
+    const suffix = dependencies.organizationCookieSuffix ?? "";
+    const sessionName = `${secure ? secureGuestSessionCookie : guestSessionCookie}${suffix}`;
+    const csrfName = `${secure ? secureGuestCsrfCookie : guestCsrfCookie}${suffix}`;
     const expires = new Date(issued.expiresAt);
     setCookie(context, sessionName, Redacted.value(issued.sessionToken), {expires, httpOnly: true, maxAge: 7 * 24 * 60 * 60, path: "/", sameSite: "Strict", secure});
     setCookie(context, csrfName, issued.csrfToken, {expires, httpOnly: false, maxAge: 7 * 24 * 60 * 60, path: "/", sameSite: "Strict", secure});
@@ -1126,14 +1158,14 @@ export function createHttpApp(
       after: encodePageCursor(decodePageCursor(query.after)), guest, limit: query.limit,
       questionId: query.questionId ?? null, versionId: query.versionId ?? null,
     })));
-    return context.json(page);
+    return context.json(await projectGuestResponses(context, dependencies, page));
   });
 
   app.get("/api/v1/public/artifacts/:artifactId/guest/responses/:responseId", async (context) => {
     const guest = await requireGuestReviewer(context, dependencies, false);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const response = await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((service) => service.guestGetResponse({guest, responseId: context.req.param("responseId")})));
-    return response === null ? guestNotFound(context) : context.json(response);
+    return response === null ? guestNotFound(context) : context.json(await projectGuestResponse(context, dependencies, response));
   });
 
   app.post("/api/v1/public/artifacts/:artifactId/guest/responses", boundedJsonBody, async (context) => {
@@ -1144,7 +1176,7 @@ export function createHttpApp(
       choice: body.choice ?? null, data: body.data ?? null, guest,
       questionId: body.questionId, versionId: body.versionId,
     })));
-    return context.json(response, 201);
+    return context.json(await projectGuestResponse(context, dependencies, response), 201);
   });
 
   app.get("/api/v1/public/artifacts/:artifactId/guest/comments", async (context) => {
@@ -1157,7 +1189,7 @@ export function createHttpApp(
         since: query.since ?? null, state: query.state ?? null,
         versionId: query.versionId ?? null,
       })));
-    return context.json(guestThreadPageResponse(responseApplicationUrl(context, dependencies), page, guest));
+    return context.json(guestThreadPageResponse(responseApplicationUrl(context, dependencies), page, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies)));
   });
 
   app.get("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", async (context) => {
@@ -1165,7 +1197,7 @@ export function createHttpApp(
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const details = await runHttpApplicationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestGetThread({guest, threadId: context.req.param("threadId")})));
-    return context.json(guestThreadDetailsResponse(responseApplicationUrl(context, dependencies), details, guest));
+    return context.json(guestThreadDetailsResponse(responseApplicationUrl(context, dependencies), details, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies)));
   });
 
   app.post("/api/v1/public/artifacts/:artifactId/guest/comments", boundedJsonBody, async (context) => {
@@ -1178,7 +1210,7 @@ export function createHttpApp(
         idempotencyKey: requiredIdempotencyKey(context.req.header("idempotency-key")),
         versionId: body.versionId,
       })));
-    return context.json({replayed: created.replayed, thread: guestThreadResponse(responseApplicationUrl(context, dependencies), created.thread, guest)}, 201);
+    return context.json({replayed: created.replayed, thread: guestThreadResponse(responseApplicationUrl(context, dependencies), created.thread, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies))}, 201);
   });
 
   app.post("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies", boundedJsonBody, async (context) => {
@@ -1187,7 +1219,7 @@ export function createHttpApp(
     const body = createCommentReplySchema.parse(await context.req.json());
     const created = await runHttpApplicationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestCreateReply({guest, threadId: context.req.param("threadId"), body: body.body, idempotencyKey: requiredIdempotencyKey(context.req.header("idempotency-key"))})));
-    return context.json({replayed: created.replayed, reply: guestReplyResponse(created.reply, guest)}, 201);
+    return context.json({replayed: created.replayed, reply: guestReplyResponse(created.reply, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies))}, 201);
   });
 
   app.patch("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", boundedJsonBody, async (context) => {
@@ -1200,7 +1232,7 @@ export function createHttpApp(
     if (body.body !== undefined) update.body = body.body;
     const thread = await runHttpApplicationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestUpdateThread({guest, threadId: context.req.param("threadId"), ...update})));
-    return context.json({thread: guestThreadResponse(responseApplicationUrl(context, dependencies), thread, guest)});
+    return context.json({thread: guestThreadResponse(responseApplicationUrl(context, dependencies), thread, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies))});
   });
 
   app.delete("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", async (context) => {
@@ -1218,7 +1250,7 @@ export function createHttpApp(
       ArtifactCommentService.use((comments) => comments.guestUpdateReply({
         guest, threadId: context.req.param("threadId"), replyId: context.req.param("replyId"), body: body.body,
       })));
-    return context.json({reply: guestReplyResponse(reply, guest)});
+    return context.json({reply: guestReplyResponse(reply, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies))});
   });
 
   app.delete("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId", async (context) => {
@@ -1330,7 +1362,12 @@ export function createHttpApp(
     context.json({status: "ok" as const}),
   );
 
-  app.get(apiProtectedResourceMetadataPath, (context) => {
+  const apiMetadataPath = dependencies.apiOAuthResource === undefined
+    ? dependencies.discoveredOAuth === undefined
+      ? apiProtectedResourceMetadataPath
+      : protectedResourceMetadataPath(dependencies.discoveredOAuth.apiResource)
+    : protectedResourceMetadataPath(dependencies.apiOAuthResource.resource);
+  app.get(apiMetadataPath, (context) => {
     const apiOAuth = currentApiOAuthResource(dependencies);
     if (apiOAuth === undefined) return context.notFound();
     return context.json({
@@ -1492,23 +1529,89 @@ export function createHttpApp(
   });
 
   app.get("/auth/callback", async (context) => {
-    const query = interactiveCallbackSchema.parse(context.req.query());
-    const handshake = getCookie(
-      context,
-      applicationCookieNames(dependencies).handshake,
-    ) ?? null;
-    const completed = await runHttpApplicationEffect(
-      context,
-      dependencies,
-      InteractiveLoginService.use((login) =>
-        login.complete({...query, handshake})
-      ),
-    );
-    clearLoginHandshakeCookie(context, dependencies);
-    setApplicationSessionCookies(context, dependencies, completed.issued);
-    context.header("Cache-Control", "private, no-store");
-    context.header("Referrer-Policy", "no-referrer");
-    return context.redirect(completed.returnTo, 303);
+    try {
+      const query = interactiveCallbackSchema.parse(context.req.query());
+      const handshake = getCookie(
+        context,
+        applicationCookieNames(dependencies).handshake,
+      ) ?? null;
+      const returnTo = await runHttpApplicationEffect(
+        context,
+        dependencies,
+        InteractiveLoginService.use((login) => login.completeIdentity({...query, handshake})),
+      );
+      if (returnTo.returnTo === "/__artifact_platform_login?returnTo=%2F" && dependencies.issuePlatformSession !== undefined) {
+        const platformToken = await dependencies.issuePlatformSession(returnTo.identity, getCookie(context, "__Host-artifact_platform"));
+        setCookie(context, "__Host-artifact_platform", platformToken, {
+          httpOnly: true, maxAge: 60 * 60, path: "/", sameSite: "Lax", secure: true,
+        });
+        context.header("Cache-Control", "private, no-store");
+        context.header("Referrer-Policy", "no-referrer");
+        clearLoginHandshakeCookie(context, dependencies);
+        return context.redirect("/", 303);
+      }
+      const completed = await runHttpApplicationEffect(
+        context,
+        dependencies,
+        InstallationAccessService.use((access) => access.completeExternalIdentity(returnTo.identity)),
+      );
+      setApplicationSessionCookies(context, dependencies, completed);
+      context.header("Cache-Control", "private, no-store");
+      context.header("Referrer-Policy", "no-referrer");
+      clearLoginHandshakeCookie(context, dependencies);
+      return context.redirect(returnTo.returnTo === "/__artifact_platform_login?returnTo=%2F"
+        ? "/api/v1/session"
+        : returnTo.returnTo, 303);
+    } catch (error) {
+      clearLoginHandshakeCookie(context, dependencies);
+      if (error instanceof Error && isArtifactServerFailure(error)) {
+        const response = httpFailure(error);
+        if (response.status >= 500) {
+          await logAdapterFailure(
+            dependencies.applicationRuntime,
+            context.get("requestId"),
+            error._tag,
+            "request",
+          );
+        }
+        const headers = new Headers();
+        if (response.status === 401) {
+          headers.set("Cache-Control", "private, no-store");
+        }
+        if (error._tag === "AuthenticationRequired") {
+          headers.set(
+            "WWW-Authenticate",
+            apiBearerChallenge(context, dependencies),
+          );
+        }
+        for (const cookie of context.res.headers.getSetCookie()) {
+          headers.append("Set-Cookie", cookie);
+        }
+        return Response.json(
+          {error: {code: response.code, message: response.message}},
+          {
+            headers,
+            status: response.status,
+          },
+        );
+      }
+      if (error instanceof z.ZodError) {
+        return context.json({error: {
+          code: errorCodes.invalidInput,
+          message: "The request does not match the API contract.",
+        }}, 422);
+      }
+      await logAdapterFailure(
+        dependencies.applicationRuntime,
+        context.get("requestId"),
+        "UnhandledError",
+        error instanceof Error ? error.name : "unknown",
+      );
+      return context.json({error: {
+        code: "INTERNAL_ERROR",
+        message: "The server could not complete the request.",
+      }}, 500);
+    }
   });
 
   app.get("/api/v1/session", (context) =>
@@ -1518,7 +1621,10 @@ export function createHttpApp(
         gitHistory: gitHistory.read(),
         linkedArtifacts: dependencies.linkedArtifacts === true,
       },
-      principal: context.get("principal"),
+      principal: (() => {
+        const {staff: _staff, tenantStaffPrincipalIds: _staffIds, ...principal} = context.get("principal");
+        return principal;
+      })(),
     }));
 
   app.post("/api/v1/session/logout", async (context) => {
@@ -1547,7 +1653,9 @@ export function createHttpApp(
       listDirectoryGroups(principal),
     );
     const privilegedHuman = principal.kind === "human" && isAdministratorRole(principal.membershipRole);
-    if (!privilegedHuman) return context.json({groups: groups.map(({hasHigherRoleOverlap: _overlap, ...visible}) => visible)});
+    if (!privilegedHuman) {
+      return context.json({groups: groups.map(({hasHigherRoleOverlap: _overlap, ...visible}) => visible)});
+    }
     const roles = await runHttpApplicationEffect(context, dependencies,
       InstallationAccessService.use((access) => access.listGroupRoles()));
     const roleByGroup = new Map(roles.map(({groupId, role}) => [groupId, role]));
@@ -1572,6 +1680,8 @@ export function createHttpApp(
   });
 
   app.get("/api/v1/members", async (context) => {
+    const principal = context.get("principal");
+    const tenantOrganization = dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex";
     const members = await runHttpApplicationEffect(
       context,
       dependencies,
@@ -1579,7 +1689,19 @@ export function createHttpApp(
         access.listMembers(context.get("principal"))
       ),
     );
-    return context.json({members});
+    if (tenantOrganization) {
+      if (principal.kind === "human") {
+        const projectedMembers = projectTenantMembers(members, principal.membershipRole);
+        if (principal.membershipRole !== membershipRoles.owner) return context.json({members: projectedMembers});
+        const staffMembers = await runHttpApplicationEffect(context, dependencies,
+          InstallationAccessService.use((access) => access.listStaffOnlyMembers()));
+        return context.json({members: [...projectedMembers, ...staffMembers.map(({id, status}) => ({id, displayName: "Orvex Support", status}))]});
+      }
+      return context.json({members: members.map(({email: _email, role: _role, staff: _staff, ...visible}) => Object.assign({}, visible, {
+        displayName: isReservedTenantIdentityName(visible.displayName) ? "Orvex Support (member)" : visible.displayName,
+      }))});
+    }
+    return context.json({members: members.map(({staff: _staff, ...visible}) => visible)});
   });
 
   app.post("/api/v1/members", boundedJsonBody, async (context) => {
@@ -1596,10 +1718,11 @@ export function createHttpApp(
         })
       ),
     );
-    return context.json({member}, 201);
+    return context.json({member: memberWithoutStaffFlag(member)}, 201);
   });
 
   app.post("/api/v1/members/:memberId/deactivate", async (context) => {
+    const tenantOrganization = dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex";
     const member = await runHttpApplicationEffect(
       context,
       dependencies,
@@ -1610,8 +1733,29 @@ export function createHttpApp(
         )
       ),
     );
-    return context.json({member});
+    if (tenantOrganization) {
+      return context.json({member: {id: member.id, status: member.status}});
+    }
+    return context.json({member: memberWithoutStaffFlag(member)});
   });
+
+  if (dependencies.organizationAdmission !== undefined) {
+    app.post("/api/v1/members/:memberId/reactivate", async (context) => {
+      const tenantOrganization = dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex";
+      const member = await runHttpApplicationEffect(
+        context,
+        dependencies,
+        InstallationAccessService.use((access) =>
+          access.reactivateMember?.(context.get("principal"), context.req.param("memberId"))
+            ?? Effect.fail(new AuthorizationDenied({message: "Member reactivation is unavailable."}))
+        ),
+      );
+      if (tenantOrganization) {
+        return context.json({member: {id: member.id, status: member.status}});
+      }
+      return context.json({member: memberWithoutStaffFlag(member)});
+    });
+  }
 
   app.get("/api/v1/api-keys", async (context) => {
     const apiKeys = await runHttpApplicationEffect(
@@ -1621,7 +1765,11 @@ export function createHttpApp(
         access.listApiKeys(context.get("principal"))
       ),
     );
-    return context.json({apiKeys});
+    const principal = context.get("principal");
+    return context.json({apiKeys: principal.tenantStaffPrincipalIds === undefined ? apiKeys : apiKeys.map((key) => Object.assign({}, key, {
+      principalId: tenantVisiblePrincipalId(principal, key.principalId),
+      authorizedByPrincipalId: key.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, key.authorizedByPrincipalId),
+    }))});
   });
 
   app.post("/api/v1/api-keys", boundedJsonBody, async (context) => {
@@ -1647,7 +1795,11 @@ export function createHttpApp(
         access.issueApiKey(issueCommand)
       ),
     );
-    return context.json(issued, 201);
+    const principal = context.get("principal");
+    return context.json(principal.tenantStaffPrincipalIds === undefined ? issued : Object.assign({}, issued, {apiKey: Object.assign({}, issued.apiKey, {
+      principalId: tenantVisiblePrincipalId(principal, issued.apiKey.principalId),
+      authorizedByPrincipalId: issued.apiKey.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, issued.apiKey.authorizedByPrincipalId),
+    })}), 201);
   });
 
   app.post("/api/v1/api-keys/:keyId/revoke", async (context) => {
@@ -1661,7 +1813,11 @@ export function createHttpApp(
         )
       ),
     );
-    return context.json({apiKey});
+    const principal = context.get("principal");
+    return context.json({apiKey: principal.tenantStaffPrincipalIds === undefined ? apiKey : Object.assign({}, apiKey, {
+      principalId: tenantVisiblePrincipalId(principal, apiKey.principalId),
+      authorizedByPrincipalId: apiKey.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, apiKey.authorizedByPrincipalId),
+    })});
   });
 
   app.post("/api/v1/api-keys/:keyId/rotate", async (context) => {
@@ -1675,7 +1831,11 @@ export function createHttpApp(
         )
       ),
     );
-    return context.json(issued, 201);
+    const principal = context.get("principal");
+    return context.json(principal.tenantStaffPrincipalIds === undefined ? issued : Object.assign({}, issued, {apiKey: Object.assign({}, issued.apiKey, {
+      principalId: tenantVisiblePrincipalId(principal, issued.apiKey.principalId),
+      authorizedByPrincipalId: issued.apiKey.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, issued.apiKey.authorizedByPrincipalId),
+    })}), 201);
   });
 
   app.get("/api/v1/administration/public-links", async (context) => {
@@ -1738,7 +1898,7 @@ export function createHttpApp(
       ),
     );
     return context.json({
-      agent: registeredAgentResponse(agent),
+      agent: registeredAgentResponse(agent, context.get("principal")),
       protocolVersion: agentProtocolVersion,
     });
   });
@@ -1751,7 +1911,7 @@ export function createHttpApp(
         dispatches.listAgents({principal: context.get("principal")})
       ),
     );
-    return context.json({items: agents.map(connectedAgentResponse)});
+    return context.json({items: agents.map((agent) => connectedAgentResponse(agent, context.get("principal")))});
   });
 
   app.post("/api/v1/agents/:agentId/disconnect", async (context) => {
@@ -1810,7 +1970,7 @@ export function createHttpApp(
     );
     return dispatch === null
       ? context.body(null, 204)
-      : context.json({dispatch: agentDispatchResponse(dispatch)});
+      : context.json({dispatch: agentDispatchResponse(dispatch, context.get("principal"))});
   });
 
   app.post("/api/v1/agent-dispatches", boundedJsonBody, async (context) => {
@@ -1832,7 +1992,7 @@ export function createHttpApp(
       ),
     );
     return context.json({
-      dispatch: agentDispatchResponse(created.dispatch),
+      dispatch: agentDispatchResponse(created.dispatch, context.get("principal")),
       replayed: created.replayed,
     }, 201);
   });
@@ -1853,7 +2013,7 @@ export function createHttpApp(
         })
       ),
     );
-    return context.json(agentDispatchPageResponse(page));
+    return context.json(agentDispatchPageResponse(page, context.get("principal")));
   });
 
   app.get("/api/v1/agent-dispatches/:dispatchId", async (context) => {
@@ -1868,7 +2028,7 @@ export function createHttpApp(
         })
       ),
     );
-    return context.json({dispatch: agentDispatchResponse(dispatch)});
+    return context.json({dispatch: agentDispatchResponse(dispatch, context.get("principal"))});
   });
 
   app.post(
@@ -1890,7 +2050,7 @@ export function createHttpApp(
           })
         ),
       );
-      return context.json({dispatch: agentDispatchResponse(dispatch)});
+      return context.json({dispatch: agentDispatchResponse(dispatch, context.get("principal"))});
     },
   );
 
@@ -1911,7 +2071,7 @@ export function createHttpApp(
           })
         ),
       );
-      return context.json({dispatch: agentDispatchResponse(dispatch)});
+      return context.json({dispatch: agentDispatchResponse(dispatch, context.get("principal"))});
     },
   );
 
@@ -1927,7 +2087,7 @@ export function createHttpApp(
         })
       ),
     );
-    return context.json({dispatch: agentDispatchResponse(dispatch)});
+    return context.json({dispatch: agentDispatchResponse(dispatch, context.get("principal"))});
   });
 
   app.get("/api/v1/projects", async (context) => {
@@ -2048,7 +2208,13 @@ export function createHttpApp(
         })
       ),
     );
-    return context.json({events});
+    const principal = context.get("principal");
+    const projectedEvents = principal.tenantStaffPrincipalIds === undefined ? events : events.map((event) => {
+      const actor = tenantIdentityPresentation(principal, {displayName: event.actorDisplayName, principalId: event.principalId});
+      const authorizedByPrincipalId = event.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, event.authorizedByPrincipalId);
+      return Object.assign({}, event, {actorDisplayName: actor.displayName, principalId: tenantVisiblePrincipalId(principal, event.principalId), authorizedByPrincipalId});
+    });
+    return context.json({events: projectedEvents});
   });
 
   app.patch(
@@ -2242,6 +2408,7 @@ export function createHttpApp(
       dependencies.contentDomain,
       read.details,
       context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest,
+      context.get("principal"),
     );
     if (read.binding === null) return context.json(response);
     const live = liveLink(requestUrl, dependencies, read.details.artifact.id);
@@ -2272,6 +2439,7 @@ export function createHttpApp(
         dependencies.contentDomain,
         version,
         context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest,
+        context.get("principal"),
       )),
     });
   });
@@ -2291,7 +2459,7 @@ export function createHttpApp(
         })
       ),
     );
-    return context.json(artifactActionPageResponse(page));
+    return context.json(artifactActionPageResponse(page, context.get("principal")));
   });
 
   app.get(
@@ -2314,6 +2482,7 @@ export function createHttpApp(
         dependencies.contentDomain,
         saved,
         context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest,
+        context.get("principal"),
       ));
     },
   );
@@ -2335,10 +2504,18 @@ export function createHttpApp(
         artifactId, principal, projectId: requestedProjectId(context), versionId: body.versionId,
       })));
     const exp = Math.floor(Date.now() / 1_000) + 60 * 60;
-    const binding = signEmbedBinding(Redacted.value(signingSecret), {
-      artifactId, exp, jti: randomUUID(), mode: body.mode, questionId: body.questionId,
+    const claims = {
+      artifactId,
+      exp,
+      jti: randomUUID(),
+      mode: body.mode,
+      questionId: body.questionId,
       versionId: body.versionId,
-    });
+    };
+    if (dependencies.installationId !== undefined) {
+      Object.assign(claims, {installation_id: dependencies.installationId});
+    }
+    const binding = signEmbedBinding(Redacted.value(signingSecret), claims);
     return context.json({binding, expiresAt: new Date(exp * 1_000).toISOString()});
   });
 
@@ -2486,6 +2663,7 @@ export function createHttpApp(
       responseApplicationUrl(context, dependencies),
       page,
       context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest",
+      context.get("principal"),
     ));
   });
 
@@ -2496,9 +2674,7 @@ export function createHttpApp(
       limit: query.limit, principal: context.get("principal"), projectId: requestedProjectId(context),
       questionId: query.questionId ?? null, versionId: query.versionId ?? null,
     })));
-    return context.json(context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest
-      ? {...page, items: page.items.map(guestResponseProjection)}
-      : page);
+    return context.json(projectHttpTenantResponses(page, context.get("principal")));
   });
 
   app.get("/api/v1/artifacts/:artifactId/responses/:responseId", async (context) => {
@@ -2507,19 +2683,29 @@ export function createHttpApp(
       projectId: requestedProjectId(context), responseId: context.req.param("responseId"),
     })));
     return response === null ? context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404) : context.json(
-      context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest ? guestResponseProjection(response) : response,
+      projectHttpTenantResponse(response, context.get("principal")),
     );
   });
 
   app.post("/api/v1/artifacts/:artifactId/responses", boundedJsonBody, async (context) => {
     const body = artifactResponseWriteSchema.parse(await context.req.json());
+    const expectedBinding = {
+      allowLegacyInstallationless: dependencies.allowLegacyEmbedBinding === true,
+      artifactId: context.req.param("artifactId"),
+      versionId: body.versionId,
+    };
+    if (dependencies.legacyEmbedBindingExpiresAt !== undefined) {
+      Object.assign(expectedBinding, {
+        legacyInstallationlessExpiresAt: dependencies.legacyEmbedBindingExpiresAt,
+      });
+    }
+    if (dependencies.installationId !== undefined) {
+      Object.assign(expectedBinding, {installation_id: dependencies.installationId});
+    }
     const bindingClaims = body.embedBinding === undefined ? null : verifyEmbedBinding(
       [dependencies.embedBindingSecret, dependencies.embedBindingPreviousSecret],
       body.embedBinding,
-      {
-        artifactId: context.req.param("artifactId"),
-        versionId: body.versionId,
-      },
+      expectedBinding,
     );
     if (body.embedBinding !== undefined && bindingClaims === null) {
       throw new AuthorizationDenied({message: "The embed response binding is invalid or expired."});
@@ -2535,7 +2721,8 @@ export function createHttpApp(
       projectId: requestedProjectId(context), questionId: bindingClaims?.questionId ?? body.questionId,
       versionId: body.versionId,
     })));
-    return context.json({...response.record, replayed: response.replayed}, 201);
+    const projected = projectHttpTenantResponse(response.record, context.get("principal"));
+    return context.json(Object.assign(projected, {replayed: response.replayed}), 201);
   });
 
   app.get("/api/v1/artifacts/:artifactId/state", async (context) => {
@@ -2549,7 +2736,7 @@ export function createHttpApp(
       })),
     );
     const isGuest = context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest;
-    return context.json({entries: isGuest ? entries.map(guestStateEntryProjection) : entries});
+    return context.json({entries: entries.map((entry) => projectTenantStateIdentity(entry, context.get("principal"), isGuest))});
   });
 
   app.get("/api/v1/artifacts/:artifactId/state/:key", async (context) => {
@@ -2564,7 +2751,7 @@ export function createHttpApp(
       })),
     );
     const isGuest = context.get("principal").kind === "human" && context.get("principal").membershipRole === membershipRoles.guest;
-    return context.json({entry: entry === null || !isGuest ? entry : guestStateEntryProjection(entry)});
+    return context.json({entry: entry === null ? null : projectTenantStateIdentity(entry, context.get("principal"), isGuest)});
   });
 
   app.put(
@@ -2583,7 +2770,7 @@ export function createHttpApp(
           value: body.value,
         })),
       );
-      return context.json({entry});
+      return context.json({entry: projectTenantStateIdentity(entry, context.get("principal"), false)});
     },
   );
 
@@ -2630,6 +2817,7 @@ export function createHttpApp(
           responseApplicationUrl(context, dependencies),
           created.thread,
           context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest",
+          context.get("principal"),
         ),
       }, 201);
     },
@@ -2654,6 +2842,7 @@ export function createHttpApp(
         responseApplicationUrl(context, dependencies),
         details,
         context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest",
+        context.get("principal"),
       ));
     },
   );
@@ -2683,6 +2872,7 @@ export function createHttpApp(
           responseApplicationUrl(context, dependencies),
           thread,
           context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest",
+          context.get("principal"),
         ),
       });
     },
@@ -2729,7 +2919,7 @@ export function createHttpApp(
         ),
       );
       return context.json(
-        {replayed: created.replayed, reply: commentReplyResponse(created.reply, context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest")},
+        {replayed: created.replayed, reply: commentReplyResponse(created.reply, context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest", context.get("principal"))},
         201,
       );
     },
@@ -2754,7 +2944,7 @@ export function createHttpApp(
           })
         ),
       );
-      return context.json({reply: commentReplyResponse(reply, context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest")});
+      return context.json({reply: commentReplyResponse(reply, context.get("principal").kind === "human" && context.get("principal").membershipRole === "guest", context.get("principal"))});
     },
   );
 
@@ -2896,7 +3086,7 @@ export function createHttpApp(
         artifactId: context.req.param("artifactId"),
         principal: context.get("principal"), projectId: requestedProjectId(context),
       })));
-    const url = new URL("/review", responseApplicationUrl(context, dependencies));
+    const url = applicationPathUrl(responseApplicationUrl(context, dependencies), "/review");
     url.searchParams.set("artifact", context.req.param("artifactId"));
     const projectId = requestedProjectId(context);
     if (projectId !== null) url.searchParams.set("project", projectId);
@@ -2994,18 +3184,18 @@ export function createHttpApp(
     const requestUrl = responseApplicationUrl(context, dependencies);
     const projectQuery = `?projectId=${encodeURIComponent(upload.projectId)}`;
     return context.json({
-      commitUrl: new URL(
-        `/api/v1/uploads/${upload.id}/commit${projectQuery}`,
+      commitUrl: applicationPathUrl(
         requestUrl,
+        `/api/v1/uploads/${upload.id}/commit${projectQuery}`,
       ).toString(),
       expiresAt: upload.expiresAt,
       files: upload.files.map((file) => ({
         method: "PUT" as const,
         path: file.entry.path,
         size: file.entry.size,
-        uploadUrl: new URL(
-          `/api/v1/uploads/${upload.id}/files/${file.storageToken}${projectQuery}`,
+        uploadUrl: applicationPathUrl(
           requestUrl,
+          `/api/v1/uploads/${upload.id}/files/${file.storageToken}${projectQuery}`,
         ).toString(),
       })),
       manifestDigest: upload.manifest.digest,
@@ -3389,6 +3579,91 @@ export function createHttpApp(
   return app;
 }
 
+async function projectGuestResponse<Value extends ArtifactResponseRecord>(context: Context<HttpEnvironment>, dependencies: HttpAppDependencies, response: Value) {
+  if (dependencies.organizationSlug === undefined || dependencies.organizationSlug === "orvex") return response;
+  const ids = new Set(await runHttpApplicationEffect(context, dependencies, InstallationAccessService.use((access) => access.listStaffOnlyMemberIds())));
+  const author = tenantIdentityPresentation(undefined, {displayName: response.authorDisplayName, email: response.authorEmail, principalId: response.authorSubject, staff: ids.has(response.authorSubject)});
+  return {...response, authorDisplayName: author.displayName, authorEmail: null, authorSubject: undefined};
+}
+
+async function projectGuestResponses<Value extends {readonly items: readonly ArtifactResponseRecord[]}>(context: Context<HttpEnvironment>, dependencies: HttpAppDependencies, page: Value) {
+  if (dependencies.organizationSlug === undefined || dependencies.organizationSlug === "orvex") return page;
+  const ids = new Set(await runHttpApplicationEffect(context, dependencies, InstallationAccessService.use((access) => access.listStaffOnlyMemberIds())));
+  return {...page, items: page.items.map((response) => {
+    const author = tenantIdentityPresentation(undefined, {
+      displayName: response.authorDisplayName, email: response.authorEmail,
+      principalId: response.authorSubject, staff: ids.has(response.authorSubject),
+    });
+    return {...response, authorDisplayName: author.displayName, authorEmail: null, authorSubject: undefined};
+  })};
+}
+
+function guestResponseProjection<T extends ArtifactResponseRecord>(response: T): Omit<T, "authorEmail" | "authorSubject"> & {readonly authorEmail: null; readonly authorSubject?: undefined} {
+  return {...response, authorEmail: null, authorSubject: undefined};
+}
+
+function projectTenantStateIdentity(entry: ArtifactStateEntry, principal: Principal, isGuest: boolean) {
+  if (isGuest) {
+    const projected = guestStateEntryProjection(entry);
+    if (principal.tenantStaffPrincipalIds === undefined) return projected;
+    const actor = tenantIdentityPresentation(principal, entry.updatedBy);
+    return {...projected, updatedBy: {...projected.updatedBy, displayName: actor.displayName}};
+  }
+  if (principal.tenantStaffPrincipalIds === undefined) return entry;
+  const actor = tenantIdentityPresentation(principal, {...entry.updatedBy, principalId: entry.updatedBy.principalId});
+  return {...entry, updatedBy: {displayName: actor.displayName, principalId: tenantVisiblePrincipalId(principal, entry.updatedBy.principalId)}};
+}
+
+export function projectHttpTenantResponse<T extends ArtifactResponseRecord>(response: T, principal: Principal): T | (Omit<T, "authorEmail" | "authorSubject"> & {readonly authorEmail: string | null; readonly authorSubject?: undefined}) {
+  if (principal.kind === "human" && principal.membershipRole === membershipRoles.guest) {
+    const projected = guestResponseProjection(response);
+    if (principal.tenantStaffPrincipalIds === undefined) return projected;
+    const author = tenantIdentityPresentation(principal, {displayName: response.authorDisplayName, email: response.authorEmail, principalId: response.authorSubject});
+    return {...projected, authorDisplayName: author.displayName};
+  }
+  if (principal.tenantStaffPrincipalIds === undefined) return response;
+  const author = tenantIdentityPresentation(principal, {displayName: response.authorDisplayName, email: response.authorEmail, principalId: response.authorSubject});
+  const maySeeEmail = principal.membershipRole === membershipRoles.member || principal.membershipRole === membershipRoles.owner;
+  return {
+    ...response,
+    authorDisplayName: author.displayName,
+    authorEmail: maySeeEmail ? author.email : null,
+    authorSubject: undefined,
+  };
+}
+
+function projectHttpTenantResponses<T extends {readonly items: readonly ArtifactResponseRecord[]}>(page: T, principal: Principal) {
+  return {...page, items: page.items.map((item) => projectHttpTenantResponse(item, principal))};
+}
+
+function memberWithoutStaffFlag<T extends {readonly staff?: boolean}>(member: T): Omit<T, "staff"> {
+  const {staff: _staff, ...visible} = member;
+  return visible;
+}
+
+/** Project tenant-visible directory fields for one membership role. */
+export function projectTenantMembers(
+  members: readonly InstallationMember[],
+  role: Principal["membershipRole"],
+): readonly Partial<InstallationMember>[] {
+  if (role === membershipRoles.guest) return [];
+  const maySeeEmails = role === membershipRoles.member || role === membershipRoles.owner;
+  return members.filter((member) => member.staff !== true).map((member) => {
+    const displayName = isReservedTenantIdentityName(member.displayName) ? "Orvex Support (member)" : member.displayName;
+    if (role === membershipRoles.owner || role === membershipRoles.administrator) {
+      const {staff: _staff, ...visible} = member;
+      return Object.assign({}, visible, {displayName});
+    }
+    if (maySeeEmails) {
+      const {role: _role, staff: _staff, ...visible} = member;
+      return Object.assign({}, visible, {displayName});
+    }
+    const {email, role: _role, staff: _staff, ...visible} = member;
+    void email;
+    return Object.assign({}, visible, {displayName});
+  });
+}
+
 function apiBearerChallenge(
   context: {readonly req: {readonly path: string}},
   dependencies: HttpAppDependencies,
@@ -3398,12 +3673,11 @@ function apiBearerChallenge(
     apiOAuth === undefined
     || !context.req.path.startsWith("/api/")
   ) return "Bearer";
-  const metadata = new URL(apiProtectedResourceMetadataPath, apiOAuth.resource);
+  const metadata = new URL(protectedResourceMetadataPath(apiOAuth.resource), apiOAuth.resource);
   return `Bearer resource_metadata="${metadata.toString()}" scope="artifactserver"`;
 }
 
-const apiProtectedResourceMetadataPath =
-  "/.well-known/oauth-protected-resource/api";
+const apiProtectedResourceMetadataPath = "/.well-known/oauth-protected-resource/api";
 const authorizationServerMetadataPath = "/.well-known/oauth-authorization-server";
 const managedApiKeyPrefix = "as_key_";
 const oauthDiscoveringMessage =
@@ -3585,16 +3859,17 @@ function applicationCookieNames(
   readonly handshake: string;
   readonly session: string;
 } {
+  const suffix = dependencies.organizationCookieSuffix ?? "";
   return usesSecureApplicationCookies(dependencies)
     ? {
-      csrf: secureApplicationCsrfCookie,
-      handshake: secureLoginHandshakeCookie,
-      session: secureApplicationSessionCookie,
+      csrf: `${secureApplicationCsrfCookie}${suffix}`,
+      handshake: `${secureLoginHandshakeCookie}${suffix}`,
+      session: `${secureApplicationSessionCookie}${suffix}`,
     }
     : {
-      csrf: applicationCsrfCookie,
-      handshake: loginHandshakeCookie,
-      session: applicationSessionCookie,
+      csrf: `${applicationCsrfCookie}${suffix}`,
+      handshake: `${loginHandshakeCookie}${suffix}`,
+      session: `${applicationSessionCookie}${suffix}`,
     };
 }
 
@@ -3610,20 +3885,27 @@ function responseApplicationUrl(
   dependencies: HttpAppDependencies,
 ): URL {
   const requestUrl = new URL(context.req.url);
-  if (dependencies.trustedApplicationOrigin === null) return requestUrl;
+  if (dependencies.trustedApplicationOrigin === null) {
+    return new URL(requestUrl.origin);
+  }
   const trustedUrl = new URL(dependencies.trustedApplicationOrigin);
   const forwardedProtocol = context.req.header("x-forwarded-proto")
     ?.split(",")[0]?.trim();
   const forwardedHost = context.req.header("x-forwarded-host")
     ?.split(",")[0]?.trim() ?? context.req.header("host");
+  const effectiveProtocol = forwardedProtocol === undefined
+    ? requestUrl.protocol
+    : `${forwardedProtocol}:`;
   if (
-    `${forwardedProtocol}:` === trustedUrl.protocol &&
+    effectiveProtocol === trustedUrl.protocol &&
     forwardedHost?.toLocaleLowerCase("en-US") ===
       trustedUrl.host.toLocaleLowerCase("en-US")
   ) {
     return trustedUrl;
   }
-  return requestUrl;
+  const requestOriginWithTrustedPath = new URL(requestUrl.origin);
+  requestOriginWithTrustedPath.pathname = trustedUrl.pathname;
+  return requestOriginWithTrustedPath;
 }
 
 function requireBrowserMutationSecurity(
@@ -3631,7 +3913,9 @@ function requireBrowserMutationSecurity(
   dependencies: HttpAppDependencies,
 ): void {
   const requestUrl = new URL(context.req.url);
-  const trustedOrigin = dependencies.trustedApplicationOrigin ?? requestUrl.origin;
+  const trustedOrigin = dependencies.trustedApplicationOrigin === null
+    ? requestUrl.origin
+    : new URL(dependencies.trustedApplicationOrigin).origin;
   const origin = context.req.header("origin");
   const fetchSite = context.req.header("sec-fetch-site");
   const fetchMode = context.req.header("sec-fetch-mode");
@@ -3665,8 +3949,9 @@ async function requireGuestReviewer(
   mutation: boolean,
 ): Promise<GuestReviewer | null> {
   const secure = usesSecureApplicationCookies(dependencies);
-  const sessionName = secure ? secureGuestSessionCookie : guestSessionCookie;
-  const csrfName = secure ? secureGuestCsrfCookie : guestCsrfCookie;
+  const suffix = dependencies.organizationCookieSuffix ?? "";
+  const sessionName = `${secure ? secureGuestSessionCookie : guestSessionCookie}${suffix}`;
+  const csrfName = `${secure ? secureGuestCsrfCookie : guestCsrfCookie}${suffix}`;
   const rawSession = sessionTokenSchema.safeParse(getCookie(context, sessionName));
   if (!rawSession.success) return null;
   const session = await runHttpApplicationEffect(context, dependencies,
@@ -3677,7 +3962,9 @@ async function requireGuestReviewer(
   if (session === null || session.artifactId !== context.req.param("artifactId")) return null;
   if (mutation) {
     const requestUrl = new URL(context.req.url);
-    const trustedOrigin = dependencies.trustedApplicationOrigin ?? requestUrl.origin;
+    const trustedOrigin = dependencies.trustedApplicationOrigin === null
+      ? requestUrl.origin
+      : new URL(dependencies.trustedApplicationOrigin).origin;
     const header = csrfTokenSchema.safeParse(context.req.header("x-csrf-token"));
     const cookie = csrfTokenSchema.safeParse(getCookie(context, csrfName));
     if (
@@ -3703,7 +3990,9 @@ function requireGuestSessionExchangeBoundary(
   dependencies: HttpAppDependencies,
 ): void {
   const requestUrl = new URL(context.req.url);
-  const trustedOrigin = dependencies.trustedApplicationOrigin ?? requestUrl.origin;
+  const trustedOrigin = dependencies.trustedApplicationOrigin === null
+    ? requestUrl.origin
+    : new URL(dependencies.trustedApplicationOrigin).origin;
   const contentType = context.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (
     context.req.header("origin") !== trustedOrigin ||
@@ -3918,7 +4207,7 @@ function liveLink(
   dependencies: HttpAppDependencies,
   artifactId: string,
 ): string | null {
-  const token = liveContentToken(artifactId);
+  const token = liveContentToken(artifactId, dependencies.contentTokenPrefix);
   if (token === null) return null;
   return versionBrowserUrl(requestUrl, dependencies.contentDomain, token);
 }
@@ -3951,10 +4240,11 @@ function artifactDetailsResponse(
   contentDomain: string,
   details: ArtifactDetails,
   isGuest = false,
+  principal?: Principal,
 ) {
   return {
     artifact: details.artifact,
-    current: artifactVersionResponse(requestUrl, contentDomain, details.current, isGuest),
+    current: artifactVersionResponse(requestUrl, contentDomain, details.current, isGuest, principal),
     links: {
       artifact: artifactBrowserUrl(requestUrl, details.artifact.id),
       management: new URL(
@@ -4044,24 +4334,27 @@ function publicLinkMutationResponse(
   };
 }
 
-function registeredAgentResponse(agent: RegisteredAgentRecord) {
+function registeredAgentResponse(agent: RegisteredAgentRecord, principal?: Principal) {
+  const owner = tenantIdentityPresentation(principal, {displayName: agent.principalId, principalId: agent.principalId});
+  const hideStaffAgentDetails = principal?.tenantStaffPrincipalIds !== undefined &&
+    principal.staff !== true && principal.tenantStaffPrincipalIds.includes(agent.principalId);
   return {
-    agentSessionId: agent.agentSessionId,
+    agentSessionId: hideStaffAgentDetails ? null : agent.agentSessionId,
     capabilities: agent.capabilities,
-    connectionKey: agent.connectionKey,
+    connectionKey: hideStaffAgentDetails ? null : agent.connectionKey,
     createdAt: agent.createdAt,
-    displayName: agent.displayName,
+    displayName: hideStaffAgentDetails ? "Orvex Support" : principal?.tenantStaffPrincipalIds === undefined || !isReservedTenantIdentityName(agent.displayName) ? agent.displayName : "Orvex Support (member)",
     id: agent.id,
     kind: agent.kind,
     lastSeenAt: agent.lastSeenAt,
-    principalId: agent.principalId,
-    workingDirectory: agent.workingDirectory,
+    principalId: owner.subject,
+    workingDirectory: hideStaffAgentDetails ? null : agent.workingDirectory,
   };
 }
 
-function connectedAgentResponse(entry: ConnectedRegisteredAgent) {
+function connectedAgentResponse(entry: ConnectedRegisteredAgent, principal?: Principal) {
   return {
-    ...registeredAgentResponse(entry.agent),
+    ...registeredAgentResponse(entry.agent, principal),
     activeDispatchId: entry.activeDispatchId,
     activity: entry.activity,
     beacon: entry.beacon,
@@ -4070,17 +4363,28 @@ function connectedAgentResponse(entry: ConnectedRegisteredAgent) {
   };
 }
 
-function agentDispatchPageResponse(page: AgentDispatchPage) {
+function agentDispatchPageResponse(page: AgentDispatchPage, principal?: Principal) {
   return {
-    items: page.items.map(agentDispatchResponse),
+    items: page.items.map((item) => agentDispatchResponse(item, principal)),
     nextCursor: encodePageCursor(page.nextCursor),
   };
 }
 
-function agentDispatchResponse(dispatch: AgentDispatchRecord) {
+function agentDispatchResponse(dispatch: AgentDispatchRecord, principal?: Principal) {
+  const {staff: _staff, ...sender} = dispatch.sender;
+  const isTenant = principal?.tenantStaffPrincipalIds !== undefined;
+  const senderPublic = isTenant ? tenantIdentityPresentation(principal, dispatch.sender) : null;
+  const publicSender = isTenant && senderPublic !== null ? Object.assign({}, sender, {
+    displayName: senderPublic.displayName,
+    email: senderPublic.email,
+    principalId: senderPublic.subject,
+    authorizedByPrincipalId: sender.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, sender.authorizedByPrincipalId),
+  }) : sender;
   return {
+    sender: publicSender,
     addressedAt: dispatch.addressedAt,
-    agentDisplayName: dispatch.agentDisplayName,
+    agentDisplayName: isTenant && isReservedTenantIdentityName(dispatch.agentDisplayName)
+      ? "Orvex Support (member)" : dispatch.agentDisplayName,
     agentId: dispatch.agentId,
     canceledAt: dispatch.canceledAt,
     claimedAt: dispatch.claimedAt,
@@ -4093,7 +4397,6 @@ function agentDispatchResponse(dispatch: AgentDispatchRecord) {
     leaseExpiresAt: dispatch.leaseExpiresAt,
     note: dispatch.note,
     projectId: dispatch.projectId,
-    sender: dispatch.sender,
     state: dispatch.state,
     threadIds: dispatch.threadIds,
     updatedAt: dispatch.updatedAt,
@@ -4171,76 +4474,52 @@ function delayMilliseconds(milliseconds: number): Promise<void> {
   });
 }
 
-function commentThreadPageResponse(requestUrl: URL, page: CommentThreadPage, isGuest = false) {
+function commentThreadPageResponse(requestUrl: URL, page: CommentThreadPage, isGuest = false, principal?: Principal) {
+  return {items: page.items.map((thread) => commentThreadResponse(requestUrl, thread, isGuest, principal)), nextCursor: encodePageCursor(page.nextCursor)};
+}
+
+function guestThreadPageResponse(requestUrl: URL, page: CommentThreadPage, guest: GuestReviewer, tenant: boolean, staffIds?: ReadonlySet<string>) {
+  return {items: page.items.map((thread) => guestThreadResponse(requestUrl, thread, guest, tenant, staffIds)), nextCursor: encodePageCursor(page.nextCursor)};
+}
+
+function commentThreadDetailsResponse(requestUrl: URL, details: CommentThreadDetails, isGuest = false, principal?: Principal) {
+  return {replies: details.replies.map((reply) => commentReplyResponse(reply, isGuest, principal)), thread: commentThreadResponse(requestUrl, details.thread, isGuest, principal)};
+}
+
+function commentThreadResponse(requestUrl: URL, thread: CommentThreadRecord, isGuest = false, principal?: Principal) {
   return {
-    items: page.items.map((thread) =>
-      commentThreadResponse(requestUrl, thread, isGuest)
-    ),
-    nextCursor: encodePageCursor(page.nextCursor),
+    anchor: thread.anchor, artifactId: thread.artifactId,
+    author: commentAuthorResponse(thread.author, isGuest, principal), body: thread.body, createdAt: thread.createdAt, id: thread.id,
+    links: {self: new URL(`/api/v1/artifacts/${thread.artifactId}/comments/${thread.id}`, requestUrl).toString(), version: new URL(`/api/v1/artifacts/${thread.artifactId}/versions/${thread.versionId}`, requestUrl).toString()},
+    path: thread.path, projectId: thread.projectId, replyCount: thread.replyCount, resolvedAt: thread.resolvedAt,
+    resolvedBy: thread.resolvedBy === null ? null : commentAuthorResponse(thread.resolvedBy, isGuest, principal),
+    state: thread.state, updatedAt: thread.updatedAt, versionId: thread.versionId,
   };
 }
 
-function guestThreadPageResponse(requestUrl: URL, page: CommentThreadPage, guest: GuestReviewer) {
-  return {
-    items: page.items.map((thread) => guestThreadResponse(requestUrl, thread, guest)),
-    nextCursor: encodePageCursor(page.nextCursor),
-  };
+function commentAuthorResponse(author: CommentAuthor, isGuest: boolean, principal?: Principal) {
+  // Guest projection takes precedence, preserving the public reviewer contract.
+  if (isGuest) {
+    const {principalId: _principalId, staff: _staff, ...visible} = author;
+    const staff = principal?.tenantStaffPrincipalIds !== undefined && (author.staff === true || principal.tenantStaffPrincipalIds.includes(author.principalId));
+    const displayName = principal?.tenantStaffPrincipalIds === undefined ? visible.displayName : tenantIdentityPresentation(principal, author).displayName;
+    const projected = {...visible, displayName: staff ? "Orvex Support" : displayName.includes("@") ? "Team member" : displayName};
+    if (staff) Object.assign(projected, {authorizedByPrincipalId: null});
+    else if (principal?.tenantStaffPrincipalIds !== undefined && author.authorizedByPrincipalId !== null) {
+      Object.assign(projected, {authorizedByPrincipalId: tenantVisiblePrincipalId(principal, author.authorizedByPrincipalId)});
+    }
+    return projected;
+  }
+  const {staff: _staff, ...visible} = author;
+  if (principal?.tenantStaffPrincipalIds !== undefined) {
+    const publicIdentity = tenantIdentityPresentation(principal, author);
+    return {...visible, displayName: publicIdentity.displayName, principalId: tenantVisiblePrincipalId(principal, author.principalId), authorizedByPrincipalId: author.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, author.authorizedByPrincipalId)};
+  }
+  return visible;
 }
 
-function commentThreadDetailsResponse(
-  requestUrl: URL,
-  details: CommentThreadDetails,
-  isGuest = false,
-) {
-  return {
-    replies: details.replies.map((reply) => commentReplyResponse(reply, isGuest)),
-    thread: commentThreadResponse(requestUrl, details.thread, isGuest),
-  };
-}
-
-function commentThreadResponse(requestUrl: URL, thread: CommentThreadRecord, isGuest = false) {
-  return {
-    anchor: thread.anchor,
-    artifactId: thread.artifactId,
-    author: commentAuthorResponse(thread.author, isGuest),
-    body: thread.body,
-    createdAt: thread.createdAt,
-    id: thread.id,
-    links: {
-      self: new URL(
-        `/api/v1/artifacts/${thread.artifactId}/comments/${thread.id}`,
-        requestUrl,
-      ).toString(),
-      version: new URL(
-        `/api/v1/artifacts/${thread.artifactId}/versions/${thread.versionId}`,
-        requestUrl,
-      ).toString(),
-    },
-    path: thread.path,
-    projectId: thread.projectId,
-    replyCount: thread.replyCount,
-    resolvedAt: thread.resolvedAt,
-    resolvedBy: thread.resolvedBy === null ? null : commentAuthorResponse(thread.resolvedBy, isGuest),
-    state: thread.state,
-    updatedAt: thread.updatedAt,
-    versionId: thread.versionId,
-  };
-}
-
-function commentAuthorResponse(author: CommentAuthor, isGuest: boolean): Omit<CommentAuthor, "principalId"> | CommentAuthor {
-  if (!isGuest) return author;
-  const {principalId: _principalId, ...visibleAuthor} = author;
-  return {...visibleAuthor, displayName: author.displayName.includes("@") ? "Team member" : author.displayName};
-}
-
-function commentReplyResponse(reply: CommentReplyRecord, isGuest: boolean) {
-  return {...reply, author: commentAuthorResponse(reply.author, isGuest)};
-}
-
-function guestResponseProjection(response: ArtifactResponseRecord): Omit<ArtifactResponseRecord, "authorSubject"> {
-  const {authorSubject, ...visibleResponse} = response;
-  void authorSubject;
-  return {...visibleResponse, authorEmail: null};
+function commentReplyResponse(reply: CommentReplyRecord, isGuest: boolean, principal?: Principal) {
+  return {...reply, author: commentAuthorResponse(reply.author, isGuest, principal)};
 }
 
 function guestStateEntryProjection(entry: ArtifactStateEntry) {
@@ -4251,34 +4530,31 @@ function guestStateEntryProjection(entry: ArtifactStateEntry) {
   }};
 }
 
-function guestAuthorResponse(author: CommentAuthor, guest: GuestReviewer) {
+function guestAuthorResponse(author: CommentAuthor, guest: GuestReviewer, tenant: boolean, staffIds?: ReadonlySet<string>) {
   const isYou = author.principalId === `guest_${guest.guestId}`;
-  const principalLike = /^(?:service|guest|human|member|principal|user|key)[_:-]/iu.test(author.displayName) ||
-    /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(author.displayName) ||
-    author.displayName === author.principalId;
-  return {
-    displayName: isYou ? author.displayName : principalLike || author.displayName.includes("@") ? "Team member" : author.displayName,
-    isYou,
-  };
+  const publicName = tenant ? tenantIdentityPresentation(undefined, author).displayName : author.displayName;
+  if (isYou) return {displayName: publicName, isYou};
+  if (tenant && (author.staff === true || staffIds?.has(author.principalId) === true)) return {displayName: "Orvex Support", isYou: false};
+  const principalLike = /^(?:service|guest|human|member|principal|user|key)[_:-]/iu.test(author.displayName) || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(author.displayName) || author.displayName === author.principalId;
+  return {displayName: principalLike || publicName.includes("@") ? "Team member" : publicName, isYou: false};
 }
 
-function guestThreadResponse(requestUrl: URL, thread: CommentThreadRecord, guest: GuestReviewer) {
-  return {
-    ...commentThreadResponse(requestUrl, thread),
-    author: guestAuthorResponse(thread.author, guest),
-    resolvedBy: thread.resolvedBy === null ? null : guestAuthorResponse(thread.resolvedBy, guest),
-  };
+function guestThreadResponse(requestUrl: URL, thread: CommentThreadRecord, guest: GuestReviewer, tenant: boolean, staffIds?: ReadonlySet<string>) {
+  return {...commentThreadResponse(requestUrl, thread), author: guestAuthorResponse(thread.author, guest, tenant, staffIds), resolvedBy: thread.resolvedBy === null ? null : guestAuthorResponse(thread.resolvedBy, guest, tenant, staffIds)};
 }
 
-function guestThreadDetailsResponse(requestUrl: URL, details: CommentThreadDetails, guest: GuestReviewer) {
-  return {
-    replies: details.replies.map((reply) => guestReplyResponse(reply, guest)),
-    thread: guestThreadResponse(requestUrl, details.thread, guest),
-  };
+function guestThreadDetailsResponse(requestUrl: URL, details: CommentThreadDetails, guest: GuestReviewer, tenant: boolean, staffIds?: ReadonlySet<string>) {
+  return {replies: details.replies.map((reply) => guestReplyResponse(reply, guest, tenant, staffIds)), thread: guestThreadResponse(requestUrl, details.thread, guest, tenant, staffIds)};
 }
 
-function guestReplyResponse(reply: CommentReplyRecord, guest: GuestReviewer) {
-  return {...reply, author: guestAuthorResponse(reply.author, guest)};
+function guestReplyResponse(reply: CommentReplyRecord, guest: GuestReviewer, tenant: boolean, staffIds?: ReadonlySet<string>) {
+  return {...reply, author: guestAuthorResponse(reply.author, guest, tenant, staffIds)};
+}
+
+async function guestMaskingStaffIds(context: Context<HttpEnvironment>, dependencies: HttpAppDependencies): Promise<ReadonlySet<string> | undefined> {
+  if (dependencies.organizationSlug === undefined || dependencies.organizationSlug === "orvex") return undefined;
+  const ids = await runHttpApplicationEffect(context, dependencies, InstallationAccessService.use((access) => access.listStaffOnlyMemberIds()));
+  return new Set(ids);
 }
 
 interface CommentThreadUpdate {
@@ -4307,9 +4583,12 @@ function updateCommentThreadCommand(
   return command;
 }
 
-function artifactActionPageResponse(page: ArtifactActionPage) {
+function artifactActionPageResponse(page: ArtifactActionPage, principal?: Principal) {
   return {
-    actions: page.items,
+    actions: principal?.tenantStaffPrincipalIds === undefined ? page.items : page.items.map((action) => Object.assign({}, action, {
+      principalId: tenantVisiblePrincipalId(principal, action.principalId),
+      authorizedByPrincipalId: action.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, action.authorizedByPrincipalId),
+    })),
     nextCursor: encodePageCursor(page.nextCursor),
   };
 }
@@ -4358,6 +4637,7 @@ function artifactVersionResponse(
   contentDomain: string,
   saved: ArtifactVersion,
   isGuest = false,
+  principal?: Principal,
 ) {
   return {
     manifest: {
@@ -4366,7 +4646,7 @@ function artifactVersionResponse(
       entryPath: saved.manifest.entryPath,
       routingMode: saved.manifest.routingMode,
     },
-    ...versionResponse(requestUrl, contentDomain, saved.version, isGuest),
+    ...versionResponse(requestUrl, contentDomain, saved.version, isGuest, principal),
   };
 }
 
@@ -4375,8 +4655,10 @@ function versionResponse(
   contentDomain: string,
   version: VersionRecord,
   isGuest = false,
+  _principal?: Principal,
 ) {
   const {publisherPrincipalId: _publisherPrincipalId, ...guestVersion} = version;
+  const visibleVersion = version;
   return {
     links: {
       review: artifactReviewUrl(
@@ -4391,7 +4673,7 @@ function versionResponse(
         version.contentToken,
       ),
     },
-    version: isGuest ? guestVersion : version,
+    version: isGuest ? guestVersion : visibleVersion,
   };
 }
 
@@ -5148,13 +5430,20 @@ function tokenFromContentHost(
   hostname: string,
   contentDomain: string,
 ): string | null {
-  const suffix = `.${contentDomain.toLocaleLowerCase("en-US")}`;
-  const normalizedHostname = hostname.toLocaleLowerCase("en-US");
+  const suffix = `.${contentDomain.toLocaleLowerCase("en-US").replace(/\.$/u, "")}`;
+  const normalizedHostname = hostname.toLocaleLowerCase("en-US").replace(/\.$/u, "");
   if (!normalizedHostname.endsWith(suffix)) return null;
   const candidate = normalizedHostname.slice(0, -suffix.length);
   const parsed = contentTokenSchema.safeParse(candidate);
   return parsed.success ? parsed.data : null;
 }
+
+function isContentDomainHost(hostname: string, contentDomain: string): boolean {
+  const normalizedHostname = hostname.toLocaleLowerCase("en-US").replace(/\.$/u, "");
+  const normalizedDomain = contentDomain.toLocaleLowerCase("en-US").replace(/\.$/u, "");
+  return normalizedHostname === normalizedDomain || normalizedHostname.endsWith(`.${normalizedDomain}`);
+}
+
 
 function isContentBootstrapRequest(requestUrl: URL): boolean {
   return requestUrl.searchParams.has(contentBootstrapQueryParameter);
@@ -5242,6 +5531,7 @@ function escapeHtmlAttribute(value: string): string {
 interface EmbedBindingClaims {
   readonly artifactId: string;
   readonly exp: number;
+  readonly installation_id?: string | undefined;
   readonly jti: string;
   readonly mode: "view" | "respond";
   readonly questionId: string;
@@ -5257,7 +5547,10 @@ function signEmbedBinding(secret: string, claims: EmbedBindingClaims): string {
 function verifyEmbedBinding(
   secrets: readonly (Redacted.Redacted | undefined)[],
   token: string,
-  expected: Pick<EmbedBindingClaims, "artifactId" | "versionId">,
+  expected: Pick<EmbedBindingClaims, "artifactId" | "installation_id" | "versionId"> & {
+    readonly allowLegacyInstallationless?: boolean;
+    readonly legacyInstallationlessExpiresAt?: number;
+  },
 ): EmbedBindingClaims | null {
   const parts = token.split(".");
   if (parts.length !== 2) return null;
@@ -5275,7 +5568,8 @@ function verifyEmbedBinding(
   let claims: EmbedBindingClaims;
   try {
     claims = z.object({
-      artifactId: z.string().min(1), exp: z.number().int(), jti: z.string().uuid(),
+      artifactId: z.string().min(1), exp: z.number().int(),
+      installation_id: z.string().min(1).optional(), jti: z.string().uuid(),
       mode: z.enum(["view", "respond"]), questionId: z.string().min(1).max(200),
       versionId: z.string().min(1),
     }).strict().parse(JSON.parse(Buffer.from(payload, "base64url").toString("utf8")));
@@ -5287,6 +5581,11 @@ function verifyEmbedBinding(
     claims.exp <= now
     || claims.exp > now + 60 * 60
     || claims.artifactId !== expected.artifactId
+    || (expected.installation_id !== undefined && claims.installation_id !== expected.installation_id
+      && !(claims.installation_id === undefined && expected.allowLegacyInstallationless === true
+        && expected.legacyInstallationlessExpiresAt !== undefined
+        && now < expected.legacyInstallationlessExpiresAt
+        && claims.exp <= expected.legacyInstallationlessExpiresAt))
     || claims.versionId !== expected.versionId
   ) return null;
   return claims;
@@ -5324,7 +5623,20 @@ async function serveWebAsset(
   }
   copyAssetHeader(asset.headers, headers, "Content-Length");
   copyAssetHeader(asset.headers, headers, "Content-Type");
-  return new Response(method === "HEAD" ? null : asset.body, {
+  let body: BodyInit | null = method === "HEAD" ? null : asset.body;
+  if (kind === "application-shell" && body !== null) {
+    const basePath = new URL(dependencies.trustedApplicationOrigin ?? "http://localhost").pathname
+      .replace(/\/$/u, "");
+    const suffix = dependencies.organizationCookieSuffix ?? "";
+    const html = await new Response(body).text();
+    body = html
+      .replaceAll('src="/assets/', `src="${basePath}/assets/`)
+      .replaceAll('href="/assets/', `href="${basePath}/assets/`)
+      .replace("</head>", `<meta name="as-organization-base" content="${escapeHtmlAttribute(basePath)}"><meta name="as-cookie-suffix" content="${escapeHtmlAttribute(suffix)}"></head>`);
+    headers.delete("Content-Length");
+    headers.delete("ETag");
+  }
+  return new Response(body, {
     headers,
     status: 200,
   });

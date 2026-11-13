@@ -36,6 +36,7 @@ import {
 } from "../application/compare-artifact.js";
 import {
   type ContentAccessDependencies,
+  type ContentSecretProvider,
   ContentAccessService,
 } from "../application/content-access.js";
 import {ExpiredStagingCleanupService} from
@@ -130,6 +131,7 @@ import type {
 } from "../core/ports.js";
 import type {GroupRolePolicy} from "../core/group-role-policy.js";
 import type {IdentityRepository} from "../core/identity-ports.js";
+import type {InstallationMember} from "../core/installation-identity.js";
 import type { ManifestEntry } from "../core/model.js";
 import {randomBase64Url} from "../core/random.js";
 import { FileVerificationError } from "../storage/verified-file.js";
@@ -148,8 +150,9 @@ import type {
 /** Concrete Node adapters reused by the Effect application layer. */
 export interface ApplicationAdapters {
   readonly apiToken: Redacted.Redacted | null;
+  readonly staffHandleSecret?: Redacted.Redacted;
   readonly blobs: BlobStore;
-  readonly bootstrapAdministratorEmail: string;
+  readonly bootstrapAdministratorEmail: string | null;
   readonly clock: Clock;
   readonly externalApiBearerVerifier: BearerCredentialVerifier | null;
   readonly externalApiOAuthVerifier: ExternalMcpBearerVerifier | null;
@@ -157,14 +160,18 @@ export interface ApplicationAdapters {
   readonly externalMcpOAuthVerifier: ExternalMcpBearerVerifier | null;
   /** Issuer groups that admit people and set their role; absent keeps admission manual. */
   readonly groupRolePolicy?: GroupRolePolicy | null;
+  /** A Keycloak organization whose verified membership admits browser users. */
+  readonly organizationAdmission?: {readonly alias: string; readonly id: string};
   /**
    * Agent-dispatch persistence. Every backend implements the dispatch tables,
    * so omitting the slot is a compile error rather than a runtime failure.
    */
   readonly dispatches: AgentDispatchRepository;
   readonly ids: IdGenerator;
+  readonly contentTokenPrefix?: string;
   readonly identityRepository: IdentityRepository;
   readonly installationId: string;
+  readonly organizationDirectoryVisibility?: boolean | undefined;
   readonly interactiveIdentityProvider: InteractiveIdentityProvider | null;
   readonly uploadUrlLifetimeMilliseconds?: number;
   /** Live optional-provider state used to guard project enablement. */
@@ -650,6 +657,7 @@ export function createApplicationLayer(
     clock,
     ids: adapters.ids,
     installationId: adapters.installationId,
+    organizationDirectoryVisibility: adapters.organizationDirectoryVisibility === true,
     repository: {
       cancelDispatch: (command) => dispatchEffect(
         "cancelAgentDispatch",
@@ -670,6 +678,10 @@ export function createApplicationLayer(
       findAgent: (installationId, agentId) => dispatchEffect(
         "findRegisteredAgent",
         () => dispatchStore.findAgent(installationId, agentId),
+      ),
+      findAgentsByIds: (installationId, agentIds) => dispatchEffect(
+        "findRegisteredAgent",
+        () => dispatchStore.findAgentsByIds(installationId, agentIds),
       ),
       findDispatch: (installationId, dispatchId, now) => dispatchEffect(
         "findAgentDispatch",
@@ -727,8 +739,23 @@ export function createApplicationLayer(
     },
   };
 
+  const contentSecrets: ContentSecretProvider = {
+    digest: (token) =>
+      createHash("sha256").update(Redacted.value(token)).digest("hex"),
+    issue: () => {
+      const raw = `${adapters.contentTokenPrefix ?? ""}${randomBase64Url(adapters.contentTokenPrefix === undefined ? 32 : 28)}`;
+      return {
+        digest: createHash("sha256").update(raw).digest("hex"),
+        token: Redacted.make(raw, {label: "content-session-token"}),
+      };
+    },
+  };
+  if (adapters.contentTokenPrefix !== undefined) {
+    Object.assign(contentSecrets, {tokenPrefix: adapters.contentTokenPrefix});
+  }
   const contentDependencies: ContentAccessDependencies = {
     clock,
+    organizationDirectoryVisibility: adapters.organizationDirectoryVisibility,
     repository: {
       reserveGuestBootstrap: (guestId, at) => Effect.tryPromise({try: () => adapters.repository.reserveGuestBootstrap(guestId, at), catch: (cause) => repositoryFailure("reserveGuestBootstrap", cause)}),
       createContentBootstrap: (command) =>
@@ -787,17 +814,7 @@ export function createApplicationLayer(
           catch: (cause) => repositoryFailure("findVersionContent", cause),
         }),
     },
-    secrets: {
-      digest: (token) =>
-        createHash("sha256").update(Redacted.value(token)).digest("hex"),
-      issue: () => {
-        const raw = randomBase64Url(32);
-        return {
-          digest: createHash("sha256").update(raw).digest("hex"),
-          token: Redacted.make(raw, {label: "content-session-token"}),
-        };
-      },
-    },
+    secrets: contentSecrets,
   };
 
   const localPrincipal: Principal = {
@@ -819,7 +836,7 @@ export function createApplicationLayer(
     membershipRole: membershipRoles.member,
   };
   const identityRepository = adapters.identityRepository;
-  const identityLayer = InstallationAccessService.layer({
+  const installationAccessDependencies: Parameters<typeof InstallationAccessService.layer>[0] = {
     bootstrapAdministratorEmail: adapters.bootstrapAdministratorEmail,
     clock: adapters.clock,
     groupRolePolicy: adapters.groupRolePolicy ?? null,
@@ -829,6 +846,8 @@ export function createApplicationLayer(
       sessionId: () => `session_${randomUUID()}`,
     },
     installationId: adapters.installationId,
+    staffHandleSecret: adapters.staffHandleSecret ?? Redacted.make(""),
+    organizationDirectoryVisibility: adapters.organizationDirectoryVisibility,
     localBootstrapCredential: adapters.localBootstrapCredential,
     localLoginAttemptLifetimeMilliseconds: 60 * 1_000,
     protectBootstrapAdministrator: adapters.protectBootstrapAdministrator,
@@ -862,13 +881,14 @@ export function createApplicationLayer(
         "createLoginAttempt",
         () => identityRepository.createLoginAttempt(attempt),
       ),
-      deactivateMember: (installationId, memberId, updatedAt) =>
+      deactivateMember: (installationId, memberId, updatedAt, manualDeactivation) =>
         identityEffectWithConflictOrNotFound(
           "deactivateMember",
           () => identityRepository.deactivateMember(
             installationId,
             memberId,
             updatedAt,
+            manualDeactivation,
           ),
         ),
       findActiveMemberByEmail: (installationId, email) => identityEffect(
@@ -915,6 +935,10 @@ export function createApplicationLayer(
       listMembers: (installationId) => identityEffect(
         "listMembers",
         () => identityRepository.listMembers(installationId),
+      ),
+      listStaffOnlyMemberIds: (installationId, staffGroupIds) => identityEffect(
+        "listMembers",
+        () => identityRepository.listStaffOnlyMemberIds?.(installationId, staffGroupIds) ?? Promise.resolve([]),
       ),
       applyDirectoryGroups: (installationId, snapshot) => identityEffect(
         "applyDirectoryGroups",
@@ -1001,13 +1025,84 @@ export function createApplicationLayer(
             recomputeFromCurrentGroups,
           ),
         ),
+      setMemberStaff: (installationId, memberId, staff) => identityEffectWithNotFound(
+        "setMemberRole",
+        () => identityRepository.setMemberStaff(installationId, memberId, staff),
+      ),
     },
     secrets: {
       digest: digestIdentitySecret,
       issue: () => randomBase64Url(32),
     },
     sessionLifetimeMilliseconds: 12 * 60 * 60 * 1_000,
-  });
+  };
+  if (identityRepository.setOrganizationMemberRole !== undefined) {
+    Object.assign(installationAccessDependencies.repository, {
+      setOrganizationMemberRole: (installationId: string, memberId: string, role: InstallationMember["role"], updatedAt: string) =>
+        identityEffectWithConflictOrNotFound(
+          "setOrganizationMemberRole",
+          () => identityRepository.setOrganizationMemberRole?.(
+            installationId,
+            memberId,
+            role,
+            updatedAt,
+          ) ?? Promise.resolve(null),
+        ),
+    });
+  }
+  if (identityRepository.reactivateMember !== undefined) {
+    Object.assign(installationAccessDependencies.repository, {
+      reactivateMember: (installationId: string, memberId: string) =>
+        identityEffectWithConflictOrNotFound(
+          "reactivateMember",
+          () => identityRepository.reactivateMember?.(installationId, memberId) ??
+            Promise.reject(new Error("Organization member reactivation is unavailable.")),
+        ),
+    });
+  }
+  if (identityRepository.isMemberManuallyDeactivated !== undefined) {
+    Object.assign(installationAccessDependencies.repository, {
+      isMemberManuallyDeactivated: (installationId: string, email: string) =>
+        identityEffect(
+          "isMemberManuallyDeactivated",
+          () => identityRepository.isMemberManuallyDeactivated?.(installationId, email) ??
+            Promise.resolve(false),
+        ),
+    });
+  }
+  if (identityRepository.listManuallyDeactivatedMemberEmails !== undefined) {
+    Object.assign(installationAccessDependencies.repository, {
+      listManuallyDeactivatedMemberEmails: (installationId: string, emails: readonly string[]) =>
+        identityEffect(
+          "listManuallyDeactivatedMemberEmails",
+          () => identityRepository.listManuallyDeactivatedMemberEmails?.(installationId, emails) ?? Promise.resolve([]),
+        ),
+    });
+  }
+  if (identityRepository.applyOrganizationMemberSnapshot !== undefined) {
+    Object.assign(installationAccessDependencies.repository, {
+      applyOrganizationMemberSnapshot: (
+        installationId: string,
+        entries: Parameters<NonNullable<IdentityRepository["applyOrganizationMemberSnapshot"]>>[1],
+        updatedAt: string,
+        maximumDeactivations: number,
+      ) => identityEffectWithConflict(
+        "applyOrganizationMemberSnapshot",
+        () => identityRepository.applyOrganizationMemberSnapshot?.(
+          installationId,
+          entries,
+          updatedAt,
+          maximumDeactivations,
+        ) ?? Promise.reject(new Error("Organization snapshot reconciliation is unavailable.")),
+      ),
+    });
+  }
+  if (adapters.organizationAdmission !== undefined) {
+    Object.assign(installationAccessDependencies, {
+      organizationAdmission: adapters.organizationAdmission,
+    });
+  }
+  const identityLayer = InstallationAccessService.layer(installationAccessDependencies);
   const authenticationLayer = Layer.effect(
     AuthenticationService,
     InstallationAccessService.use((installationAccess) => {
@@ -1282,6 +1377,7 @@ export function createApplicationLayer(
   const guestReviewLayer = GuestReviewService.layer({
     clock,
     ids: adapters.ids,
+    organizationDirectoryVisibility: adapters.organizationDirectoryVisibility === true,
     repository: {
       createGuestInvitation: (invitation) => Effect.tryPromise({try: () => adapters.repository.createGuestInvitation(invitation), catch: (cause) => repositoryFailure("createGuestInvitation", cause)}),
       findGuestInvitation: (projectId, artifactId) => Effect.tryPromise({try: () => adapters.repository.findGuestInvitation(projectId, artifactId), catch: (cause) => repositoryFailure("findGuestInvitation", cause)}),

@@ -13,7 +13,7 @@ import {
   type AuthorizationDenied,
   InvalidPagination,
 } from "../core/errors.js";
-import type {Principal} from "../core/identity.js";
+import {tenantVersionRecord, type Principal} from "../core/identity.js";
 import {
   accessSettings,
   type ArtifactRecord,
@@ -149,10 +149,13 @@ function makePublicLinkAdministrationService(
   )(function*(command: ListPublicLinksCommand) {
     yield* authorization.requireInstallationAdministration(command.principal);
     const limit = yield* requireBound(command.limit, "page", maximumPageSize);
-    return yield* repository.listPublicLinks({
+    const page = yield* repository.listPublicLinks({
       cursor: command.cursor,
       limit,
     });
+    return Object.assign({}, page, {items: page.items.map((item) => Object.assign({}, item, {
+      currentVersion: tenantVersionRecord(command.principal, item.currentVersion),
+    }))});
   });
 
   const makePrivate = Effect.fn(
