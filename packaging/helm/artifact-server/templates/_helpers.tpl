@@ -203,6 +203,8 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
   value: {{ .Values.configuration.installationId | quote }}
 - name: ARTIFACT_SERVER_ORIGIN
   value: {{ .Values.configuration.applicationOrigin | quote }}
+- name: ARTIFACT_SERVER_ORG_TENANCY
+  value: {{ .Values.configuration.organizationTenancy | default "off" | quote }}
 - name: ARTIFACT_SERVER_OBJECT_STORAGE_PROVIDER
   value: "s3"
 - name: ARTIFACT_SERVER_POSTGRES_MAX_CONNECTIONS

@@ -78,6 +78,7 @@
         "requestLogSampleRate": {"type": "number", "minimum": 0, "maximum": 1},
         "readinessWithdrawalMilliseconds": {"type": "integer", "minimum": 0, "maximum": 60000},
         "shutdownDeadlineMilliseconds": {"type": "integer", "minimum": 1, "maximum": 300000},
+        "organizationTenancy": {"type": "string", "enum": ["off", "on"]},
         "s3": {
           "type": "object",
           "additionalProperties": false,
