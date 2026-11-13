@@ -405,11 +405,6 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
     return this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql.withTransaction(Effect.gen(function*() {
-        if (entries.length === 0) {
-          return yield* Effect.fail(new IdentityConflict({
-            message: "Directory sync refuses an empty organization snapshot.",
-          }));
-        }
         yield* sql`SELECT pg_advisory_xact_lock(
           hashtextextended(${`artifact-server:directory-groups:${installationId}`}, 0)
         )`;
@@ -423,6 +418,11 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         if (installationRows[0]?.status !== "active") {
           return yield* Effect.fail(new IdentityConflict({
             message: "Directory sync cannot update a suspended organization installation.",
+          }));
+        }
+        if (entries.length === 0) {
+          return yield* Effect.fail(new IdentityConflict({
+            message: "Directory sync refuses an empty organization snapshot.",
           }));
         }
         const rows = yield* sql.unsafe<object>(
@@ -1235,7 +1235,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
            WHERE installation_id = $1 AND id = $2 AND manual_deactivation = TRUE
              AND suspended_by_org_at IS NULL
            RETURNING id, installation_id AS "installationId", email,
-             display_name AS "displayName", role, status,
+             display_name AS "displayName", role, staff, status,
              created_at AS "createdAt", updated_at AS "updatedAt"`,
           [installationId, memberId],
         );
@@ -1319,7 +1319,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
            SET role = $1, status = $2, updated_at = $3
            WHERE installation_id = $4 AND id = $5
            RETURNING id, installation_id AS "installationId", email,
-             display_name AS "displayName", role, status,
+             display_name AS "displayName", role, staff, status,
              created_at AS "createdAt", updated_at AS "updatedAt"`,
           [effectiveRole, memberStatuses.active, updatedAt, installationId, memberId],
         );
@@ -1332,7 +1332,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
               `UPDATE installation_members SET role = $1, status = $2, updated_at = $3
                WHERE installation_id = $4 AND id = $5
                RETURNING id, installation_id AS "installationId", email,
-                 display_name AS "displayName", role, status,
+                 display_name AS "displayName", role, staff, status,
                  created_at AS "createdAt", updated_at AS "updatedAt"`,
               [originalMember?.role, originalMember?.status, updatedAt, installationId, memberId]);
           }

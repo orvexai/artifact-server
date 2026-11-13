@@ -2333,6 +2333,56 @@ describe.sequential("organization tenancy security boundary", () => {
       await expect(runtimeA.syncOrganizationMembers(failingDirectory, organizationA))
         .rejects.toThrow("Keycloak organization member read failed");
       expect(await registry.find(aliasA)).toMatchObject({status: "active"});
+      const staffOwnerLogin = await roleLogin("owner-a@example.test", "owner-a", ["/owner"]);
+      expect(staffOwnerLogin.status).toBe(303);
+      const staffOwnerCookies = staffOwnerLogin.headers.getSetCookie();
+      const staffOwnerCookie = staffOwnerCookies.map((value) => value.split(";", 1)[0]).join("; ");
+      const staffOwnerCsrfPair = staffOwnerCookie.split("; ").find((pair) =>
+        pair.slice(0, pair.indexOf("=")).toLowerCase().includes("csrf"),
+      );
+      const staffOwnerCsrf = staffOwnerCsrfPair?.slice(staffOwnerCsrfPair.indexOf("=") + 1);
+      if (staffOwnerCsrf === undefined) throw new Error("The staff owner session has no CSRF token.");
+      const staffMember = await new PostgresIdentityRepository(database, orgA.id).admitMember({
+        createdAt: new Date().toISOString(),
+        displayName: "staff-a",
+        email: "staff-a@example.test",
+        id: `member_${randomUUID()}`,
+        installationId: orgA.id,
+        role: "member",
+        staff: true,
+      });
+      const staffHandle = staffMemberOpaqueId(orgA.id, apiTokenA, staffMember.id);
+      const staffHeaders = {
+        Cookie: staffOwnerCookie, Host: "artifacts.example.com", Origin: "https://artifacts.example.com",
+        "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json",
+        "X-CSRF-Token": staffOwnerCsrf,
+      };
+      const admitAttempt = async (email: string) => fetch(`${baseUrl}/o/${aliasA}/api/v1/members`, {
+        method: "POST",
+        headers: staffHeaders,
+        body: JSON.stringify({displayName: "New member", email, role: "member"}),
+      });
+      const staffAdmissionAttempt = await admitAttempt(staffMember.email);
+      const newAddressAdmissionAttempt = await admitAttempt(`not-admittable-${randomUUID()}@example.test`);
+      expect(staffAdmissionAttempt.status).toBe(409);
+      expect(newAddressAdmissionAttempt.status).toBe(409);
+      const staffAdmissionBody = await staffAdmissionAttempt.json();
+      expect(staffAdmissionBody).toEqual(await newAddressAdmissionAttempt.json());
+      expect(staffAdmissionBody).toEqual({error: {code: "IDENTITY_CONFLICT", message: "Cannot admit this address."}});
+      const staffDeactivate = await fetch(`${baseUrl}/o/${aliasA}/api/v1/members/${staffHandle}/deactivate`, {
+        method: "POST", headers: staffHeaders, body: "{}",
+      });
+      expect(staffDeactivate.status).toBe(200);
+      const staffDeactivateBody = await staffDeactivate.text();
+      assertNoStaffIdentity(staffDeactivateBody, ["staff-a", "staff-a@example.test", staffMember.id]);
+      expect(JSON.parse(staffDeactivateBody)).toEqual({member: {id: staffHandle, status: "inactive"}});
+      const staffReactivate = await fetch(`${baseUrl}/o/${aliasA}/api/v1/members/${staffHandle}/reactivate`, {
+        method: "POST", headers: staffHeaders, body: "{}",
+      });
+      expect(staffReactivate.status).toBe(200);
+      const staffReactivateBody = await staffReactivate.text();
+      assertNoStaffIdentity(staffReactivateBody, ["staff-a", "staff-a@example.test", staffMember.id]);
+      expect(JSON.parse(staffReactivateBody)).toEqual({member: {id: staffHandle, status: "inactive"}});
     } finally {
       await Promise.all([runtimeA.close(), runtimeB.close()]);
     }

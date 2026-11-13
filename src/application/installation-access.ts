@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
 
 import {
   type ProjectAccess,
@@ -436,7 +436,6 @@ export interface InstallationAccessOperations {
   >;
   readonly listStaffOnlyMemberIds: () => Effect.Effect<readonly string[], IdentityRepositoryFailure>;
   readonly listStaffOnlyMembers: () => Effect.Effect<readonly Pick<InstallationMember, "id" | "displayName" | "email" | "status">[], IdentityRepositoryFailure>;
-  readonly staffMemberHandle: (memberId: string) => Effect.Effect<string>;
   readonly issueLocalBrowserLogin: (
     credential: Redacted.Redacted,
   ) => Effect.Effect<
@@ -1554,6 +1553,11 @@ function makeInstallationAccessService(
     "InstallationAccessService.admitMember",
   )(function*(command: AdmitMemberCommand) {
     yield* requireAdministrator(command.principal, dependencies.installationId);
+    if (dependencies.organizationDirectoryVisibility === true) {
+      // Keycloak owns tenant membership; refusing every manual admit keeps a
+      // staff address indistinguishable from any other unadmittable address.
+      return yield* Effect.fail(new IdentityConflict({message: "Cannot admit this address."}));
+    }
     const displayName = yield* requireText(command.displayName, "display name");
     const email = yield* normalizeEmail(command.email);
     return yield* dependencies.repository.admitMember({
@@ -1598,7 +1602,10 @@ function makeInstallationAccessService(
     return key;
   };
   const createStaffMemberHandle = (memberId: string) => staffMemberOpaqueId(dependencies.installationId, memberIdKey(), memberId);
-  const staffMemberHandle = (memberId: string) => Effect.sync(() => createStaffMemberHandle(memberId));
+  const projectMemberMutation = (member: InstallationMember, wasStaff: boolean): InstallationMember =>
+    dependencies.organizationDirectoryVisibility === true && wasStaff
+      ? {...member, id: createStaffMemberHandle(member.id), displayName: "Orvex Support", email: "", staff: true}
+      : member;
 
   const deactivateMember = Effect.fn(
     "InstallationAccessService.deactivateMember",
@@ -1646,13 +1653,14 @@ function makeInstallationAccessService(
       dependencies.organizationDirectoryVisibility === true,
     );
     clearAuthenticationCaches();
-    return member;
+    return projectMemberMutation(member, target?.staff === true);
   });
 
   const reactivateMember = Effect.fn(
     "InstallationAccessService.reactivateMember",
   )(function*(principal: Principal, memberId: string) {
     let targetMemberId = memberId;
+    let targetWasStaff = false;
     if (dependencies.organizationDirectoryVisibility === true) {
       const members = yield* dependencies.repository.listMembers(dependencies.installationId);
       const staffTarget = members.find(({id, staff}) => staff === true && createStaffMemberHandle(id) === memberId);
@@ -1661,6 +1669,7 @@ function makeInstallationAccessService(
       if (target.staff === true) {
         if (principal.membershipRole !== membershipRoles.owner) return yield* new IdentityNotFound({message: "Member does not exist."});
         targetMemberId = target.id;
+        targetWasStaff = true;
       }
     }
     yield* requireAdministrator(principal, dependencies.installationId);
@@ -1675,7 +1684,7 @@ function makeInstallationAccessService(
       targetMemberId,
     );
     clearAuthenticationCaches();
-    return member;
+    return projectMemberMutation(member, targetWasStaff);
   });
 
   const issueApiKey = Effect.fn(
@@ -1857,7 +1866,6 @@ function makeInstallationAccessService(
     listMembers,
     listStaffOnlyMemberIds,
     listStaffOnlyMembers,
-    staffMemberHandle,
     loginWithLocalBrowserToken,
     reconcileDirectoryMembers,
     applyDirectoryGroups,
@@ -1999,7 +2007,12 @@ export function digestIdentitySecret(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-/** Stable, non-reversible public handles for staff rows shown to tenant owners. */
+/**
+ * Stable, non-reversible public handles for staff rows shown to tenant owners.
+ * The handle key is HKDF-derived from the server token, so token rotation also
+ * rotates all staff handles without using the live bearer token as an HMAC key.
+ */
 export function staffMemberOpaqueId(installationId: string, serverKey: string, memberId: string): string {
-  return `staff_${createHmac("sha256", serverKey).update(installationId).update("\0").update(memberId).digest("base64url").slice(0, 22)}`;
+  const handleKey = Buffer.from(hkdfSync("sha256", serverKey, installationId, "artifact-server staff handle v1", 32));
+  return `staff_${createHmac("sha256", handleKey).update(installationId).update("\0").update(memberId).digest("base64url").slice(0, 22)}`;
 }

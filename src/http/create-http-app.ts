@@ -1719,10 +1719,7 @@ export function createHttpApp(
       ),
     );
     if (tenantOrganization) {
-      const id = member.staff === true
-        ? await runHttpApplicationEffect(context, dependencies, InstallationAccessService.use((access) => access.staffMemberHandle(member.id)))
-        : member.id;
-      return context.json({member: {id, status: member.status}});
+      return context.json({member: {id: member.id, status: member.status}});
     }
     return context.json({member});
   });
@@ -1739,10 +1736,7 @@ export function createHttpApp(
         ),
       );
       if (tenantOrganization) {
-        const id = member.staff === true
-          ? await runHttpApplicationEffect(context, dependencies, InstallationAccessService.use((access) => access.staffMemberHandle(member.id)))
-          : member.id;
-        return context.json({member: {id, status: member.status}});
+        return context.json({member: {id: member.id, status: member.status}});
       }
       return context.json({member});
     });

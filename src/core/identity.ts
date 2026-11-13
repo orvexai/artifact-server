@@ -109,22 +109,36 @@ export function tenantVisiblePrincipalId(principal: Principal | undefined, princ
 
 /** Compare reserved tenant identity labels after compatibility and confusable folding. */
 export function isReservedTenantIdentityName(value: string): boolean {
-  const normalized = value.normalize("NFKD").replace(/€/gu, "e").replace(/[ʀ]/gu, "r").replace(/[ᴇ]/gu, "e").replace(/[ᴘ]/gu, "p");
-  const skeletonValue = confusableSkeleton(normalized).toLowerCase()
-    .replace(/\u028b/gu, "v")
+  const folded = tenantIdentityNameFold(value);
+  const tokens = folded.split(/[\p{P}\p{S}\p{Z}]+/u).filter(Boolean);
+  const wholeName = folded.replace(/[\p{P}\p{S}\p{Z}]/gu, "");
+  // OrvexHelp is intentionally allowed: the reserved prefix is the exact
+  // OrvexSupport brand token, rather than any name beginning with "Orvex".
+  return tokens.some((token) => token === "orvex" || token.startsWith("orvexsupport")) ||
+    editDistanceAtMostOne(wholeName, "orvexsupport");
+}
+
+function tenantIdentityNameFold(value: string): string {
+  const normalized = value.replace(/™/gu, "").normalize("NFKD")
+    .replace(/[\p{M}\p{Default_Ignorable_Code_Point}]/gu, "")
+    .replace(/[ᴏ]/gu, "o")
+    .replace(/[ʀ]/gu, "r")
+    .replace(/[ᴠ]/gu, "v")
+    .replace(/[ᴇ]/gu, "e")
+    .replace(/[ᴘ]/gu, "p")
+    .replace(/[ѕ]/gu, "s")
+    .replace(/[ʋ]/gu, "v")
+    .replace(/€/gu, "e");
+  return confusableSkeleton(normalized)
+    .toLowerCase()
     .replace(/[01]/gu, (character) => character === "0" ? "o" : "l")
-    .replace(/[3]/gu, "e").replace(/[4]/gu, "a").replace(/[5$]/gu, "s")
-    .replace(/[7]/gu, "t").replace(/@/gu, "a").replace(/€/gu, "e").replace(/i/gu, "l")
-    .replace(/[\p{M}\p{P}\p{S}\p{Z}\p{Default_Ignorable_Code_Point}]/gu, "");
-  const tokens = confusableSkeleton(normalized).toLowerCase()
-    .replace(/[01]/gu, (character) => character === "0" ? "o" : "l")
-    .replace(/[3]/gu, "e").replace(/[4]/gu, "a").replace(/[5$]/gu, "s")
-    .replace(/[7]/gu, "t").replace(/@/gu, "a").replace(/€/gu, "e").replace(/i/gu, "l")
-    .replace(/[\p{M}\p{P}\p{S}\p{Z}\p{Default_Ignorable_Code_Point}]/gu, " ")
-    .split(/\s+/u).filter(Boolean);
-  return editDistanceAtMostOne(skeletonValue, "orvexsupport") ||
-    tokens.includes("orvex") ||
-    /(?:^|\s)\$upport(?:$|\s)/iu.test(normalized);
+    .replace(/[3]/gu, "e")
+    .replace(/[4]/gu, "a")
+    .replace(/[5$]/gu, "s")
+    .replace(/[7]/gu, "t")
+    .replace(/@/gu, "a")
+    .replace(/€/gu, "e")
+    .replace(/i/gu, "l");
 }
 
 function editDistanceAtMostOne(left: string, right: string): boolean {

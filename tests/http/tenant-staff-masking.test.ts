@@ -60,7 +60,7 @@ describe("tenant identity projection", () => {
       expect(tenantIdentityPresentation(principal, {displayName: value, principalId: "member-id"}).displayName)
         .toBe("Orvex Support (member)");
     }
-    for (const value of ["Orvex 5upport", "$upport", "Orv3x", "0rv3x 5upp0r7", "or\u2c9fvexsupport", "orvex suppo\u2ca3t"]) {
+    for (const value of ["Orvex 5upport", "Orv3x", "0rv3x 5upp0r7", "or\u2c9fvexsupport", "orvex suppo\u2ca3t"]) {
       expect(isReservedTenantIdentityName(value), `reserved identity: ${value}`).toBe(true);
     }
     for (const value of ["田中 Taro", "Иван Ivanov"]) {
@@ -68,12 +68,21 @@ describe("tenant identity projection", () => {
     }
   });
 
-  test("reserved-name matching avoids substring false positives and folds euro", () => {
-    for (const name of ["Cortex Bot", "Convex", "Vortex", "Forex Team", "Torvex Ltd"]) {
-      expect(isReservedTenantIdentityName(name)).toBe(false);
+  test("reserved-name folding catches variants without reserving unrelated names", () => {
+    for (const name of [
+      "Orvéx Support Team", "Orʋex", "OrvexSupport Team", "Orvexsupport staff",
+      "Orvex™ Support Desk", "Orvex\u00adSupport", "Orvex\u200bSupport",
+      "Orvex 5upport", "Orv3x", "0rv3x 5upp0r7", "or\u2c9fvexsupport",
+      "orvex suppo\u2ca3t", "Orv€x",
+    ]) {
+      expect(isReservedTenantIdentityName(name), `reserved identity: ${name}`).toBe(true);
     }
-    for (const name of ["Orvex 5upport", "$upport", "Orv3x", "0rv3x 5upp0r7", "Orv€x"]) {
-      expect(isReservedTenantIdentityName(name)).toBe(true);
+    for (const name of [
+      "Orvexa Smith", "Lorvex Jones", "Torvex", "Sorvex Ltd", "Marvex", "Irvex",
+      "Orvel", "Orvexian Club", "Oliver Vex", "Cortex", "Convex", "Vortex", "Forex",
+      "OrvexHelp", "田中 Taro", "Иван Ivanov",
+    ]) {
+      expect(isReservedTenantIdentityName(name)).toBe(false);
     }
   });
 
@@ -87,12 +96,12 @@ describe("tenant identity projection", () => {
       .toBe("c5172e647efd550afb93b49d9e4d7afdabef59794be136cc921010674fc41383");
   });
 
-  test("staff handles are installation-scoped HMACs rather than offline member hashes", () => {
+  test("staff handles use installation-scoped HKDF/HMAC keys, which rotate with the server token", () => {
     const handle = staffMemberOpaqueId("install-a", "server-key", "member-1");
     expect(handle).toMatch(/^staff_[A-Za-z0-9_-]{22}$/u);
     expect(staffMemberOpaqueId("install-a", "server-key", "member-1")).toBe(handle);
     expect(staffMemberOpaqueId("install-b", "server-key", "member-1")).not.toBe(handle);
-    expect(staffMemberOpaqueId("install-a", "other-key", "member-1")).not.toBe(handle);
+    expect(staffMemberOpaqueId("install-a", "rotated-server-token", "member-1")).not.toBe(handle);
   });
 
   test("tenant attribution projection masks staff ids while preserving other principals", () => {
