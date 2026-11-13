@@ -2562,6 +2562,66 @@ describe.sequential("organization tenancy security boundary", () => {
     }
   }, 60_000);
 
+  test("org sync marks staff from the org's admission-policy staff selectors (H1)", async () => {
+    const registry = new OrganizationRegistry(database);
+    const slug = `staff-${randomUUID().slice(0, 8)}`;
+    const keycloakId = randomUUID();
+    const groupRoot = `/teams/${slug}/`;
+    const policy: OrganizationAdmissionPolicy = {
+      groupRoots: [groupRoot],
+      seed: [
+        {role: "owner", selector: `${groupRoot}owners`},
+        {role: "administrator", selector: `${groupRoot}support`, staff: true},
+      ],
+    };
+    const record = await registry.create(slug, "Staff Org", policy, keycloakId);
+    const organization: DirectoryOrganization = {alias: slug, id: keycloakId, name: "Staff Org"};
+    const users: DirectoryOrganizationMember[] = [
+      {id: "kc-owner", username: "owner", email: `owner@${slug}.test`, emailVerified: true, enabled: true, firstName: "Real", lastName: "Owner", role: "owner"},
+      {id: "kc-staff", username: "staff", email: `staff@${slug}.test`, emailVerified: true, enabled: true, firstName: "Private", lastName: "Staffer", role: "editor"},
+    ];
+    const staffLookups: string[] = [];
+    const directory: OrganizationDirectory = {
+      listGroupMemberIdsByPath: (path) => {
+        staffLookups.push(path);
+        return Effect.succeed(path === `${groupRoot}support` ? ["kc-staff"] : []);
+      },
+      listOrganizationMembers: () => Effect.succeed(users),
+      listOrganizations: () => Effect.succeed([organization]),
+    };
+    const runtime = await createOrgRuntime(record.id, {
+      admissionPolicy: runtimeAdmissionPolicy(record.admissionPolicy),
+      cookieRouteId: record.routeId,
+      keycloakOrganizationId: keycloakId,
+      slug,
+    }, withoutGitHistory(config), database);
+    try {
+      const report = await runtime.syncOrganizationMembers(directory, organization);
+      expect("kind" in report).toBe(false);
+      expect(staffLookups).toEqual([`${groupRoot}support`]);
+      const rows = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT email, staff FROM installation_members
+          WHERE installation_id = ${record.id} ORDER BY email`;
+      }));
+      expect(rows).toEqual([
+        {email: `owner@${slug}.test`, staff: false},
+        {email: `staff@${slug}.test`, staff: true},
+      ]);
+      // The marker is sticky: a later sync without the staff group keeps it.
+      const stickyDirectory: OrganizationDirectory = {...directory, listGroupMemberIdsByPath: () => Effect.succeed([])};
+      await runtime.syncOrganizationMembers(stickyDirectory, organization);
+      const sticky = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT staff FROM installation_members
+          WHERE installation_id = ${record.id} AND email = ${`staff@${slug}.test`}`;
+      }));
+      expect(sticky[0]?.["staff"]).toBe(true);
+    } finally {
+      await runtime.close();
+    }
+  });
+
   test("an org member removal deactivates only that installation's member", async () => {
     const registry = new OrganizationRegistry(database);
     const aliasA = `org-a-${randomUUID().slice(0, 8)}`;
@@ -3032,14 +3092,14 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(staffDeactivate.status).toBe(200);
       const staffDeactivateBody = await staffDeactivate.text();
       assertNoStaffIdentity(staffDeactivateBody, ["staff-a", "staff-a@example.test", staffMember.id]);
-      expect(JSON.parse(staffDeactivateBody)).toEqual({member: {id: staffHandle, status: "inactive"}});
+      expect(JSON.parse(staffDeactivateBody)).toEqual({member: {displayName: "Orvex Support", id: staffHandle, staff: true, status: "inactive"}});
       const staffReactivate = await fetch(`${baseUrl}/o/${aliasA}/api/v1/members/${staffHandle}/reactivate`, {
         method: "POST", headers: staffHeaders, body: "{}",
       });
       expect(staffReactivate.status).toBe(200);
       const staffReactivateBody = await staffReactivate.text();
       assertNoStaffIdentity(staffReactivateBody, ["staff-a", "staff-a@example.test", staffMember.id]);
-      expect(JSON.parse(staffReactivateBody)).toEqual({member: {id: staffHandle, status: "inactive"}});
+      expect(JSON.parse(staffReactivateBody)).toEqual({member: {displayName: "Orvex Support", id: staffHandle, staff: true, status: "inactive"}});
     } finally {
       await Promise.all([runtimeA.close(), runtimeB.close()]);
     }

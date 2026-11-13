@@ -147,7 +147,10 @@ describe("tenant identity projection", () => {
       organizations: {acme: {id: "wrong-id", groups: ["/teams/acme/reviewers"]}},
     };
     expect(await resolver.forIdentity(identity)).toEqual([]);
+    // The chooser role follows tenant admission: Keycloak org /viewer, /editor, /owner groups.
     expect(await resolver.forIdentity({...identity, organizations: {acme: {id: "keycloak-org-id", groups: ["/teams/acme/reviewers"]}}}))
+      .toEqual([]);
+    expect(await resolver.forIdentity({...identity, organizations: {acme: {id: "keycloak-org-id", groups: ["/viewer"]}}}))
       .toEqual([{displayName: "Acme", role: "viewer", slug: "acme"}]);
   });
 

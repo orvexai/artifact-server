@@ -620,7 +620,8 @@ const registeredAgentSchema = z.object({
   agentSessionId: z.string().nullable(),
   /** Derived from the agent's own claim polling; the poll is the heartbeat. */
   connected: z.boolean(),
-  connectionKey: z.string(),
+  /** Null for an Orvex staff agent shown inside a tenant organization. */
+  connectionKey: z.string().nullable(),
   createdAt: z.string(),
   displayName: z.string(),
   id: z.string(),
@@ -628,7 +629,8 @@ const registeredAgentSchema = z.object({
   kind: z.string(),
   lastSeenAt: z.string(),
   principalId: z.string().nullable(),
-  workingDirectory: z.string(),
+  /** Null for an Orvex staff agent shown inside a tenant organization. */
+  workingDirectory: z.string().nullable(),
 });
 
 const agentDispatchStateSchema = z.enum([
@@ -719,7 +721,8 @@ const agentPresenceSchema = z.object({
   }).optional(),
   /** Derived from the agent's own claim polling; the poll is the heartbeat. */
   connected: z.boolean(),
-  connectionKey: z.string(),
+  /** Null for an Orvex staff agent shown inside a tenant organization. */
+  connectionKey: z.string().nullable(),
   createdAt: z.string(),
   displayName: z.string(),
   id: z.string(),
@@ -728,7 +731,8 @@ const agentPresenceSchema = z.object({
   lastActivityAt: z.string().optional(),
   lastSeenAt: z.string(),
   principalId: z.string().nullable(),
-  workingDirectory: z.string(),
+  /** Null for an Orvex staff agent shown inside a tenant organization. */
+  workingDirectory: z.string().nullable(),
 });
 
 export type AgentActivity = z.infer<typeof agentActivitySchema>;
@@ -743,15 +747,20 @@ const commentClearResultSchema = z.object({
 
 export type CommentClearResult = z.infer<typeof commentClearResultSchema>;
 
+/**
+ * One member row. A tenant organization masks Orvex staff rows to an opaque
+ * handle, "Orvex Support" and status, so every other field is optional.
+ */
 const memberSchema = z.object({
-  createdAt: z.string(),
+  createdAt: z.string().optional(),
   displayName: z.string(),
   email: z.string().optional(),
   id: z.string(),
-  installationId: z.string(),
+  installationId: z.string().optional(),
   role: membershipRoleSchema.optional(),
+  staff: z.boolean().optional(),
   status: z.enum(["active", "inactive"]),
-  updatedAt: z.string(),
+  updatedAt: z.string().optional(),
 });
 
 const apiKeySchema = z.object({

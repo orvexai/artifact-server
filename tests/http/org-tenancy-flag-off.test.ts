@@ -20,6 +20,7 @@ import {
 import {publishNew} from "../support/publishing.js";
 
 const mcpVersion = "2026-07-28";
+const responseListContentSchema = z.object({items: z.array(z.object({authorEmail: z.string().nullable()}).passthrough())}).passthrough();
 const rpcSchema = z.object({result: z.object({structuredContent: z.unknown()}).passthrough()}).passthrough();
 const mcpPrincipals = new Map<string, Principal>();
 
@@ -208,8 +209,7 @@ describe("organization tenancy flag-off compatibility", () => {
       method: "POST",
     });
     expect(mcp.status).toBe(200);
-    // SAFETY: artifact_response_list's structured content is the paged response with an items array.
-    const mcpPayload = rpcSchema.parse(await mcp.json()).result.structuredContent as {items: Array<{authorEmail: string | null}>};
+    const mcpPayload = responseListContentSchema.parse(rpcSchema.parse(await mcp.json()).result.structuredContent);
     expect(mcpPayload.items[0]?.authorEmail).toBe("administrator@example.test");
     const readResponsesMcp = async (credential: string, id: string) => fetch(`${server.baseUrl}/mcp`, {
       body: JSON.stringify({id, jsonrpc: "2.0", method: "tools/call", params: {
@@ -226,8 +226,7 @@ describe("organization tenancy flag-off compatibility", () => {
     });
     const viewerMcp = await readResponsesMcp("flag-off-viewer", "flag-off-viewer-response-list");
     expect(viewerMcp.status).toBe(200);
-    // SAFETY: artifact_response_list's structured content is the paged response with an items array.
-    const viewerMcpPayload = rpcSchema.parse(await viewerMcp.json()).result.structuredContent as {items: Array<{authorEmail: string | null}>};
+    const viewerMcpPayload = responseListContentSchema.parse(rpcSchema.parse(await viewerMcp.json()).result.structuredContent);
     expect(viewerMcpPayload.items[0]?.authorEmail).toBe("administrator@example.test");
     const guestMcp = await readResponsesMcp("flag-off-guest", "flag-off-guest-response-list");
     expect(guestMcp.status).toBe(200);
@@ -248,8 +247,7 @@ describe("organization tenancy flag-off compatibility", () => {
       method: "POST",
     });
     expect(serviceMcp.status).toBe(200);
-    // SAFETY: artifact_response_list's structured content is the paged response with an items array.
-    const serviceMcpPayload = rpcSchema.parse(await serviceMcp.json()).result.structuredContent as {items: Array<{authorEmail: string | null}>};
+    const serviceMcpPayload = responseListContentSchema.parse(rpcSchema.parse(await serviceMcp.json()).result.structuredContent);
     expect(serviceMcpPayload.items[0]?.authorEmail).toBeNull();
     const revokedResponse = await fetch(`${server.baseUrl}/api/v1/api-keys/${rotated.apiKey.id}/revoke`, {
       headers: {Cookie: cookies.header, Origin: server.baseUrl, "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": cookies.csrf},

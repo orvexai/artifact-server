@@ -1,5 +1,6 @@
 import {
   createOrgRuntime,
+  organizationRuntimeAdmissionPolicy,
   openExternalStorageDatabase,
   type ExternalStorageOrgConfig,
   type ExternalStorageRuntime,
@@ -10,8 +11,10 @@ import {OrganizationRegistry, type OrganizationRecord} from
 import {z} from "zod";
 import {Effect} from "effect";
 import {SqlClient} from "effect/unstable/sql/SqlClient";
-import {createKeycloakOrganizationMembershipResolver} from "./organization-memberships.js";
+import {createKeycloakOrganizationMembershipResolver, createOrvexAdmissionRole} from "./organization-memberships.js";
+import {PostgresIdentityRepository} from "../storage/postgres-identity-repository.js";
 import {PlatformSessions} from "./platform-sessions.js";
+import {platformRootRedirectHeader} from "../http/create-http-app.js";
 
 const maximumCachedOrganizations = 16;
 const idleOrganizationMilliseconds = 5 * 60 * 1_000;
@@ -63,6 +66,19 @@ export async function createOrganizationRouter(
   let evictionTimer: ReturnType<typeof setInterval> | undefined;
   try {
     const registry = new OrganizationRegistry(database);
+    // Orvex is chosen by its normal issuer-group admission, previewed here
+    // without admitting anyone; Keycloak orgs use the verified claim.
+    const orvexIdentities = new PostgresIdentityRepository(database, config.installationId);
+    const orvexAdmissionRole = createOrvexAdmissionRole({
+      bootstrapAdministratorEmail: config.bootstrapAdministratorEmail,
+      findActiveMemberByEmail: (email) => orvexIdentities.findActiveMemberByEmail(config.installationId, email),
+      findActiveMemberByExternalIdentity: (provider, subject) =>
+        orvexIdentities.findActiveMemberByExternalIdentity(config.installationId, provider, subject),
+      groupRolePolicy: config.groupRolePolicy ?? null,
+      hasMembers: () => orvexIdentities.hasMembers(config.installationId),
+      isGroupRoleSeedApplied: () => orvexIdentities.isGroupRoleSeedApplied(config.installationId),
+      listGroupRoles: () => orvexIdentities.listGroupRoles(config.installationId),
+    });
     const platformSessions = new PlatformSessions(
       database,
         config.organizationMemberships ?? createKeycloakOrganizationMembershipResolver(
@@ -77,6 +93,7 @@ export async function createOrganizationRouter(
             ) AS deactivated`;
             return rows[0]?.["deactivated"] === true;
           })),
+          orvexAdmissionRole,
         ),
     );
     await registry.ensureOrvex(config.installationId);
@@ -124,19 +141,7 @@ export async function createOrganizationRouter(
       if (opening !== undefined && BigInt(opening.registryVersion) >= BigInt(organization.registryVersion)) {
         return acquire(await opening.promise);
       }
-      const admissionPolicy = organization.admissionPolicy === null
-        ? null
-        : {
-          groupRoots: organization.admissionPolicy.groupRoots,
-          seed: organization.admissionPolicy.seed.map(({role, selector, staff}) =>
-            staff === undefined ? {role, selector} : {role, selector, staff}
-          ),
-        };
-      if (admissionPolicy !== null && organization.admissionPolicy?.guestGroupPrefixes !== undefined) {
-        Object.assign(admissionPolicy, {
-          guestGroupPrefixes: organization.admissionPolicy.guestGroupPrefixes,
-        });
-      }
+      const admissionPolicy = organizationRuntimeAdmissionPolicy(organization.admissionPolicy);
       const orgConfig: ExternalStorageOrgConfig = {
         admissionPolicy,
         bootstrapAdministratorEmail: organization.slug === "orvex"
@@ -427,6 +432,7 @@ export async function createOrganizationRouter(
             await entry.runtime.app.fetch(new Request(target, request)),
             route.slug,
             config.applicationOrigin,
+            sourceUrl.pathname === "/auth/callback",
           );
           if (response.body === null) {
             finish();
@@ -593,20 +599,29 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
-function prefixOrganizationRedirect(
+export function prefixOrganizationRedirect(
   response: Response,
   slug: string,
   applicationOrigin: string | undefined,
+  rootCallback = false,
 ): Response {
-  const location = response.headers.get("location");
-  if (location === null || applicationOrigin === undefined) return response;
-  const trustedOrigin = new URL(applicationOrigin).origin;
-  const target = new URL(location, trustedOrigin);
-  if (target.origin !== trustedOrigin || target.pathname.startsWith("/o/")) {
+  const headers = new Headers(response.headers);
+  // Only the root /auth/callback may land a platform login on the root
+  // chooser; the internal marker never leaves the router.
+  const toRoot = headers.has(platformRootRedirectHeader);
+  headers.delete(platformRootRedirectHeader);
+  const location = headers.get("location");
+  if (location !== null && applicationOrigin !== undefined && !(toRoot && rootCallback)) {
+    const trustedOrigin = new URL(applicationOrigin).origin;
+    const target = new URL(location, trustedOrigin);
+    if (target.origin === trustedOrigin && !target.pathname.startsWith("/o/")) {
+      headers.set("location", `/o/${slug}${target.pathname}${target.search}${target.hash}`);
+    } else if (!toRoot) {
+      return response;
+    }
+  } else if (!toRoot) {
     return response;
   }
-  const headers = new Headers(response.headers);
-  headers.set("location", `/o/${slug}${target.pathname}${target.search}${target.hash}`);
   return new Response(response.body, {
     headers,
     status: response.status,
