@@ -24,7 +24,7 @@ env:
 jobs:
   gitleaks:
     name: Gitleaks
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 15
     steps:
       - name: Checkout repository history
@@ -79,7 +79,7 @@ jobs:
 
   zizmor:
     name: zizmor
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -114,7 +114,7 @@ jobs:
             'on: issues' \
             'jobs:' \
             '  test:' \
-            '    runs-on: ubuntu-latest' \
+            '    runs-on: public-dind-runners' \
             '    steps:' \
             "      - run: echo \"$unsafe_expression\"" \
             | zizmor --offline --persona regular --strict-collection --format=json --no-progress --color=never - \
@@ -124,6 +124,28 @@ jobs:
           if [[ "$detector_exit" -lt 11 || "$detector_exit" -gt 14 ]] \
             || ! jq -e 'any(.ident == "template-injection")' "$RUNNER_TEMP/zizmor-health.json" >/dev/null; then
             echo "zizmor failed its synthetic detection test (exit $detector_exit)." >&2
+            exit 1
+          fi
+
+      - name: Verify workflow runner labels
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t workflow_files < <(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print)
+          run_count=0
+          while IFS= read -r runner_line; do
+            [[ -z "$runner_line" ]] && continue
+            run_count=$((run_count + 1))
+            case "$runner_line" in
+              *'runs-on: public-dind-runners'|*'runs-on: public-runners') ;;
+              *)
+                printf 'Unsupported or unpinned workflow runner: %s\n' "$runner_line" >&2
+                exit 1
+                ;;
+            esac
+          done < <(rg --no-filename '^[[:space:]]*runs-on:' "${workflow_files[@]}")
+          if [[ "$run_count" -eq 0 ]]; then
+            echo 'No workflow runner declarations were checked.' >&2
             exit 1
           fi
 
