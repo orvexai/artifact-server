@@ -92,6 +92,12 @@ export interface IdentityRepository {
     provider: string,
     subject: string,
   ): Promise<InstallationMember | null>;
+  hasExternalIdentityForMemberWithDifferentSubject(
+    installationId: string,
+    memberId: string,
+    provider: string,
+    subject: string,
+  ): Promise<boolean>;
   findApiKey(
     installationId: string,
     keyId: string,

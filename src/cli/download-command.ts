@@ -5,6 +5,7 @@ import {pipeline} from "node:stream/promises";
 import path from "node:path";
 
 import {Option, type Command} from "commander";
+import {artifactServerRouteUrl} from "../core/server-address.js";
 import {Redacted} from "effect";
 
 import {resolveCliServerConnection} from "./cli-server-connection.js";
@@ -38,7 +39,7 @@ export function configureDownloadCommand(
       .default(commandOptions.defaultProfileDirectory).env("ARTIFACT_SERVER_HOME"))
     .action(async (artifactId: string, versionId: string, options: DownloadOptions) => {
       const connection = await resolveCliServerConnection(options, "history");
-      const endpoint = new URL(
+      const endpoint = artifactServerRouteUrl(
         `/api/v1/artifacts/${encodeURIComponent(artifactId)}/versions/${encodeURIComponent(versionId)}/archive`,
         connection.origin,
       );

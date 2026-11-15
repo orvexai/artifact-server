@@ -394,6 +394,55 @@ describe("M2: the chooser lists every org the user is admitted to", () => {
       },
     })).toEqual([]);
   });
+
+  test("AS-ORVEX-F1-F5: chooser mirrors tenant-aware login, keeps staff, flag-off roles and legacy admins", async () => {
+    const protectedAdmission = createOrvexAdmissionRole({
+      bootstrapAdministratorEmail: null,
+      findActiveMemberByEmail: async () => null,
+      findActiveMemberByExternalIdentity: async () => null,
+      groupRolePolicy: {seed: []},
+      hasMembers: async () => true,
+      isGroupRoleSeedApplied: async () => true,
+      listGroupRoles: async () => [
+        {assignedAt: "now", groupId: "guest", name: "acme", nameUnique: true, path: "/Guests/acme", role: "guest"},
+        {assignedAt: "now", groupId: "staff", name: "acme-staff", nameUnique: true, path: "/TenantWorkspaces/acme/acme-staff", role: "member"},
+      ],
+      orvexTenantGroupProtection: true,
+      organizationStaffGroups: ["/TenantWorkspaces/{slug}/{slug}-staff"],
+    });
+    const makeIdentity = (groups: string[]) => ({...identity, groups});
+    await expect(protectedAdmission(makeIdentity(["/Guests/acme"]))).resolves.toBeNull();
+    await expect(protectedAdmission(makeIdentity(["/TenantWorkspaces/acme/acme-staff"]))).resolves.toBe("member");
+
+    const legacy = createOrvexAdmissionRole({
+      bootstrapAdministratorEmail: null,
+      findActiveMemberByEmail: async () => ({
+        createdAt: "now", displayName: "Legacy admin", email: identity.email, id: "member-admin",
+        installationId: "orvex", role: membershipRoles.administrator, status: "active", updatedAt: "now",
+      }),
+      findActiveMemberByExternalIdentity: async () => null,
+      groupRolePolicy: {seed: []},
+      hasMembers: async () => true,
+      isGroupRoleSeedApplied: async () => true,
+      listGroupRoles: async () => [],
+      orvexTenantGroupProtection: true,
+      organizationStaffGroups: [],
+    });
+    await expect(legacy(makeIdentity([]))).resolves.toBe(membershipRoles.administrator);
+
+    const tenancyOff = createOrvexAdmissionRole({
+      bootstrapAdministratorEmail: null,
+      findActiveMemberByEmail: async () => null,
+      findActiveMemberByExternalIdentity: async () => null,
+      groupRolePolicy: {seed: []},
+      hasMembers: async () => true,
+      isGroupRoleSeedApplied: async () => true,
+      listGroupRoles: async () => [
+        {assignedAt: "now", groupId: "guest", name: "acme", nameUnique: true, path: "/Guests/acme", role: "guest"},
+      ],
+    });
+    await expect(tenancyOff(makeIdentity(["/Guests/acme"]))).resolves.toBe("guest");
+  });
 });
 
 describe("M4: tenant Members and Agents pages accept masked staff rows", () => {

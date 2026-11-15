@@ -2,6 +2,8 @@ import {Option, type Command} from "commander";
 import {Redacted} from "effect";
 import {z} from "zod";
 
+import {artifactServerRouteUrl} from "../core/server-address.js";
+
 import {
   resolveCliServerConnection,
   type CliServerConnectionOptions,
@@ -118,7 +120,7 @@ async function stateRequest<T>(
     headers.set("Content-Type", "application/json");
     init.body = call.jsonBody;
   }
-  const response = await fetch(`${connection.origin}${path}`, init);
+  const response = await fetch(artifactServerRouteUrl(path, connection.origin), init);
   const payload: unknown = response.status === 204 ? null : await response.json();
   if (!response.ok) {
     const failure = z.object({error: z.object({message: z.string()})}).safeParse(payload);

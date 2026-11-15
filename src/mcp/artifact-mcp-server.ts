@@ -738,7 +738,10 @@ export function createArtifactMcpServer(
         dependencies.linkedArtifacts === true,
         dependencies.gitHistory,
       ),
-      "Artifact Server publishes actual files through an upload plan. It does not accept inline HTML, CSS, JavaScript, or base64 content."),
+      dependencies.mode === "local"
+        ? "This tool is connected to a local Artifact Server installation. It publishes actual files through an upload plan and does not accept inline HTML, CSS, JavaScript, or base64 content."
+        : "This tool is connected to a remote Artifact Server installation. It publishes actual files through an upload plan and does not accept inline HTML, CSS, JavaScript, or base64 content.",
+    ),
   );
 
   if (dependencies.organizationTenancy === true) registerNudgedTool(

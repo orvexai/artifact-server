@@ -233,6 +233,26 @@ describe("file publication client", () => {
     } finally {
       await closeServer(uploadPlanServer.server);
     }
+
+    await Promise.all((["upload", "commit"] as const).map(async (unsafePart) => {
+      const uploadPlan = await startUnsafeTenantUploadPlanServer(unsafePart);
+      try {
+        const unsafeTenantPlan = await executeClient(
+          `${uploadPlan.origin}/o/acme`,
+          installation.apiToken,
+          newArtifactCommand(filePath),
+        );
+        expect(unsafeTenantPlan).toMatchObject({
+          error: {
+            _tag: "FilePublicationConfigurationError",
+            reason: "unsafe_upload_plan",
+          },
+          success: false,
+        });
+      } finally {
+        await closeServer(uploadPlan.server);
+      }
+    }));
   });
 
   test("rejects incomplete and malformed plans and reports an unavailable server as protocol failures", async () => {
@@ -404,6 +424,25 @@ async function startUnsafeUploadPlanServer(): Promise<{
       projectId: "prj_default",
       uploadId: "unsafe-upload-plan",
     }));
+}
+
+async function startUnsafeTenantUploadPlanServer(unsafePart: "upload" | "commit"): Promise<{
+  readonly origin: string;
+  readonly server: Server;
+}> {
+  return startResponseServer((origin) => JSON.stringify({
+    commitUrl: `${origin}${unsafePart === "commit" ? "/commit" : "/o/acme/commit"}`,
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    files: [{
+      method: "PUT",
+      path: "safe.txt",
+      size: 22,
+      uploadUrl: `${origin}${unsafePart === "upload" ? "/upload" : "/o/acme/upload"}`,
+    }],
+    manifestDigest: "0".repeat(64),
+    projectId: "prj_default",
+    uploadId: "unsafe-tenant-upload-plan",
+  }));
 }
 
 async function startResponseServer(
