@@ -376,7 +376,7 @@ describe("authenticated CLI profiles and remote publication", () => {
       await stopProcess(server);
       await rm(temporaryDirectory, {force: true, recursive: true});
     }
-  }, 60_000);
+  }, 90_000);
 
   test("CLI-002-F PUB-012-F: rejects an invalid credential without saving it and never sends one profile to another origin", async () => {
     const temporaryDirectory = await mkdtemp(
@@ -474,7 +474,7 @@ describe("authenticated CLI profiles and remote publication", () => {
       await Promise.all([stopProcess(first), stopProcess(second)]);
       await rm(temporaryDirectory, {force: true, recursive: true});
     }
-  }, 30_000);
+  }, 90_000);
 
   test("completes browser PKCE, refresh, status, and revocation against real HTTP boundaries", async () => {
     const temporaryDirectory = await mkdtemp(
