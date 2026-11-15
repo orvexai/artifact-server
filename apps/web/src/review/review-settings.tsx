@@ -1,3 +1,5 @@
+import {useEffect} from "react";
+
 import {ArrowLeft01Icon, Moon02Icon, Sun03Icon} from "@hugeicons/core-free-icons";
 import {HugeiconsIcon} from "@hugeicons/react";
 
@@ -44,7 +46,7 @@ export function ReviewSettings({
     : "installation";
   const tenantDirectory = organizationKind === "tenant";
   const memberDirectoryVisible = tenantDirectory
-    ? directHuman && principal.membershipRole === "owner"
+    ? directHuman && (principal.membershipRole === "owner" || principal.membershipRole === "administrator")
     : administrator;
   const reviewHref = readReturnToReview();
   const visiblePages = visibleSettingsPages({
@@ -53,6 +55,12 @@ export function ReviewSettings({
     organizationKind,
     role: principal.membershipRole,
   });
+  const settingsLanding = window.location.pathname === `${organizationBase}/review/settings` || window.location.pathname === `${organizationBase}/review/settings/`;
+  useEffect(() => {
+    if (!settingsLanding) return;
+    const destination = settingsLandingDestination(visiblePages);
+    if (destination !== null) window.location.replace(destination);
+  }, [settingsLanding, visiblePages]);
 
   return (
     <div className="as-settings">
@@ -120,8 +128,10 @@ export function ReviewSettings({
             memberDirectoryVisible={memberDirectoryVisible}
             onProjectsChanged={onProjectsChanged}
             projects={projects}
+            landing={settingsLanding}
             route={route}
             session={session}
+            visiblePages={visiblePages}
           />
         </main>
       </div>
@@ -137,6 +147,8 @@ function SettingsContent({
   projects,
   route,
   session,
+  landing,
+  visiblePages,
 }: {
   readonly administrator: boolean;
   readonly canManageProjects: boolean;
@@ -145,6 +157,8 @@ function SettingsContent({
   readonly projects: readonly Project[];
   readonly route: SettingsRoute;
   readonly session: Session;
+  readonly landing: boolean;
+  readonly visiblePages: ReadonlySet<SettingsPage>;
 }) {
   const principal = session.principal;
   const directHuman = principal.kind === "human" && principal.authorizedByPrincipalId === null;
@@ -163,8 +177,11 @@ function SettingsContent({
       />
     );
   }
+  if (landing) return <StatePanel description="Opening the first settings page available to this account." title="Opening settings" />;
+  const requiredPage = settingsPageForRoute(route);
+  if (requiredPage !== null && !visiblePages.has(requiredPage)) return <SettingsUnavailable />;
   if (route.kind === "projects" || route.kind === "project") {
-    if (!canManageProjects) return <ProjectPermissionRequired />;
+    if (route.kind === "project" && !canManageProjects) return <ProjectPermissionRequired />;
     if (route.kind === "projects") {
       return (
         <SettingsProjects
@@ -232,6 +249,10 @@ function SettingsLink({
   );
 }
 
+function SettingsUnavailable() {
+  return <StatePanel description="This settings page is not available for your organization role." title="Settings page not available" />;
+}
+
 function ProjectPermissionRequired() {
   return (
     <StatePanel
@@ -274,15 +295,21 @@ export function visibleSettingsPages({
 }): ReadonlySet<SettingsPage> {
   const pages = new Set<SettingsPage>();
   const administrator = directHuman && isAdministratorRole(role);
-  if (canManageProjects) pages.add("projects");
-  if (role !== "guest") {
-    pages.add("mcp");
-    pages.add("webmcp");
-    pages.add("groups");
+  if (organizationKind === "tenant") {
+    if (directHuman && (role === "member" || role === "owner" || role === "administrator")) pages.add("projects");
+    if (directHuman && role !== "guest") pages.add("mcp");
+    if (directHuman && (role === "owner" || role === "administrator")) pages.add("webmcp");
+  } else {
+    if (canManageProjects) pages.add("projects");
+    if (role !== "guest") {
+      pages.add("mcp");
+      pages.add("webmcp");
+      pages.add("groups");
+    }
   }
   if (
     organizationKind === "tenant"
-      ? directHuman && role === "owner"
+      ? directHuman && (role === "owner" || role === "administrator")
       : administrator
   ) {
     pages.add("members");
@@ -292,4 +319,21 @@ export function visibleSettingsPages({
     pages.add("publicLinks");
   }
   return pages;
+}
+
+function settingsPageForRoute(route: SettingsRoute): SettingsPage | null {
+  if (route.kind === "projects" || route.kind === "project") return "projects";
+  if (route.kind === "apiKeys") return "apiKeys";
+  if (route.kind === "publicLinks") return "publicLinks";
+  if (route.kind === "notFound") return null;
+  return route.kind;
+}
+
+function settingsPagePath(page: SettingsPage): string {
+  return page === "apiKeys" ? "api-keys" : page === "publicLinks" ? "public-links" : page;
+}
+
+export function settingsLandingDestination(pages: ReadonlySet<SettingsPage>): string | null {
+  const page = pages.has("projects") ? "projects" : pages.has("mcp") ? "mcp" : null;
+  return page === null ? null : organizationPath(`/review/settings/${settingsPagePath(page)}`);
 }

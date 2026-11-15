@@ -1322,6 +1322,28 @@ describe.sequential("organization tenancy security boundary", () => {
         Promise.resolve([]),
       );
       const actorCookies = new Map<string, RouteWalkerActor>(actorEntries);
+      await Promise.all((["admin", "editor", "viewer"] as const).map(async (role) => {
+        const actor = actorCookies.get(role);
+        if (actor === undefined) throw new Error(`The route walker has no ${role} session.`);
+        const [apiKeysResponse, publicLinksResponse] = await Promise.all([
+          admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/api-keys", {
+            headers: {Cookie: actor.cookie},
+          })),
+          admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/administration/public-links", {
+            headers: {Cookie: actor.cookie},
+          })),
+        ]);
+        const expectedAdministrationStatus = role === "admin" ? 200 : 403;
+        expect(apiKeysResponse.status, `${role} API key administration status`).toBe(expectedAdministrationStatus);
+        expect(publicLinksResponse.status, `${role} public link administration status`).toBe(expectedAdministrationStatus);
+        const groupRoleResponse = await admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/groups/tenant-test/role", {
+          body: JSON.stringify({role: null}),
+          headers: {Cookie: actor.cookie, "Content-Type": "application/json", Origin: applicationOrigin,
+            "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": actor.csrf},
+          method: "PUT",
+        }));
+        expect(groupRoleResponse.status, `${role} cannot edit tenant group roles`).toBe(403);
+      }));
       const adminActor = actorCookies.get("admin");
       if (adminActor === undefined) throw new Error("The route walker has no administrator session.");
       const issuedActorKeys = await Promise.all([...actorCookies].map(async ([role, actor]) => {
@@ -1568,6 +1590,14 @@ describe.sequential("organization tenancy security boundary", () => {
       const ownerCsrfCookie = ownerCookies.find((cookie) => cookie.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`));
       const ownerCsrf = ownerCsrfCookie?.split(";", 1)[0]?.split("=", 2)[1];
       if (ownerCsrf === undefined) throw new Error("Owner login did not issue a CSRF token.");
+      const ownerApiKeysResponse = await admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/api-keys", {
+        headers: {Cookie: ownerCookieHeader},
+      }));
+      expect(ownerApiKeysResponse.status).toBe(200);
+      const ownerPublicLinksResponse = await admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/administration/public-links", {
+        headers: {Cookie: ownerCookieHeader},
+      }));
+      expect(ownerPublicLinksResponse.status).toBe(200);
       const ownerMembersResponse = await admissionRuntime.app.fetch(new Request("https://artifacts.example.com/api/v1/members", {
         headers: {Cookie: ownerCookieHeader},
       }));
