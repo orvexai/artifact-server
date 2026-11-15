@@ -19,6 +19,11 @@ import {Effect} from "effect";
 import {z} from "zod";
 
 import {
+  artifactServerProtectedResourceMetadataUrl,
+  artifactServerRouteUrl,
+} from "../core/server-address.js";
+
+import {
   CliAuthenticationError,
   oauthAccessTokenIsFresh,
   oauthCredential,
@@ -82,7 +87,7 @@ function loginWithOAuth(
   environment: NodeJS.ProcessEnv,
 ): Effect.Effect<CliOAuthLoginResult, CliAuthenticationError> {
   return Effect.gen(function*() {
-    const resource = new URL("/api", origin);
+    const resource = artifactServerRouteUrl("/api", origin);
     const metadataUrl = protectedResourceMetadataUrl(origin);
     const issuer = yield* verifyProtectedResourceMetadata(resource, metadataUrl);
     const state = randomBytes(32).toString("base64url");
@@ -288,7 +293,7 @@ export const refreshCliOAuthCredential = Effect.fn("CliOAuth.refresh")(
           const result = await auth(provider, {
             resourceMetadataUrl: protectedResourceMetadataUrl(origin),
             scope: cliScope,
-            serverUrl: new URL("/api", origin),
+            serverUrl: artifactServerRouteUrl("/api", origin),
           });
           if (result !== "AUTHORIZED") {
             throw new Error("OAuth refresh requires a new login.");
@@ -323,7 +328,7 @@ export const revokeCliOAuthCredential = Effect.fn("CliOAuth.revoke")(
     return yield* Effect.promise(async () => {
       try {
         const discovered = await discoverOAuthServerInfo(
-          new URL("/api", origin),
+          artifactServerRouteUrl("/api", origin),
           {resourceMetadataUrl: protectedResourceMetadataUrl(origin)},
         );
         const metadata = revocationMetadataSchema.safeParse(
@@ -377,7 +382,7 @@ function temporarilyUnavailableError(): CliAuthenticationError {
 
 /** Exact RFC 9728 path for the Artifact Server HTTP API resource. */
 export function protectedResourceMetadataUrl(origin: string): URL {
-  return new URL("/.well-known/oauth-protected-resource/api", origin);
+  return artifactServerProtectedResourceMetadataUrl(origin, "api");
 }
 
 interface OAuthProviderOptions {

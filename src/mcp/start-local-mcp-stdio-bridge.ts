@@ -17,6 +17,7 @@ import {
   type McpCliProfileConnection,
 } from "../cli/mcp-cli-profile.js";
 import {readLocalApiCredential} from "../local/local-credentials.js";
+import {artifactServerRouteUrl} from "../core/server-address.js";
 
 const modernProtocolRevision = "2026-07-28";
 const forwardedResultSchema = z.object({
@@ -53,6 +54,7 @@ async function createForwardingServer(
   if (profile !== null) {
     return createRemoteForwardingServer(options, profile);
   }
+  console.error("Artifact Server MCP bridge is connected to a local installation because no remote CLI profile is configured.");
   const service = await ensureManagedLocalService(
     options.dataDirectory,
     options.invocation,
@@ -62,7 +64,7 @@ async function createForwardingServer(
     {versionNegotiation: {mode: {pin: modernProtocolRevision}}},
   );
   const transport = new StreamableHTTPClientTransport(
-    new URL("/mcp", service.origin),
+    artifactServerRouteUrl("/mcp", service.origin),
     {
       authProvider: {
         token: () => readLocalApiCredential(options.dataDirectory),
@@ -104,7 +106,7 @@ async function createRemoteForwardingServer(
     {versionNegotiation: {mode: {pin: modernProtocolRevision}}},
   );
   const transport = new StreamableHTTPClientTransport(
-    new URL("/mcp", profile.origin),
+    artifactServerRouteUrl("/mcp", profile.origin),
     {authProvider: {token: profile.token}},
   );
   try {

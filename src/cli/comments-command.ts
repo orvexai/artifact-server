@@ -2,6 +2,7 @@ import {Option, type Command} from "commander";
 import {Redacted} from "effect";
 import {z} from "zod";
 
+import {artifactServerRouteUrl} from "../core/server-address.js";
 import {
   resolveCliServerConnection,
   type CliServerConnectionOptions,
@@ -142,7 +143,7 @@ export async function listArtifactComments({
     if (projectId !== undefined) query.set("projectId", projectId);
     if (versionId !== undefined) query.set("versionId", versionId);
     const response = await fetchImpl(
-      new URL(`/api/v1/artifacts/${encodeURIComponent(artifactId)}/comments?${query}`, origin),
+      artifactServerRouteUrl(`/api/v1/artifacts/${encodeURIComponent(artifactId)}/comments?${query}`, origin),
       {
         headers: {Authorization: `Bearer ${apiToken}`, Accept: "application/json"},
         redirect: "error",
@@ -158,7 +159,7 @@ export async function listArtifactComments({
         const resolvedProjectId = projectId ?? thread.projectId;
         const projectQuery = `?projectId=${encodeURIComponent(resolvedProjectId)}`;
         const detailsResponse = await fetchImpl(
-          new URL(
+          artifactServerRouteUrl(
             `/api/v1/artifacts/${encodeURIComponent(artifactId)}/comments/${encodeURIComponent(thread.id)}${projectQuery}`,
             origin,
           ),
