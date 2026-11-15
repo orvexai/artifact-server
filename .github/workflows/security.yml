@@ -142,7 +142,7 @@ jobs:
                 exit 1
                 ;;
             esac
-          done < <(rg --no-filename '^[[:space:]]*runs-on:' "${workflow_files[@]}")
+          done < <(grep -h -E '^[[:space:]]*runs-on:' "${workflow_files[@]}")
           if [[ "$run_count" -eq 0 ]]; then
             echo 'No workflow runner declarations were checked.' >&2
             exit 1
