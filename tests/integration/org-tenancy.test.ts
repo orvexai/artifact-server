@@ -656,7 +656,11 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(orgs.status).toBe(200);
     expect(await orgs.json()).toEqual([]);
     const noOrgLanding = await fetch(`${baseUrl}/`, {headers: {Cookie: cookie}});
-    expect(await noOrgLanding.text()).toContain("You don't belong to any organization yet.");
+    expect(noOrgLanding.headers.get("content-type")).toContain("text/html");
+    expect(noOrgLanding.headers.get("content-security-policy")).toContain("style-src");
+    const noOrgHtml = await noOrgLanding.text();
+    expect(noOrgHtml).toContain("You don't belong to any organization yet.");
+    expect(noOrgHtml).toContain("Sign out");
     platformMemberships = [
       {displayName: "Org B", role: "viewer", slug: orgB.slug},
       {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
@@ -677,6 +681,100 @@ describe.sequential("organization tenancy security boundary", () => {
 
     const platformLogin = await fetch(`${baseUrl}/`, {redirect: "manual"});
     expect(platformLogin.headers.get("location")).toBe("/auth/platform/login?returnTo=%2F");
+
+    const beforeTenantRootLogin = await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`SELECT id, email, role, status, updated_at AS "updatedAt", manual_deactivation AS "manualDeactivation"
+        FROM installation_members WHERE installation_id = ${installationId} ORDER BY id`;
+    }));
+    const completePlatformLogin = async (
+      groups: readonly string[],
+      subject: string,
+      memberships: {displayName: string; role: string; slug: string}[],
+    ) => {
+      oidc.claims.email = `${subject}@example.test`;
+      oidc.claims.emailVerified = true;
+      oidc.claims.groups = groups;
+      oidc.claims.subject = subject;
+      platformMemberships = memberships;
+      const started = await fetch(`${baseUrl}/auth/platform/login?returnTo=%2F`, {redirect: "manual"});
+      expect(started.status).toBe(302);
+      const handshake = started.headers.getSetCookie().find((cookieValue) => cookieValue.startsWith("__Host-artifact_login-"));
+      const authorizationUrl = started.headers.get("location");
+      if (handshake === undefined || authorizationUrl === null) throw new Error("Platform login did not start OIDC.");
+      const authorized = await fetch(authorizationUrl, {redirect: "manual"});
+      const callbackLocation = authorized.headers.get("location");
+      if (callbackLocation === null) throw new Error("OIDC did not redirect to the callback.");
+      const callback = new URL(callbackLocation);
+      callback.protocol = new URL(baseUrl).protocol;
+      callback.host = new URL(baseUrl).host;
+      const completed = await fetch(callback, {
+        headers: {Cookie: handshake.split(";", 1)[0] ?? ""},
+        redirect: "manual",
+      });
+      expect(completed.status).toBe(303);
+      expect(completed.headers.get("location")).toBe("/");
+      const platformCookie = completed.headers.getSetCookie().find((cookieValue) => cookieValue.startsWith("__Host-artifact_platform="));
+      if (platformCookie === undefined) throw new Error("Platform login did not issue its host-only session cookie.");
+      expect(platformCookie).toContain("Path=/");
+      expect(platformCookie).toContain("Secure");
+      expect(platformCookie).toContain("HttpOnly");
+      return fetch(`${baseUrl}/`, {
+        headers: {Cookie: platformCookie.split(";", 1)[0] ?? ""},
+        redirect: "manual",
+      });
+    };
+    const singleTenantLanding = await completePlatformLogin(
+      [`/teams/${orgB.slug}/viewers`],
+      "tenant-only-root",
+      [{displayName: orgB.displayName, role: "viewer", slug: orgB.slug}],
+    );
+    expect(singleTenantLanding.status).toBe(302);
+    expect(singleTenantLanding.headers.get("location")).toBe(`/o/${orgB.slug}/`);
+    const tenantRootRows = await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`SELECT id, email, role, status, updated_at AS "updatedAt", manual_deactivation AS "manualDeactivation"
+        FROM installation_members WHERE installation_id = ${installationId} ORDER BY id`;
+    }));
+    expect(tenantRootRows).toEqual(beforeTenantRootLogin);
+
+    const multiTenantLanding = await completePlatformLogin(
+      [`/teams/${orgB.slug}/viewers`],
+      "tenant-multi-root",
+      [
+        {displayName: orgB.displayName, role: "viewer", slug: orgB.slug},
+        {displayName: orgC.displayName, role: "editor", slug: orgC.slug},
+      ],
+    );
+    expect(multiTenantLanding.status).toBe(200);
+    expect(multiTenantLanding.headers.get("content-type")).toContain("text/html");
+    expect(await multiTenantLanding.text()).toContain("Choose an organization");
+
+    const staffLanding = await completePlatformLogin(
+      ["/orvex/admin"],
+      "orvex-staff-root",
+      [{displayName: "Orvex", role: "administrator", slug: "orvex"}],
+    );
+    expect(staffLanding.status).toBe(302);
+    expect(staffLanding.headers.get("location")).toBe("/o/orvex/");
+
+    const noTenantLanding = await completePlatformLogin(
+      [`/teams/${orgB.slug}/viewers`],
+      "tenant-no-org-root",
+      [],
+    );
+    expect(noTenantLanding.status).toBe(200);
+    expect(noTenantLanding.headers.get("content-type")).toContain("text/html");
+    expect(noTenantLanding.headers.get("content-security-policy")).toContain("style-src");
+    const noTenantHtml = await noTenantLanding.text();
+    expect(noTenantHtml).toContain("No organization available");
+    expect(noTenantHtml).toContain("Sign out");
+    const rowsAfterAllRootLogins = await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`SELECT id, email, role, status, updated_at AS "updatedAt", manual_deactivation AS "manualDeactivation"
+        FROM installation_members WHERE installation_id = ${installationId} ORDER BY id`;
+    }));
+    expect(rowsAfterAllRootLogins).toEqual(beforeTenantRootLogin);
 
     const multiOrgSessions = new PlatformSessions(database, {forIdentity: async () => [
       {displayName: "Org B", role: "viewer", slug: orgB.slug},

@@ -552,6 +552,21 @@ interface HttpEnvironment {
 /** Internal marker: a platform-login redirect that targets the root chooser. */
 export const platformRootRedirectHeader = "x-artifact-platform-root-redirect";
 
+function isPlatformLoginReturnTo(value: string): boolean {
+  try {
+    const parsed = new URL(value, "https://artifactserver.invalid");
+    return parsed.origin === "https://artifactserver.invalid" &&
+      parsed.pathname === "/__artifact_platform_login" &&
+      parsed.searchParams.get("returnTo") === "/";
+  } catch {
+    return false;
+  }
+}
+
+function renderIdentityAdmissionDeniedPage(): string {
+  return "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>Sign-in unavailable</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f8f7fa;color:#211f26;font:16px/1.5 ui-sans-serif,system-ui,sans-serif}.card{width:min(100% - 40px,440px);padding:32px;border:1px solid #e4e1e8;border-radius:12px;background:white;box-shadow:0 12px 36px #211f2612}h1{margin:0 0 12px;font-size:26px;line-height:1.2}p{color:#625e69}.actions{display:flex;gap:20px;align-items:center;margin-top:24px}a,button{font:inherit}a{color:#5140a3}button{border:0;padding:0;background:none;color:#625e69;text-decoration:underline;cursor:pointer}@media(prefers-color-scheme:dark){body{background:#17151b;color:#f5f2f8}.card{background:#24212a;border-color:#393540}p,button{color:#c3bdca}}</style></head><body><main class=\"card\"><h1>We couldn’t sign you in to Orvex</h1><p>Your account does not have access to this organization.</p><div class=\"actions\"><a href=\"/\">Choose another organization</a><form method=\"post\" action=\"/api/v1/platform/session/logout\"><button type=\"submit\">Sign out</button></form></div></main></body></html>";
+}
+
 export interface HttpAppDependencies {
   readonly apiOAuthResource?: ApiOAuthResourceConfiguration;
   readonly applicationRuntime: ApplicationRuntime;
@@ -1543,7 +1558,7 @@ export function createHttpApp(
         dependencies,
         InteractiveLoginService.use((login) => login.completeIdentity({...query, handshake})),
       );
-      if (returnTo.returnTo === "/__artifact_platform_login?returnTo=%2F" && dependencies.issuePlatformSession !== undefined) {
+      if (isPlatformLoginReturnTo(returnTo.returnTo) && dependencies.issuePlatformSession !== undefined) {
         const platformToken = await dependencies.issuePlatformSession(returnTo.identity, getCookie(context, "__Host-artifact_platform"));
         setCookie(context, "__Host-artifact_platform", platformToken, {
           httpOnly: true, maxAge: 60 * 60, path: "/", sameSite: "Lax", secure: true,
@@ -1565,13 +1580,22 @@ export function createHttpApp(
       context.header("Cache-Control", "private, no-store");
       context.header("Referrer-Policy", "no-referrer");
       clearLoginHandshakeCookie(context, dependencies);
-      return context.redirect(returnTo.returnTo === "/__artifact_platform_login?returnTo=%2F"
+      return context.redirect(isPlatformLoginReturnTo(returnTo.returnTo)
         ? "/api/v1/session"
         : returnTo.returnTo, 303);
     } catch (error) {
       clearLoginHandshakeCookie(context, dependencies);
       if (error instanceof Error && isArtifactServerFailure(error)) {
         const response = httpFailure(error);
+        if (response.code === errorCodes.identityAdmissionDenied &&
+          (context.req.header("accept") ?? "").split(",").some((value) => value.trim().startsWith("text/html"))
+        ) {
+          return new Response(renderIdentityAdmissionDeniedPage(), {status: response.status, headers: {
+            "Cache-Control": "private, no-store",
+            "Content-Security-Policy": "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'",
+            "Content-Type": "text/html; charset=utf-8",
+          }});
+        }
         if (response.status >= 500) {
           await logAdapterFailure(
             dependencies.applicationRuntime,

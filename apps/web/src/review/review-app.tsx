@@ -43,6 +43,7 @@ import {setDraftPrincipal, writeDraft} from "@/components/comments/comment-draft
 import {useCommentPoll} from "@/components/comments/comment-poll";
 import {
   isAdministratorRole,
+  organizationLoginHref,
   api,
   ApiError,
   type AccessContext,
@@ -472,7 +473,7 @@ export function ReviewApp() {
     return (
       <ReviewGate
         action={(
-          <a className="as-button as-button--primary" href={`/auth/login?returnTo=${encodeURIComponent(returnTo)}`}>
+          <a className="as-button as-button--primary" href={organizationLoginHref(returnTo)}>
             Sign in
           </a>
         )}
@@ -2848,7 +2849,7 @@ function PublicArtifactReview({
     } catch (error) { setGuestMessage(error instanceof Error ? error.message : "Comment could not be added."); }
   };
   const signIn = (
-    <a className="as-button as-button--primary" href={`/auth/login?returnTo=${encodeURIComponent(returnTo)}`}>
+    <a className="as-button as-button--primary" href={organizationLoginHref(returnTo)}>
       Sign in to comment
     </a>
   );

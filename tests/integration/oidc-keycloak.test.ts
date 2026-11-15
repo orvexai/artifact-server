@@ -253,6 +253,24 @@ describe.sequential("Keycloak generic OIDC browser login", () => {
       .toEqual([realm.admittedSubject]);
     expect(rowCount(application.dataDirectory, "installation_members")).toBe(1);
     expect(rowCount(application.dataDirectory, "application_sessions")).toBe(1);
+
+    const browserLogin = await fetch(`${application.baseUrl}/auth/login`, {redirect: "manual"});
+    const browserAuthorization = redirectTarget(browserLogin, "/auth/login");
+    const browserCallbackUrl = await signInAtKeycloak(browserAuthorization, {
+      password: strangerPassword,
+      username: strangerEmail,
+    });
+    const browserRefused = await fetch(browserCallbackUrl, {
+      headers: {Accept: "text/html", Cookie: loginHandshakeCookie(browserLogin)},
+      redirect: "manual",
+    });
+    expect(browserRefused.status).toBe(403);
+    expect(browserRefused.headers.get("content-type")).toContain("text/html");
+    const browserHtml = await browserRefused.text();
+    expect(browserHtml).toContain("We couldn’t sign you in to Orvex");
+    expect(browserHtml).toContain('href="/">Choose another organization</a>');
+    expect(browserHtml).toContain("Sign out");
+    expect(rowCount(application.dataDirectory, "installation_members")).toBe(1);
   });
 
   test("a real Keycloak access token bound to /mcp authorizes the MCP endpoint", async () => {

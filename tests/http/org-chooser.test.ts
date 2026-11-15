@@ -2,6 +2,7 @@ import {describe, expect, test} from "vitest";
 
 import {
   organizationRootRedirect,
+  renderNoOrganizationPage,
   renderOrganizationChooser,
 } from "../../src/external-storage/create-organization-router.js";
 
@@ -15,6 +16,14 @@ describe("organization chooser", () => {
     expect(html).toContain(`action="/api/v1/platform/session/logout"`);
     expect(html).toContain(`method="post"`);
     expect(html).toContain(`class="avatar"`);
+    expect(html).toContain("prefers-color-scheme:dark");
+  });
+
+  test("renders a styled no-organization page with sign-out", () => {
+    const html = renderNoOrganizationPage();
+    expect(html).toContain("<title>No organization</title>");
+    expect(html).toContain("You don't belong to any organization yet.");
+    expect(html).toContain('action="/api/v1/platform/session/logout"');
     expect(html).toContain("prefers-color-scheme:dark");
   });
 

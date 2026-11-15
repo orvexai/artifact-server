@@ -1,9 +1,18 @@
 import {afterEach, describe, expect, test, vi} from "vitest";
 
-import {api} from "./client";
+import {api, organizationLoginHref, organizationPath} from "./client";
 
 describe("tenant-masked version client payload", () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  test("prefixes sign-in and return URLs on an organization page", () => {
+    vi.stubGlobal("document", {querySelector: () => ({content: "/o/isotest-b"})});
+    const returnTo = organizationPath("/review?artifact=example");
+    const signInHref = organizationLoginHref(returnTo);
+    expect(signInHref.startsWith("/o/isotest-b/auth/login?returnTo=")).toBe(true);
+    expect(new URLSearchParams(new URL(signInHref, "https://artifact.example.test").search).get("returnTo"))
+      .toBe("/o/isotest-b/review?artifact=example");
+  });
 
   test("parses a version whose staff publisher id is masked", async () => {
     vi.stubGlobal("document", {querySelector: () => null});

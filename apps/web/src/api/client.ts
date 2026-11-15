@@ -839,11 +839,15 @@ function readCsrfToken(): string {
   );
 }
 
-function organizationPath(path: string): string {
+export function organizationPath(path: string): string {
   const basePath = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
   return basePath.length > 0 && path.startsWith("/") && !path.startsWith(`${basePath}/`)
     ? `${basePath}${path}`
     : path;
+}
+
+export function organizationLoginHref(returnTo: string): string {
+  return organizationPath(`/auth/login?returnTo=${encodeURIComponent(organizationPath(returnTo))}`);
 }
 
 async function parseFailure(response: Response): Promise<ApiError> {
@@ -1014,13 +1018,13 @@ export type GuestCommentThread = z.infer<typeof guestCommentThreadSchema>;
 
 export const api = {
   platformOrganizations: async (): Promise<readonly PlatformOrganization[]> => {
-    const response = await fetch("/api/v1/platform/me/orgs", {credentials: "same-origin"});
+    const response = await fetch(organizationPath("/api/v1/platform/me/orgs"), {credentials: "same-origin"});
     if (!response.ok) return [];
     const parsed = z.array(platformOrganizationSchema).safeParse(await response.json());
     return parsed.success ? parsed.data : [];
   },
   setLastOrganization: async (slug: string): Promise<void> => {
-    await fetch("/api/v1/platform/session/last-org", {
+    await fetch(organizationPath("/api/v1/platform/session/last-org"), {
       body: JSON.stringify({slug}),
       credentials: "same-origin",
       headers: {"Content-Type": "application/json"},
@@ -1113,7 +1117,7 @@ export const api = {
     // each organization session cookie present in the same cookie jar.
     let platformLogoutCompleted = false;
     try {
-      const response = await fetch("/api/v1/platform/session/logout", {credentials: "same-origin", method: "POST"});
+      const response = await fetch(organizationPath("/api/v1/platform/session/logout"), {credentials: "same-origin", method: "POST"});
       platformLogoutCompleted = response.ok;
     } catch {
       // Standalone installations still use their organization logout route.
