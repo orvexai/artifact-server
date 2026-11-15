@@ -98,6 +98,7 @@ import {
   isReservedTenantIdentityName,
   tenantVisiblePrincipalId,
   tenantIdentityPresentation,
+  tenantVersionRecord,
   type Principal,
 } from "../core/identity.js";
 import {
@@ -4700,15 +4701,15 @@ function artifactVersionResponse(
   };
 }
 
-function versionResponse(
+export function versionResponse(
   requestUrl: URL,
   contentDomain: string,
   version: VersionRecord,
   isGuest = false,
-  _principal?: Principal,
+  principal?: Principal,
 ) {
   const {publisherPrincipalId: _publisherPrincipalId, ...guestVersion} = version;
-  const visibleVersion = version;
+  const visibleVersion = principal === undefined ? version : tenantVersionRecord(principal, version);
   return {
     links: {
       review: artifactReviewUrl(

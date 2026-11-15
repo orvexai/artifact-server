@@ -3,7 +3,7 @@ import {createHash} from "node:crypto";
 import {readFileSync} from "node:fs";
 
 import {isReservedTenantIdentityName, tenantIdentityPresentation, tenantVersionRecord, tenantVisiblePrincipalId, type Principal} from "../../src/core/identity.js";
-import {agentDispatchResponse, projectHttpTenantResponse, projectTenantMembers} from "../../src/http/create-http-app.js";
+import {agentDispatchResponse, projectHttpTenantResponse, projectTenantMembers, versionResponse} from "../../src/http/create-http-app.js";
 import type {AgentDispatchRecord, ArtifactResponseRecord} from "../../src/core/model.js";
 import {createKeycloakOrganizationMembershipResolver} from "../../src/external-storage/organization-memberships.js";
 import {artifactResponseProjection} from "../../src/mcp/artifact-mcp-server.js";
@@ -113,6 +113,18 @@ describe("tenant identity projection", () => {
     expect(tenantVersionRecord(principal, version).publisherPrincipalId).toBeNull();
     expect(tenantVersionRecord(undefined, version).publisherPrincipalId).toBeNull();
     expect(tenantVersionRecord(principal, {...version, publisherPrincipalId: "member-id"}).publisherPrincipalId).toBe("member-id");
+  });
+
+  test("tenant viewer listing versions sees staff publisher ids masked", () => {
+    const version = {
+      artifactId: "art_test", contentToken: "content-token", createdAt: "2026-11-12T00:00:00.000Z",
+      entryPath: "index.html", id: "ver_test", manifestDigest: "sha256:test", number: 1,
+      projectId: "prj_test", publisherPrincipalId: "staff-id", routingMode: "static" as const,
+    };
+    const response = versionResponse(new URL("https://artifacts.example.test"), "content.example.test", version, false, principal);
+    expect(response.version).toMatchObject({publisherPrincipalId: null});
+    expect(versionResponse(new URL("https://artifacts.example.test"), "content.example.test", version).version)
+      .toMatchObject({publisherPrincipalId: "staff-id"});
   });
 
   test("tenant Git history commits omit the publisher identity from metadata files", () => {

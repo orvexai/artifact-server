@@ -75,6 +75,7 @@ import {
   principalKinds,
   tenantIdentityPresentation,
   tenantVisiblePrincipalId,
+  tenantVersionRecord,
   type Principal,
 } from "../core/identity.js";
 import {provisionerToolAllowList} from "./provisioner-tools.js";
@@ -1403,7 +1404,7 @@ export function createArtifactMcpServer(
           manifestDigest: version.manifestDigest,
           number: version.number,
         }, identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest
-          ? {} : {publisherPrincipalId: version.publisherPrincipalId})),
+          ? {} : {publisherPrincipalId: tenantVersionRecord(identity.principal, version).publisherPrincipalId})),
       };
     }),
   );
