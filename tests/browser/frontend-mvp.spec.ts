@@ -4,6 +4,7 @@ import {unzipSync} from "fflate";
 import {readFile} from "node:fs/promises";
 import {z} from "zod";
 
+import {fetchLoopbackContent} from "../support/fetch-loopback-content.js";
 import {
   apiHeaders,
   fetchVersion,
@@ -1636,9 +1637,9 @@ test.describe("Artifact Server frontend MVP", () => {
       expect(crossedProject.status()).toBe(404);
 
       const contentUi = new URL("/projects", first.body.links.version);
-      const isolated = await fixture.page.request.get(contentUi.toString());
-      expect(isolated.status()).toBe(404);
-      expect(isolated.headers()["content-type"]).toContain("application/json");
+      const isolated = await fetchLoopbackContent(contentUi);
+      expect(isolated.status).toBe(404);
+      expect(isolated.headers.get("content-type")).toContain("application/json");
 
       await fixture.page.goto(`${fixture.server.baseUrl}/projects`);
       await expect(fixture.page).toHaveURL(/\/review\/settings\/projects$/u);

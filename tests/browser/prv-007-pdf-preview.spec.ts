@@ -1,5 +1,6 @@
 import {expect, test, type Response} from "@playwright/test";
 
+import {fetchLoopbackContent} from "../support/fetch-loopback-content.js";
 import {multiPagePdf} from "../support/pdf-fixture.js";
 import {
   commitStagedUpload,
@@ -125,8 +126,8 @@ test.describe("Review PDF preview", () => {
       expect(delivered.request().resourceType()).toBe("document");
       expect(delivered.request().frame().parentFrame()).toBe(fixture.page.mainFrame());
       expect((await delivered.request().allHeaders())["cookie"]).toBeUndefined();
-      const bytes = await fixture.page.request.get(frameSource);
-      expect(Buffer.from(await bytes.body())).toEqual(Buffer.from(reportBytes));
+      const bytes = await fetchLoopbackContent(frameSource);
+      expect(Buffer.from(await bytes.arrayBuffer())).toEqual(Buffer.from(reportBytes));
       expect(policyViolations).toEqual([]);
 
       // Comments stay whole-file: there is nothing to annotate in place.
