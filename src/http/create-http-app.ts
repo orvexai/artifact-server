@@ -3658,7 +3658,7 @@ export function projectHttpTenantResponse<T extends ArtifactResponseRecord>(resp
   }
   if (principal.tenantStaffPrincipalIds === undefined) return response;
   const author = tenantIdentityPresentation(principal, {displayName: response.authorDisplayName, email: response.authorEmail, principalId: response.authorSubject});
-  const maySeeEmail = principal.membershipRole === membershipRoles.member || principal.membershipRole === membershipRoles.owner;
+  const maySeeEmail = isAdministratorRole(principal.membershipRole);
   return {
     ...response,
     authorDisplayName: author.displayName,
@@ -4420,13 +4420,13 @@ function agentDispatchPageResponse(page: AgentDispatchPage, principal?: Principa
   };
 }
 
-function agentDispatchResponse(dispatch: AgentDispatchRecord, principal?: Principal) {
+export function agentDispatchResponse(dispatch: AgentDispatchRecord, principal?: Principal) {
   const {staff: _staff, ...sender} = dispatch.sender;
   const isTenant = principal?.tenantStaffPrincipalIds !== undefined;
   const senderPublic = isTenant ? tenantIdentityPresentation(principal, dispatch.sender) : null;
   const publicSender = isTenant && senderPublic !== null ? Object.assign({}, sender, {
     displayName: senderPublic.displayName,
-    email: senderPublic.email,
+    email: isAdministratorRole(principal.membershipRole) ? senderPublic.email : null,
     principalId: senderPublic.subject,
     authorizedByPrincipalId: sender.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, sender.authorizedByPrincipalId),
   }) : sender;

@@ -2143,9 +2143,6 @@ export function createArtifactMcpServer(
           items: page.items.map((response) => artifactResponseProjection(
             response,
             identity.principal.kind === "human" && identity.principal.membershipRole === membershipRoles.guest,
-            isTenantOrganization
-              ? identity.principal.kind === "human" && (identity.principal.membershipRole === membershipRoles.member || identity.principal.membershipRole === membershipRoles.owner)
-              : identity.principal.kind === "human" && identity.principal.membershipRole !== membershipRoles.guest,
             identity.principal,
             isTenantOrganization,
           )),
@@ -3254,9 +3251,12 @@ function commentThreadProjection(thread: CommentThreadRecord, isGuest = false, p
   };
 }
 
-function artifactResponseProjection(response: ArtifactResponseRecord, isGuest: boolean, canSeeEmails: boolean, principal?: Principal, tenant = false) {
+export function artifactResponseProjection(response: ArtifactResponseRecord, isGuest: boolean, principal?: Principal, tenant = false) {
   const author = tenant ? tenantIdentityPresentation(principal, {displayName: response.authorDisplayName, email: response.authorEmail, principalId: response.authorSubject}) : null;
   const guest = isGuest;
+  const canSeeEmails = principal?.kind === "human" && (tenant
+    ? isAdministratorRole(principal.membershipRole)
+    : principal.membershipRole !== membershipRoles.guest);
   return {
     ...response,
     authorDisplayName: author?.displayName ?? (isGuest && response.authorDisplayName.includes("@") ? "Team member" : response.authorDisplayName),
