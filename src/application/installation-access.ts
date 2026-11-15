@@ -1114,6 +1114,7 @@ function makeInstallationAccessService(
     identity: ExternalIdentity,
     email: string,
     member: InstallationMember | null,
+    trustPresentedGroups: boolean,
   ) {
     // The configured roles decide until the directory sync has stored them,
     // and always without a directory sync; after that the stored roles do.
@@ -1166,7 +1167,7 @@ function makeInstallationAccessService(
         member.id,
         role,
         now,
-        true,
+        !trustPresentedGroups,
       );
       if (changed === null) {
         if (yield* isSoleActiveAdministrator(member)) return member;
@@ -1208,7 +1209,7 @@ function makeInstallationAccessService(
         previous.id,
         role,
         now,
-        true,
+        !trustPresentedGroups,
       );
       if (restored === null) {
         if (yield* isSoleActiveAdministrator(previous)) return previous;
@@ -1329,7 +1330,7 @@ function makeInstallationAccessService(
 
   const resolveExternalMember = Effect.fn(
     "InstallationAccessService.resolveExternalMember",
-  )(function*(identity: ExternalIdentity) {
+  )(function*(identity: ExternalIdentity, trustPresentedGroups = false) {
     if (identity.serviceAccount === true) {
       return yield* Effect.fail(new IdentityAdmissionDenied({
         message: "Service accounts cannot authenticate as members.",
@@ -1378,6 +1379,7 @@ function makeInstallationAccessService(
         identity,
         email,
         member,
+        trustPresentedGroups,
       );
     } else if (member === null) {
       const hasMembers = yield* dependencies.repository.hasMembers(
@@ -1517,7 +1519,7 @@ function makeInstallationAccessService(
         serviceAccountSource: "oidc" as const,
       });
     }
-    const member = yield* resolveExternalMember(identity);
+    const member = yield* resolveExternalMember(identity, true);
     return yield* withTenantStaffContext(humanPrincipal(member));
   });
 

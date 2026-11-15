@@ -117,8 +117,8 @@ describe("guest installation role", () => {
       membershipRole: membershipRoles.member,
       serviceAccountSource: "oidc" as const,
     };
-    expect(resolveProjectAccess(sharedStaff, record("restricted", ["editor"])))
-      .toEqual({mode: "restricted", role: "editor"});
+    expect(resolveProjectAccess(sharedStaff, record("restricted", ["editor"], false)))
+      .toEqual({isCreator: false, mode: "restricted", role: "editor"});
   });
 
   test("AS-ORVEX-F1-POLICY: tenant group roots are exact and configured staff selectors remain admitted", () => {
@@ -1380,11 +1380,12 @@ const conformanceBearerVerifier: BearerCredentialVerifier = {
 function record(
   mode: ProjectAccessRecord["accessMode"],
   grantRoles: readonly ("viewer" | "editor" | "manager")[],
+  isCreator = true,
 ): ProjectAccessRecord {
   return {
     accessMode: mode,
     grantRoles,
-    isCreator: true,
+    isCreator,
     member: {role: membershipRoles.guest, status: "active"},
   };
 }

@@ -860,12 +860,12 @@ test.describe("Artifact Server frontend MVP", () => {
 
       const standardDownload = fixture.page.getByRole("link", {
         exact: true,
-        name: "Download",
+        name: "Download source",
       });
       await expect(standardDownload).toBeVisible();
       await expect(standardDownload).toHaveAttribute(
         "title",
-        "Download 2 files as a ZIP",
+        "Download all 2 source files as a ZIP",
       );
       const [standardArchive] = await Promise.all([
         fixture.page.waitForEvent("download"),
@@ -889,11 +889,11 @@ test.describe("Artifact Server frontend MVP", () => {
       await expect(focusComments).toBeHidden();
       const focusDownload = focusControls.getByRole("link", {
         exact: true,
-        name: "Download",
+        name: "Download source",
       });
       await expect(focusDownload).toHaveAttribute(
         "title",
-        "Download 2 files as a ZIP",
+        "Download all 2 source files as a ZIP",
       );
       const [focusArchive] = await Promise.all([
         fixture.page.waitForEvent("download"),
