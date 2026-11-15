@@ -2,7 +2,7 @@ import {createRoot} from "react-dom/client";
 import {useEffect, useRef, useState} from "react";
 import {z} from "zod";
 
-import {api, type ArtifactVersion} from "@/api/client";
+import {api, organizationLoginHref, organizationPath, type ArtifactVersion} from "@/api/client";
 import {documentBaseUrl} from "@/review/content-host-url";
 import {frameMessageSchema, reviewProtocolVersion, type ReviewInit} from "@/review-frame/protocol";
 
@@ -157,7 +157,7 @@ function EmbedApp(): React.ReactNode {
 
   if (message !== null) {
     return <main className="as-embed-auth"><p>{message}</p><button onClick={() => {
-      const popup = window.open("/auth/login?returnTo=" + encodeURIComponent("/embed/signed-in"), "artifact-server-login", "popup,width=540,height=720");
+      const popup = window.open(organizationLoginHref("/embed/signed-in"), "artifact-server-login", "popup,width=540,height=720");
       if (popup === null) setMessage("Your browser blocked the sign-in popup. Allow popups for this site, then try again.");
     }} type="button">Sign in to view</button></main>;
   }
@@ -168,7 +168,7 @@ function EmbedApp(): React.ReactNode {
     publicUrl.hash = window.location.hash;
     return <iframe className="as-embed-public" ref={frame} src={publicUrl.toString()} title={loaded.artifactName} />;
   }
-  return <iframe className="as-embed-frame" ref={frame} src="/review-frame?embed=1" title={loaded.artifactName} />;
+  return <iframe className="as-embed-frame" ref={frame} src={organizationPath("/review-frame?embed=1")} title={loaded.artifactName} />;
 }
 
 function addFragmentScript(html: string, fragment: string): string {

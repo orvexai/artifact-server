@@ -33,6 +33,10 @@ const organizationChooserStyles = `
 *{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--background);color:var(--foreground);font:16px/1.5 ui-sans-serif,system-ui,sans-serif}.shell{width:min(100% - 32px,720px);margin:0 auto;padding:clamp(48px,12vh,112px) 0 48px}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:42px}.brand{font-size:14px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-foreground)}h1{margin:0 0 8px;font-size:clamp(28px,5vw,36px);line-height:1.15;letter-spacing:-.035em}.intro{margin:0 0 28px;color:var(--muted-foreground)}.org-list{display:grid;gap:12px}.org-card{display:flex;align-items:center;gap:16px;padding:18px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card);color:var(--card-foreground);text-decoration:none;transition:border-color .15s,box-shadow .15s,transform .15s}.org-card:hover{border-color:var(--primary);box-shadow:0 8px 24px color-mix(in srgb,var(--foreground) 8%,transparent);transform:translateY(-1px)}.avatar{display:grid;flex:none;place-items:center;width:48px;height:48px;border-radius:calc(var(--radius) * .8);background:var(--muted);color:var(--primary);font-weight:700;font-size:16px}.org-name{font-size:16px;font-weight:650}.org-action{margin-left:auto;color:var(--muted-foreground);font-size:20px}.footer{margin-top:36px;padding-top:20px;border-top:1px solid var(--border);text-align:right}.signout{border:0;padding:4px 0;background:none;color:var(--muted-foreground);font:inherit;text-decoration:underline;text-underline-offset:3px;cursor:pointer}.signout:hover{color:var(--foreground)}
 `;
 
+export function renderNoOrganizationPage(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>No organization</title><style>${organizationChooserStyles}</style></head><body><main class="shell"><div class="top"><span class="brand">Artifact Server</span></div><h1>No organization available</h1><section class="org-card"><span class="org-name">You don't belong to any organization yet.</span></section><footer class="footer"><form method="post" action="/api/v1/platform/session/logout"><button class="signout" type="submit">Sign out</button></form></footer></main></body></html>`;
+}
+
 export function renderOrganizationChooser(
   organizations: readonly Pick<OrganizationRecord, "displayName" | "slug">[],
 ): string {
@@ -297,6 +301,7 @@ export async function createOrganizationRouter(
         }
         const contentHostRequest = contentTokenFromHost(request, config.contentDomain);
         const contentHost = contentHostRequest.isContentHost;
+        const applicationPath = sourceUrl.pathname.replace(/^\/o\/[^/]+(?=\/api\/v1\/platform\/)/u, "");
         if (!contentHost && sourceUrl.pathname === "/") {
           if (request.method !== "GET" && request.method !== "HEAD") return notFound();
           const token = platformCookie(request);
@@ -305,7 +310,13 @@ export async function createOrganizationRouter(
           const active = new Set((await registry.list()).filter(({status}) => status === "active").map(({slug}) => slug));
           const organizations = session.organizations.filter(({slug}) => active.has(slug));
           if (organizations.length === 0) {
-            return new Response('<!doctype html><html><head><meta charset="utf-8"><title>Artifact Server</title></head><body><main><p>You don\'t belong to any organization yet.</p></main></body></html>', {headers: {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "private, no-store"}});
+            const html = renderNoOrganizationPage();
+            const styleHash = createHash("sha256").update(organizationChooserStyles).digest("base64");
+            return new Response(html, {headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "private, no-store",
+              "Content-Security-Policy": `default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; img-src 'self' data:; style-src 'self' 'sha256-${styleHash}'`,
+            }});
           }
           const rootRedirect = organizationRootRedirect(organizations, session.lastOrg);
           if (rootRedirect !== null) return new Response(null, {headers: {Location: rootRedirect}, status: 302});
@@ -331,14 +342,14 @@ export async function createOrganizationRouter(
             : returnTo);
           return entry.runtime.app.fetch(new Request(target, request));
         }
-        if (!contentHost && sourceUrl.pathname === "/api/v1/platform/me/orgs" && request.method === "GET") {
+        if (!contentHost && applicationPath === "/api/v1/platform/me/orgs" && request.method === "GET") {
           const token = platformCookie(request);
           const session = token === null ? null : await platformSessions.find(token, true);
           if (session === null) return notFound();
           const active = new Set((await registry.list()).filter(({status}) => status === "active").map(({slug}) => slug));
           return Response.json(session.organizations.filter(({slug}) => active.has(slug)), {headers: {"Cache-Control": "private, no-store"}});
         }
-        if (!contentHost && sourceUrl.pathname === "/api/v1/platform/session/last-org" && request.method === "POST") {
+        if (!contentHost && applicationPath === "/api/v1/platform/session/last-org" && request.method === "POST") {
           if (config.applicationOrigin !== undefined && request.headers.get("origin") !== new URL(config.applicationOrigin).origin) return notFound();
           if (request.headers.get("sec-fetch-site") !== "same-origin") return notFound();
           const token = platformCookie(request);
@@ -355,7 +366,7 @@ export async function createOrganizationRouter(
           const saved = await platformSessions.setLastOrg(token, parsedBody.data.slug);
           return saved ? new Response(null, {status: 204}) : notFound();
         }
-        if (!contentHost && sourceUrl.pathname === "/api/v1/platform/session/logout" && request.method === "POST") {
+        if (!contentHost && applicationPath === "/api/v1/platform/session/logout" && request.method === "POST") {
           if (config.applicationOrigin !== undefined && request.headers.get("origin") !== new URL(config.applicationOrigin).origin) return notFound();
           if (request.headers.get("sec-fetch-site") !== "same-origin") return notFound();
           const token = platformCookie(request);

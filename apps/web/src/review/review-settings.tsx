@@ -1,7 +1,7 @@
 import {ArrowLeft01Icon, Moon02Icon, Sun03Icon} from "@hugeicons/core-free-icons";
 import {HugeiconsIcon} from "@hugeicons/react";
 
-import {api, isAdministratorRole, type Project, type Session} from "@/api/client";
+import {api, isAdministratorRole, organizationPath, type Project, type Session} from "@/api/client";
 import {StatePanel} from "@/components/product";
 import {Button, ButtonLink} from "@/components/ui/button";
 import {ArtifactMark} from "./artifact-mark.tsx";
@@ -68,7 +68,7 @@ export function ReviewSettings({
               Back to review
             </ButtonLink>
             <Button
-              onClick={() => void api.logout().finally(() => window.location.assign("/review"))}
+              onClick={() => void api.logout().finally(() => window.location.assign(organizationPath("/review")))}
               size="sm"
               variant="ghost"
             >
