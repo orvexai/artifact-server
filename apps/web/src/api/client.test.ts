@@ -24,6 +24,19 @@ describe("tenant-masked version client payload", () => {
       .toBe("https://content.example.test/artifacts/a1");
   });
 
+  test("rejects unsafe navigation paths and encoded path separators", () => {
+    vi.stubGlobal("document", {querySelector: () => ({content: "/o/acme"})});
+
+    for (const path of [
+      "//evil.example/x",
+      "/\\evil.example",
+      "/review%2f..%2fadmin",
+      "/review%5c..%5cadmin",
+    ]) {
+      expect(organizationPath(path)).toBe("/o/acme/review");
+    }
+  });
+
   test("parses a version whose staff publisher id is masked", async () => {
     vi.stubGlobal("document", {querySelector: () => null});
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({

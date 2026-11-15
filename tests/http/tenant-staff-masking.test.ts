@@ -164,10 +164,23 @@ describe("tenant identity projection", () => {
       id: "staff-id", installationId: "tenant-installation", role: "member" as const, staff: true,
       status: "active" as const, updatedAt: "2026-11-12T00:00:00.000Z",
     }];
-    const viewer = projectTenantMembers(members, "viewer");
-    expect(viewer).toHaveLength(1);
-    expect(viewer[0]).not.toHaveProperty("email");
-    expect(projectTenantMembers(members, "member")[0]).toHaveProperty("email", "member@example.test");
+    const expectedDirectoryEntry = {displayName: "Tenant member", id: "member-id", role: "viewer"};
+    expect(projectTenantMembers(members, "viewer")).toEqual([expectedDirectoryEntry]);
+    expect(projectTenantMembers(members, "member")).toEqual([expectedDirectoryEntry]);
+    expect(projectTenantMembers(members, "administrator")[0]).toMatchObject({
+      createdAt: "2026-11-12T00:00:00.000Z",
+      email: "member@example.test",
+      id: "member-id",
+      role: "viewer",
+      status: "active",
+      updatedAt: "2026-11-12T00:00:00.000Z",
+    });
+    expect(projectTenantMembers(members, "owner")[0]).toMatchObject({
+      email: "member@example.test",
+      id: "member-id",
+      role: "viewer",
+      status: "active",
+    });
     expect(projectTenantMembers(members, "guest")).toEqual([]);
   });
 

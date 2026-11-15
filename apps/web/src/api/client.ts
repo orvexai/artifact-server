@@ -759,7 +759,7 @@ const memberSchema = z.object({
   installationId: z.string().optional(),
   role: membershipRoleSchema.optional(),
   staff: z.boolean().optional(),
-  status: z.enum(["active", "inactive"]),
+  status: z.enum(["active", "inactive"]).optional(),
   updatedAt: z.string().optional(),
 });
 
@@ -841,7 +841,17 @@ function readCsrfToken(): string {
 
 export function organizationPath(path: string): string {
   const basePath = organizationBasePath();
-  if (basePath === "" || path.startsWith("//")) return path;
+  const organizationRoot = `${basePath}/review`;
+  const absolutePrefix = /^https?:\/\/[^/?#]*/iu.exec(path)?.[0];
+  const pathPart = absolutePrefix === undefined
+    ? path.split(/[?#]/u, 1)[0] ?? ""
+    : path.slice(absolutePrefix.length).split(/[?#]/u, 1)[0] || "/";
+  if (
+    path.startsWith("//")
+    || path.startsWith("/\\")
+    || pathPart.includes("\\")
+    || /%(?:2f|5c)/iu.test(pathPart)
+  ) return organizationRoot;
 
   // Navigation URLs returned by the server can be absolute. Prefix only URLs
   // on this application origin; content hosts must retain their own paths.
@@ -852,12 +862,20 @@ export function organizationPath(path: string): string {
       url.pathname = prefixOrganizationPath(url.pathname);
       return url.toString();
     } catch {
-      return path;
+      return organizationRoot;
     }
   }
 
-  if (!path.startsWith("/")) return path;
+  if (basePath === "" || !path.startsWith("/")) return path;
   return prefixOrganizationPath(path);
+}
+
+/** Whether a document pathname belongs to the current organization mount. */
+export function isOrganizationPathname(pathname: string): boolean {
+  const basePath = organizationBasePath();
+  return basePath === ""
+    || pathname === basePath
+    || pathname.startsWith(`${basePath}/`);
 }
 
 /** Return the application pathname with its tenant mount point removed. */

@@ -43,6 +43,7 @@ import {setDraftPrincipal, writeDraft} from "@/components/comments/comment-draft
 import {useCommentPoll} from "@/components/comments/comment-poll";
 import {
   isAdministratorRole,
+  isOrganizationPathname,
   organizationLoginHref,
   organizationPath,
   organizationPathname,
@@ -463,6 +464,9 @@ export function ReviewApp() {
     return loaded;
   }, []);
 
+  if (!isOrganizationPathname(window.location.pathname)) {
+    return <ReviewGate description="This path is outside the current organization." title="Page not found" />;
+  }
   if (sessionState === "loading") {
     return <ReviewGate description="Opening the local artifact catalog." title="Loading Artifact Server" />;
   }

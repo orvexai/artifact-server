@@ -86,7 +86,7 @@ import {
   isArtifactServerFailure,
   VersionNotFound,
 } from "../core/errors.js";
-import type {ExternalIdentity, InstallationMember, IssuedApplicationSession} from "../core/installation-identity.js";
+import type {ExternalIdentity, InstallationMember, IssuedApplicationSession, TenantMemberDirectoryEntry} from "../core/installation-identity.js";
 import {
   browserAccessModes,
   type BrowserAccess,
@@ -1727,11 +1727,16 @@ export function createHttpApp(
           InstallationAccessService.use((access) => access.listStaffOnlyMembers()));
         return context.json({members: [...projectedMembers, ...staffMembers.map(maskedTenantStaffMember)]});
       }
-      return context.json({members: members.map(({email: _email, role: _role, staff: _staff, ...visible}) => Object.assign({}, visible, {
-        displayName: isReservedTenantIdentityName(visible.displayName) ? "Orvex Support (member)" : visible.displayName,
+      return context.json({members: members.map(({id, displayName}) => ({
+        displayName: isReservedTenantIdentityName(displayName) ? "Orvex Support (member)" : displayName,
+        id,
       }))});
     }
-    return context.json({members: members.map(({staff: _staff, ...visible}) => visible)});
+    return context.json({members: members.map((member) => {
+      if (!("staff" in member)) return member;
+      const {staff: _staff, ...visible} = member;
+      return visible;
+    })});
   });
 
   app.post("/api/v1/members", boundedJsonBody, async (context) => {
@@ -3691,24 +3696,20 @@ function memberWithoutStaffFlag<T extends {readonly staff?: boolean}>(member: T)
 
 /** Project tenant-visible directory fields for one membership role. */
 export function projectTenantMembers(
-  members: readonly InstallationMember[],
+  members: readonly (InstallationMember | TenantMemberDirectoryEntry)[],
   role: Principal["membershipRole"],
-): readonly Partial<InstallationMember>[] {
+): readonly (InstallationMember | TenantMemberDirectoryEntry)[] {
   if (role === membershipRoles.guest) return [];
-  const maySeeEmails = role === membershipRoles.member || role === membershipRoles.owner;
-  return members.filter((member) => member.staff !== true).map((member) => {
+  return members.filter((member) => !("staff" in member && member.staff)).map((member) => {
     const displayName = isReservedTenantIdentityName(member.displayName) ? "Orvex Support (member)" : member.displayName;
     if (role === membershipRoles.owner || role === membershipRoles.administrator) {
-      const {staff: _staff, ...visible} = member;
-      return Object.assign({}, visible, {displayName});
+      if ("staff" in member) {
+        const {staff: _staff, ...visible} = member;
+        return Object.assign({}, visible, {displayName});
+      }
+      return Object.assign({}, member, {displayName});
     }
-    if (maySeeEmails) {
-      const {role: _role, staff: _staff, ...visible} = member;
-      return Object.assign({}, visible, {displayName});
-    }
-    const {email, role: _role, staff: _staff, ...visible} = member;
-    void email;
-    return Object.assign({}, visible, {displayName});
+    return {displayName, id: member.id, role: member.role};
   });
 }
 

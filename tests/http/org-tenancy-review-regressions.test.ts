@@ -521,6 +521,8 @@ describe("M4: tenant Members and Agents pages accept masked staff rows", () => {
 
   test("a masked staff agent parses in both agent schemas", async () => {
     const agent = registeredAgentResponse(staffAgent, viewer);
+    expect(agent.principalId).toBeNull();
+    expect(agent).not.toHaveProperty("email");
     expect(agent.workingDirectory).toBeNull();
     expect(agent.connectionKey).toBeNull();
     expect(JSON.stringify(agent)).not.toContain("/home/staff/secret");

@@ -35,6 +35,7 @@ import {
   type ApplicationSession,
   type ExternalIdentity,
   type InstallationMember,
+  type TenantMemberDirectoryEntry,
   type IssuedApplicationSession,
   type IssuedManagedApiKey,
   type LoginAttempt,
@@ -453,7 +454,7 @@ export interface InstallationAccessOperations {
   readonly listMembers: (
     principal: Principal,
   ) => Effect.Effect<
-    readonly InstallationMember[],
+    readonly (InstallationMember | TenantMemberDirectoryEntry)[],
     AuthorizationDenied | IdentityRepositoryFailure
   >;
   readonly listStaffOnlyMemberIds: () => Effect.Effect<readonly string[], IdentityRepositoryFailure>;
@@ -1670,7 +1671,12 @@ function makeInstallationAccessService(
     }
     const members = yield* dependencies.repository.listMembers(dependencies.installationId);
     if (dependencies.organizationDirectoryVisibility !== true) return members;
-    return members.filter((member) => member.staff !== true);
+    const visibleMembers = members.filter((member) => member.staff !== true);
+    if (
+      principal.membershipRole === membershipRoles.administrator
+      || principal.membershipRole === membershipRoles.owner
+    ) return visibleMembers;
+    return visibleMembers.map(({id, displayName, role}) => ({id, displayName, role}));
   });
 
   const listStaffOnlyMemberIds = Effect.fn("InstallationAccessService.listStaffOnlyMemberIds")(function*() {

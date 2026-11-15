@@ -43,7 +43,9 @@ export function ReviewSettings({
     ? "tenant"
     : "installation";
   const tenantDirectory = organizationKind === "tenant";
-  const memberDirectoryVisible = administrator || (tenantDirectory && directHuman && principal.membershipRole !== "guest");
+  const memberDirectoryVisible = tenantDirectory
+    ? directHuman && principal.membershipRole === "owner"
+    : administrator;
   const reviewHref = readReturnToReview();
   const visiblePages = visibleSettingsPages({
     canManageProjects,
@@ -278,7 +280,11 @@ export function visibleSettingsPages({
     pages.add("webmcp");
     pages.add("groups");
   }
-  if (administrator || (organizationKind === "tenant" && directHuman && role !== "guest")) {
+  if (
+    organizationKind === "tenant"
+      ? directHuman && role === "owner"
+      : administrator
+  ) {
     pages.add("members");
   }
   if (administrator) {

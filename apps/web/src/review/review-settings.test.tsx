@@ -3,9 +3,30 @@ import {renderToStaticMarkup} from "react-dom/server";
 import {afterEach, describe, expect, test, vi} from "vitest";
 
 import type {Session} from "@/api/client";
-import {ReviewSettings} from "./review-settings.tsx";
+import {ReviewSettings, visibleSettingsPages} from "./review-settings.tsx";
+
+const pages = (role: "administrator" | "member" | "owner" | "viewer") => visibleSettingsPages({
+  canManageProjects: true,
+  directHuman: true,
+  organizationKind: "tenant",
+  role,
+});
 
 describe("tenant settings navigation", () => {
+  test("shows the Members page only to tenant owners", () => {
+
+    expect(pages("owner").has("members")).toBe(true);
+    expect(pages("administrator").has("members")).toBe(false);
+    expect(pages("member").has("members")).toBe(false);
+    expect(pages("viewer").has("members")).toBe(false);
+    expect(visibleSettingsPages({
+      canManageProjects: true,
+      directHuman: true,
+      organizationKind: "installation",
+      role: "administrator",
+    }).has("members")).toBe(true);
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });
