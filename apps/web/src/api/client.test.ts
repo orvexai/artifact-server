@@ -14,6 +14,16 @@ describe("tenant-masked version client payload", () => {
       .toBe("/o/isotest-b/review?artifact=example");
   });
 
+  test("prefixes same-origin absolute navigation and preserves content-host URLs", () => {
+    vi.stubGlobal("document", {querySelector: () => ({content: "/o/isotest-b"})});
+    vi.stubGlobal("window", {location: {origin: "https://app.example.test"}});
+
+    expect(organizationPath("https://app.example.test/auth/local-owner"))
+      .toBe("https://app.example.test/o/isotest-b/auth/local-owner");
+    expect(organizationPath("https://content.example.test/artifacts/a1"))
+      .toBe("https://content.example.test/artifacts/a1");
+  });
+
   test("parses a version whose staff publisher id is masked", async () => {
     vi.stubGlobal("document", {querySelector: () => null});
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({

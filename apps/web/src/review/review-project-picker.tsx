@@ -8,7 +8,7 @@ import {
 import {HugeiconsIcon} from "@hugeicons/react";
 import {type FormEvent, useMemo, useState} from "react";
 
-import {type Project} from "@/api/client";
+import {organizationPath, type Project} from "@/api/client";
 import {Alert, AlertDescription} from "@/components/ui/alert";
 import {Button} from "@/components/ui/button";
 import {
@@ -154,7 +154,7 @@ export function ReviewProjectPicker({
                     )}
                     <a
                       className="as-project-action"
-                      href="/review/settings/projects"
+                      href={organizationPath("/review/settings/projects")}
                       onClick={() => setPickerOpen(false)}
                     >
                       <HugeiconsIcon aria-hidden="true" icon={FolderManagementIcon} strokeWidth={2} />

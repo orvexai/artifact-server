@@ -840,10 +840,50 @@ function readCsrfToken(): string {
 }
 
 export function organizationPath(path: string): string {
+  const basePath = organizationBasePath();
+  if (basePath === "" || path.startsWith("//")) return path;
+
+  // Navigation URLs returned by the server can be absolute. Prefix only URLs
+  // on this application origin; content hosts must retain their own paths.
+  if (/^https?:\/\//iu.test(path)) {
+    try {
+      const url = new URL(path);
+      if (url.origin !== window.location.origin) return path;
+      url.pathname = prefixOrganizationPath(url.pathname);
+      return url.toString();
+    } catch {
+      return path;
+    }
+  }
+
+  if (!path.startsWith("/")) return path;
+  return prefixOrganizationPath(path);
+}
+
+/** Return the application pathname with its tenant mount point removed. */
+export function organizationPathname(pathname: string): string {
+  const basePath = organizationBasePath();
+  if (basePath === "") return pathname;
+  if (pathname === basePath || pathname === `${basePath}/`) return "/";
+  return pathname.startsWith(`${basePath}/`)
+    ? pathname.slice(basePath.length)
+    : pathname;
+}
+
+function organizationBasePath(): string {
   const basePath = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
-  return basePath.length > 0 && path.startsWith("/") && !path.startsWith(`${basePath}/`)
-    ? `${basePath}${path}`
-    : path;
+  return basePath.replace(/\/+$/u, "");
+}
+
+function prefixOrganizationPath(pathname: string): string {
+  const basePath = organizationBasePath();
+  return basePath === ""
+    || pathname === basePath
+    || pathname.startsWith(`${basePath}/`)
+    || pathname.startsWith(`${basePath}?`)
+    || pathname.startsWith(`${basePath}#`)
+    ? pathname
+    : `${basePath}${pathname}`;
 }
 
 export function organizationLoginHref(returnTo: string): string {

@@ -2,6 +2,7 @@ import {useEffect, useMemo, useState} from "react";
 
 import {
   api,
+  organizationPath,
   type MakePublicLinkPrivateItem,
   type PublicLinkItem,
   type PublicLinkMutationResult,
@@ -426,10 +427,10 @@ export function PublicLinksScreen() {
                           <div className="as-public-links-table__artifact-heading">
                             <a
                               className="as-public-links-table__artifact-link"
-                              href={`/review?${new URLSearchParams({
+                              href={organizationPath(`/review?${new URLSearchParams({
                                 artifact: item.artifact.id,
                                 project: item.project.id,
-                              })}`}
+                              })}`)}
                             >
                               {item.artifact.name}
                             </a>
@@ -442,7 +443,7 @@ export function PublicLinksScreen() {
                         <td className="as-public-links-table__link-cell">
                           <a
                             className="as-public-links-table__url"
-                            href={item.links.public}
+                            href={organizationPath(item.links.public)}
                             rel="noreferrer"
                             target="_blank"
                             title={item.links.public}
@@ -458,7 +459,7 @@ export function PublicLinksScreen() {
                         <td className="as-public-links-table__actions-cell">
                           <div className="as-public-links-table__actions">
                             <ButtonLink
-                              href={item.links.public}
+                              href={organizationPath(item.links.public)}
                               rel="noreferrer"
                               size="xs"
                               target="_blank"

@@ -2,6 +2,7 @@ import {useEffect, useState} from "react";
 
 import {
   api,
+  organizationPath,
   type DeploymentCapabilities,
   type Project,
   type ProjectGitHistoryEstimate,
@@ -173,7 +174,7 @@ export function SettingsProjects({
                     <td className="px-4 py-4">
                       <div className="flex justify-end gap-2">
                         <ButtonLink
-                          href={`/review?project=${encodeURIComponent(project.id)}`}
+                          href={organizationPath(`/review?project=${encodeURIComponent(project.id)}`)}
                           size="sm"
                           variant="outline"
                         >
@@ -247,7 +248,7 @@ export function SettingsProject({
     return (
       <StatePanel
         action={(
-          <ButtonLink href="/review/settings/projects" variant="outline">
+          <ButtonLink href={organizationPath("/review/settings/projects")} variant="outline">
             View projects
           </ButtonLink>
         )}
@@ -316,7 +317,7 @@ export function SettingsProject({
       <PageHeader
         actions={(
           <ButtonLink
-            href={`/review?project=${encodeURIComponent(project.id)}`}
+            href={organizationPath(`/review?project=${encodeURIComponent(project.id)}`)}
             variant="outline"
           >
             Open artifacts
