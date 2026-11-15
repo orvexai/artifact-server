@@ -759,7 +759,7 @@ const memberSchema = z.object({
   installationId: z.string().optional(),
   role: membershipRoleSchema.optional(),
   staff: z.boolean().optional(),
-  status: z.enum(["active", "inactive"]),
+  status: z.enum(["active", "inactive"]).optional(),
   updatedAt: z.string().optional(),
 });
 
@@ -840,10 +840,68 @@ function readCsrfToken(): string {
 }
 
 export function organizationPath(path: string): string {
+  const basePath = organizationBasePath();
+  const organizationRoot = `${basePath}/review`;
+  const absolutePrefix = /^https?:\/\/[^/?#]*/iu.exec(path)?.[0];
+  const pathPart = absolutePrefix === undefined
+    ? path.split(/[?#]/u, 1)[0] ?? ""
+    : path.slice(absolutePrefix.length).split(/[?#]/u, 1)[0] || "/";
+  if (
+    path.startsWith("//")
+    || path.startsWith("/\\")
+    || pathPart.includes("\\")
+    || /%(?:2f|5c)/iu.test(pathPart)
+  ) return organizationRoot;
+
+  // Navigation URLs returned by the server can be absolute. Prefix only URLs
+  // on this application origin; content hosts must retain their own paths.
+  if (/^https?:\/\//iu.test(path)) {
+    try {
+      const url = new URL(path);
+      if (url.origin !== window.location.origin) return path;
+      url.pathname = prefixOrganizationPath(url.pathname);
+      return url.toString();
+    } catch {
+      return organizationRoot;
+    }
+  }
+
+  if (basePath === "" || !path.startsWith("/")) return path;
+  return prefixOrganizationPath(path);
+}
+
+/** Whether a document pathname belongs to the current organization mount. */
+export function isOrganizationPathname(pathname: string): boolean {
+  const basePath = organizationBasePath();
+  return basePath === ""
+    || pathname === basePath
+    || pathname.startsWith(`${basePath}/`);
+}
+
+/** Return the application pathname with its tenant mount point removed. */
+export function organizationPathname(pathname: string): string {
+  const basePath = organizationBasePath();
+  if (basePath === "") return pathname;
+  if (pathname === basePath || pathname === `${basePath}/`) return "/";
+  return pathname.startsWith(`${basePath}/`)
+    ? pathname.slice(basePath.length)
+    : pathname;
+}
+
+function organizationBasePath(): string {
   const basePath = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
-  return basePath.length > 0 && path.startsWith("/") && !path.startsWith(`${basePath}/`)
-    ? `${basePath}${path}`
-    : path;
+  return basePath.replace(/\/+$/u, "");
+}
+
+function prefixOrganizationPath(pathname: string): string {
+  const basePath = organizationBasePath();
+  return basePath === ""
+    || pathname === basePath
+    || pathname.startsWith(`${basePath}/`)
+    || pathname.startsWith(`${basePath}?`)
+    || pathname.startsWith(`${basePath}#`)
+    ? pathname
+    : `${basePath}${pathname}`;
 }
 
 export function organizationLoginHref(returnTo: string): string {

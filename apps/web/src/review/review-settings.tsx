@@ -1,7 +1,7 @@
 import {ArrowLeft01Icon, Moon02Icon, Sun03Icon} from "@hugeicons/core-free-icons";
 import {HugeiconsIcon} from "@hugeicons/react";
 
-import {api, isAdministratorRole, organizationPath, type Project, type Session} from "@/api/client";
+import {api, isAdministratorRole, organizationPath, type MembershipRole, type Project, type Session} from "@/api/client";
 import {StatePanel} from "@/components/product";
 import {Button, ButtonLink} from "@/components/ui/button";
 import {ArtifactMark} from "./artifact-mark.tsx";
@@ -39,9 +39,20 @@ export function ReviewSettings({
   const administrator = directHuman
     && isAdministratorRole(principal.membershipRole);
   const organizationBase = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
-  const tenantDirectory = organizationBase.startsWith("/o/") && organizationBase.replace(/\/+$/u, "") !== "/o/orvex";
-  const memberDirectoryVisible = administrator || (tenantDirectory && directHuman && principal.membershipRole !== "guest");
+  const organizationKind = organizationBase.startsWith("/o/") && organizationBase.replace(/\/+$/u, "") !== "/o/orvex"
+    ? "tenant"
+    : "installation";
+  const tenantDirectory = organizationKind === "tenant";
+  const memberDirectoryVisible = tenantDirectory
+    ? directHuman && principal.membershipRole === "owner"
+    : administrator;
   const reviewHref = readReturnToReview();
+  const visiblePages = visibleSettingsPages({
+    canManageProjects,
+    directHuman,
+    organizationKind,
+    role: principal.membershipRole,
+  });
 
   return (
     <div className="as-settings">
@@ -80,25 +91,25 @@ export function ReviewSettings({
       <div className="as-settings__layout">
         <nav aria-label="Settings" className="as-settings__nav">
           <p>Settings</p>
-          {canManageProjects ? (
-            <SettingsLink active={route.kind === "projects" || route.kind === "project"} href="/review/settings/projects">
+          {visiblePages.has("projects") ? (
+            <SettingsLink active={route.kind === "projects" || route.kind === "project"} href={organizationPath("/review/settings/projects")}>
               Projects
             </SettingsLink>
           ) : null}
-          <SettingsLink active={route.kind === "mcp"} href="/review/settings/mcp">
+          {visiblePages.has("mcp") ? <SettingsLink active={route.kind === "mcp"} href={organizationPath("/review/settings/mcp")}>
             MCP
-          </SettingsLink>
-          <SettingsLink active={route.kind === "webmcp"} href="/review/settings/webmcp">
+          </SettingsLink> : null}
+          {visiblePages.has("webmcp") ? <SettingsLink active={route.kind === "webmcp"} href={organizationPath("/review/settings/webmcp")}>
             WebMCP
-          </SettingsLink>
-          {principal.membershipRole === "guest" ? null : (
-            <SettingsLink active={route.kind === "groups"} href="/review/settings/groups">Groups</SettingsLink>
-          )}
-          {memberDirectoryVisible ? <SettingsLink active={route.kind === "members"} href="/review/settings/members">Members</SettingsLink> : null}
-          {administrator ? (
+          </SettingsLink> : null}
+          {visiblePages.has("groups") ? (
+            <SettingsLink active={route.kind === "groups"} href={organizationPath("/review/settings/groups")}>Groups</SettingsLink>
+          ) : null}
+          {visiblePages.has("members") ? <SettingsLink active={route.kind === "members"} href={organizationPath("/review/settings/members")}>Members</SettingsLink> : null}
+          {visiblePages.has("apiKeys") && visiblePages.has("publicLinks") ? (
             <>
-              <SettingsLink active={route.kind === "apiKeys"} href="/review/settings/api-keys">API keys</SettingsLink>
-              <SettingsLink active={route.kind === "publicLinks"} href="/review/settings/public-links">Public links</SettingsLink>
+              <SettingsLink active={route.kind === "apiKeys"} href={organizationPath("/review/settings/api-keys")}>API keys</SettingsLink>
+              <SettingsLink active={route.kind === "publicLinks"} href={organizationPath("/review/settings/public-links")}>Public links</SettingsLink>
             </>
           ) : null}
         </nav>
@@ -143,7 +154,7 @@ function SettingsContent({
     return (
       <StatePanel
         action={(
-          <ButtonLink href="/review/settings/projects" variant="outline">
+          <ButtonLink href={organizationPath("/review/settings/projects")} variant="outline">
             View settings
           </ButtonLink>
         )}
@@ -242,6 +253,43 @@ function AdministratorPermissionRequired() {
 function readReturnToReview(): string {
   const stored = window.sessionStorage.getItem("artifact-review-return-url");
   return stored?.startsWith("/review") && !stored.startsWith("/review/settings")
-    ? stored
-    : "/review";
+    ? organizationPath(stored)
+    : organizationPath("/review");
+}
+
+type SettingsPage = "apiKeys" | "groups" | "members" | "mcp" | "projects" | "publicLinks" | "webmcp";
+type OrganizationKind = "installation" | "tenant";
+
+/** The client-visible settings surface mirrors authorization already known by the current session. */
+export function visibleSettingsPages({
+  canManageProjects,
+  directHuman,
+  organizationKind,
+  role,
+}: {
+  readonly canManageProjects: boolean;
+  readonly directHuman: boolean;
+  readonly organizationKind: OrganizationKind;
+  readonly role: MembershipRole;
+}): ReadonlySet<SettingsPage> {
+  const pages = new Set<SettingsPage>();
+  const administrator = directHuman && isAdministratorRole(role);
+  if (canManageProjects) pages.add("projects");
+  if (role !== "guest") {
+    pages.add("mcp");
+    pages.add("webmcp");
+    pages.add("groups");
+  }
+  if (
+    organizationKind === "tenant"
+      ? directHuman && role === "owner"
+      : administrator
+  ) {
+    pages.add("members");
+  }
+  if (administrator) {
+    pages.add("apiKeys");
+    pages.add("publicLinks");
+  }
+  return pages;
 }

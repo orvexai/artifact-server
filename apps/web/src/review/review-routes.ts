@@ -1,3 +1,5 @@
+import {isOrganizationPathname, organizationPath, organizationPathname} from "@/api/client";
+
 /** One canonical settings destination inside the Artifact Server application. */
 export type SettingsRoute =
   | {readonly kind: "projects"}
@@ -12,12 +14,16 @@ export type SettingsRoute =
 
 /** Return whether the current document path belongs to the settings mode. */
 export function isSettingsPath(pathname: string): boolean {
+  if (!isOrganizationPathname(pathname)) return false;
+  pathname = organizationPathname(pathname);
   return pathname === "/review/settings"
     || pathname.startsWith("/review/settings/");
 }
 
 /** Parse one refresh-safe settings URL without guessing a missing identity. */
 export function parseSettingsRoute(pathname: string): SettingsRoute {
+  if (!isOrganizationPathname(pathname)) return {kind: "notFound"};
+  pathname = organizationPathname(pathname);
   if (pathname === "/review/settings" || pathname === "/review/settings/") {
     return {kind: "projects"};
   }
@@ -56,7 +62,7 @@ export function parseSettingsRoute(pathname: string): SettingsRoute {
 
 /** Build the canonical settings URL for one project. */
 export function projectSettingsHref(projectId: string): string {
-  return `/review/settings/projects/${encodeURIComponent(projectId)}`;
+  return organizationPath(`/review/settings/projects/${encodeURIComponent(projectId)}`);
 }
 
 function parsePathSegment(segment: string | undefined): string | null {

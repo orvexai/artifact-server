@@ -2,6 +2,7 @@ import {Copy01Icon, Tick02Icon} from "@hugeicons/core-free-icons";
 import {HugeiconsIcon} from "@hugeicons/react";
 import {useEffect, useRef, useState} from "react";
 
+import {organizationPath} from "@/api/client";
 import {PageHeader} from "@/components/product";
 import {Button, ButtonLink} from "@/components/ui/button";
 
@@ -14,7 +15,7 @@ export function McpScreen({administrator}: {readonly administrator: boolean}) {
   const [copiedTarget, setCopiedTarget] = useState<CopyTarget | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const copiedResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mcpAddress = `${window.location.origin}/mcp`;
+  const mcpAddress = `${window.location.origin}${organizationPath("/mcp")}`;
 
   useEffect(() => () => {
     if (copiedResetTimer.current !== null) clearTimeout(copiedResetTimer.current);
@@ -87,7 +88,7 @@ export function McpScreen({administrator}: {readonly administrator: boolean}) {
             API key. Never paste a key into chat.
           </p>
           {administrator ? (
-            <ButtonLink className="justify-self-start" href="/review/settings/api-keys" size="xs" variant="outline">
+            <ButtonLink className="justify-self-start" href={organizationPath("/review/settings/api-keys")} size="xs" variant="outline">
               Manage API keys
             </ButtonLink>
           ) : null}

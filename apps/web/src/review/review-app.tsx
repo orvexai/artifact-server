@@ -43,7 +43,10 @@ import {setDraftPrincipal, writeDraft} from "@/components/comments/comment-draft
 import {useCommentPoll} from "@/components/comments/comment-poll";
 import {
   isAdministratorRole,
+  isOrganizationPathname,
   organizationLoginHref,
+  organizationPath,
+  organizationPathname,
   api,
   ApiError,
   type AccessContext,
@@ -461,6 +464,9 @@ export function ReviewApp() {
     return loaded;
   }, []);
 
+  if (!isOrganizationPathname(window.location.pathname)) {
+    return <ReviewGate description="This path is outside the current organization." title="Page not found" />;
+  }
   if (sessionState === "loading") {
     return <ReviewGate description="Opening the local artifact catalog." title="Loading Artifact Server" />;
   }
@@ -945,10 +951,10 @@ function ArtifactReview({
         selectedVersionId,
       );
       if (popup === null) {
-        window.location.assign(issued.bootstrapUrl);
+        window.location.assign(organizationPath(issued.bootstrapUrl));
       } else {
         popup.opener = null;
-        popup.location.replace(issued.bootstrapUrl);
+        popup.location.replace(organizationPath(issued.bootstrapUrl));
       }
     } catch (caught) {
       popup?.close();
@@ -1132,10 +1138,10 @@ function ArtifactReview({
     setDetailError(null);
     try {
       const issued = await api.liveSession(details.artifact.projectId, details.artifact.id);
-      if (popup === null) window.location.assign(issued.bootstrapUrl);
+      if (popup === null) window.location.assign(organizationPath(issued.bootstrapUrl));
       else {
         popup.opener = null;
-        popup.location.replace(issued.bootstrapUrl);
+        popup.location.replace(organizationPath(issued.bootstrapUrl));
       }
     } catch (caught) {
       popup?.close();
@@ -1430,7 +1436,7 @@ function ArtifactReview({
             <a
               aria-label="Artifact Server"
               className="as-catalog__brand"
-              href="/review"
+              href={organizationPath("/review")}
               onClick={returnHome}
               title="Artifact Server"
             >
@@ -1455,8 +1461,8 @@ function ArtifactReview({
               aria-label="Open settings"
               className="as-icon-button"
               href={selectedProject === null
-                ? "/review/settings/projects"
-                : `/review/settings/projects/${encodeURIComponent(selectedProject.id)}`}
+                ? organizationPath("/review/settings/projects")
+                : organizationPath(`/review/settings/projects/${encodeURIComponent(selectedProject.id)}`)}
               title="Open settings"
             >
               <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.8} />
@@ -2099,7 +2105,7 @@ function ReviewDownloadControl({
       aria-label="Download source"
       className={className}
       download
-      href={download.href}
+      href={organizationPath(download.href)}
       title={download.title}
     >
       <HugeiconsIcon aria-hidden="true" icon={Download04Icon} strokeWidth={1.8} />
@@ -2753,7 +2759,7 @@ function PublicArtifactReview({
     const match = /^#invite=(.*)$/.exec(window.location.hash);
     if (match === null) return null;
     const secret = new URLSearchParams(match[0].slice(1)).get("invite");
-    window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
+    window.history.replaceState(window.history.state, "", organizationPath(`${window.location.pathname}${window.location.search}`));
     return secret;
   });
   const [state, setState] = useState<
@@ -2860,7 +2866,7 @@ function PublicArtifactReview({
     return <main className="as-gate"><form onSubmit={(event) => void joinAsGuest(event)}><h1>Join artifact review</h1><label>Your name<input autoComplete="name" maxLength={80} minLength={1} onChange={(event) => setGuestName(event.target.value)} required value={guestName} /></label><button className="as-button as-button--primary" type="submit">Continue</button>{guestMessage === null ? null : <p role="alert">{guestMessage}</p>}</form></main>;
   }
   if (state.kind === "guest") {
-    return <main className="as-public-review"><header className="as-public-review__bar"><h1>{state.guest.artifactName}</h1><small>Version {state.guest.number} · commenting as {state.guest.displayName}</small></header><iframe className="as-public-review__frame" ref={guestFrameRef} referrerPolicy="no-referrer" src={state.guest.bootstrapUrl} title={state.guest.artifactName} /><aside aria-label="Comments"><h2>Comments</h2><form onSubmit={(event) => void submitGuestComment(event)}><label>Add a comment<textarea onChange={(event) => setNewComment(event.target.value)} value={newComment} /></label><button className="as-button as-button--primary" type="submit">Comment</button></form>{threads.map((thread) => <article key={thread.id}><strong>{thread.author.displayName}</strong><p>{thread.body}</p><GuestReplyForm artifactId={artifactId} threadId={thread.id} onReply={async () => setThreads((await api.guestComments(artifactId)).items)} />{thread.replyCount > 0 ? <button className="as-button" onClick={async () => { const details = await api.guestComment(artifactId, thread.id); setGuestMessage(details.replies.map((reply) => `${reply.author.displayName}: ${reply.body}`).join("\n")); }} type="button">Read {thread.replyCount} replies</button> : null}</article>)}{guestMessage === null ? null : <p role="status">{guestMessage}</p>}</aside></main>;
+    return <main className="as-public-review"><header className="as-public-review__bar"><h1>{state.guest.artifactName}</h1><small>Version {state.guest.number} · commenting as {state.guest.displayName}</small></header><iframe className="as-public-review__frame" ref={guestFrameRef} referrerPolicy="no-referrer" src={organizationPath(state.guest.bootstrapUrl)} title={state.guest.artifactName} /><aside aria-label="Comments"><h2>Comments</h2><form onSubmit={(event) => void submitGuestComment(event)}><label>Add a comment<textarea onChange={(event) => setNewComment(event.target.value)} value={newComment} /></label><button className="as-button as-button--primary" type="submit">Comment</button></form>{threads.map((thread) => <article key={thread.id}><strong>{thread.author.displayName}</strong><p>{thread.body}</p><GuestReplyForm artifactId={artifactId} threadId={thread.id} onReply={async () => setThreads((await api.guestComments(artifactId)).items)} />{thread.replyCount > 0 ? <button className="as-button" onClick={async () => { const details = await api.guestComment(artifactId, thread.id); setGuestMessage(details.replies.map((reply) => `${reply.author.displayName}: ${reply.body}`).join("\n")); }} type="button">Read {thread.replyCount} replies</button> : null}</article>)}{guestMessage === null ? null : <p role="status">{guestMessage}</p>}</aside></main>;
   }
   if (state.kind === "missing") {
     return (
@@ -2883,7 +2889,7 @@ function PublicArtifactReview({
       <iframe
         className="as-public-review__frame"
         referrerPolicy="no-referrer"
-        src={links.version}
+        src={organizationPath(links.version)}
         title={artifact.name}
       />
     </main>
@@ -2935,7 +2941,10 @@ function readInitialInspectorOpen(): boolean {
 }
 
 function readReviewLocation(): ReviewLocation {
-  const search = new URLSearchParams(window.location.search);
+  const pathname = organizationPathname(window.location.pathname);
+  const search = new URLSearchParams(pathname === "/review" || pathname === "/review/"
+    ? window.location.search
+    : "");
   return {
     artifactId: search.get("artifact"),
     path: search.get("path"),
@@ -2954,7 +2963,7 @@ function reviewHref(location: ReviewLocation): string {
   if (location.versionId !== null) search.set("version", location.versionId);
   if (location.path !== null) search.set("path", location.path);
   if (location.view !== null) search.set("view", location.view);
-  return search.size === 0 ? "/review" : `/review?${search}`;
+  return organizationPath(search.size === 0 ? "/review" : `/review?${search}`);
 }
 
 function reviewPreviewKind(

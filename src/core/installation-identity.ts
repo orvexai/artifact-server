@@ -32,6 +32,9 @@ export interface InstallationMember {
   readonly updatedAt: string;
 }
 
+/** Minimum tenant directory entry shared with non-administrator members. */
+export type TenantMemberDirectoryEntry = Pick<InstallationMember, "displayName" | "id" | "role">;
+
 /** Identity information returned by a configured interactive-login provider. */
 export interface ExternalIdentity {
   readonly displayName: string;

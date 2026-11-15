@@ -86,7 +86,7 @@ import {
   isArtifactServerFailure,
   VersionNotFound,
 } from "../core/errors.js";
-import type {ExternalIdentity, InstallationMember, IssuedApplicationSession} from "../core/installation-identity.js";
+import type {ExternalIdentity, InstallationMember, IssuedApplicationSession, TenantMemberDirectoryEntry} from "../core/installation-identity.js";
 import {
   browserAccessModes,
   type BrowserAccess,
@@ -98,6 +98,7 @@ import {
   isReservedTenantIdentityName,
   tenantVisiblePrincipalId,
   tenantIdentityPresentation,
+  tenantVersionRecord,
   type Principal,
 } from "../core/identity.js";
 import {
@@ -1727,11 +1728,16 @@ export function createHttpApp(
           InstallationAccessService.use((access) => access.listStaffOnlyMembers()));
         return context.json({members: [...projectedMembers, ...staffMembers.map(maskedTenantStaffMember)]});
       }
-      return context.json({members: members.map(({email: _email, role: _role, staff: _staff, ...visible}) => Object.assign({}, visible, {
-        displayName: isReservedTenantIdentityName(visible.displayName) ? "Orvex Support (member)" : visible.displayName,
+      return context.json({members: members.map(({id, displayName}) => ({
+        displayName: isReservedTenantIdentityName(displayName) ? "Orvex Support (member)" : displayName,
+        id,
       }))});
     }
-    return context.json({members: members.map(({staff: _staff, ...visible}) => visible)});
+    return context.json({members: members.map((member) => {
+      if (!("staff" in member)) return member;
+      const {staff: _staff, ...visible} = member;
+      return visible;
+    })});
   });
 
   app.post("/api/v1/members", boundedJsonBody, async (context) => {
@@ -3653,7 +3659,7 @@ export function projectHttpTenantResponse<T extends ArtifactResponseRecord>(resp
   }
   if (principal.tenantStaffPrincipalIds === undefined) return response;
   const author = tenantIdentityPresentation(principal, {displayName: response.authorDisplayName, email: response.authorEmail, principalId: response.authorSubject});
-  const maySeeEmail = principal.membershipRole === membershipRoles.member || principal.membershipRole === membershipRoles.owner;
+  const maySeeEmail = isAdministratorRole(principal.membershipRole);
   return {
     ...response,
     authorDisplayName: author.displayName,
@@ -3691,24 +3697,20 @@ function memberWithoutStaffFlag<T extends {readonly staff?: boolean}>(member: T)
 
 /** Project tenant-visible directory fields for one membership role. */
 export function projectTenantMembers(
-  members: readonly InstallationMember[],
+  members: readonly (InstallationMember | TenantMemberDirectoryEntry)[],
   role: Principal["membershipRole"],
-): readonly Partial<InstallationMember>[] {
+): readonly (InstallationMember | TenantMemberDirectoryEntry)[] {
   if (role === membershipRoles.guest) return [];
-  const maySeeEmails = role === membershipRoles.member || role === membershipRoles.owner;
-  return members.filter((member) => member.staff !== true).map((member) => {
+  return members.filter((member) => !("staff" in member && member.staff)).map((member) => {
     const displayName = isReservedTenantIdentityName(member.displayName) ? "Orvex Support (member)" : member.displayName;
     if (role === membershipRoles.owner || role === membershipRoles.administrator) {
-      const {staff: _staff, ...visible} = member;
-      return Object.assign({}, visible, {displayName});
+      if ("staff" in member) {
+        const {staff: _staff, ...visible} = member;
+        return Object.assign({}, visible, {displayName});
+      }
+      return Object.assign({}, member, {displayName});
     }
-    if (maySeeEmails) {
-      const {role: _role, staff: _staff, ...visible} = member;
-      return Object.assign({}, visible, {displayName});
-    }
-    const {email, role: _role, staff: _staff, ...visible} = member;
-    void email;
-    return Object.assign({}, visible, {displayName});
+    return {displayName, id: member.id, role: member.role};
   });
 }
 
@@ -4419,13 +4421,13 @@ function agentDispatchPageResponse(page: AgentDispatchPage, principal?: Principa
   };
 }
 
-function agentDispatchResponse(dispatch: AgentDispatchRecord, principal?: Principal) {
+export function agentDispatchResponse(dispatch: AgentDispatchRecord, principal?: Principal) {
   const {staff: _staff, ...sender} = dispatch.sender;
   const isTenant = principal?.tenantStaffPrincipalIds !== undefined;
   const senderPublic = isTenant ? tenantIdentityPresentation(principal, dispatch.sender) : null;
   const publicSender = isTenant && senderPublic !== null ? Object.assign({}, sender, {
     displayName: senderPublic.displayName,
-    email: senderPublic.email,
+    email: isAdministratorRole(principal.membershipRole) ? senderPublic.email : null,
     principalId: senderPublic.subject,
     authorizedByPrincipalId: sender.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, sender.authorizedByPrincipalId),
   }) : sender;
@@ -4699,15 +4701,15 @@ function artifactVersionResponse(
   };
 }
 
-function versionResponse(
+export function versionResponse(
   requestUrl: URL,
   contentDomain: string,
   version: VersionRecord,
   isGuest = false,
-  _principal?: Principal,
+  principal?: Principal,
 ) {
   const {publisherPrincipalId: _publisherPrincipalId, ...guestVersion} = version;
-  const visibleVersion = version;
+  const visibleVersion = principal === undefined ? version : tenantVersionRecord(principal, version);
   return {
     links: {
       review: artifactReviewUrl(

@@ -2,7 +2,7 @@ import {createRoot} from "react-dom/client";
 import {useEffect, useRef, useState} from "react";
 import {z} from "zod";
 
-import {api, organizationLoginHref, organizationPath, type ArtifactVersion} from "@/api/client";
+import {api, organizationLoginHref, organizationPath, organizationPathname, type ArtifactVersion} from "@/api/client";
 import {documentBaseUrl} from "@/review/content-host-url";
 import {frameMessageSchema, reviewProtocolVersion, type ReviewInit} from "@/review-frame/protocol";
 
@@ -28,7 +28,8 @@ function EmbedApp(): React.ReactNode {
   const [message, setMessage] = useState<string | null>(null);
   const [frameReady, setFrameReady] = useState(false);
   const query = new URLSearchParams(window.location.search);
-  const artifactId = decodeURIComponent(window.location.pathname.split("/").at(-1) ?? "");
+  const pathname = organizationPathname(window.location.pathname);
+  const artifactId = decodeURIComponent(pathname.split("/").at(-1) ?? "");
   const path = query.get("path") ?? "";
   const versionId = query.get("version") ?? undefined;
   const requestedMode = query.get("mode") === "respond" ? "respond" : "view";
@@ -166,7 +167,7 @@ function EmbedApp(): React.ReactNode {
     const publicUrl = new URL(loaded.version.links.version);
     publicUrl.pathname = "/" + loaded.entryPath.split("/").map(encodeURIComponent).join("/");
     publicUrl.hash = window.location.hash;
-    return <iframe className="as-embed-public" ref={frame} src={publicUrl.toString()} title={loaded.artifactName} />;
+    return <iframe className="as-embed-public" ref={frame} src={organizationPath(publicUrl.toString())} title={loaded.artifactName} />;
   }
   return <iframe className="as-embed-frame" ref={frame} src={organizationPath("/review-frame?embed=1")} title={loaded.artifactName} />;
 }

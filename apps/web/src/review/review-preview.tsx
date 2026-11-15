@@ -3,6 +3,7 @@ import { ExternalLinkIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import {
+  organizationPath,
   api,
   type ArtifactVersion,
 } from "@/api/client";
@@ -465,7 +466,7 @@ function HtmlPreview({
     <iframe
       className="as-artifact-frame"
       ref={frameRef}
-      src="/review-frame"
+      src={organizationPath("/review-frame")}
       title={`${version.version.artifactId} version ${version.version.number}`}
     />
   );
@@ -559,7 +560,7 @@ function NativeMediaPreview({
           key={retry}
           onError={handleMediaError}
           onLoad={() => setStatus("ready")}
-          src={mediaSource}
+          src={organizationPath(mediaSource)}
         />
       ) : (
         <video
@@ -571,7 +572,7 @@ function NativeMediaPreview({
           playsInline
           preload="metadata"
           ref={videoRef}
-          src={mediaSource}
+          src={organizationPath(mediaSource)}
         />
       )}
       {status === "loading" ? (
@@ -679,7 +680,7 @@ function PdfPreview({
           className="as-pdf-preview__frame"
           onLoad={() => setStatus("ready")}
           referrerPolicy="no-referrer"
-          src={source}
+          src={organizationPath(source)}
           title={accessibleName}
         />
       )}
@@ -795,7 +796,7 @@ function PreviewActionButtons({
         {actions.opening ? "Opening…" : "Open raw artifact"}
       </button>
       {actions.downloadUrl === null ? null : (
-        <a className="as-button" download href={actions.downloadUrl}>Download file</a>
+        <a className="as-button" download href={organizationPath(actions.downloadUrl)}>Download file</a>
       )}
     </div>
   );

@@ -3,9 +3,10 @@ import {createHash} from "node:crypto";
 import {readFileSync} from "node:fs";
 
 import {isReservedTenantIdentityName, tenantIdentityPresentation, tenantVersionRecord, tenantVisiblePrincipalId, type Principal} from "../../src/core/identity.js";
-import {projectHttpTenantResponse, projectTenantMembers} from "../../src/http/create-http-app.js";
-import type {ArtifactResponseRecord} from "../../src/core/model.js";
+import {agentDispatchResponse, projectHttpTenantResponse, projectTenantMembers, versionResponse} from "../../src/http/create-http-app.js";
+import type {AgentDispatchRecord, ArtifactResponseRecord} from "../../src/core/model.js";
 import {createKeycloakOrganizationMembershipResolver} from "../../src/external-storage/organization-memberships.js";
+import {artifactResponseProjection} from "../../src/mcp/artifact-mcp-server.js";
 import {gitHistoryMetadataFiles, gitHistoryVersionMetadata} from "../../src/git-history/git-history-mirror.js";
 import {unicodeConfusablesVersion} from "../../src/core/confusables.js";
 import {staffMemberOpaqueId} from "../../src/application/installation-access.js";
@@ -114,6 +115,18 @@ describe("tenant identity projection", () => {
     expect(tenantVersionRecord(principal, {...version, publisherPrincipalId: "member-id"}).publisherPrincipalId).toBe("member-id");
   });
 
+  test("tenant viewer listing versions sees staff publisher ids masked", () => {
+    const version = {
+      artifactId: "art_test", contentToken: "content-token", createdAt: "2026-11-12T00:00:00.000Z",
+      entryPath: "index.html", id: "ver_test", manifestDigest: "sha256:test", number: 1,
+      projectId: "prj_test", publisherPrincipalId: "staff-id", routingMode: "static" as const,
+    };
+    const response = versionResponse(new URL("https://artifacts.example.test"), "content.example.test", version, false, principal);
+    expect(response.version).toMatchObject({publisherPrincipalId: null});
+    expect(versionResponse(new URL("https://artifacts.example.test"), "content.example.test", version).version)
+      .toMatchObject({publisherPrincipalId: "staff-id"});
+  });
+
   test("tenant Git history commits omit the publisher identity from metadata files", () => {
     const version = {
       artifactId: "art_test", createdAt: "2026-11-12T00:00:00.000Z", entryPath: "index.html",
@@ -164,14 +177,27 @@ describe("tenant identity projection", () => {
       id: "staff-id", installationId: "tenant-installation", role: "member" as const, staff: true,
       status: "active" as const, updatedAt: "2026-11-12T00:00:00.000Z",
     }];
-    const viewer = projectTenantMembers(members, "viewer");
-    expect(viewer).toHaveLength(1);
-    expect(viewer[0]).not.toHaveProperty("email");
-    expect(projectTenantMembers(members, "member")[0]).toHaveProperty("email", "member@example.test");
+    const expectedDirectoryEntry = {displayName: "Tenant member", id: "member-id", role: "viewer"};
+    expect(projectTenantMembers(members, "viewer")).toEqual([expectedDirectoryEntry]);
+    expect(projectTenantMembers(members, "member")).toEqual([expectedDirectoryEntry]);
+    expect(projectTenantMembers(members, "administrator")[0]).toMatchObject({
+      createdAt: "2026-11-12T00:00:00.000Z",
+      email: "member@example.test",
+      id: "member-id",
+      role: "viewer",
+      status: "active",
+      updatedAt: "2026-11-12T00:00:00.000Z",
+    });
+    expect(projectTenantMembers(members, "owner")[0]).toMatchObject({
+      email: "member@example.test",
+      id: "member-id",
+      role: "viewer",
+      status: "active",
+    });
     expect(projectTenantMembers(members, "guest")).toEqual([]);
   });
 
-  test("response identities follow tenant roles and preserve the Orvex projection", () => {
+  test("tenant artifact responses expose other members' email only to owners and administrators", () => {
     const response: ArtifactResponseRecord = {
       artifactId: "art_test", authorDisplayName: "Support Person", authorEmail: "support@example.test",
       authorKind: "member", authorSubject: "staff-id", choice: null, createdAt: "2026-11-12T00:00:00.000Z",
@@ -179,17 +205,49 @@ describe("tenant identity projection", () => {
       questionId: "question-id", versionId: "version-id",
     };
     const staffViewer = {...principal, id: "viewer-id", membershipRole: "viewer" as const, tenantStaffPrincipalIds: ["staff-id"]};
-    const staffEditor = {...staffViewer, membershipRole: "member" as const};
+    for (const role of ["viewer", "member"] as const) {
+      const reader = {...staffViewer, membershipRole: role};
+      const httpResponse = projectHttpTenantResponse({...response, authorSubject: "ordinary-member"}, reader);
+      expect(httpResponse).toMatchObject({authorDisplayName: "Support Person", authorEmail: null, data: {answer: "unchanged"}});
+      expect(JSON.parse(JSON.stringify(httpResponse))).not.toHaveProperty("authorSubject");
+      const mcpResponse = artifactResponseProjection({...response, authorSubject: "ordinary-member"}, false, reader, true);
+      expect(mcpResponse).toMatchObject({authorDisplayName: "Support Person", authorEmail: null, authorSubject: null});
+    }
+    for (const role of ["administrator", "owner"] as const) {
+      const reader = {...staffViewer, membershipRole: role};
+      const otherMemberResponse = {...response, authorSubject: "ordinary-member"};
+      expect(projectHttpTenantResponse(otherMemberResponse, reader).authorEmail).toBe("support@example.test");
+      expect(artifactResponseProjection(otherMemberResponse, false, reader, true).authorEmail).toBe("support@example.test");
+    }
     const viewerResponse = projectHttpTenantResponse(response, staffViewer);
     expect(viewerResponse).toMatchObject({authorDisplayName: "Orvex Support", authorEmail: null, data: {answer: "unchanged"}});
     expect(JSON.parse(JSON.stringify(viewerResponse))).not.toHaveProperty("authorSubject");
-    const editorResponse = projectHttpTenantResponse({...response, authorSubject: "ordinary-member"}, staffEditor);
-    expect(editorResponse).toMatchObject({authorDisplayName: "Support Person", authorEmail: "support@example.test", data: {answer: "unchanged"}});
-    expect(JSON.parse(JSON.stringify(editorResponse))).not.toHaveProperty("authorSubject");
     expect(projectHttpTenantResponse(response, {...principal, tenantStaffPrincipalIds: undefined})).toEqual(response);
     const guest = {...staffViewer, membershipRole: "guest" as const};
     const guestTenantResponse = projectHttpTenantResponse(response, guest);
     expect(guestTenantResponse).toMatchObject({authorDisplayName: "Orvex Support", authorEmail: null});
     expect(JSON.parse(JSON.stringify(guestTenantResponse))).not.toHaveProperty("authorSubject");
+  });
+
+  test("tenant dispatch sender emails are limited to owners and administrators", () => {
+    const dispatch: AgentDispatchRecord = {
+      addressedAt: null, agentDisplayName: "Review agent", agentId: "agent-id", canceledAt: null,
+      claimedAt: null, createdAt: "2026-11-12T00:00:00.000Z", deliveredAt: null, failedAt: null,
+      failureReason: null, id: "dispatch-id", idempotencyKey: "dispatch-key", installationId: "tenant-installation",
+      leaseExpiresAt: null, note: null, projectId: "project-id",
+      sender: Object.assign(
+        {authorizedByPrincipalId: null, displayName: "Other member", principalId: "other-member", principalKind: "human" as const},
+        {email: "other@example.test"},
+      ),
+      state: "queued", threadIds: [], updatedAt: "2026-11-12T00:00:00.000Z",
+    };
+    for (const role of ["viewer", "member"] as const) {
+      const result = agentDispatchResponse(dispatch, {...principal, membershipRole: role});
+      expect(result.sender).toMatchObject({displayName: "Other member", email: null, principalId: "other-member"});
+    }
+    for (const role of ["administrator", "owner"] as const) {
+      const result = agentDispatchResponse(dispatch, {...principal, membershipRole: role});
+      expect(result.sender).toMatchObject({email: "other@example.test"});
+    }
   });
 });
