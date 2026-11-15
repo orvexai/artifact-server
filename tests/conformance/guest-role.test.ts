@@ -14,7 +14,7 @@ import type {InteractiveIdentityProvider} from "../../src/application/interactiv
 import type {BearerCredentialVerifier} from "../../src/application/authentication.js";
 import {AuthenticationRequired, IdentityProviderFailure, type AuthorizationDenied} from "../../src/core/errors.js";
 import {browserLoginKinds, privateTeamBrowserAccess} from "../../src/core/browser-access.js";
-import {groupMembershipRole, guestGroupPathMatches} from "../../src/core/group-role-policy.js";
+import {groupMembershipRole, guestGroupPathMatches, isOrvexTenantGroupPath, organizationStaffPathMatches} from "../../src/core/group-role-policy.js";
 import type {ExternalIdentity} from "../../src/core/installation-identity.js";
 import {
   membershipRoles,
@@ -23,6 +23,7 @@ import {
 } from "../../src/core/identity.js";
 import {resolveProjectAccess, type ProjectAccessRecord} from "../../src/core/project-access.js";
 import {SqliteIdentityRepository} from "../../src/storage/sqlite-identity-repository.js";
+import {createOrvexAdmissionRole} from "../../src/external-storage/organization-memberships.js";
 import {createTestInstallation, issueLocalBrowserLogin, loginHandshakeCookie, removeTestInstallation, startTestServer, storeTestGroupRoles, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
 import {publishNew} from "../support/publishing.js";
 
@@ -116,8 +117,467 @@ describe("guest installation role", () => {
       membershipRole: membershipRoles.member,
       serviceAccountSource: "oidc" as const,
     };
-    expect(resolveProjectAccess(sharedStaff, record("restricted", ["editor"])))
-      .toEqual({mode: "restricted", role: "editor"});
+    expect(resolveProjectAccess(sharedStaff, record("restricted", ["editor"], false)))
+      .toEqual({isCreator: false, mode: "restricted", role: "editor"});
+  });
+
+  test("AS-ORVEX-F1-POLICY: tenant group roots are exact and configured staff selectors remain admitted", () => {
+    expect([
+      "/Guests/acme",
+      "/Guests/acme/Reviewers",
+      "/TenantWorkspaces/acme",
+      "/TenantWorkspaces/acme/acme-staff/Support",
+      "/Guests",
+      "/GuestsX/acme",
+      "/TenantWorkspaces/acme-old/acme-staff",
+    ].map(isOrvexTenantGroupPath)).toEqual([true, true, true, true, false, false, true]);
+    const staff = ["/TenantWorkspaces/{slug}/{slug}-staff"];
+    expect(organizationStaffPathMatches("/TenantWorkspaces/acme/acme-staff", staff)).toBe(true);
+    expect(organizationStaffPathMatches("/TenantWorkspaces/acme/acme-staff/Support", staff)).toBe(false);
+    expect(organizationStaffPathMatches("/TenantWorkspaces/acme/acme-guest", staff)).toBe(false);
+    expect(organizationStaffPathMatches("/TenantWorkspaces/acme/acme-staff", ["/TenantWorkspaces/{slug}/other-staff"])).toBe(false);
+  });
+
+  test("AS-ORVEX-F1-F4-HTTP-MCP: protected tenant groups are hidden and cannot receive Orvex roles", async () => {
+    await server.stop();
+    server = await startTestServer(installation, {
+      externalApiBearerVerifier: conformanceBearerVerifier,
+      externalMcpBearerVerifier: conformanceBearerVerifier,
+      orvexTenantGroupProtection: true,
+      organizationStaffGroups: ["/TenantWorkspaces/{slug}/{slug}-staff"],
+    });
+    const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
+    const database = new DatabaseSync(databasePath);
+    const repository = new SqliteIdentityRepository(databasePath);
+    let installationId = "";
+    try {
+      installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_groups WHERE id = 'group-Guests'").get()).installationId;
+      const now = new Date().toISOString();
+      const tenantGroups: readonly (readonly [string, string])[] = [
+        ["tenant-guest", "/Guests/acme"],
+        ["tenant-staff", "/TenantWorkspaces/acme/acme-staff"],
+      ];
+      for (const [id, path] of tenantGroups) {
+        database.prepare(`INSERT INTO directory_groups (
+          installation_id, id, name, path, first_path, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?)`)
+          .run(installationId, id, id, path, path, now);
+      }
+      await repository.setGroupRole(installationId, "tenant-guest", "guest", now, "admin");
+      await repository.setGroupRole(installationId, "tenant-staff", "member", now, "admin");
+    } finally {
+      repository.close();
+      database.close();
+    }
+
+    const httpGroups = z.object({groups: z.array(z.object({path: z.string()}).passthrough())})
+      .parse(await (await ownerFetch("/api/v1/groups")).json()).groups;
+    expect(httpGroups.map(({path}) => path)).not.toContain("/Guests/acme");
+    expect(httpGroups.map(({path}) => path)).not.toContain("/TenantWorkspaces/acme/acme-staff");
+    expect((await ownerFetch("/api/v1/groups/tenant-guest/role", {
+      body: JSON.stringify({role: "owner"}), method: "PUT",
+    })).status).toBe(403);
+    const verifyRepository = new SqliteIdentityRepository(databasePath);
+    try {
+      const roles = await verifyRepository.listGroupRoles(installationId);
+      expect(roles.find(({groupId}) => groupId === "tenant-guest")?.role).toBe("guest");
+    } finally {
+      verifyRepository.close();
+    }
+
+    const mcpResponse = await fetch(`${server.baseUrl}/mcp`, {
+      body: JSON.stringify({
+        id: crypto.randomUUID(), jsonrpc: "2.0", method: "tools/call",
+        params: {
+          _meta: {
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+            [CLIENT_INFO_META_KEY]: {name: "guest-role-conformance", version: "1"},
+            [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+          },
+          name: "group_list", arguments: {},
+        },
+      }),
+      headers: {
+        Accept: "application/json, text/event-stream",
+        Authorization: "Bearer owner-conformance",
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "group_list",
+      },
+      method: "POST",
+    });
+    const mcpBody = z.object({result: z.object({structuredContent: z.object({
+      groups: z.array(z.object({path: z.string()}).passthrough()),
+    }).passthrough()}).passthrough()}).passthrough().parse(await mcpResponse.json());
+    expect(mcpBody.result.structuredContent.groups.map(({path}) => path)).not.toContain("/Guests/acme");
+    expect(mcpBody.result.structuredContent.groups.map(({path}) => path)).not.toContain("/TenantWorkspaces/acme/acme-staff");
+
+    const shareResponse = await fetch(`${server.baseUrl}/mcp`, {
+      body: JSON.stringify({
+        id: crypto.randomUUID(), jsonrpc: "2.0", method: "tools/call",
+        params: {
+          _meta: {
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+            [CLIENT_INFO_META_KEY]: {name: "guest-role-conformance", version: "1"},
+            [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+          },
+          name: "project_share", arguments: {group: "/Guests/acme", projectId: "prj_default", role: "viewer"},
+        },
+      }),
+      headers: {
+        Accept: "application/json, text/event-stream",
+        Authorization: "Bearer owner-conformance",
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "project_share",
+      },
+      method: "POST",
+    });
+    const shareBody = z.object({result: z.object({
+      isError: z.boolean(), content: z.array(z.object({text: z.string().optional()}).passthrough()),
+    }).passthrough()}).passthrough().parse(await shareResponse.json());
+    expect(shareBody.result.isError).toBe(true);
+    expect(shareBody.result.content[0]?.text).toContain("GROUP_NOT_FOUND");
+  });
+
+  test("AS-ORVEX-F1-SYNC: legacy tenant guest rows deactivate users without tripping the safety threshold", async () => {
+    const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
+    const database = new DatabaseSync(databasePath);
+    const repository = new SqliteIdentityRepository(databasePath);
+    try {
+      const installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_groups WHERE id = 'group-Guests'").get()).installationId;
+      const now = new Date().toISOString();
+      const members = Array.from({length: 8}, (_, index) => ({
+        email: `tenant-guest-${index}@example.test`, subject: `tenant-guest-subject-${index}`,
+      }));
+      database.prepare(`INSERT INTO directory_groups (
+        installation_id, id, name, path, first_path, synced_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (installation_id, id) DO UPDATE SET path = excluded.path, first_path = excluded.first_path`)
+        .run(installationId, "tenant-guest", "acme", "/Guests/acme", "/Guests/acme", now);
+      database.prepare(`INSERT INTO directory_group_roles (
+        installation_id, group_id, role, assigned_at, assigned_by_principal_id
+      ) VALUES (?, ?, 'guest', ?, 'configuration:guest-group-rule')
+      ON CONFLICT (installation_id, group_id) DO UPDATE SET
+        role = 'guest', assigned_by_principal_id = 'configuration:guest-group-rule'`)
+        .run(installationId, "tenant-guest", now);
+      for (const [index, member] of members.entries()) {
+        database.prepare(`INSERT INTO installation_members (
+          id, installation_id, email, display_name, role, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'guest', 'active', ?, ?)`)
+          .run(`tenant-guest-member-${index}`, installationId, member.email, `Guest ${index}`, now, now);
+      }
+      await repository.applyDirectoryGroups(installationId, {
+        groups: [{id: "tenant-guest", name: "acme", path: "/Guests/acme", members}],
+        excludedRoleGroupIds: ["tenant-guest"],
+        maxDeactivations: 0,
+        provider: "tenant-keycloak",
+        syncedAt: now,
+      });
+      const statuses = database.prepare(`SELECT status FROM installation_members
+        WHERE installation_id = ? AND id LIKE 'tenant-guest-member-%' ORDER BY id`).all(installationId);
+      expect(statuses).toHaveLength(8);
+      expect(statuses.every((row) => z.object({status: z.string()}).parse(row).status === "inactive")).toBe(true);
+      expect(await repository.listGroupRoles(installationId)).toContainEqual(expect.objectContaining({
+        groupId: "tenant-guest", role: "guest", source: "rule",
+      }));
+    } finally {
+      repository.close();
+      database.close();
+    }
+  });
+
+  test("AS-ORVEX-F1-LOGIN: interactive login rejects a tenant guest group role", async () => {
+    await server.stop();
+    const identity: ExternalIdentity = {
+      displayName: "Tenant guest",
+      email: "tenant-guest-login@example.test",
+      emailVerified: true,
+      groups: ["/Guests/acme"],
+      provider: "tenant-guest-login",
+      subject: "tenant-guest-login-subject",
+    };
+    const provider: InteractiveIdentityProvider = {
+      name: identity.provider,
+      start: () => Effect.succeed({
+        authorizationUrl: "https://identity.example/authorize",
+        codeVerifier: "tenant-guest-verifier-with-sufficient-entropy",
+        nonce: null,
+        state: "tenant-guest-login-state-with-sufficient-entropy",
+      }),
+      complete: (code) => code === "tenant-guest-login-code"
+        ? Effect.succeed(identity)
+        : Effect.fail(new IdentityProviderFailure({message: "Invalid code."})),
+    };
+    server = await startTestServer(installation, {
+      browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
+      groupRolePolicy: {seed: [
+        {role: membershipRoles.guest, selector: "/Guests"},
+        {role: membershipRoles.viewer, selector: "/Viewers"},
+        {role: membershipRoles.owner, selector: "/Owners"},
+      ]},
+      interactiveIdentityProvider: provider,
+      orvexTenantGroupProtection: true,
+      organizationStaffGroups: ["/TenantWorkspaces/{slug}/{slug}-staff"],
+    });
+    const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
+    const database = new DatabaseSync(databasePath);
+    const repository = new SqliteIdentityRepository(databasePath);
+    try {
+      const installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_group_roles LIMIT 1").get()).installationId;
+      const now = new Date().toISOString();
+      database.prepare(`INSERT INTO directory_groups (
+        installation_id, id, name, path, first_path, synced_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(installationId, "tenant-guest-login-group", "acme", "/Guests/acme", "/Guests/acme", now);
+      await repository.setGroupRole(installationId, "tenant-guest-login-group", "guest", now, "admin");
+    } finally {
+      repository.close();
+      database.close();
+    }
+    const login = await fetch(`${server.baseUrl}/auth/login`, {redirect: "manual"});
+    expect(login.status).toBe(302);
+    const callback = new URL("/auth/callback", server.baseUrl);
+    callback.searchParams.set("code", "tenant-guest-login-code");
+    callback.searchParams.set("state", "tenant-guest-login-state-with-sufficient-entropy");
+    const response = await fetch(callback, {
+      headers: {Cookie: loginHandshakeCookie(login)},
+      redirect: "manual",
+    });
+    expect(response.status).toBe(403);
+  });
+
+  test.each([false, true])("AS-ORVEX-B1: no group assignments deny existing administrators with tenant protection %s", async (tenantProtection) => {
+    await server.stop();
+    await removeTestInstallation(installation);
+    installation = await createTestInstallation();
+    const identity: ExternalIdentity = {
+      displayName: "Unassigned administrator",
+      email: `unassigned-admin-${tenantProtection}@example.test`,
+      emailVerified: true,
+      groups: null,
+      provider: `unassigned-admin-${tenantProtection}`,
+      subject: `unassigned-admin-subject-${tenantProtection}`,
+    };
+    const provider: InteractiveIdentityProvider = {
+      name: identity.provider,
+      start: () => Effect.succeed({
+        authorizationUrl: "https://identity.example/authorize",
+        codeVerifier: "unassigned-admin-verifier-with-sufficient-entropy",
+        nonce: null,
+        state: "unassigned-admin-state-with-sufficient-entropy",
+      }),
+      complete: (code) => code === "unassigned-admin-code"
+        ? Effect.succeed(identity)
+        : Effect.fail(new IdentityProviderFailure({message: "Invalid code."})),
+    };
+    server = await startTestServer(installation, {
+      browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
+      groupRolePolicy: {seed: []},
+      interactiveIdentityProvider: provider,
+      orvexTenantGroupProtection: tenantProtection,
+    });
+    await storeTestGroupRoles(server, installation, [
+      {name: "Guests", role: membershipRoles.guest},
+      {name: "Viewers", role: membershipRoles.viewer},
+      {name: "Owners", role: membershipRoles.owner},
+    ]);
+    const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
+    const database = new DatabaseSync(databasePath);
+    let installationId: string;
+    const now = new Date().toISOString();
+    try {
+      installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_group_roles LIMIT 1").get()).installationId;
+      database.prepare("DELETE FROM directory_group_roles").run();
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'administrator', 'active', ?, ?)`)
+        .run(`unassigned-admin-${tenantProtection}`, installationId, identity.email, identity.displayName, now, now);
+    } finally {
+      database.close();
+    }
+    const previewMember = {
+      createdAt: now,
+      displayName: identity.displayName,
+      email: identity.email ?? "",
+      id: `unassigned-admin-${tenantProtection}`,
+      installationId,
+      role: membershipRoles.administrator,
+      status: "active" as const,
+      updatedAt: now,
+    };
+    const previewRole = createOrvexAdmissionRole({
+      bootstrapAdministratorEmail: null,
+      findActiveMemberByEmail: async () => previewMember,
+      findActiveMemberByExternalIdentity: async () => null,
+      groupRolePolicy: {seed: []},
+      hasMembers: async () => true,
+      isGroupRoleSeedApplied: async () => true,
+      listMembers: async () => [],
+      listGroupRoles: async () => [],
+      orvexTenantGroupProtection: tenantProtection,
+    });
+    await expect(previewRole(identity)).resolves.toBeNull();
+
+    const login = await fetch(`${server.baseUrl}/auth/login`, {redirect: "manual"});
+    const callback = new URL("/auth/callback", server.baseUrl);
+    callback.searchParams.set("code", "unassigned-admin-code");
+    callback.searchParams.set("state", "unassigned-admin-state-with-sufficient-entropy");
+    const response = await fetch(callback, {
+      headers: {Cookie: loginHandshakeCookie(login)},
+      redirect: "manual",
+    });
+    expect(response.status).toBe(403);
+  });
+
+  test.each(["groups", "organization"] as const)("AS-ORVEX-N1: an inactive email match with a different provider subject is denied before %s reactivation", async (admissionMode) => {
+    await server.stop();
+    await removeTestInstallation(installation);
+    installation = await createTestInstallation();
+    const identity: ExternalIdentity = {
+      displayName: "Replacement subject",
+      email: "inactive-subject-conflict@example.test",
+      emailVerified: true,
+      groups: admissionMode === "groups" ? ["/Viewers"] : null,
+      organizationMembership: admissionMode === "organization"
+        ? {alias: "acme", id: "organization-id", role: membershipRoles.viewer}
+        : null,
+      provider: "inactive-subject-conflict-provider",
+      subject: "new-inactive-subject",
+    };
+    const provider: InteractiveIdentityProvider = {
+      name: identity.provider,
+      start: () => Effect.succeed({
+        authorizationUrl: "https://identity.example/authorize",
+        codeVerifier: "inactive-subject-verifier-with-sufficient-entropy",
+        nonce: null,
+        state: "inactive-subject-state-with-sufficient-entropy",
+      }),
+      complete: (code) => code === "inactive-subject-code"
+        ? Effect.succeed(identity)
+        : Effect.fail(new IdentityProviderFailure({message: "Invalid code."})),
+    };
+    let serverOptions: NonNullable<Parameters<typeof startTestServer>[1]> = {
+      browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
+      groupRolePolicy: {seed: []},
+      interactiveIdentityProvider: provider,
+    };
+    if (admissionMode === "organization") {
+      serverOptions = {...serverOptions, organizationAdmission: {alias: "acme", id: "organization-id"}};
+    }
+    server = await startTestServer(installation, serverOptions);
+    await storeTestGroupRoles(server, installation, [
+      {name: "Guests", role: membershipRoles.guest},
+      {name: "Viewers", role: membershipRoles.viewer},
+      {name: "Owners", role: membershipRoles.owner},
+    ]);
+    const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
+    const database = new DatabaseSync(databasePath);
+    let installationId: string;
+    const now = new Date().toISOString();
+    try {
+      installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_group_roles LIMIT 1").get()).installationId;
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'member', 'inactive', ?, ?)`)
+        .run("inactive-subject-conflict", installationId, identity.email, identity.displayName, now, now);
+      database.prepare(`INSERT INTO external_identities (
+        provider, subject, member_id, email, bound_at
+      ) VALUES (?, ?, ?, ?, ?)`)
+        .run(identity.provider, "old-inactive-subject", "inactive-subject-conflict", identity.email, now);
+    } finally {
+      database.close();
+    }
+    const login = await fetch(`${server.baseUrl}/auth/login`, {redirect: "manual"});
+    const callback = new URL("/auth/callback", server.baseUrl);
+    callback.searchParams.set("code", "inactive-subject-code");
+    callback.searchParams.set("state", "inactive-subject-state-with-sufficient-entropy");
+    const response = await fetch(callback, {
+      headers: {Cookie: loginHandshakeCookie(login)},
+      redirect: "manual",
+    });
+    expect(response.status).toBe(403);
+    const verify = new DatabaseSync(databasePath);
+    try {
+      expect(verify.prepare("SELECT subject FROM external_identities WHERE member_id = ? AND provider = ?")
+        .all("inactive-subject-conflict", identity.provider)).toEqual([{subject: "old-inactive-subject"}]);
+      expect(verify.prepare("SELECT status FROM installation_members WHERE id = ?")
+        .get("inactive-subject-conflict")).toEqual({status: "inactive"});
+    } finally {
+      verify.close();
+    }
+  });
+
+  test("AS-ORVEX-F6: an email match with a different existing provider subject is denied before mutation", async () => {
+    await server.stop();
+    const identity: ExternalIdentity = {
+      displayName: "Changed subject",
+      email: "subject-conflict@example.test",
+      emailVerified: true,
+      groups: null,
+      provider: "subject-conflict-provider",
+      subject: "new-subject",
+    };
+    const provider: InteractiveIdentityProvider = {
+      name: identity.provider,
+      start: () => Effect.succeed({
+        authorizationUrl: "https://identity.example/authorize",
+        codeVerifier: "subject-conflict-verifier-with-sufficient-entropy",
+        nonce: null,
+        state: "subject-conflict-state-with-sufficient-entropy",
+      }),
+      complete: (code) => code === "subject-conflict-code"
+        ? Effect.succeed(identity)
+        : Effect.fail(new IdentityProviderFailure({message: "Invalid code."})),
+    };
+    server = await startTestServer(installation, {
+      browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
+      interactiveIdentityProvider: provider,
+    });
+    const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
+    const database = new DatabaseSync(databasePath);
+    try {
+      const installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_group_roles LIMIT 1").get()).installationId;
+      const now = new Date().toISOString();
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'administrator', 'active', ?, ?)`)
+        .run("member_subject_conflict", installationId, identity.email, identity.displayName, now, now);
+      database.prepare(`INSERT INTO external_identities (
+        provider, subject, member_id, email, bound_at
+      ) VALUES (?, ?, ?, ?, ?)`)
+        .run(identity.provider, "old-subject", "member_subject_conflict", identity.email, now);
+    } finally {
+      database.close();
+    }
+
+    const login = await fetch(`${server.baseUrl}/auth/login`, {redirect: "manual"});
+    expect(login.status).toBe(302);
+    const callback = new URL("/auth/callback", server.baseUrl);
+    callback.searchParams.set("code", "subject-conflict-code");
+    callback.searchParams.set("state", "subject-conflict-state-with-sufficient-entropy");
+    const response = await fetch(callback, {
+      headers: {Cookie: loginHandshakeCookie(login)},
+      redirect: "manual",
+    });
+    expect(response.status).toBe(403);
+    const verify = new DatabaseSync(databasePath);
+    try {
+      expect(verify.prepare("SELECT subject FROM external_identities WHERE member_id = ? AND provider = ?")
+        .all("member_subject_conflict", identity.provider)).toEqual([{subject: "old-subject"}]);
+      expect(verify.prepare("SELECT status FROM installation_members WHERE id = ?")
+        .get("member_subject_conflict")).toEqual({status: "active"});
+    } finally {
+      verify.close();
+    }
   });
 
   test("GUEST-001-B: a guest sees only explicitly shared restricted projects at viewer level", () => {
@@ -921,11 +1381,12 @@ const conformanceBearerVerifier: BearerCredentialVerifier = {
 function record(
   mode: ProjectAccessRecord["accessMode"],
   grantRoles: readonly ("viewer" | "editor" | "manager")[],
+  isCreator = true,
 ): ProjectAccessRecord {
   return {
     accessMode: mode,
     grantRoles,
-    isCreator: true,
+    isCreator,
     member: {role: membershipRoles.guest, status: "active"},
   };
 }

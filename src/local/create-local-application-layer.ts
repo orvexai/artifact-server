@@ -173,6 +173,9 @@ export interface ApplicationAdapters {
   readonly identityRepository: IdentityRepository;
   readonly installationId: string;
   readonly organizationDirectoryVisibility?: boolean | undefined;
+  /** Orvex is inside org tenancy; tenant root groups are hidden from role and sharing tools. */
+  readonly orvexTenantGroupProtection?: boolean | undefined;
+  readonly organizationStaffGroups?: readonly string[] | undefined;
   /** This tenant's Orvex staff definition, shared with org sync. */
   readonly tenantStaff?: TenantStaffDefinition | undefined;
   readonly interactiveIdentityProvider: InteractiveIdentityProvider | null;
@@ -425,6 +428,7 @@ export function createApplicationLayer(
     clock,
     ids: adapters.ids,
     installationId: adapters.installationId,
+    orvexTenantGroupProtection: adapters.orvexTenantGroupProtection === true,
     repository: {
       createProject: (command) => Effect.tryPromise({
         try: () => adapters.repository.createProject(command),
@@ -851,6 +855,8 @@ export function createApplicationLayer(
     installationId: adapters.installationId,
     staffHandleSecret: adapters.staffHandleSecret ?? Redacted.make(""),
     organizationDirectoryVisibility: adapters.organizationDirectoryVisibility,
+    orvexTenantGroupProtection: adapters.orvexTenantGroupProtection,
+    organizationStaffGroups: adapters.organizationStaffGroups,
     tenantStaff: adapters.tenantStaff ?? emptyTenantStaffDefinition,
     localBootstrapCredential: adapters.localBootstrapCredential,
     localLoginAttemptLifetimeMilliseconds: 60 * 1_000,
@@ -907,6 +913,15 @@ export function createApplicationLayer(
         "findActiveMemberByExternalIdentity",
         () => identityRepository.findActiveMemberByExternalIdentity(
           installationId,
+          provider,
+          subject,
+        ),
+      ),
+      hasExternalIdentityForMemberWithDifferentSubject: (installationId, memberId, provider, subject) => identityEffect(
+        "hasExternalIdentityForMemberWithDifferentSubject",
+        () => identityRepository.hasExternalIdentityForMemberWithDifferentSubject(
+          installationId,
+          memberId,
           provider,
           subject,
         ),

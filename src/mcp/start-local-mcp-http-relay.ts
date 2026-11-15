@@ -11,6 +11,7 @@ import {currentCliInvocation, type CliInvocation} from "../cli/current-cli-invoc
 import {ensureManagedLocalService} from "../cli/local-service-manager.js";
 import {resolveDefaultMcpCliProfile} from "../cli/mcp-cli-profile.js";
 import {readLocalApiCredential} from "../local/local-credentials.js";
+import {artifactServerRouteUrl} from "../core/server-address.js";
 
 const healthPath = "/health";
 const mcpPath = "/mcp";
@@ -37,7 +38,12 @@ export async function startLocalMcpHttpRelay(
   invocation: CliInvocation = currentCliInvocation(),
 ): Promise<void> {
   let localServicePromise: ReturnType<typeof ensureManagedLocalService> | null = null;
+  let reportedLocalMode = false;
   const localFallback = async (): Promise<{origin: string; token: string}> => {
+    if (!reportedLocalMode) {
+      console.error("Artifact Server MCP relay is using a local installation because no remote CLI profile is configured.");
+      reportedLocalMode = true;
+    }
     localServicePromise ??= ensureManagedLocalService(profileDirectory, invocation);
     try {
       const service = await localServicePromise;
@@ -153,23 +159,24 @@ async function handleRequest(
 
   let targetOrigin: string;
   let token: string;
+  const profile = await resolveDefaultMcpCliProfile(profileDirectory).catch(() => {
+    writeRemoteProfileUnavailable(response);
+    return undefined;
+  });
+  if (profile === undefined) return;
   try {
-    const profile = await resolveDefaultMcpCliProfile(profileDirectory).catch(() => null);
     if (profile !== null) {
-      try {
-        token = await profile.token();
-        targetOrigin = profile.origin;
-      } catch {
-        ({origin: targetOrigin, token} = await localFallback());
-      }
+      token = await profile.token();
+      targetOrigin = profile.origin;
     } else {
       ({origin: targetOrigin, token} = await localFallback());
     }
   } catch {
-    writeLocalServiceUnavailable(response);
+    if (profile !== null) writeRemoteProfileUnavailable(response);
+    else writeLocalServiceUnavailable(response);
     return;
   }
-  const target = new URL(mcpPath + requestUrl.search, targetOrigin);
+  const target = artifactServerRouteUrl(mcpPath + requestUrl.search, targetOrigin);
   const headers: Record<string, string | string[]> = {};
   for (const [name, value] of Object.entries(request.headers)) {
     if (value !== undefined && forwardedHeaders.has(name.toLowerCase())) {
@@ -205,5 +212,13 @@ function writeLocalServiceUnavailable(response: ServerResponse): void {
   response.end(JSON.stringify({
     error: "Artifact Server MCP service is unavailable.",
     message: "Check the local Artifact Server service and retry the MCP request.",
+  }));
+}
+
+function writeRemoteProfileUnavailable(response: ServerResponse): void {
+  response.writeHead(502, {"content-type": "application/json"});
+  response.end(JSON.stringify({
+    error: "Configured remote Artifact Server profile is unavailable.",
+    message: "The remote profile could not be authenticated. No local fallback was attempted.",
   }));
 }

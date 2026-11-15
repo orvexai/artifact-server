@@ -2,6 +2,8 @@ import type {ExternalIdentity} from "../core/installation-identity.js";
 import {
   configuredGroupRoleAssignments,
   groupMembershipRole,
+  isOrvexTenantGroupPath,
+  organizationStaffPathMatches,
   type GroupRoleAssignment,
   type GroupRolePolicy,
 } from "../core/group-role-policy.js";
@@ -102,10 +104,16 @@ export interface OrvexAdmissionReader {
   readonly bootstrapAdministratorEmail: string | null;
   readonly findActiveMemberByEmail: (email: string) => Promise<InstallationMember | null>;
   readonly findActiveMemberByExternalIdentity: (provider: string, subject: string) => Promise<InstallationMember | null>;
+  readonly hasExternalIdentityForMemberWithDifferentSubject?: (
+    memberId: string, provider: string, subject: string,
+  ) => Promise<boolean>;
   readonly groupRolePolicy: GroupRolePolicy | null;
   readonly hasMembers: () => Promise<boolean>;
   readonly isGroupRoleSeedApplied: () => Promise<boolean>;
+  readonly listMembers: () => Promise<readonly InstallationMember[]>;
   readonly listGroupRoles: () => Promise<readonly GroupRoleAssignment[]>;
+  readonly orvexTenantGroupProtection?: boolean;
+  readonly organizationStaffGroups?: readonly string[];
 }
 
 /**
@@ -117,8 +125,14 @@ export function createOrvexAdmissionRole(reader: OrvexAdmissionReader): OrvexAdm
     if (identity.serviceAccount === true || identity.email === null || !identity.emailVerified) return null;
     const email = normalizeMemberEmail(identity.email);
     if (email === null) return null;
-    const member = await reader.findActiveMemberByExternalIdentity(identity.provider, identity.subject) ??
-      await reader.findActiveMemberByEmail(email);
+    let member = await reader.findActiveMemberByExternalIdentity(identity.provider, identity.subject);
+    if (member === null) {
+      member = await reader.findActiveMemberByEmail(email);
+      if (member !== null && reader.hasExternalIdentityForMemberWithDifferentSubject !== undefined &&
+        await reader.hasExternalIdentityForMemberWithDifferentSubject(member.id, identity.provider, identity.subject)) {
+        return null;
+      }
+    }
     const policy = reader.groupRolePolicy;
     if (policy === null) {
       if (member !== null) return member.role;
@@ -129,14 +143,25 @@ export function createOrvexAdmissionRole(reader: OrvexAdmissionReader): OrvexAdm
         ? membershipRoles.administrator
         : null;
     }
-    const assignments = await reader.isGroupRoleSeedApplied()
+    const storedAssignments = await reader.isGroupRoleSeedApplied()
       ? await reader.listGroupRoles()
       : configuredGroupRoleAssignments(policy.seed);
+    const assignments = reader.orvexTenantGroupProtection === true
+      ? storedAssignments.filter((assignment) => !isOrvexTenantGroupPath(assignment.path) ||
+        organizationStaffPathMatches(assignment.path, reader.organizationStaffGroups ?? []))
+      : storedAssignments;
     if (assignments.length === 0) return null;
     const role = policy.groupRoots === undefined
       ? groupMembershipRole(assignments, identity.groups)
       : groupMembershipRole(assignments, identity.groups, policy.groupRoots);
-    if (role === null && member !== null && isAdministratorRole(member.role)) return member.role;
+    if (member !== null && isAdministratorRole(member.role) &&
+      (role === null || !isAdministratorRole(role))) {
+      const members = await reader.listMembers();
+      const hasOtherAdministrator = members.some((candidate) =>
+        candidate.id !== member.id && candidate.status === "active" && isAdministratorRole(candidate.role)
+      );
+      if (!hasOtherAdministrator) return member.role;
+    }
     return role;
   };
 }

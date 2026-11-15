@@ -5,6 +5,7 @@ import {Option, type Command} from "commander";
 import {Redacted} from "effect";
 import {z} from "zod";
 
+import {artifactServerRouteUrl} from "../core/server-address.js";
 import {resolveCliServerConnection} from "./cli-server-connection.js";
 
 interface LinkOptions {
@@ -88,7 +89,7 @@ export function configureLinkCommand(
       const absolutePath = path.resolve(inputPath);
       const connection = await resolveCliServerConnection(options, "link");
       const response = await fetch(
-        new URL("/api/v1/artifacts/link", connection.origin),
+        artifactServerRouteUrl("/api/v1/artifacts/link", connection.origin),
         {
           body: JSON.stringify(linkRequestBody(absolutePath, options)),
           headers: {

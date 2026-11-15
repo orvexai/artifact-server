@@ -687,7 +687,9 @@ describe("installation identity and access", () => {
     const handshake = loginHandshakeCookie(started);
     const unboundCallback = await fetch(callbackUrl, {redirect: "manual"});
     expect(unboundCallback.status).toBe(401);
-    expect(unboundCallback.headers.getSetCookie()).toEqual([]);
+    expect(unboundCallback.headers.getSetCookie()).toEqual([
+      "artifact_login=; Max-Age=0; Path=/",
+    ]);
     const completed = await fetch(callbackUrl, {
       headers: {Cookie: handshake},
       redirect: "manual",
@@ -791,7 +793,7 @@ describe("installation identity and access", () => {
     expect((await fetch(conflictingRebindCallback, {
       headers: {Cookie: loginHandshakeCookie(conflictingRebindStart)},
       redirect: "manual",
-    })).status).toBe(409);
+    })).status).toBe(403);
 
     provider.identity = {
       ...provider.identity,

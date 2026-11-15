@@ -366,6 +366,7 @@ describe("M2: the chooser lists every org the user is admitted to", () => {
     groupRolePolicy: {seed: [{role: "member", selector: "/orvex/staff"}]},
     hasMembers: async () => true,
     isGroupRoleSeedApplied: async () => false,
+    listMembers: async () => [],
     listGroupRoles: async () => [],
   });
 
@@ -393,6 +394,82 @@ describe("M2: the chooser lists every org the user is admitted to", () => {
         orvex: {groups: ["/owner"], id: "44444444-4444-4444-8444-444444444444"},
       },
     })).toEqual([]);
+  });
+
+  test("AS-ORVEX-F1-F5: chooser mirrors tenant-aware login, keeps staff, flag-off roles and legacy admins", async () => {
+    const protectedAdmission = createOrvexAdmissionRole({
+      bootstrapAdministratorEmail: null,
+      findActiveMemberByEmail: async () => null,
+      findActiveMemberByExternalIdentity: async () => null,
+      groupRolePolicy: {seed: []},
+      hasMembers: async () => true,
+      isGroupRoleSeedApplied: async () => true,
+      listMembers: async () => [],
+      listGroupRoles: async () => [
+        {assignedAt: "now", groupId: "guest", name: "acme", nameUnique: true, path: "/Guests/acme", role: "guest"},
+        {assignedAt: "now", groupId: "staff", name: "acme-staff", nameUnique: true, path: "/TenantWorkspaces/acme/acme-staff", role: "member"},
+      ],
+      orvexTenantGroupProtection: true,
+      organizationStaffGroups: ["/TenantWorkspaces/{slug}/{slug}-staff"],
+    });
+    const makeIdentity = (groups: string[]) => ({...identity, groups});
+    await expect(protectedAdmission(makeIdentity(["/Guests/acme"]))).resolves.toBeNull();
+    await expect(protectedAdmission(makeIdentity(["/TenantWorkspaces/acme/acme-staff"]))).resolves.toBe("member");
+
+    const legacy = createOrvexAdmissionRole({
+      bootstrapAdministratorEmail: null,
+      findActiveMemberByEmail: async () => ({
+        createdAt: "now", displayName: "Legacy admin", email: identity.email, id: "member-admin",
+        installationId: "orvex", role: membershipRoles.administrator, status: "active", updatedAt: "now",
+      }),
+      findActiveMemberByExternalIdentity: async () => null,
+      groupRolePolicy: {seed: []},
+      hasMembers: async () => true,
+      isGroupRoleSeedApplied: async () => true,
+      listMembers: async () => [{
+        createdAt: "now", displayName: "Legacy admin", email: identity.email, id: "member-admin",
+        installationId: "orvex", role: membershipRoles.administrator, status: "active", updatedAt: "now",
+      }],
+      listGroupRoles: async () => [],
+      orvexTenantGroupProtection: true,
+      organizationStaffGroups: [],
+    });
+    // Empty group assignments are denied by login before last-admin recovery; the chooser must match.
+    await expect(legacy(makeIdentity([]))).resolves.toBeNull();
+
+    const recoverableLegacyAdmin = createOrvexAdmissionRole({
+      bootstrapAdministratorEmail: null,
+      findActiveMemberByEmail: async () => ({
+        createdAt: "now", displayName: "Legacy admin", email: identity.email, id: "member-admin",
+        installationId: "orvex", role: membershipRoles.administrator, status: "active", updatedAt: "now",
+      }),
+      findActiveMemberByExternalIdentity: async () => null,
+      groupRolePolicy: {seed: [{role: "member", selector: "/orvex/staff"}]},
+      hasMembers: async () => true,
+      isGroupRoleSeedApplied: async () => true,
+      listMembers: async () => [{
+        createdAt: "now", displayName: "Legacy admin", email: identity.email, id: "member-admin",
+        installationId: "orvex", role: membershipRoles.administrator, status: "active", updatedAt: "now",
+      }],
+      listGroupRoles: async () => [{
+        assignedAt: "now", groupId: "staff", name: "staff", nameUnique: true, path: "/orvex/staff", role: "member",
+      }],
+    });
+    await expect(recoverableLegacyAdmin(makeIdentity([]))).resolves.toBe(membershipRoles.administrator);
+
+    const tenancyOff = createOrvexAdmissionRole({
+      bootstrapAdministratorEmail: null,
+      findActiveMemberByEmail: async () => null,
+      findActiveMemberByExternalIdentity: async () => null,
+      groupRolePolicy: {seed: []},
+      hasMembers: async () => true,
+      isGroupRoleSeedApplied: async () => true,
+      listMembers: async () => [],
+      listGroupRoles: async () => [
+        {assignedAt: "now", groupId: "guest", name: "acme", nameUnique: true, path: "/Guests/acme", role: "guest"},
+      ],
+    });
+    await expect(tenancyOff(makeIdentity(["/Guests/acme"]))).resolves.toBe("guest");
   });
 });
 

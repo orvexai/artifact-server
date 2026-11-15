@@ -45,6 +45,8 @@ import {
 } from "../core/installation-identity.js";
 import {
   configuredGroupRoleAssignments,
+  isOrvexTenantGroupPath,
+  organizationStaffPathMatches,
   groupRoleEditAllowed,
   groupRoleSeedMarksStaff,
   type GroupRoleAssignment,
@@ -217,6 +219,12 @@ export interface InstallationIdentityRepository {
     provider: string,
     subject: string,
   ) => Effect.Effect<InstallationMember | null, IdentityRepositoryFailure>;
+  readonly hasExternalIdentityForMemberWithDifferentSubject: (
+    installationId: string,
+    memberId: string,
+    provider: string,
+    subject: string,
+  ) => Effect.Effect<boolean, IdentityRepositoryFailure>;
   readonly findMember: (
     installationId: string,
     memberId: string,
@@ -311,6 +319,9 @@ export interface InstallationAccessDependencies {
   readonly installationId: string;
   /** Let non-guest tenant members read their org-scoped directory. */
   readonly organizationDirectoryVisibility?: boolean | undefined;
+  /** The Orvex installation is served through org tenancy; tenant group paths are not Orvex roles. */
+  readonly orvexTenantGroupProtection?: boolean | undefined;
+  readonly organizationStaffGroups?: readonly string[] | undefined;
   /**
    * This tenant's Orvex staff definition: platform staff groups ({slug}
    * expanded) plus the org's own staff selectors.
@@ -764,9 +775,14 @@ function makeInstallationAccessService(
   const applyDirectoryGroups = Effect.fn(
     "InstallationAccessService.applyDirectoryGroups",
   )(function*(snapshot: DirectoryGroupSnapshot) {
+    const excludedRoleGroupIds = dependencies.orvexTenantGroupProtection === true
+      ? snapshot.groups.filter((group) => isOrvexTenantGroupPath(group.path) &&
+        !organizationStaffPathMatches(group.path, dependencies.organizationStaffGroups ?? []))
+        .map(({id}) => id)
+      : [];
     const result = yield* dependencies.repository.applyDirectoryGroups(
       dependencies.installationId,
-      {...snapshot, guestGroupPrefixes: dependencies.groupRolePolicy?.guestGroupPrefixes ?? []},
+      {...snapshot, excludedRoleGroupIds, guestGroupPrefixes: dependencies.groupRolePolicy?.guestGroupPrefixes ?? []},
     );
     // Group membership will decide project access; never serve a stale grant.
     if (
@@ -783,6 +799,9 @@ function makeInstallationAccessService(
     const groups = yield* dependencies.repository.listDirectoryGroups(
       dependencies.installationId,
     );
+    if (dependencies.orvexTenantGroupProtection === true) {
+      return groups.filter((group) => !isOrvexTenantGroupPath(group.path));
+    }
     if (dependencies.organizationDirectoryVisibility !== true) return groups;
     const tenantStaffGroups = dependencies.tenantStaff?.groups ?? [];
     return groups.filter((group) => !tenantStaffGroups.some((path) => staffPathCovers(path, group.path)) &&
@@ -793,8 +812,13 @@ function makeInstallationAccessService(
     "InstallationAccessService.listGroupRoles",
   )(function*() {
     const roles = yield* dependencies.repository.listGroupRoles(dependencies.installationId);
-    if (groupRolePolicy === null) return roles;
-    return roles.map((group) => Object.assign({}, group, {staff: groupRoleSeedMarksStaff(group, groupRolePolicy.seed)}));
+    const visibleRoles = dependencies.orvexTenantGroupProtection === true
+      ? roles.filter((group) => !isOrvexTenantGroupPath(group.path) ||
+        organizationStaffPathMatches(group.path, dependencies.organizationStaffGroups ?? []))
+      : roles;
+    if (groupRolePolicy === null) return visibleRoles;
+    return visibleRoles.map((group) => Object.assign({}, group, {staff: groupRoleSeedMarksStaff(group, groupRolePolicy.seed) ||
+      dependencies.orvexTenantGroupProtection === true && organizationStaffPathMatches(group.path, dependencies.organizationStaffGroups ?? [])}));
   });
 
   const isGroupRoleSeedApplied = Effect.fn(
@@ -849,6 +873,9 @@ function makeInstallationAccessService(
       const groups = yield* dependencies.repository.listDirectoryGroups(dependencies.installationId);
       const target = groups.find((group) => group.id === groupId);
       if (target === undefined) return yield* new IdentityNotFound({message: "The group does not exist."});
+      if (dependencies.orvexTenantGroupProtection === true && isOrvexTenantGroupPath(target.path)) {
+        return yield* new AuthorizationDenied({message: "Tenant groups cannot receive Orvex roles."});
+      }
       if (tenantOrganization && groupRolePolicy !== null && groupRoleSeedMarksStaff(target, groupRolePolicy.seed)) {
         return yield* new AuthorizationDenied({message: "Staff group roles cannot be edited."});
       }
@@ -1087,6 +1114,7 @@ function makeInstallationAccessService(
     identity: ExternalIdentity,
     email: string,
     member: InstallationMember | null,
+    trustPresentedGroups: boolean,
   ) {
     // The configured roles decide until the directory sync has stored them,
     // and always without a directory sync; after that the stored roles do.
@@ -1096,16 +1124,18 @@ function makeInstallationAccessService(
       : configuredGroupRoleAssignments(policy.seed);
     const assignments = baseAssignments;
     const now = dependencies.clock.now().toISOString();
-    // With every stored role removed nobody is turned away for good: the
-    // roles are simply not set up.
     if (assignments.length === 0) {
       return yield* Effect.fail(new IdentityAdmissionDenied({
         message: "No group has been given a role in the Artifact Server yet.",
       }));
     }
+    const effectiveAssignments = dependencies.orvexTenantGroupProtection === true
+      ? assignments.filter((assignment) => !isOrvexTenantGroupPath(assignment.path) ||
+        organizationStaffPathMatches(assignment.path, dependencies.organizationStaffGroups ?? []))
+      : assignments;
     const role = policy.groupRoots === undefined
-      ? groupMembershipRole(assignments, identity.groups)
-      : groupMembershipRole(assignments, identity.groups, policy.groupRoots);
+      ? groupMembershipRole(effectiveAssignments, identity.groups)
+      : groupMembershipRole(effectiveAssignments, identity.groups, policy.groupRoots);
     // The last active Admin or Owner keeps their role, so someone can always
     // give the roles out again after a group that held them is lost.
     if (
@@ -1137,7 +1167,7 @@ function makeInstallationAccessService(
         member.id,
         role,
         now,
-        true,
+        !trustPresentedGroups,
       );
       if (changed === null) {
         if (yield* isSoleActiveAdministrator(member)) return member;
@@ -1160,6 +1190,16 @@ function makeInstallationAccessService(
     );
     const previous = members.find((candidate) => candidate.email === email);
     if (previous !== undefined) {
+      if (yield* dependencies.repository.hasExternalIdentityForMemberWithDifferentSubject(
+        dependencies.installationId,
+        previous.id,
+        identity.provider,
+        identity.subject,
+      )) {
+        return yield* Effect.fail(new IdentityAdmissionDenied({
+          message: "This email is already linked to a different identity for this login provider.",
+        }));
+      }
       if (dependencies.organizationDirectoryVisibility === true && dependencies.repository.isMemberManuallyDeactivated !== undefined &&
         (yield* dependencies.repository.isMemberManuallyDeactivated(dependencies.installationId, email))) {
         return yield* Effect.fail(new IdentityAdmissionDenied({message: "This member was manually deactivated by an organization owner."}));
@@ -1169,7 +1209,7 @@ function makeInstallationAccessService(
         previous.id,
         role,
         now,
-        true,
+        !trustPresentedGroups,
       );
       if (restored === null) {
         if (yield* isSoleActiveAdministrator(previous)) return previous;
@@ -1234,6 +1274,16 @@ function makeInstallationAccessService(
       );
       const previous = previousMembers.find((candidate) => candidate.email === email);
       if (previous !== undefined) {
+        if (yield* dependencies.repository.hasExternalIdentityForMemberWithDifferentSubject(
+          dependencies.installationId,
+          previous.id,
+          identity.provider,
+          identity.subject,
+        )) {
+          return yield* Effect.fail(new IdentityAdmissionDenied({
+            message: "This email is already linked to a different identity for this login provider.",
+          }));
+        }
         previousRole = previous.role;
         previousStatus = previous.status;
         const updateRole = dependencies.repository.setOrganizationMemberRole ??
@@ -1280,7 +1330,7 @@ function makeInstallationAccessService(
 
   const resolveExternalMember = Effect.fn(
     "InstallationAccessService.resolveExternalMember",
-  )(function*(identity: ExternalIdentity) {
+  )(function*(identity: ExternalIdentity, trustPresentedGroups = false) {
     if (identity.serviceAccount === true) {
       return yield* Effect.fail(new IdentityAdmissionDenied({
         message: "Service accounts cannot authenticate as members.",
@@ -1302,11 +1352,24 @@ function makeInstallationAccessService(
       identity.provider,
       identity.subject,
     );
+    let matchedByEmail = false;
     if (member === null) {
       member = yield* dependencies.repository.findActiveMemberByEmail(
         dependencies.installationId,
         email,
       );
+      matchedByEmail = member !== null;
+    }
+    if (matchedByEmail && member !== null &&
+      (yield* dependencies.repository.hasExternalIdentityForMemberWithDifferentSubject(
+        dependencies.installationId,
+        member.id,
+        identity.provider,
+        identity.subject,
+      ))) {
+      return yield* Effect.fail(new IdentityAdmissionDenied({
+        message: "This email is already linked to a different identity for this login provider.",
+      }));
     }
     if (dependencies.organizationAdmission !== undefined) {
       member = yield* applyOrganizationAdmission(identity, email, member);
@@ -1316,6 +1379,7 @@ function makeInstallationAccessService(
         identity,
         email,
         member,
+        trustPresentedGroups,
       );
     } else if (member === null) {
       const hasMembers = yield* dependencies.repository.hasMembers(
@@ -1399,7 +1463,10 @@ function makeInstallationAccessService(
         ))
         ? yield* dependencies.repository.listGroupRoles(dependencies.installationId)
         : configuredGroupRoleAssignments(groupRolePolicy.seed);
-      const assignments = baseAssignments;
+      const assignments = dependencies.orvexTenantGroupProtection === true
+        ? baseAssignments.filter((assignment) => !isOrvexTenantGroupPath(assignment.path) ||
+          organizationStaffPathMatches(assignment.path, dependencies.organizationStaffGroups ?? []))
+        : baseAssignments;
       const role = groupRolePolicy.groupRoots === undefined
         ? groupMembershipRole(assignments, identity.groups)
         : groupMembershipRole(assignments, identity.groups, groupRolePolicy.groupRoots);
@@ -1452,7 +1519,7 @@ function makeInstallationAccessService(
         serviceAccountSource: "oidc" as const,
       });
     }
-    const member = yield* resolveExternalMember(identity);
+    const member = yield* resolveExternalMember(identity, true);
     return yield* withTenantStaffContext(humanPrincipal(member));
   });
 

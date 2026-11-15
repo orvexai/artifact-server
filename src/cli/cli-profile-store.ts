@@ -5,6 +5,8 @@ import path from "node:path";
 import {Effect, Schema} from "effect";
 import {z} from "zod";
 
+import {parseArtifactServerAddress} from "../core/server-address.js";
+
 const profileNamePattern = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
 const profileNameSchema = z.string().min(1).max(64).regex(profileNamePattern);
 const profileSchema = z.object({
@@ -62,29 +64,17 @@ export interface CliProfileSelection {
   readonly origin?: string;
 }
 
-/** Normalize one exact Artifact Server origin without silently keeping a path. */
+/** Normalize one Artifact Server address without silently dropping its tenant path. */
 export function parseArtifactServerOrigin(
   candidate: string,
 ): Effect.Effect<string, CliProfileError> {
   return Effect.try({
     try: () => {
-      const url = new URL(candidate);
-      if (
-        (url.protocol !== "http:" && url.protocol !== "https:")
-        || url.username.length > 0
-        || url.password.length > 0
-        || (url.pathname !== "" && url.pathname !== "/")
-        || url.search.length > 0
-        || url.hash.length > 0
-      ) {
-        throw new Error("invalid origin");
-      }
-      url.pathname = "";
-      return url.origin;
+      return parseArtifactServerAddress(candidate).address;
     },
     catch: () => new CliProfileError({
       message:
-        "The Artifact Server address must be an HTTP or HTTPS origin without credentials, a path, a query, or a fragment.",
+        "The Artifact Server address must be an HTTP or HTTPS origin with an optional /o/<slug> path, without credentials, a query, or a fragment.",
       reason: "invalid_origin",
     }),
   });

@@ -12,6 +12,9 @@ export default defineConfig({
   timeout: 60_000,
   use: {
     headless: true,
+    launchOptions: {
+      args: ["--host-resolver-rules=MAP *.localhost 127.0.0.1"],
+    },
     trace: "retain-on-failure",
   },
   workers: 1,

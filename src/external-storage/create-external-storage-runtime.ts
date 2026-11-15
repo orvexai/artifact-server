@@ -180,6 +180,8 @@ export interface ExternalStorageOrgConfig {
   readonly contentTokenPrefix?: string;
   readonly embedOrigins?: readonly string[];
   readonly slug?: string;
+  /** Set only by the org-tenancy router for the Orvex platform installation. */
+  readonly orvexTenantGroupProtection?: boolean;
   readonly issuePlatformSession?: (identity: ExternalIdentity, existingToken?: string | null) => Promise<string>;
 }
 
@@ -348,6 +350,8 @@ export async function createOrgRuntime(
         ? scopedOAuthVerifier(config.externalMcpOAuthVerifier)
         : null,
       groupRolePolicy,
+      orvexTenantGroupProtection: orgConfig.orvexTenantGroupProtection === true,
+      organizationStaffGroups: config.organizationStaffGroups ?? [],
       ids,
       identityRepository,
       installationId,

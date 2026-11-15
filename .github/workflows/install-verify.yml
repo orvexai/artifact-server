@@ -22,8 +22,10 @@ concurrency:
 
 jobs:
   node-package:
-    name: Node package / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Node package / hosted OS matrix
+    # Skipped: GitHub-hosted runners unavailable for orvexai; restore once GitHub's block is lifted.
+    if: false
+    runs-on: public-dind-runners
     timeout-minutes: 12
     permissions:
       actions: read
@@ -31,8 +33,6 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-14]
     steps:
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -168,8 +168,9 @@ jobs:
 
   image:
     name: Immutable GHCR image / compact profile
-    if: github.event_name == 'release' || inputs.source_run_id == ''
-    runs-on: ubuntu-latest
+    # Skipped: GitHub-hosted runners unavailable for orvexai; restore once GitHub's block is lifted.
+    if: false
+    runs-on: public-dind-runners
     timeout-minutes: 12
     permissions:
       attestations: read
@@ -274,7 +275,9 @@ jobs:
 
   adapter:
     name: Public npm adapter
-    runs-on: ubuntu-latest
+    # Skipped: GitHub-hosted runners unavailable for orvexai; restore once GitHub's block is lifted.
+    if: false
+    runs-on: public-dind-runners
     timeout-minutes: 6
     permissions:
       actions: read

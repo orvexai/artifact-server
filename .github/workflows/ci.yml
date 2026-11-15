@@ -37,7 +37,7 @@ concurrency:
 jobs:
   build:
     name: PR / Build and static policy
-    if: inputs.tier != 'release' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr'))
+    if: inputs.tier != 'release' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: public-dind-runners
     timeout-minutes: 8
     steps:
@@ -88,10 +88,11 @@ jobs:
 
   unit:
     name: PR / Unit and conformance behavior
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: build
     runs-on: public-dind-runners
-    timeout-minutes: 12
+    # ARC pods are slower than GitHub-hosted runners.
+    timeout-minutes: 25
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -122,10 +123,11 @@ jobs:
 
   browser:
     name: PR / Browser behavior
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: build
     runs-on: public-dind-runners
-    timeout-minutes: 10
+    # ARC pods are slower than GitHub-hosted runners.
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -164,7 +166,7 @@ jobs:
 
   cloudflare:
     name: PR / Cloudflare deployment
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: build
     runs-on: public-dind-runners
     timeout-minutes: 8
@@ -196,9 +198,9 @@ jobs:
 
   portable:
     name: macOS portability
-    # GitHub-hosted macOS is unavailable on the in-cluster ARC pool; keep this off PRs and pushes.
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-    runs-on: macos-14
+    # Skipped: GitHub-hosted runners unavailable for orvexai; restore once GitHub's block is lifted.
+    if: false
+    runs-on: public-dind-runners
     timeout-minutes: 12
     steps:
       - name: Checkout repository
@@ -225,7 +227,7 @@ jobs:
 
   full:
     name: Full / Linux iteration gate
-    if: inputs.tier == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'full')
+    if: (inputs.tier == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'full')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: public-dind-runners
     timeout-minutes: 47
     env:

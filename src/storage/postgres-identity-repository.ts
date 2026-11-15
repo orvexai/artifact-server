@@ -1,4 +1,5 @@
-import {Effect} from "effect";
+import {Effect, Result} from "effect";
+import {PgTypes} from "@effect/sql-pg";
 import {SqlClient} from "effect/unstable/sql/SqlClient";
 import {isSqlError} from "effect/unstable/sql/SqlError";
 import {z} from "zod";
@@ -279,6 +280,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         }
         for (const group of snapshot.groups) {
           if (
+            !(snapshot.excludedRoleGroupIds ?? []).includes(group.id) &&
             guestGroupPathMatches(stored.get(group.id)?.firstPath || group.path, snapshot.guestGroupPrefixes ?? []) &&
             (backfillGuestRoles || !stored.has(group.id))
           ) {
@@ -291,14 +293,51 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
             );
           }
         }
+        let expectedRoleRemovalDeactivations = 0;
         if (snapshot.recomputeRoles !== false) {
+        const excludedRoleGroupIds = snapshot.excludedRoleGroupIds ?? [];
+        const excludedRoleGroupIdsParameter = Result.getOrThrow(
+          PgTypes.array(excludedRoleGroupIds, PgTypes.OID.text),
+        );
+        if (excludedRoleGroupIds.length > 0) {
+          const plannedRows = yield* sql.unsafe<object>(
+            `SELECT COUNT(DISTINCT member.id)::integer AS count
+             FROM installation_members member
+             WHERE member.installation_id = $1 AND member.status = 'active'
+               AND EXISTS (
+                 SELECT 1 FROM directory_group_members gm
+                 JOIN directory_group_roles assigned
+                   ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
+                 WHERE gm.installation_id = member.installation_id
+                   AND gm.group_id = ANY($2::text[])
+                   AND (EXISTS (SELECT 1 FROM external_identities identity
+                         WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                     OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
+                         WHERE identity.member_id = member.id AND identity.provider = gm.provider)))
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM directory_group_members gm
+                 JOIN directory_group_roles assigned
+                   ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
+                 WHERE gm.installation_id = member.installation_id
+                   AND NOT (gm.group_id = ANY($2::text[]))
+                   AND (EXISTS (SELECT 1 FROM external_identities identity
+                         WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                     OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
+                         WHERE identity.member_id = member.id AND identity.provider = gm.provider)))
+               )`,
+            [installationId, excludedRoleGroupIds],
+          );
+          expectedRoleRemovalDeactivations = z.object({count: z.number().int().nonnegative()}).parse(plannedRows[0]).count;
+        }
         yield* sql.unsafe(
           `WITH resolved AS (
              SELECT member.id, member.role AS old_role,
                (SELECT assigned.role
                 FROM directory_group_members gm
                 LEFT JOIN directory_group_roles assigned ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
-                WHERE gm.installation_id = member.installation_id AND assigned.group_id IS NOT NULL AND (
+                WHERE gm.installation_id = member.installation_id AND assigned.group_id IS NOT NULL
+                  AND NOT (gm.group_id = ANY($3::text[])) AND (
                   EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider AND identity.subject = gm.subject)
                   OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id AND identity.provider = gm.provider))
                 ) ORDER BY CASE assigned.role WHEN 'owner' THEN 5 WHEN 'administrator' THEN 4 WHEN 'guest' THEN 3 WHEN 'member' THEN 2 ELSE 1 END DESC LIMIT 1) AS desired_role
@@ -329,7 +368,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
            UPDATE installation_members member SET role = COALESCE(policy.next_role, member.role),
              status = CASE WHEN policy.next_role IS NULL THEN 'inactive' ELSE member.status END,
              updated_at = $2 FROM policy WHERE member.installation_id = $1 AND member.id = policy.id`,
-          [installationId, snapshot.syncedAt],
+          [installationId, snapshot.syncedAt, excludedRoleGroupIdsParameter],
         );
         yield* sql.unsafe(
           `UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, $1)
@@ -362,7 +401,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
           return yield* Effect.fail(new IdentityConflict({message: "Directory sync cannot remove the last active administrator."}));
         }
         const deactivated = beforeRoles.active - afterRoles.active;
-        const threshold = Math.max(snapshot.maxDeactivations ?? 5, Math.ceil(beforeRoles.active * 0.2));
+        const threshold = Math.max(snapshot.maxDeactivations ?? 5, Math.ceil(beforeRoles.active * 0.2)) + expectedRoleRemovalDeactivations;
         if (deactivated > threshold) {
           return yield* Effect.fail(new IdentityConflict({message: `Directory sync would deactivate ${deactivated} members, exceeding the configured safety threshold of ${threshold}.`}));
         }
@@ -1128,6 +1167,24 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         [installationId, provider, subject, memberStatuses.active],
       );
       return memberRowSchema.nullable().parse(rows[0] ?? null);
+    }));
+  }
+
+  async hasExternalIdentityForMemberWithDifferentSubject(
+    installationId: string,
+    memberId: string,
+    provider: string,
+    subject: string,
+  ): Promise<boolean> {
+    this.#assertInstallationScope(installationId);
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`SELECT EXISTS (
+        SELECT 1 FROM external_identities
+        WHERE installation_id = ${installationId} AND member_id = ${memberId}
+          AND provider = ${provider} AND subject <> ${subject}
+      ) AS present`;
+      return rows[0]?.["present"] === true;
     }));
   }
 

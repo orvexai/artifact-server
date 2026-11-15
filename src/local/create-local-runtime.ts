@@ -119,6 +119,11 @@ export interface LocalRuntimeConfig {
   readonly gitHistory?: NodeGitHistoryConfiguration;
   /** Issuer groups that admit people and set their role, when configured. */
   readonly groupRolePolicy?: GroupRolePolicy | null;
+  /** Keycloak organization admission configured for an organization runtime. */
+  readonly organizationAdmission?: {readonly alias: string; readonly id: string};
+  /** Test seam for the Orvex installation when served by org tenancy. */
+  readonly orvexTenantGroupProtection?: boolean;
+  readonly organizationStaffGroups?: readonly string[];
   /** Optional provider seam for real-boundary tests; production composes REST. */
   readonly gitHistoryHealthProbe?: GitHistoryProviderHealthProbe;
   /** Complete provider seam for conformance tests; production composes REST and Git. */
@@ -266,6 +271,8 @@ export async function createLocalRuntime(
     externalMcpBearerVerifier: config.externalMcpBearerVerifier ?? null,
     externalMcpOAuthVerifier: config.externalMcpOAuthVerifier ?? null,
     groupRolePolicy: config.groupRolePolicy ?? null,
+    orvexTenantGroupProtection: config.orvexTenantGroupProtection,
+    organizationStaffGroups: config.organizationStaffGroups,
     ids: new SystemIdGenerator(),
     identityRepository,
     installationId,
@@ -289,6 +296,9 @@ export async function createLocalRuntime(
   }
   if (gitHistoryProvider !== null) {
     Object.assign(applicationAdapters, {gitHistoryProvider});
+  }
+  if (config.organizationAdmission !== undefined) {
+    Object.assign(applicationAdapters, {organizationAdmission: config.organizationAdmission});
   }
   if (linkedAdapters !== undefined) {
     applicationAdapters = {...applicationAdapters, linked: linkedAdapters};

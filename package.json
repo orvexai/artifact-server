@@ -1,6 +1,6 @@
 {
   "name": "artifact-server",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "private": true,
   "description": "Publish, version, and serve finished browser artifacts.",
   "type": "module",
@@ -64,8 +64,8 @@
     "smoke": "vitest run tests/smoke",
     "start": "tsx src/cli/main.ts start",
     "test": "vitest run --reporter=default --reporter=json --outputFile.json=project/evidence/local-foundation.json",
-    "test:web": "pnpm build && playwright test && tsx scripts/write-browser-evidence.ts",
-    "test:web:prebuilt": "playwright test && tsx scripts/write-browser-evidence.ts",
+    "test:web": "pnpm build && NODE_OPTIONS=--require=./tests/support/localhost-dns.cjs playwright test && tsx scripts/write-browser-evidence.ts",
+    "test:web:prebuilt": "NODE_OPTIONS=--require=./tests/support/localhost-dns.cjs playwright test && tsx scripts/write-browser-evidence.ts",
     "test:observability": "vitest run --config tests/configs/vitest.integration.config.ts tests/integration/observability.test.ts --reporter=default --reporter=json --outputFile=project/evidence/observability.json",
     "test:oci-image": "bash scripts/run-oci-image-integration.sh",
     "test:oidc": "bash scripts/run-oidc-integration.sh",
