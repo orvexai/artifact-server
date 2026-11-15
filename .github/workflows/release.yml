@@ -39,6 +39,7 @@ concurrency:
 jobs:
   verify:
     name: Verify release reference
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: public-dind-runners
     timeout-minutes: 5
     outputs:
@@ -117,6 +118,7 @@ jobs:
 
   gate:
     name: Canonical release gate
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: verify
     uses: ./.github/workflows/ci.yml
     with:
@@ -124,6 +126,7 @@ jobs:
 
   packages:
     name: Build Node and adapter packages
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [verify, gate]
     runs-on: public-dind-runners
     timeout-minutes: 18
@@ -178,6 +181,7 @@ jobs:
 
   image:
     name: Build and optionally publish OCI image
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [verify, gate]
     runs-on: public-dind-runners
     timeout-minutes: 25
@@ -281,6 +285,7 @@ jobs:
 
   assemble:
     name: Assemble downloadable release assets
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [verify, packages, image]
     runs-on: public-dind-runners
     timeout-minutes: 6
@@ -320,7 +325,7 @@ jobs:
 
   attest:
     name: Attest release assets
-    if: needs.verify.outputs.publish_image == 'true'
+    if: github.event_name != 'pull_request' && needs.verify.outputs.publish_image == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [verify, assemble]
     runs-on: public-dind-runners
     timeout-minutes: 12
@@ -402,7 +407,7 @@ jobs:
 
   publish-npm:
     name: Publish public npm adapters
-    if: needs.verify.outputs.publish == 'true'
+    if: github.event_name != 'pull_request' && needs.verify.outputs.publish == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [verify, assemble, attest]
     runs-on: public-dind-runners
     timeout-minutes: 8
@@ -473,7 +478,7 @@ jobs:
 
   release:
     name: Create GitHub release
-    if: needs.verify.outputs.publish == 'true'
+    if: github.event_name != 'pull_request' && needs.verify.outputs.publish == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [verify, assemble, attest, publish-npm]
     runs-on: public-dind-runners
     timeout-minutes: 8

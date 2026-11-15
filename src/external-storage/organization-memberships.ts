@@ -149,7 +149,6 @@ export function createOrvexAdmissionRole(reader: OrvexAdmissionReader): OrvexAdm
       ? storedAssignments.filter((assignment) => !isOrvexTenantGroupPath(assignment.path) ||
         organizationStaffPathMatches(assignment.path, reader.organizationStaffGroups ?? []))
       : storedAssignments;
-    if (assignments.length === 0 && member !== null && isAdministratorRole(member.role)) return member.role;
     if (assignments.length === 0) return null;
     const role = policy.groupRoots === undefined
       ? groupMembershipRole(assignments, identity.groups)

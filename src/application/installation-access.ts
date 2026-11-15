@@ -1123,9 +1123,6 @@ function makeInstallationAccessService(
       : configuredGroupRoleAssignments(policy.seed);
     const assignments = baseAssignments;
     const now = dependencies.clock.now().toISOString();
-    // With every stored role removed nobody is turned away for good: the
-    // roles are simply not set up.
-    if (assignments.length === 0 && member !== null && isAdministratorRole(member.role)) return member;
     if (assignments.length === 0) {
       return yield* Effect.fail(new IdentityAdmissionDenied({
         message: "No group has been given a role in the Artifact Server yet.",
@@ -1135,7 +1132,6 @@ function makeInstallationAccessService(
       ? assignments.filter((assignment) => !isOrvexTenantGroupPath(assignment.path) ||
         organizationStaffPathMatches(assignment.path, dependencies.organizationStaffGroups ?? []))
       : assignments;
-    if (effectiveAssignments.length === 0 && member !== null && isAdministratorRole(member.role)) return member;
     const role = policy.groupRoots === undefined
       ? groupMembershipRole(effectiveAssignments, identity.groups)
       : groupMembershipRole(effectiveAssignments, identity.groups, policy.groupRoots);
@@ -1193,6 +1189,16 @@ function makeInstallationAccessService(
     );
     const previous = members.find((candidate) => candidate.email === email);
     if (previous !== undefined) {
+      if (yield* dependencies.repository.hasExternalIdentityForMemberWithDifferentSubject(
+        dependencies.installationId,
+        previous.id,
+        identity.provider,
+        identity.subject,
+      )) {
+        return yield* Effect.fail(new IdentityAdmissionDenied({
+          message: "This email is already linked to a different identity for this login provider.",
+        }));
+      }
       if (dependencies.organizationDirectoryVisibility === true && dependencies.repository.isMemberManuallyDeactivated !== undefined &&
         (yield* dependencies.repository.isMemberManuallyDeactivated(dependencies.installationId, email))) {
         return yield* Effect.fail(new IdentityAdmissionDenied({message: "This member was manually deactivated by an organization owner."}));
@@ -1267,6 +1273,16 @@ function makeInstallationAccessService(
       );
       const previous = previousMembers.find((candidate) => candidate.email === email);
       if (previous !== undefined) {
+        if (yield* dependencies.repository.hasExternalIdentityForMemberWithDifferentSubject(
+          dependencies.installationId,
+          previous.id,
+          identity.provider,
+          identity.subject,
+        )) {
+          return yield* Effect.fail(new IdentityAdmissionDenied({
+            message: "This email is already linked to a different identity for this login provider.",
+          }));
+        }
         previousRole = previous.role;
         previousStatus = previous.status;
         const updateRole = dependencies.repository.setOrganizationMemberRole ??

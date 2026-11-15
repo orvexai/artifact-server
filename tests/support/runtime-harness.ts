@@ -111,6 +111,7 @@ export async function startTestServer(
     readonly gitHistoryProvider?: GitHistoryProvider;
     readonly groupRolePolicy?: GroupRolePolicy;
     readonly orvexTenantGroupProtection?: boolean;
+    readonly organizationAdmission?: {readonly alias: string; readonly id: string};
     readonly organizationStaffGroups?: readonly string[];
     readonly hostname?: string;
     readonly interactiveIdentityProvider?: InteractiveIdentityProvider;
@@ -206,6 +207,9 @@ export async function startTestServer(
   }
   if (options.groupRolePolicy !== undefined) {
     config = {...config, groupRolePolicy: options.groupRolePolicy};
+  }
+  if (options.organizationAdmission !== undefined) {
+    config = {...config, organizationAdmission: options.organizationAdmission};
   }
   if (options.orvexTenantGroupProtection !== undefined) {
     config = {...config, orvexTenantGroupProtection: options.orvexTenantGroupProtection};

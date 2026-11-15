@@ -1,4 +1,5 @@
-import {Effect} from "effect";
+import {Effect, Result} from "effect";
+import {PgTypes} from "@effect/sql-pg";
 import {SqlClient} from "effect/unstable/sql/SqlClient";
 import {isSqlError} from "effect/unstable/sql/SqlError";
 import {z} from "zod";
@@ -295,6 +296,9 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
         let expectedRoleRemovalDeactivations = 0;
         if (snapshot.recomputeRoles !== false) {
         const excludedRoleGroupIds = snapshot.excludedRoleGroupIds ?? [];
+        const excludedRoleGroupIdsParameter = Result.getOrThrow(
+          PgTypes.array(excludedRoleGroupIds, PgTypes.OID.text),
+        );
         if (excludedRoleGroupIds.length > 0) {
           const plannedRows = yield* sql.unsafe<object>(
             `SELECT COUNT(DISTINCT member.id)::integer AS count
@@ -364,7 +368,7 @@ export class PostgresIdentityRepository implements BootstrapManagedApiKeyReposit
            UPDATE installation_members member SET role = COALESCE(policy.next_role, member.role),
              status = CASE WHEN policy.next_role IS NULL THEN 'inactive' ELSE member.status END,
              updated_at = $2 FROM policy WHERE member.installation_id = $1 AND member.id = policy.id`,
-          [installationId, snapshot.syncedAt, excludedRoleGroupIds],
+          [installationId, snapshot.syncedAt, excludedRoleGroupIdsParameter],
         );
         yield* sql.unsafe(
           `UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, $1)

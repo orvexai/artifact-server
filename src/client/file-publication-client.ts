@@ -715,12 +715,16 @@ const validateUploadPlan = Effect.fn("FilePublicationClient.validateUploadPlan")
     prepared: PreparedPublication,
     upload: typeof createUploadResponseSchema.Type,
   ): Effect.fn.Return<void, FilePublicationConfigurationError> {
+    const serverBasePath = serverOrigin.pathname === "/" ? "" : serverOrigin.pathname;
+    const allowedPathPrefix = `${serverBasePath}/`;
+    const isAllowedServerUrl = (url: URL): boolean =>
+      url.origin === serverOrigin.origin && url.pathname.startsWith(allowedPathPrefix);
     if (
-      upload.commitUrl.origin !== serverOrigin.origin
-      || upload.files.some((file) => file.uploadUrl.origin !== serverOrigin.origin)
+      !isAllowedServerUrl(upload.commitUrl)
+      || upload.files.some((file) => !isAllowedServerUrl(file.uploadUrl))
     ) {
       return yield* new FilePublicationConfigurationError({
-        message: "The server returned an upload URL on another origin. Artifact Server credentials were not sent.",
+        message: "The server returned an upload URL outside its origin or organization path. Artifact Server credentials were not sent.",
         reason: "unsafe_upload_plan",
       });
     }

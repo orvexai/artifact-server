@@ -34,7 +34,7 @@ concurrency:
 jobs:
   build:
     name: PR / Build and static policy
-    if: inputs.tier != 'release' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr'))
+    if: inputs.tier != 'release' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: public-dind-runners
     timeout-minutes: 8
     steps:
@@ -85,7 +85,7 @@ jobs:
 
   unit:
     name: PR / Unit and conformance behavior
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: build
     runs-on: public-dind-runners
     timeout-minutes: 12
@@ -119,7 +119,7 @@ jobs:
 
   browser:
     name: PR / Browser behavior
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: build
     runs-on: public-dind-runners
     timeout-minutes: 10
@@ -161,7 +161,7 @@ jobs:
 
   cloudflare:
     name: PR / Cloudflare deployment
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: build
     runs-on: public-dind-runners
     timeout-minutes: 8
@@ -222,7 +222,7 @@ jobs:
 
   full:
     name: Full / Linux iteration gate
-    if: inputs.tier == 'release' || (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.tier == 'full'))
+    if: (inputs.tier == 'release' || (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.tier == 'full'))) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: public-dind-runners
     timeout-minutes: 47
     env:
