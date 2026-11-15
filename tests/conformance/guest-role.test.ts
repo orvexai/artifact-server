@@ -419,6 +419,7 @@ describe("guest installation role", () => {
       groupRolePolicy: {seed: []},
       hasMembers: async () => true,
       isGroupRoleSeedApplied: async () => true,
+      listMembers: async () => [],
       listGroupRoles: async () => [],
       orvexTenantGroupProtection: tenantProtection,
     });

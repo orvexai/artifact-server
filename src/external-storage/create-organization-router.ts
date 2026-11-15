@@ -116,6 +116,7 @@ export async function createOrganizationRouter(
       organizationStaffGroups: config.organizationStaffGroups ?? [],
       hasMembers: () => orvexIdentities.hasMembers(config.installationId),
       isGroupRoleSeedApplied: () => orvexIdentities.isGroupRoleSeedApplied(config.installationId),
+      listMembers: () => orvexIdentities.listMembers(config.installationId),
       listGroupRoles: () => orvexIdentities.listGroupRoles(config.installationId),
     });
     const platformSessions = new PlatformSessions(

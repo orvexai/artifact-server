@@ -110,6 +110,7 @@ export interface OrvexAdmissionReader {
   readonly groupRolePolicy: GroupRolePolicy | null;
   readonly hasMembers: () => Promise<boolean>;
   readonly isGroupRoleSeedApplied: () => Promise<boolean>;
+  readonly listMembers: () => Promise<readonly InstallationMember[]>;
   readonly listGroupRoles: () => Promise<readonly GroupRoleAssignment[]>;
   readonly orvexTenantGroupProtection?: boolean;
   readonly organizationStaffGroups?: readonly string[];
@@ -153,7 +154,14 @@ export function createOrvexAdmissionRole(reader: OrvexAdmissionReader): OrvexAdm
     const role = policy.groupRoots === undefined
       ? groupMembershipRole(assignments, identity.groups)
       : groupMembershipRole(assignments, identity.groups, policy.groupRoots);
-    if (role === null && member !== null && isAdministratorRole(member.role)) return member.role;
+    if (member !== null && isAdministratorRole(member.role) &&
+      (role === null || !isAdministratorRole(role))) {
+      const members = await reader.listMembers();
+      const hasOtherAdministrator = members.some((candidate) =>
+        candidate.id !== member.id && candidate.status === "active" && isAdministratorRole(candidate.role)
+      );
+      if (!hasOtherAdministrator) return member.role;
+    }
     return role;
   };
 }

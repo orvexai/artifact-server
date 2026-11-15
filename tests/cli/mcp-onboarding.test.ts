@@ -82,7 +82,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     const first = await connectStdio(dataDirectory);
     const firstTools = await first.client.listTools();
     expect(first.client.getNegotiatedProtocolVersion()).toBe(modernProtocolRevision);
-    expect(firstTools.tools).toHaveLength(33);
+    expect(firstTools.tools).toHaveLength(50);
     const capabilities = await first.client.callTool({
       arguments: {},
       name: "artifact_capabilities",
@@ -104,11 +104,11 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     )).toEqual({status: "ok"});
 
     const second = await connectStdio(dataDirectory);
-    expect((await second.client.listTools()).tools).toHaveLength(33);
+    expect((await second.client.listTools()).tools).toHaveLength(50);
     await second.client.close();
 
     const legacy = await connectStdio(dataDirectory, "legacy");
-    expect((await legacy.client.listTools()).tools).toHaveLength(33);
+    expect((await legacy.client.listTools()).tools).toHaveLength(50);
     const legacyCapabilities = await legacy.client.callTool({
       arguments: {},
       name: "artifact_capabilities",
@@ -177,7 +177,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
       await client.connect(new StreamableHTTPClientTransport(
         new URL("/mcp", `http://127.0.0.1:${address.port}`),
       ));
-      expect((await client.listTools()).tools).toHaveLength(33);
+      expect((await client.listTools()).tools).toHaveLength(50);
       const capabilities = await client.callTool({
         arguments: {},
         name: "artifact_capabilities",
