@@ -36,14 +36,15 @@ export function ReviewSettings({
   const principal = session.principal;
   const directHuman = principal.kind === "human"
     && principal.authorizedByPrincipalId === null;
-  const canManageProjects = directHuman
-    || principal.capabilities.includes("project:manage");
   const administrator = directHuman
     && isAdministratorRole(principal.membershipRole);
   const organizationBase = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
   const organizationKind = organizationBase.startsWith("/o/") && organizationBase.replace(/\/+$/u, "") !== "/o/orvex"
     ? "tenant"
     : "installation";
+  const canManageProjects = organizationKind === "tenant"
+    ? administrator || projects.some((project) => project.canManage === true)
+    : directHuman || principal.capabilities.includes("project:manage");
   const tenantDirectory = organizationKind === "tenant";
   const memberDirectoryVisible = tenantDirectory
     ? directHuman && (principal.membershipRole === "owner" || principal.membershipRole === "administrator")
@@ -181,11 +182,17 @@ function SettingsContent({
   const requiredPage = settingsPageForRoute(route);
   if (requiredPage !== null && !visiblePages.has(requiredPage)) return <SettingsUnavailable />;
   if (route.kind === "projects" || route.kind === "project") {
-    if (route.kind === "project" && !canManageProjects) return <ProjectPermissionRequired />;
+    const selectedProject = route.kind === "project"
+      ? projects.find((project) => project.id === route.projectId)
+      : undefined;
+    const canManageSelectedProject = tenantDirectory
+      ? administrator || selectedProject?.canManage === true
+      : canManageProjects;
+    if (route.kind === "project" && !canManageSelectedProject) return <ProjectPermissionRequired />;
     if (route.kind === "projects") {
       return (
         <SettingsProjects
-          canManage={canManageProjects}
+          canManage={tenantDirectory ? administrator : canManageProjects}
           gitHistory={session.capabilities.gitHistory}
           onProjectsChanged={onProjectsChanged}
           projects={projects}
@@ -195,7 +202,7 @@ function SettingsContent({
     return (
       <SettingsProject
         administrator={administrator}
-        canManage={canManageProjects}
+        canManage={canManageSelectedProject}
         gitHistory={session.capabilities.gitHistory}
         onProjectsChanged={onProjectsChanged}
         projectId={route.projectId}

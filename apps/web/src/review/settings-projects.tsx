@@ -180,9 +180,11 @@ export function SettingsProjects({
                         >
                           Open artifacts
                         </ButtonLink>
-                        <ButtonLink href={projectSettingsHref(project.id)} size="sm">
-                          Settings
-                        </ButtonLink>
+                        {canManage || project.canManage === true ? (
+                          <ButtonLink href={projectSettingsHref(project.id)} size="sm">
+                            Settings
+                          </ButtonLink>
+                        ) : null}
                       </div>
                     </td>
                   </tr>

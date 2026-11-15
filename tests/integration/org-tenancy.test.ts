@@ -972,7 +972,8 @@ describe.sequential("organization tenancy security boundary", () => {
         oidc.claims.email = `${subject}@example.test`;
         oidc.claims.emailVerified = true;
         oidc.claims.groups = groups;
-        oidc.claims.name = subject === "tenant-support-user" ? "Private Tenant Support Identity" : "Stub Administrator";
+        oidc.claims.name = subject === "tenant-support-user" ? "Private Tenant Support Identity" :
+          subject.startsWith("tenant-project-") || subject === "tenant-mcp-manager" ? subject : "Stub Administrator";
         oidc.claims.subject = subject;
         const login = await admissionRuntime.app.fetch(new Request(
           `https://artifacts.example.com/auth/login`,
@@ -1011,6 +1012,147 @@ describe.sequential("organization tenancy security boundary", () => {
       const orgBCsrfValue = orgBCsrfCookie?.split(";", 1)[0]?.split("=", 2)[1];
       if (orgBCsrfValue === undefined) throw new Error("Org B administrator login did not issue a CSRF token.");
       orgBCsrf = orgBCsrfValue;
+      const managerLogin = await loginWithGroups(["/teams/" + orgB.slug + "/editors"], "tenant-mcp-manager");
+      expect(managerLogin.status).toBe(303);
+      const managerCookies = managerLogin.headers.getSetCookie();
+      const managerCookieHeader = managerCookies
+        .map((cookie) => cookie.split("; ", 1)[0])
+        .join("; ");
+      const managerCsrfCookie = managerCookies.find((cookie) =>
+        cookie.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`)
+      );
+      const managerCsrf = managerCsrfCookie?.split(";", 1)[0]?.split("=", 2)[1];
+      if (managerCsrf === undefined) throw new Error("Tenant manager login did not issue a CSRF token.");
+      const settingsProjectResponse = await admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com/api/v1/projects",
+        {
+          body: JSON.stringify({name: "Tenant settings permissions"}),
+          headers: {
+            Cookie: managerCookieHeader,
+            "Content-Type": "application/json",
+            Origin: applicationOrigin,
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "X-CSRF-Token": managerCsrf,
+          },
+          method: "POST",
+        },
+      ));
+      expect(settingsProjectResponse.status).toBe(201);
+      const settingsProjectId = z.object({project: z.object({id: z.string()})})
+        .parse(await settingsProjectResponse.json()).project.id;
+      const nonManagerLogin = await loginWithGroups(["/teams/" + orgB.slug + "/editors"], "tenant-project-member");
+      expect(nonManagerLogin.status).toBe(303);
+      const nonManagerCookieHeader = nonManagerLogin.headers.getSetCookie()
+        .map((cookie) => cookie.split("; ", 1)[0])
+        .join("; ");
+      const readAsViewer = async (path: string) => admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com" + path,
+        {headers: {Cookie: nonManagerCookieHeader}},
+      ));
+      expect((await readAsViewer("/api/v1/projects/" + settingsProjectId + "/sharing")).status).toBe(404);
+      expect((await readAsViewer("/api/v1/projects/" + settingsProjectId + "/git-history")).status).toBe(404);
+      const readAsManager = async (path: string) => admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com" + path,
+        {headers: {Cookie: managerCookieHeader}},
+      ));
+      expect((await readAsManager("/api/v1/projects/" + settingsProjectId + "/sharing")).status).toBe(200);
+      expect((await readAsManager("/api/v1/projects/" + settingsProjectId + "/git-history")).status).toBe(200);
+      const settingsOwnerLogin = await loginWithGroups(["/teams/" + orgB.slug + "/owners"], "tenant-project-owner");
+      expect(settingsOwnerLogin.status).toBe(303);
+      const settingsOwnerCookies = settingsOwnerLogin.headers.getSetCookie();
+      const settingsOwnerCookieHeader = settingsOwnerCookies
+        .map((cookie) => cookie.split("; ", 1)[0])
+        .join("; ");
+      const settingsOwnerCsrfCookie = settingsOwnerCookies.find((cookie) =>
+        cookie.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`)
+      );
+      const settingsOwnerCsrf = settingsOwnerCsrfCookie?.split(";", 1)[0]?.split("=", 2)[1];
+      if (settingsOwnerCsrf === undefined) throw new Error("Tenant owner login did not issue a CSRF token.");
+      const ownerRead = await admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com/api/v1/projects/" + settingsProjectId + "/sharing",
+        {headers: {Cookie: settingsOwnerCookieHeader}},
+      ));
+      expect(ownerRead.status).toBe(200);
+      const tenantMembersResponse = await admissionRuntime.app.fetch(new Request(
+        "https://artifacts.example.com/api/v1/members",
+        {headers: {Cookie: orgBMemberCookie}},
+      ));
+      expect(tenantMembersResponse.status).toBe(200);
+      const tenantMembers = z.object({members: z.array(z.object({
+        displayName: z.string(), id: z.string(), role: z.string(),
+      }).passthrough())}).parse(await tenantMembersResponse.json()).members;
+      const tenantMemberId = (displayName: string) => {
+        const member = tenantMembers.find((candidate) => candidate.displayName === displayName);
+        if (member === undefined) throw new Error(`Could not find tenant member ${displayName}.`);
+        return member.id;
+      };
+      const issueSettingsKey = async (memberId: string, name: string, capabilities: string[]) => {
+        const response = await admissionRuntime.app.fetch(new Request(
+          "https://artifacts.example.com/api/v1/api-keys",
+          {
+            body: JSON.stringify({
+              capabilities,
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              memberId,
+              name,
+            }),
+            headers: {
+              Cookie: settingsOwnerCookieHeader,
+              "Content-Type": "application/json",
+              Origin: applicationOrigin,
+              "Sec-Fetch-Mode": "cors",
+              "Sec-Fetch-Site": "same-origin",
+              "X-CSRF-Token": settingsOwnerCsrf,
+            },
+            method: "POST",
+          },
+        ));
+        expect(response.status).toBe(201);
+        return z.object({token: z.string()}).parse(await response.json()).token;
+      };
+      const nonManagerMcpKey = await issueSettingsKey(tenantMemberId("tenant-project-member"), "Tenant member MCP", ["artifact:read"]);
+      const managerMcpKey = await issueSettingsKey(tenantMemberId("tenant-mcp-manager"), "Tenant manager MCP", ["project:manage"]);
+      const ownerMcpKey = await issueSettingsKey(tenantMemberId("tenant-project-owner"), "Tenant owner MCP", ["project:manage"]);
+      const callProjectReadTool = async (token: string, name: string) => {
+        const response = await admissionRuntime.app.fetch(appRequest(
+          "/mcp", token, "POST", {
+            id: randomUUID(), jsonrpc: "2.0", method: "tools/call",
+            params: {
+              _meta: {
+                [CLIENT_CAPABILITIES_META_KEY]: {},
+                [CLIENT_INFO_META_KEY]: {name: "tenant-settings-test", version: "1"},
+                [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+              },
+              arguments: {projectId: settingsProjectId},
+              name,
+            },
+          }, {
+            "MCP-Protocol-Version": "2026-07-28",
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": name,
+            Accept: "application/json, text/event-stream",
+            Origin: applicationOrigin,
+          },
+        ));
+        expect(response.status).toBe(200);
+        const body = await response.text();
+        const payload = response.headers.get("content-type")?.includes("text/event-stream")
+          ? body.split("\n").find((line) => line.startsWith("data: "))?.slice(6) ?? "{}"
+          : body;
+        return z.object({result: z.object({isError: z.boolean().optional()})})
+          .parse(JSON.parse(payload)).result;
+      };
+      expect((await callProjectReadTool(nonManagerMcpKey, "project_sharing")).isError).toBe(true);
+      expect((await callProjectReadTool(nonManagerMcpKey, "project_git_history_status")).isError).toBe(true);
+      expect((await callProjectReadTool(managerMcpKey, "project_sharing")).isError ?? false).toBe(false);
+      expect((await callProjectReadTool(managerMcpKey, "project_git_history_status")).isError ?? false).toBe(false);
+      expect((await callProjectReadTool(ownerMcpKey, "project_sharing")).isError ?? false).toBe(false);
+      expect((await callProjectReadTool(ownerMcpKey, "project_git_history_status")).isError ?? false).toBe(false);
+      const listedTenantProjects = z.object({projects: z.array(z.object({
+        canManage: z.boolean(), id: z.string(),
+      }).passthrough())}).parse(await (await readAsManager("/api/v1/projects")).json()).projects;
+      expect(listedTenantProjects.find(({id}) => id === settingsProjectId)?.canManage).toBe(true);
 
       const staffLogin = await loginWithGroups([`/teams/${orgB.slug}/support`], "tenant-support-user");
       expect(staffLogin.status).toBe(303);

@@ -60,6 +60,27 @@ describe("tenant settings navigation", () => {
     expect(html).not.toContain("Sign in");
   });
 
+  test("tenant project settings follow the server per-project management flag", () => {
+    vi.stubGlobal("document", {querySelector: () => ({content: "/o/acme"})});
+    vi.stubGlobal("window", {
+      location: {origin: "https://artifact.example.test", pathname: "/o/acme/review/settings/projects/project-1"},
+      sessionStorage: {getItem: () => null},
+    });
+    const session = {
+      authenticationMethod: "session",
+      capabilities: {gitHistory: {limits: {fileCopyBytes: 0, logicalCopiedBytes: 0, logicalReservedBytes: 0, storageBudgetBytes: null, versionCopyBytes: 0}, provider: null, providerState: "disabled"}, linkedArtifacts: false},
+      principal: {authorizedByPrincipalId: null, capabilities: [], displayName: "Acme member", id: "member", installationId: "installation-acme", kind: "human", membershipRole: "member"},
+    } satisfies Session;
+    const render = (canManage: boolean) => renderToStaticMarkup(createElement(ReviewSettings, {
+      onProjectsChanged: async () => [], onThemeChange: () => undefined,
+      projects: [{archivedAt: null, canManage, createdAt: "2026-01-01T00:00:00.000Z", id: "project-1", installationId: "installation-acme", name: "Project one"}],
+      session, theme: "moon",
+    }));
+
+    expect(render(false)).toContain("Project permission required");
+    expect(render(true)).not.toContain("Project permission required");
+  });
+
   test.each(["/o/acme", "/o/orvex"])("renders every in-app link below %s", (basePath) => {
     vi.stubGlobal("document", {
       querySelector: () => ({content: basePath}),
