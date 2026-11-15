@@ -868,6 +868,9 @@ function makeInstallationAccessService(
     function*(principal: Principal, groupId: string, role: MembershipRole | null) {
       const directHuman = principal.kind === "human" && principal.authorizedByPrincipalId === null;
       const tenantOrganization = dependencies.organizationDirectoryVisibility === true;
+      if (tenantOrganization) {
+        return yield* new AuthorizationDenied({message: "Group roles cannot be edited for tenant organizations."});
+      }
       if (!groupRoleEditAllowed(principal.membershipRole, directHuman)) {
         return yield* new AuthorizationDenied({message: "Only installation owners may edit group roles."});
       }

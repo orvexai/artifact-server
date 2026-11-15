@@ -2131,10 +2131,10 @@ export function createHttpApp(
       context,
       dependencies,
       ProjectManagementService.use((management) =>
-        management.listProjects(context.get("principal"))
+        management.listProjectsWithAccess(context.get("principal"))
       ),
     );
-    return context.json({projects});
+    return context.json({projects: projects.map(({canManage, project}) => Object.assign({}, project, {canManage}))});
   });
 
   app.post("/api/v1/projects", boundedJsonBody, async (context) => {

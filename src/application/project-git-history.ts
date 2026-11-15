@@ -14,6 +14,7 @@ import {
   type ArtifactRepositoryFailure,
   AuthorizationDenied,
   CapabilityUnavailable,
+  ProjectNotFound,
 } from "../core/errors.js";
 import type {
   GitHistoryCapabilityReader,
@@ -231,7 +232,15 @@ function makeProjectGitHistoryService(
       if (command.principal.kind === "human" && command.principal.membershipRole === "guest") {
         return yield* new AuthorizationDenied({message: "Guests cannot read Git history status."});
       }
-      yield* projects.getProject(command);
+      if (command.principal.tenantStaffPrincipalIds !== undefined) {
+        yield* projects.requireManagement(command).pipe(
+          Effect.catchTag("AuthorizationDenied", () =>
+            Effect.fail(new ProjectNotFound({message: "The project does not exist."}))
+          ),
+        );
+      } else {
+        yield* projects.getProject(command);
+      }
       const stored = yield* dependencies.repository
         .readProjectGitHistorySetting(command.projectId);
       return yield* projectSettingProjection(

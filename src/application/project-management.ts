@@ -19,6 +19,7 @@ import {
 } from "../core/errors.js";
 import {
   hasCapability,
+  isAdministratorRole,
   isDirectHumanPrincipal,
   principalCapabilities,
   principalKinds,
@@ -83,6 +84,7 @@ export interface ProjectGroupShareView {
 /** One project the caller can see, with how it can see it. */
 export interface VisibleProject {
   readonly accessMode: ProjectAccessMode;
+  readonly canManage: boolean;
   readonly project: ProjectRecord;
   /** Null on an installation project, where today's rules apply. */
   readonly yourRole: ProjectRole | null;
@@ -672,6 +674,13 @@ function makeProjectManagementService(
 
   const getSharing = Effect.fn("ProjectManagementService.getSharing")(
     function*(command: ReadProjectCommand) {
+      if (command.principal.tenantStaffPrincipalIds !== undefined) {
+        yield* requireManagedProject(command.principal, command.projectId).pipe(
+          Effect.catchTag("AuthorizationDenied", () =>
+            Effect.fail(new ProjectNotFound({message: "The project does not exist."}))
+          ),
+        );
+      }
       const found = yield* requireProjectWithAccess(
         command.principal,
         command.projectId,
@@ -769,6 +778,13 @@ function makeProjectManagementService(
         Effect.map((visible) =>
           visible.map(({access: projectAccess, project}): VisibleProject => ({
             accessMode: projectAccess.mode,
+            canManage: isAdministratorRole(principal.membershipRole) ||
+              hasCapability(principal, principalCapabilities.manageProjects) ||
+              projectAccess.isCreator === true &&
+                (isDirectHumanPrincipal(principal) ||
+                  hasCapability(principal, principalCapabilities.provisionProjects)) ||
+              projectAccess.mode === "restricted" &&
+                projectAccess.role === "manager" && isDirectHumanPrincipal(principal),
             project,
             yourRole: projectAccess.mode === "restricted" ? projectAccess.role : null,
           }))

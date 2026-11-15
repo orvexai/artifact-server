@@ -1390,6 +1390,7 @@ export function createApplicationLayer(
   );
   const publicLinkAdministrationLayer = PublicLinkAdministrationService.layer(
     publicLinkAdministrationRepository,
+    adapters.organizationDirectoryVisibility === true,
   ).pipe(
     Layer.provideMerge(Layer.mergeAll(authorizationLayer, managementLayer)),
   );

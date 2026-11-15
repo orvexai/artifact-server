@@ -13,7 +13,7 @@ import {
   type AuthorizationDenied,
   InvalidPagination,
 } from "../core/errors.js";
-import {tenantVersionRecord, type Principal} from "../core/identity.js";
+import {isDirectHumanPrincipal, tenantVersionRecord, type Principal} from "../core/identity.js";
 import {
   accessSettings,
   type ArtifactRecord,
@@ -111,6 +111,7 @@ export class PublicLinkAdministrationService extends Context.Service<
   /** Construct public-link administration over the specialized inventory query. */
   static readonly layer = (
     repository: PublicLinkAdministrationRepository,
+    organizationDirectoryVisibility = false,
   ): Layer.Layer<
     PublicLinkAdministrationService,
     never,
@@ -125,15 +126,21 @@ export class PublicLinkAdministrationService extends Context.Service<
           repository,
           artifacts,
           authorization,
+          organizationDirectoryVisibility,
         );
       }),
     );
+}
+
+function isDirectTenantOwner(principal: Principal): boolean {
+  return isDirectHumanPrincipal(principal) && principal.membershipRole === "owner";
 }
 
 function makePublicLinkAdministrationService(
   repository: PublicLinkAdministrationRepository,
   artifacts: ArtifactManagementService["Service"],
   authorization: AuthorizationOperations,
+  organizationDirectoryVisibility: boolean,
 ): PublicLinkAdministrationOperations {
   const requireBound = Effect.fn(
     "PublicLinkAdministrationService.requireBound",
@@ -147,7 +154,9 @@ function makePublicLinkAdministrationService(
   const listPublicLinks = Effect.fn(
     "PublicLinkAdministrationService.listPublicLinks",
   )(function*(command: ListPublicLinksCommand) {
-    yield* authorization.requireInstallationAdministration(command.principal);
+    if (!(organizationDirectoryVisibility && isDirectTenantOwner(command.principal))) {
+      yield* authorization.requireInstallationAdministration(command.principal);
+    }
     const limit = yield* requireBound(command.limit, "page", maximumPageSize);
     const page = yield* repository.listPublicLinks({
       cursor: command.cursor,
@@ -161,7 +170,9 @@ function makePublicLinkAdministrationService(
   const makePrivate = Effect.fn(
     "PublicLinkAdministrationService.makePrivate",
   )(function*(command: MakePublicLinksPrivateCommand) {
-    yield* authorization.requireInstallationAdministration(command.principal);
+    if (!(organizationDirectoryVisibility && isDirectTenantOwner(command.principal))) {
+      yield* authorization.requireInstallationAdministration(command.principal);
+    }
     yield* requireBound(command.items.length, "bulk request", maximumBulkSize);
     return yield* Effect.forEach(
       command.items,

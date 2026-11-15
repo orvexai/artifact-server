@@ -126,7 +126,7 @@ import {
   type ToolResultNudgeFacts,
 } from "./tool-result-nudges.js";
 
-const serverVersion = "0.1.23";
+const serverVersion = "0.1.24";
 const maximumListedArtifacts = 100;
 const maximumTextDiffBytes = 256 * 1_024;
 const accessSettingSchema = z.enum([
@@ -179,6 +179,7 @@ const projectGrantRoleSchema = z.enum(["viewer", "editor", "manager"]);
 const projectRoleSchema = z.enum(["viewer", "editor", "manager", "administrator"]);
 const listedProjectSchema = projectProjectionSchema.extend({
   accessMode: projectAccessModeSchema,
+  canManage: z.boolean(),
   yourRole: projectRoleSchema.nullable(),
 }).strict();
 const projectGroupReferenceSchema = z.string().trim().min(1).max(500)
@@ -784,8 +785,9 @@ export function createArtifactMcpServer(
         ProjectManagementService.use((projects) =>
           projects.listProjectsWithAccess(identity.principal)
         ),
-      )).map(({accessMode, project, yourRole}) => ({
+      )).map(({accessMode, canManage, project, yourRole}) => ({
         accessMode,
+        canManage,
         archivedAt: project.archivedAt,
         createdAt: project.createdAt,
         id: project.id,

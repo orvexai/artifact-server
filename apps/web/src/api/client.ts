@@ -120,6 +120,7 @@ const sourceBindingSchema = z.object({
 
 const projectSchema = z.object({
   archivedAt: z.string().nullable(),
+  canManage: z.boolean().optional(),
   createdAt: z.string(),
   id: z.string(),
   installationId: z.string(),
