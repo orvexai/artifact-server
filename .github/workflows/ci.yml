@@ -34,8 +34,8 @@ concurrency:
 jobs:
   build:
     name: PR / Build and static policy
-    if: inputs.tier != 'release' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr'))
-    runs-on: ubuntu-latest
+    if: inputs.tier != 'release' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: public-dind-runners
     timeout-minutes: 8
     steps:
       - name: Checkout repository
@@ -85,9 +85,9 @@ jobs:
 
   unit:
     name: PR / Unit and conformance behavior
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 12
     steps:
       - name: Checkout repository
@@ -119,9 +119,9 @@ jobs:
 
   browser:
     name: PR / Browser behavior
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -161,9 +161,9 @@ jobs:
 
   cloudflare:
     name: PR / Cloudflare deployment
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')
+    if: (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 8
     steps:
       - name: Checkout repository
@@ -193,8 +193,9 @@ jobs:
 
   portable:
     name: macOS portability
-    if: inputs.tier != 'release'
-    runs-on: macos-14
+    # Skipped: GitHub-hosted runners unavailable for orvexai; restore once GitHub's block is lifted.
+    if: false
+    runs-on: public-dind-runners
     timeout-minutes: 12
     steps:
       - name: Checkout repository
@@ -221,8 +222,8 @@ jobs:
 
   full:
     name: Full / Linux iteration gate
-    if: inputs.tier == 'release' || (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.tier == 'full'))
-    runs-on: ubuntu-latest
+    if: (inputs.tier == 'release' || (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.tier == 'full'))) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: public-dind-runners
     timeout-minutes: 47
     env:
       NODE_OPTIONS: --max-old-space-size=4096

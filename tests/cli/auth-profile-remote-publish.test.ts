@@ -24,6 +24,10 @@ import {afterEach, describe, expect, test} from "vitest";
 import {z} from "zod";
 
 import {fetchLoopbackContent} from "../support/fetch-loopback-content.js";
+import {
+  artifactServerProtectedResourceMetadataUrl,
+  artifactServerRouteUrl,
+} from "../../src/core/server-address.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const cliExecutable = path.join(repositoryRoot, "node_modules/.bin/tsx");
@@ -56,6 +60,58 @@ afterEach(async () => {
 });
 
 describe("authenticated CLI profiles and remote publication", () => {
+  test("CLI-ORG-001: logs in and publishes through an organization base path", async () => {
+    const temporaryDirectory = await mkdtemp(
+      path.join(tmpdir(), "artifact-server-cli-org-address-"),
+    );
+    const serverData = path.join(temporaryDirectory, "server");
+    const profileData = path.join(temporaryDirectory, "profiles");
+    const helperState = path.join(temporaryDirectory, "credential-helper.json");
+    const helper = path.join(temporaryDirectory, "credential-helper.mjs");
+    const fixture = path.join(temporaryDirectory, "org-report.html");
+    const environment = await credentialHelperEnvironment(helper, helperState);
+    await writeFile(fixture, "<h1>Organization path</h1>");
+    const port = await availablePort();
+    const backend = startServer(serverData, port);
+    let proxy: OrganizationAddressProxy | null = null;
+    try {
+      await waitForReady(backend, port);
+      const backendOrigin = `http://127.0.0.1:${port}`;
+      proxy = await startOrganizationAddressProxy(backendOrigin);
+      const token = (await readFile(path.join(serverData, "local-api-token"), "utf8")).trim();
+      const address = `${proxy.origin}/o/orvex`;
+      expect(artifactServerRouteUrl("/api", address).toString()).toBe(`${address}/api`);
+      expect(artifactServerProtectedResourceMetadataUrl(address, "api").toString())
+        .toBe(`${proxy.origin}/.well-known/oauth-protected-resource/o/orvex/api`);
+      const login = await runCli([
+        "auth", "login", address, "--api-key-stdin", "--name", "organization",
+        "--profile-data", profileData,
+      ], environment, `${token}\n`);
+      expect({exitCode: login.exitCode, stderr: login.stderr}).toEqual({exitCode: 0, stderr: ""});
+      expect(profileOutputSchema.parse(JSON.parse(login.stdout))).toMatchObject({
+        authentication: "api_key",
+        name: "organization",
+        origin: address,
+        status: "authenticated",
+      });
+
+      const published = await runCli([
+        "publish", fixture, "--public", "--profile-data", profileData,
+      ], environment);
+      expect({exitCode: published.exitCode, stderr: published.stderr}).toEqual({
+        exitCode: 0,
+        stderr: "",
+      });
+      expect(publicationSchema.parse(JSON.parse(published.stdout)).version.number).toBe(1);
+      expect(proxy.paths().length).toBeGreaterThan(3);
+      expect(proxy.paths().every((pathname) => pathname.startsWith("/o/orvex/api/"))).toBe(true);
+    } finally {
+      await proxy?.stop();
+      await stopProcess(backend);
+      await rm(temporaryDirectory, {force: true, recursive: true});
+    }
+  }, 60_000);
+
   test("CLI-003-B CLI-003-F: resumes a lost commit response across CLI process restarts", async () => {
     const temporaryDirectory = await mkdtemp(
       path.join(tmpdir(), "artifact-server-cli-publication-recovery-"),
@@ -698,6 +754,75 @@ interface LostCommitResponseProxy {
   droppedResponses(): number;
   errors(): readonly string[];
   stop(): Promise<void>;
+}
+
+interface OrganizationAddressProxy {
+  readonly origin: string;
+  paths(): readonly string[];
+  stop(): Promise<void>;
+}
+
+async function startOrganizationAddressProxy(
+  backendOrigin: string,
+): Promise<OrganizationAddressProxy> {
+  let origin = "";
+  const observedPaths: string[] = [];
+  const server = createHttpServer(async (request, response) => {
+    try {
+      const requestUrl = new URL(request.url ?? "/", "http://localhost");
+      observedPaths.push(requestUrl.pathname);
+      if (!requestUrl.pathname.startsWith("/o/orvex/api/")) {
+        response.writeHead(404).end();
+        return;
+      }
+      const upstreamPath = requestUrl.pathname.slice("/o/orvex".length);
+      const target = new URL(`${upstreamPath}${requestUrl.search}`, backendOrigin);
+      const body = await readTextBody(request);
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(request.headers)) {
+        if (value === undefined || ["host", "connection", "content-length", "transfer-encoding"].includes(name)) continue;
+        headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+      }
+      const init: RequestInit = body.length === 0
+        ? {headers, method: request.method ?? "GET", redirect: "manual"}
+        : {body, headers, method: request.method ?? "GET", redirect: "manual"};
+      const upstream = await fetch(target, init);
+      const responseBody = await upstream.text();
+      let renderedBody = responseBody;
+      if (request.method === "POST" && upstreamPath === "/api/v1/uploads" && upstream.ok) {
+        const upload = z.object({
+          commitUrl: z.url(),
+          files: z.array(z.object({uploadUrl: z.url()}).passthrough()),
+        }).passthrough().parse(JSON.parse(responseBody));
+        const prefix = (value: string): string => {
+          const url = new URL(value);
+          return `${origin}/o/orvex${url.pathname}${url.search}`;
+        };
+        renderedBody = JSON.stringify({
+          ...upload,
+          commitUrl: prefix(upload.commitUrl),
+          files: upload.files.map((file) => Object.assign({}, file, {
+            uploadUrl: prefix(file.uploadUrl),
+          })),
+        });
+      }
+      response.writeHead(upstream.status, {
+        "content-type": upstream.headers.get("content-type") ?? "application/json",
+      });
+      response.end(renderedBody);
+    } catch (cause) {
+      response.writeHead(502, {"content-type": "text/plain"});
+      response.end(cause instanceof Error ? cause.message : "Organization proxy failed.");
+    }
+  });
+  await listenHttp(server);
+  const address = assignedAddressSchema.parse(server.address());
+  origin = `http://127.0.0.1:${address.port}`;
+  return {
+    origin,
+    paths: () => [...observedPaths],
+    stop: () => closeHttp(server),
+  };
 }
 
 async function startLostCommitResponseProxy(

@@ -14,6 +14,7 @@ import {
   principalKinds,
   type Principal,
 } from "../core/identity.js";
+import {artifactServerRouteUrl} from "../core/server-address.js";
 
 const oauthClientInformationSchema = z.object({
   client_id: z.string().min(1),
@@ -236,7 +237,7 @@ export const verifyCliCredential = Effect.fn("CliAuthentication.verifyCredential
     HttpClient.HttpClient
   > {
     const request = HttpClientRequest.get(
-      new URL("/api/v1/session", origin),
+      artifactServerRouteUrl("/api/v1/session", origin),
     ).pipe(HttpClientRequest.bearerToken(bearer));
     const response = yield* HttpClient.execute(request).pipe(
       Effect.mapError(() => new CliAuthenticationError({

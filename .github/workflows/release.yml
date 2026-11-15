@@ -39,7 +39,8 @@ concurrency:
 jobs:
   verify:
     name: Verify release reference
-    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: public-dind-runners
     timeout-minutes: 5
     outputs:
       image_primary_tag: ${{ steps.metadata.outputs.image_primary_tag }}
@@ -117,6 +118,7 @@ jobs:
 
   gate:
     name: Canonical release gate
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: verify
     uses: ./.github/workflows/ci.yml
     with:
@@ -124,8 +126,9 @@ jobs:
 
   packages:
     name: Build Node and adapter packages
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [verify, gate]
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 18
     steps:
       - name: Checkout release source
@@ -178,8 +181,9 @@ jobs:
 
   image:
     name: Build and optionally publish OCI image
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [verify, gate]
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 25
     permissions:
       contents: read
@@ -281,8 +285,9 @@ jobs:
 
   assemble:
     name: Assemble downloadable release assets
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [verify, packages, image]
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 6
     steps:
       - name: Checkout release tooling
@@ -320,9 +325,9 @@ jobs:
 
   attest:
     name: Attest release assets
-    if: needs.verify.outputs.publish_image == 'true'
+    if: github.event_name != 'pull_request' && needs.verify.outputs.publish_image == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [verify, assemble]
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 12
     permissions:
       attestations: write
@@ -402,9 +407,9 @@ jobs:
 
   publish-npm:
     name: Publish public npm adapters
-    if: needs.verify.outputs.publish == 'true'
+    if: github.event_name != 'pull_request' && needs.verify.outputs.publish == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [verify, assemble, attest]
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 8
     permissions:
       contents: read
@@ -444,6 +449,7 @@ jobs:
           publish_adapter() {
             package_name=$1
             archive=$2
+            # shellcheck disable=SC2016
             local_integrity=$(node --input-type=module -e \
               'import {createHash} from "node:crypto"; import {readFileSync} from "node:fs"; const bytes = readFileSync(process.argv[1]); process.stdout.write(`sha512-${createHash("sha512").update(bytes).digest("base64")}`);' \
               "$archive")
@@ -472,9 +478,9 @@ jobs:
 
   release:
     name: Create GitHub release
-    if: needs.verify.outputs.publish == 'true'
+    if: github.event_name != 'pull_request' && needs.verify.outputs.publish == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [verify, assemble, attest, publish-npm]
-    runs-on: ubuntu-latest
+    runs-on: public-dind-runners
     timeout-minutes: 8
     permissions:
       actions: write

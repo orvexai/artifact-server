@@ -24,6 +24,10 @@ import {
   createManifest,
   parseManifestPath,
 } from "../manifest/create-manifest.js";
+import {
+  artifactServerRouteUrl,
+  parseArtifactServerAddress,
+} from "../core/server-address.js";
 
 const maximumFileCount = 10_000;
 const maximumManifestPathLength = 1_024;
@@ -653,22 +657,11 @@ const parseServerOrigin = Effect.fn("FilePublicationClient.parseServerOrigin")(
   ): Effect.fn.Return<URL, FilePublicationConfigurationError> {
     return yield* Effect.try({
       try: () => {
-        const url = new URL(candidate);
-        if (
-          (url.protocol !== "http:" && url.protocol !== "https:")
-          || url.username.length > 0
-          || url.password.length > 0
-          || (url.pathname !== "/" && url.pathname !== "")
-          || url.search.length > 0
-          || url.hash.length > 0
-        ) {
-          throw new Error("invalid server origin");
-        }
-        url.pathname = "/";
-        return url;
+        const address = parseArtifactServerAddress(candidate);
+        return new URL(address.address);
       },
       catch: () => new FilePublicationConfigurationError({
-        message: "The Artifact Server URL must be an HTTP or HTTPS origin without credentials, a path, a query, or a fragment.",
+        message: "The Artifact Server URL must be an HTTP or HTTPS origin with an optional /o/<slug> path, without credentials, a query, or a fragment.",
         reason: "invalid_server",
       }),
     });
@@ -703,7 +696,7 @@ const createUpload = Effect.fn("FilePublicationClient.createUpload")(
       routingMode: prepared.routingMode,
     };
     const request = yield* jsonRequest(
-      HttpClientRequest.post(new URL("/api/v1/uploads", serverOrigin)),
+      HttpClientRequest.post(artifactServerRouteUrl("/api/v1/uploads", serverOrigin)),
       apiToken,
       body,
       "create_upload",
@@ -722,12 +715,16 @@ const validateUploadPlan = Effect.fn("FilePublicationClient.validateUploadPlan")
     prepared: PreparedPublication,
     upload: typeof createUploadResponseSchema.Type,
   ): Effect.fn.Return<void, FilePublicationConfigurationError> {
+    const serverBasePath = serverOrigin.pathname === "/" ? "" : serverOrigin.pathname;
+    const allowedPathPrefix = `${serverBasePath}/`;
+    const isAllowedServerUrl = (url: URL): boolean =>
+      url.origin === serverOrigin.origin && url.pathname.startsWith(allowedPathPrefix);
     if (
-      upload.commitUrl.origin !== serverOrigin.origin
-      || upload.files.some((file) => file.uploadUrl.origin !== serverOrigin.origin)
+      !isAllowedServerUrl(upload.commitUrl)
+      || upload.files.some((file) => !isAllowedServerUrl(file.uploadUrl))
     ) {
       return yield* new FilePublicationConfigurationError({
-        message: "The server returned an upload URL on another origin. Artifact Server credentials were not sent.",
+        message: "The server returned an upload URL outside its origin or organization path. Artifact Server credentials were not sent.",
         reason: "unsafe_upload_plan",
       });
     }

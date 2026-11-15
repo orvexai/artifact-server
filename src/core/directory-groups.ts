@@ -35,6 +35,8 @@ export interface DirectoryGroupSnapshot {
   readonly recomputeRoles?: boolean;
   /** Full-path prefixes used to materialize guest role rows in this transaction. */
   readonly guestGroupPrefixes?: readonly string[];
+  /** Orvex groups whose stored roles must not participate in admission when org tenancy is enabled. */
+  readonly excludedRoleGroupIds?: readonly string[];
 }
 
 /** A stored directory group with its current member count. */

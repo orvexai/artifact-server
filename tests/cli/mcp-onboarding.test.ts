@@ -1,4 +1,6 @@
 import {spawn} from "node:child_process";
+import {createServer} from "node:http";
+import {once} from "node:events";
 import {
   chmod,
   mkdir,
@@ -194,6 +196,81 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
         if (localService.success) managedServicePids.add(localService.data.pid);
       }
       if (relayProcess.pid !== undefined) managedServicePids.delete(relayProcess.pid);
+      await killProcess(relayProcess);
+    }
+  }, 45_000);
+
+  test("HTTP relay reports an unreachable configured remote profile without local fallback", async () => {
+    const workspace = await temporaryWorkspace("artifact-server-mcp-remote-unreachable-");
+    const dataDirectory = path.join(workspace, "data");
+    const home = path.join(workspace, "home");
+    const remote = createServer((request, response) => {
+      if (request.url !== "/api/v1/session" || request.method !== "GET") {
+        response.writeHead(404).end();
+        return;
+      }
+      response.writeHead(200, {"content-type": "application/json"});
+      response.end(JSON.stringify({
+        authenticationMethod: "bearer",
+        principal: {
+          authorizedByPrincipalId: null,
+          capabilities: ["artifact:create", "artifact:read"],
+          displayName: "Relay test",
+          id: "human-relay-test",
+          installationId: "installation-relay-test",
+          kind: "human",
+          membershipRole: "owner",
+        },
+      }));
+    });
+    remote.listen(0, "127.0.0.1");
+    await once(remote, "listening");
+    const remoteAddress = z.object({port: z.number().int().positive()})
+      .passthrough()
+      .parse(remote.address());
+    const remoteOrigin = `http://127.0.0.1:${remoteAddress.port}`;
+    const environment = {
+      ...process.env,
+      ARTIFACT_SERVER_CREDENTIAL_STORE: "file",
+      ARTIFACT_SERVER_HOME: dataDirectory,
+      HOME: home,
+    };
+    const apiKey = "R".repeat(48);
+    const login = await runCli([
+      "auth", "login", remoteOrigin, "--api-key-stdin", "--profile-data", dataDirectory,
+    ], environment, `${apiKey}\n`);
+    expect(login.exitCode).toBe(0);
+    remote.close();
+    await once(remote, "close");
+
+    const addressFile = path.join(dataDirectory, "mcp-http-relay.json");
+    const relayProcess = spawn(tsxExecutable, [
+      cliEntrypoint, "mcp", "relay", "--data", dataDirectory,
+      "--address-file", addressFile,
+    ], {cwd: repositoryRoot, env: environment, stdio: "ignore"});
+    if (relayProcess.pid !== undefined) managedServicePids.add(relayProcess.pid);
+    try {
+      await waitForFile(addressFile);
+      const address = z.object({port: z.number().int().positive()})
+        .parse(JSON.parse(await readFile(addressFile, "utf8")));
+      const response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
+        body: JSON.stringify({id: 1, jsonrpc: "2.0", method: "initialize", params: {}}),
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          host: `127.0.0.1:${address.port}`,
+        },
+        method: "POST",
+      });
+      expect(response.status).toBe(502);
+      expect(await response.json()).toMatchObject({
+        error: "Configured remote Artifact Server profile is unavailable.",
+        message: "The remote profile could not be authenticated. No local fallback was attempted.",
+      });
+      await expect(readFile(path.join(dataDirectory, "local-service.json"), "utf8"))
+        .rejects.toMatchObject({code: "ENOENT"});
+    } finally {
+      managedServicePids.delete(relayProcess.pid ?? -1);
       await killProcess(relayProcess);
     }
   }, 45_000);
@@ -567,12 +644,13 @@ async function connectStdio(
 function runCli(
   arguments_: readonly string[],
   environment: NodeJS.ProcessEnv = process.env,
+  standardInput = "",
 ): Promise<{readonly exitCode: number; readonly stderr: string; readonly stdout: string}> {
   return new Promise((resolve, reject) => {
     const child = spawn(tsxExecutable, [cliEntrypoint, ...arguments_], {
       cwd: repositoryRoot,
       env: environment,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
     const stdout: Uint8Array[] = [];
     const stderr: Uint8Array[] = [];
@@ -584,6 +662,7 @@ function runCli(
       stderr: Buffer.concat(stderr).toString("utf8"),
       stdout: Buffer.concat(stdout).toString("utf8"),
     }));
+    child.stdin.end(standardInput, "utf8");
   });
 }
 

@@ -1,15 +1,13 @@
 import {Effect, Redacted} from "effect";
 
 import {resolveVerifiedProfileCredential} from "./cli-auth-commands.js";
-import {CliAuthenticationError} from "./cli-profile-credential.js";
 import {authenticatedCliHttpClientLayer} from "./cli-server-connection.js";
 import {
   CliProfileError,
   readCliProfileState,
   type CliProfileState,
 } from "./cli-profile-store.js";
-import {CliCredentialStoreError, createSystemCredentialStore} from
-  "./system-credential-store.js";
+import {createSystemCredentialStore} from "./system-credential-store.js";
 
 const tokenCacheMilliseconds = 30_000;
 const profileLookupCacheMilliseconds = 2_000;
@@ -64,12 +62,7 @@ async function resolveProfile(
   if (profile === undefined) return null;
 
   const store = createSystemCredentialStore();
-  try {
-    await resolveCredential(profileDirectory, profile, store);
-  } catch (cause) {
-    if (isUnavailableCredential(cause)) return null;
-    throw cause;
-  }
+  await resolveCredential(profileDirectory, profile, store);
 
   let cachedToken: string | null = null;
   let cachedAt = 0;
@@ -97,9 +90,4 @@ function resolveCredential(
       Effect.provide(authenticatedCliHttpClientLayer),
     ),
   );
-}
-
-function isUnavailableCredential(cause: unknown): boolean {
-  if (cause instanceof CliCredentialStoreError) return true;
-  return cause instanceof CliAuthenticationError;
 }

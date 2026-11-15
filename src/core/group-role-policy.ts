@@ -31,6 +31,30 @@ export function groupRoleSeedMarksStaff(
     (entry.selector.startsWith("/") ? entry.selector === group.path : entry.selector === group.name));
 }
 
+/** Tenant workspace and guest groups mirrored into Orvex are not Orvex admission groups. */
+export function isOrvexTenantGroupPath(path: string): boolean {
+  return path.startsWith("/Guests/") || /^\/TenantWorkspaces\/[^/]+(?:\/|$)/u.test(path);
+}
+
+function escapeRegularExpression(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+/** Match one exact platform staff group path, including repeated `{slug}` segments. */
+export function organizationStaffPathMatches(
+  groupPath: string,
+  staffPaths: readonly string[],
+): boolean {
+  return staffPaths.some((staffPath) => {
+    const segments = staffPath.split("{slug}");
+    let expression = escapeRegularExpression(segments[0] ?? "");
+    for (let index = 1; index < segments.length; index += 1) {
+      expression += `${index === 1 ? "([^/]+)" : "\\1"}${escapeRegularExpression(segments[index] ?? "")}`;
+    }
+    return new RegExp(`^${expression}$`, "u").test(groupPath);
+  });
+}
+
 /** Group-role edits stay with direct installation owners. */
 export function groupRoleEditAllowed(
   role: MembershipRole,
