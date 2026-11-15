@@ -119,6 +119,9 @@ export interface LocalRuntimeConfig {
   readonly gitHistory?: NodeGitHistoryConfiguration;
   /** Issuer groups that admit people and set their role, when configured. */
   readonly groupRolePolicy?: GroupRolePolicy | null;
+  /** Test seam for the Orvex installation when served by org tenancy. */
+  readonly orvexTenantGroupProtection?: boolean;
+  readonly organizationStaffGroups?: readonly string[];
   /** Optional provider seam for real-boundary tests; production composes REST. */
   readonly gitHistoryHealthProbe?: GitHistoryProviderHealthProbe;
   /** Complete provider seam for conformance tests; production composes REST and Git. */
@@ -266,6 +269,8 @@ export async function createLocalRuntime(
     externalMcpBearerVerifier: config.externalMcpBearerVerifier ?? null,
     externalMcpOAuthVerifier: config.externalMcpOAuthVerifier ?? null,
     groupRolePolicy: config.groupRolePolicy ?? null,
+    orvexTenantGroupProtection: config.orvexTenantGroupProtection,
+    organizationStaffGroups: config.organizationStaffGroups,
     ids: new SystemIdGenerator(),
     identityRepository,
     installationId,

@@ -24,6 +24,7 @@ import {
   principalKinds,
   type Principal,
 } from "../core/identity.js";
+import {isOrvexTenantGroupPath} from "../core/group-role-policy.js";
 import {
   type ProjectAccess,
   type ProjectAccessMode,
@@ -151,6 +152,7 @@ export interface ProjectManagementDependencies {
   readonly clock: ApplicationClock;
   readonly ids: IdGenerator;
   readonly installationId: string;
+  readonly orvexTenantGroupProtection?: boolean;
   readonly repository: ProjectManagementRepository;
 }
 
@@ -559,6 +561,9 @@ function makeProjectManagementService(
           return yield* new AuthorizationDenied({message: "Provisioners may grant at most the editor role."});
         }
         const group = yield* resolveGroup(share.group, directory);
+        if (dependencies.orvexTenantGroupProtection === true && isOrvexTenantGroupPath(group.path)) {
+          return yield* new AuthorizationDenied({message: "Tenant groups cannot be shared with Orvex projects."});
+        }
         yield* validateProvisionerGroup(command.principal, share.group, group);
         grants.push({groupId: group.id, role: share.role});
       }
@@ -720,6 +725,9 @@ function makeProjectManagementService(
       }
       const project = yield* requireManagedProject(command.principal, command.projectId);
       const group = yield* resolveGroup(command.group, yield* access.listDirectoryGroups());
+      if (dependencies.orvexTenantGroupProtection === true && isOrvexTenantGroupPath(group.path)) {
+        return yield* new AuthorizationDenied({message: "Tenant groups cannot be shared with Orvex projects."});
+      }
       yield* validateProvisionerGroup(command.principal, command.group, group);
       yield* access.projectSharing.put({
         grantedAt: DateTime.formatIso(yield* dependencies.clock.now),

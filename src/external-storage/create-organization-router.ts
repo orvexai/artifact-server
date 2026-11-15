@@ -77,7 +77,13 @@ export async function createOrganizationRouter(
       findActiveMemberByEmail: (email) => orvexIdentities.findActiveMemberByEmail(config.installationId, email),
       findActiveMemberByExternalIdentity: (provider, subject) =>
         orvexIdentities.findActiveMemberByExternalIdentity(config.installationId, provider, subject),
+      hasExternalIdentityForMemberWithDifferentSubject: (memberId, provider, subject) =>
+        orvexIdentities.hasExternalIdentityForMemberWithDifferentSubject(
+          config.installationId, memberId, provider, subject,
+        ),
       groupRolePolicy: config.groupRolePolicy ?? null,
+      orvexTenantGroupProtection: true,
+      organizationStaffGroups: config.organizationStaffGroups ?? [],
       hasMembers: () => orvexIdentities.hasMembers(config.installationId),
       isGroupRoleSeedApplied: () => orvexIdentities.isGroupRoleSeedApplied(config.installationId),
       listGroupRoles: () => orvexIdentities.listGroupRoles(config.installationId),
@@ -121,6 +127,7 @@ export async function createOrganizationRouter(
         keycloakId: organization.keycloakId,
         routeId: organization.routeId,
         slug: organization.slug,
+        orvexTenantGroupProtection: organization.slug === "orvex",
         status: organization.status,
       });
       const acquire = (entry: CachedRuntime): CachedRuntime | null => {
@@ -154,6 +161,7 @@ export async function createOrganizationRouter(
         contentTokenPrefix: `${organization.routeId}-`,
         embedOrigins: organization.embedOrigins,
         slug: organization.slug,
+        orvexTenantGroupProtection: organization.slug === "orvex",
         issuePlatformSession: (identity, existingToken) => platformSessions.issue(identity, existingToken),
         allowLegacyEmbedBinding: organization.slug === "orvex",
         legacyEmbedBindingExpiresAt: legacyInstallationlessBindingExpiresAt,

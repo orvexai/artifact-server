@@ -291,8 +291,10 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         ) VALUES (?, ?, 'guest', ?, ?)
         ON CONFLICT (installation_id, group_id) DO NOTHING
       `);
+      const excludedRoleGroupIds = snapshot.excludedRoleGroupIds ?? [];
       for (const group of snapshot.groups) {
         if (
+          !excludedRoleGroupIds.includes(group.id) &&
           guestGroupPathMatches(stored.get(group.id)?.firstPath || group.path, snapshot.guestGroupPrefixes ?? []) &&
           (backfillGuestRoles || !stored.has(group.id))
         ) {
@@ -301,7 +303,37 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           );
         }
       }
+      let expectedRoleRemovalDeactivations = 0;
       if (snapshot.recomputeRoles !== false) {
+      const exclusionSql = excludedRoleGroupIds.length === 0
+        ? ""
+        : ` AND gm.group_id NOT IN (${excludedRoleGroupIds.map(() => "?").join(",")})`;
+      const placeholders = excludedRoleGroupIds.map(() => "?");
+      if (excludedRoleGroupIds.length > 0) {
+        const planned = this.#database.prepare(`
+          SELECT COUNT(DISTINCT member.id) AS count FROM installation_members member
+          WHERE member.installation_id = ? AND member.status = 'active'
+            AND EXISTS (
+              SELECT 1 FROM directory_group_members gm JOIN directory_group_roles assigned
+                ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
+              WHERE gm.installation_id = member.installation_id AND gm.group_id IN (${placeholders.join(",")})
+                AND (EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id
+                      AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                  OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
+                      WHERE identity.member_id = member.id AND identity.provider = gm.provider)))
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM directory_group_members gm JOIN directory_group_roles assigned
+                ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
+              WHERE gm.installation_id = member.installation_id AND gm.group_id NOT IN (${placeholders.join(",")})
+                AND (EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id
+                      AND identity.provider = gm.provider AND identity.subject = gm.subject)
+                  OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
+                      WHERE identity.member_id = member.id AND identity.provider = gm.provider)))
+            )
+        `).get(installationId, ...excludedRoleGroupIds, ...excludedRoleGroupIds);
+        expectedRoleRemovalDeactivations = z.object({count: z.number().int().nonnegative()}).parse(planned).count;
+      }
       this.#database.prepare(`
         WITH resolved AS (
           SELECT member.id, member.role AS old_role,
@@ -312,7 +344,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
               WHEN MAX(assigned.role = 'viewer') = 1 THEN 'viewer' ELSE NULL END
              FROM directory_group_members gm LEFT JOIN directory_group_roles assigned
               ON assigned.installation_id = gm.installation_id AND assigned.group_id = gm.group_id
-             WHERE gm.installation_id = member.installation_id AND assigned.group_id IS NOT NULL AND (
+             WHERE gm.installation_id = member.installation_id AND assigned.group_id IS NOT NULL${exclusionSql} AND (
                EXISTS (SELECT 1 FROM external_identities identity WHERE identity.member_id = member.id
                  AND identity.provider = gm.provider AND identity.subject = gm.subject)
                OR (gm.email = member.email AND NOT EXISTS (SELECT 1 FROM external_identities identity
@@ -349,7 +381,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
           status = CASE WHEN (SELECT next_role FROM policy WHERE policy.id = installation_members.id) IS NULL THEN 'inactive' ELSE status END,
           updated_at = ?
         WHERE installation_id = ? AND id IN (SELECT id FROM policy)
-      `).run(installationId, installationId, installationId, snapshot.syncedAt, installationId);
+      `).run(...excludedRoleGroupIds, installationId, installationId, installationId, snapshot.syncedAt, installationId);
       this.#database.prepare(`
         UPDATE application_sessions SET revoked_at = COALESCE(revoked_at, ?)
         WHERE installation_id = ? AND member_id IN (SELECT id FROM installation_members
@@ -381,7 +413,7 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         throw new IdentityConflict({message: "Directory sync cannot remove the last active administrator."});
       }
       const deactivated = (beforePrivileged.active ?? 0) - (afterPrivileged.active ?? 0);
-      const threshold = Math.max(snapshot.maxDeactivations ?? 5, Math.ceil((beforePrivileged.active ?? 0) * 0.2));
+      const threshold = Math.max(snapshot.maxDeactivations ?? 5, Math.ceil((beforePrivileged.active ?? 0) * 0.2)) + expectedRoleRemovalDeactivations;
       if (deactivated > threshold) {
         throw new IdentityConflict({message: `Directory sync would deactivate ${deactivated} members, exceeding the configured safety threshold of ${threshold}.`});
       }
@@ -933,6 +965,23 @@ export class SqliteIdentityRepository implements BootstrapManagedApiKeyRepositor
         external.subject = ? AND member.status = ?
     `).get(installationId, provider, subject, memberStatuses.active);
     return row === undefined ? null : memberRowSchema.parse(row);
+  }
+
+  async hasExternalIdentityForMemberWithDifferentSubject(
+    installationId: string,
+    memberId: string,
+    provider: string,
+    subject: string,
+  ): Promise<boolean> {
+    const row = this.#database.prepare(`
+      SELECT EXISTS (
+        SELECT 1 FROM external_identities identity
+        JOIN installation_members member ON member.id = identity.member_id
+        WHERE member.installation_id = ? AND member.id = ? AND identity.provider = ?
+          AND identity.subject <> ?
+      ) AS present
+    `).get(installationId, memberId, provider, subject);
+    return z.object({present: z.number().int().min(0).max(1)}).parse(row).present === 1;
   }
 
   async bindExternalIdentity(command: BindExternalIdentityRecord): Promise<void> {

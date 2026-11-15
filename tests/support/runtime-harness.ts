@@ -110,6 +110,8 @@ export async function startTestServer(
     readonly gitHistoryHealthProbe?: GitHistoryProviderHealthProbe;
     readonly gitHistoryProvider?: GitHistoryProvider;
     readonly groupRolePolicy?: GroupRolePolicy;
+    readonly orvexTenantGroupProtection?: boolean;
+    readonly organizationStaffGroups?: readonly string[];
     readonly hostname?: string;
     readonly interactiveIdentityProvider?: InteractiveIdentityProvider;
     readonly linkedFiles?: "off" | "on";
@@ -204,6 +206,12 @@ export async function startTestServer(
   }
   if (options.groupRolePolicy !== undefined) {
     config = {...config, groupRolePolicy: options.groupRolePolicy};
+  }
+  if (options.orvexTenantGroupProtection !== undefined) {
+    config = {...config, orvexTenantGroupProtection: options.orvexTenantGroupProtection};
+  }
+  if (options.organizationStaffGroups !== undefined) {
+    config = {...config, organizationStaffGroups: options.organizationStaffGroups};
   }
   if (options.hostname !== undefined) {
     config = {...config, hostname: options.hostname};
