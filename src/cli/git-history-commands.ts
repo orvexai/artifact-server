@@ -6,6 +6,7 @@ import {type Command, Option} from "commander";
 import {Redacted} from "effect";
 import {z} from "zod";
 
+import {artifactServerRouteUrl} from "../core/server-address.js";
 import {
   resolveCliServerConnection,
   type CliServerConnection,
@@ -431,7 +432,7 @@ async function authenticatedFetch(
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
   headers.set("Authorization", `Bearer ${Redacted.value(connection.apiToken)}`);
-  const response = await fetch(new URL(route, connection.origin), {
+  const response = await fetch(artifactServerRouteUrl(route, connection.origin), {
     ...init,
     headers,
     redirect: "error",
