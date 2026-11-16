@@ -46,6 +46,9 @@
     "vitest"
   ],
   "rules": {
+    // Oxlint 1.93 newly flags existing app/test patterns; keep this dependency refresh scoped and revisit in a dedicated lint cleanup.
+    "typescript/no-generated-empty-object-type": "off",
+    "unicorn/consistent-function-scoping": "off",
     "anti-slop/no-chained-type-assertions": "error",
     "anti-slop/no-conditional-empty-object-spread": "error",
     "anti-slop/no-known-value-widening": "error",
