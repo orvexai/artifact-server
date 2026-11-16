@@ -29,7 +29,12 @@ createRoot(rootElement).render(
 );
 
 function readInitialTheme(): "dawn" | "moon" {
-  const savedTheme = window.localStorage.getItem("artifact-review-theme");
+  let savedTheme: string | null = null;
+  try {
+    savedTheme = window.localStorage.getItem("artifact-review-theme");
+  } catch {
+    // Storage can be unavailable; continue with the device preference.
+  }
   if (savedTheme === "dawn" || savedTheme === "moon") return savedTheme;
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "moon" : "dawn";
 }

@@ -384,7 +384,11 @@ export function ReviewApp() {
   const changeTheme = useCallback(() => {
     setTheme((current) => {
       const nextTheme = current === "moon" ? "dawn" : "moon";
-      window.localStorage.setItem("artifact-review-theme", nextTheme);
+      try {
+        window.localStorage.setItem("artifact-review-theme", nextTheme);
+      } catch {
+        // The theme still changes when storage is unavailable.
+      }
       return nextTheme;
     });
   }, []);
@@ -461,7 +465,12 @@ export function ReviewApp() {
   useEffect(() => {
     const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
     const followSystemTheme = (): void => {
-      const savedTheme = window.localStorage.getItem("artifact-review-theme");
+      let savedTheme: string | null = null;
+      try {
+        savedTheme = window.localStorage.getItem("artifact-review-theme");
+      } catch {
+        // Storage can be unavailable; keep following the device preference.
+      }
       if (savedTheme === "dawn" || savedTheme === "moon") return;
       setTheme(systemTheme.matches ? "moon" : "dawn");
     };
@@ -2950,7 +2959,12 @@ function ReviewGate({
 }
 
 function readInitialTheme(): ReviewTheme {
-  const savedTheme = window.localStorage.getItem("artifact-review-theme");
+  let savedTheme: string | null = null;
+  try {
+    savedTheme = window.localStorage.getItem("artifact-review-theme");
+  } catch {
+    // Storage can be unavailable; continue with the device preference.
+  }
   if (savedTheme === "dawn" || savedTheme === "moon") return savedTheme;
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "moon" : "dawn";
 }
