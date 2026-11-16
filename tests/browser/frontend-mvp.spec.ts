@@ -95,19 +95,6 @@ test.describe("Houston Artifacts frontend MVP", () => {
         expect(rootResponse.status(), `root /${assetPath}`).toBe(200);
         expect(rootResponse.headers()["content-type"], `root /${assetPath}`)
           .toContain(contentType);
-
-        const tenantUrl = new URL(`./${assetPath}`, tenantReview);
-        expect(tenantUrl.pathname).toBe(`/o/orvex/${assetPath}`);
-        // The organization ingress removes /o/orvex before forwarding to its
-        // app instance; verify the tenant URL's routed asset response as well.
-        const routedTenantUrl = new URL(
-          tenantUrl.pathname.slice("/o/orvex".length),
-          fixture.server.baseUrl,
-        );
-        const tenantResponse = await fixture.page.request.get(routedTenantUrl.toString());
-        expect(tenantResponse.status(), `tenant ${tenantUrl.pathname}`).toBe(200);
-        expect(tenantResponse.headers()["content-type"], `tenant ${tenantUrl.pathname}`)
-          .toContain(contentType);
       }
     } finally {
       await stopBrowserFixture(fixture);

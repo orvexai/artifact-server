@@ -11,7 +11,6 @@ export function ArtifactMark({className}: {readonly className?: string}) {
       <circle cx="24" cy="24" r="13" stroke="currentColor" strokeWidth="1.8" />
       <circle cx="24" cy="24" r="7" stroke="currentColor" strokeWidth="1.8" />
       <path d="M24 24 33.192 14.808" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
-      <circle cx="24" cy="24" r="1.2" fill="currentColor" />
       <circle cx="14.808" cy="33.192" r="3" fill="#0891b2" />
     </svg>
   );

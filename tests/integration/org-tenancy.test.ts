@@ -73,6 +73,16 @@ import {PostgresIdentityRepository} from "../../src/storage/postgres-identity-re
 
 const region = "us-east-1";
 const applicationOrigin = "https://artifacts.example.com";
+const brandingAssetContentTypes = [
+  ["/favicon.svg", "image/svg+xml"],
+  ["/favicon.ico", "image/vnd.microsoft.icon"],
+  ["/apple-touch-icon-180.png", "image/png"],
+  ["/site.webmanifest", "application/manifest+json; charset=utf-8"],
+  ["/icon-192.png", "image/png"],
+  ["/icon-512.png", "image/png"],
+  ["/maskable-512.png", "image/png"],
+] as const;
+const brandingAssetContentTypeByPath: ReadonlyMap<string, string> = new Map(brandingAssetContentTypes);
 const embedBindingSecret = "org-tenancy-test-embed-binding-secret-with-32-bytes-minimum";
 const orgTenancyGitProvider = new RecordingGitHistoryProvider();
 const orgTenancyGitHistory: NodeGitHistoryConfiguration = {
@@ -544,13 +554,22 @@ describe.sequential("organization tenancy security boundary", () => {
       }),
       objectStorage,
       webAssets: {
-        fetch: async (assetPath) => assetPath === "/embed.html"
-          ? new Response("<!doctype html><html><head></head><body>embed</body></html>")
-          : assetPath === "/review-frame.html"
-          ? new Response("<!doctype html><html><head></head><body>review frame</body></html>")
-          : assetPath === "/assets/embed-signed-in.js"
-          ? new Response("window.close();")
-          : null,
+        fetch: async (assetPath) => {
+          const brandingContentType = brandingAssetContentTypeByPath.get(assetPath);
+          if (brandingContentType !== undefined) {
+            return new Response("branding fixture", {
+              headers: {"Content-Type": brandingContentType},
+            });
+          }
+          if (assetPath === "/embed.html") {
+            return new Response("<!doctype html><html><head></head><body>embed</body></html>");
+          }
+          if (assetPath === "/review-frame.html") {
+            return new Response("<!doctype html><html><head></head><body>review frame</body></html>");
+          }
+          if (assetPath === "/assets/embed-signed-in.js") return new Response("window.close();");
+          return null;
+        },
       },
     };
 
@@ -906,6 +925,18 @@ describe.sequential("organization tenancy security boundary", () => {
       return {body: routedBody, status: routedResponse.status};
     };
     try {
+      for (const [assetPath, contentType] of brandingAssetContentTypes) {
+        const response = await fetchWithHost(
+          `${baseUrl}/o/orvex${assetPath}`,
+          {headers: {Host: "artifacts.example.com"}},
+          router.hostname,
+          router.port,
+        );
+        expect(response.status, `/o/orvex${assetPath}`).toBe(200);
+        expect(response.headers.get("content-type"), `/o/orvex${assetPath}`)
+          .toContain(contentType);
+      }
+
       const session = await compareRoute("/api/v1/session", "GET");
       expect(session.status).toBe(200);
       expect(session.body).not.toHaveProperty("principal.staff");
