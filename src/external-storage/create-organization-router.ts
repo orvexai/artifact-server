@@ -9,7 +9,7 @@ import {
 import {OrganizationRegistry, type OrganizationRecord} from
   "./organization-registry.js";
 import {z} from "zod";
-import {Effect} from "effect";
+import {Effect, Redacted} from "effect";
 import {SqlClient} from "effect/unstable/sql/SqlClient";
 import {createKeycloakOrganizationMembershipResolver, createOrvexAdmissionRole} from "./organization-memberships.js";
 import {PostgresIdentityRepository} from "../storage/postgres-identity-repository.js";
@@ -123,9 +123,7 @@ export async function createOrganizationRouter(
       listMembers: () => orvexIdentities.listMembers(config.installationId),
       listGroupRoles: () => orvexIdentities.listGroupRoles(config.installationId),
     });
-    const platformSessions = new PlatformSessions(
-      database,
-        config.organizationMemberships ?? createKeycloakOrganizationMembershipResolver(
+    const organizationMemberships = config.organizationMemberships ?? createKeycloakOrganizationMembershipResolver(
           (slug) => registry.find(slug),
           async (organization, identity) => database.run(Effect.gen(function*() {
             const sql = yield* SqlClient;
@@ -138,8 +136,8 @@ export async function createOrganizationRouter(
             return rows[0]?.["deactivated"] === true;
           })),
           orvexAdmissionRole,
-        ),
-    );
+        );
+    const platformSessions = new PlatformSessions(database, organizationMemberships);
     await registry.ensureOrvex(config.installationId);
     const closeResources = async () => {
       if (closed) return;
@@ -343,6 +341,41 @@ export async function createOrganizationRouter(
           return entry.runtime.app.fetch(new Request(target, request));
         }
         if (!contentHost && applicationPath === "/api/v1/platform/me/orgs" && request.method === "GET") {
+          if (
+            sourceUrl.pathname === "/api/v1/platform/me/orgs"
+            && request.headers.has("authorization")
+          ) {
+            const bearer = /^Bearer\s+(\S+)$/iu.exec(request.headers.get("authorization")?.trim() ?? "")?.[1];
+            const verifier = config.externalApiOAuthVerifier;
+            const trustedOrigin = config.applicationOrigin === undefined
+              ? sourceUrl.origin
+              : new URL(config.applicationOrigin).origin;
+            const metadata = new URL("/.well-known/oauth-protected-resource/api", trustedOrigin).toString();
+            const challenge = `Bearer resource_metadata="${metadata}" scope="artifactserver"`;
+            if (bearer === undefined || verifier === undefined) {
+              return Response.json({error: "Authentication required."}, {
+                headers: {"Cache-Control": "private, no-store", "WWW-Authenticate": challenge},
+                status: 401,
+              });
+            }
+            try {
+              const credential = Redacted.make(bearer, {label: "artifact-server-api-bearer"});
+              const verified = await Effect.runPromise(verifier.verify(credential));
+              const identity = await Effect.runPromise(verifier.resolveIdentity(verified, credential));
+              const active = new Set((await registry.list())
+                .filter(({status}) => status === "active")
+                .map(({slug}) => slug));
+              const memberships = await organizationMemberships.forIdentity(identity);
+              return Response.json(memberships.filter(({slug}) => active.has(slug)), {
+                headers: {"Cache-Control": "private, no-store"},
+              });
+            } catch {
+              return Response.json({error: "The bearer token is invalid or unavailable."}, {
+                headers: {"Cache-Control": "private, no-store", "WWW-Authenticate": challenge},
+                status: 401,
+              });
+            }
+          }
           const token = platformCookie(request);
           const session = token === null ? null : await platformSessions.find(token, true);
           if (session === null) return notFound();

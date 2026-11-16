@@ -62,12 +62,13 @@ async function resolveProfile(
   if (profile === undefined) return null;
 
   const store = createSystemCredentialStore();
-  await resolveCredential(profileDirectory, profile, store);
+  const verified = await resolveCredential(profileDirectory, profile, store);
+  const apiOrigin = `${new URL(profile.origin).origin}${verified.profile.apiBasePath ?? new URL(profile.origin).pathname.replace(/\/$/u, "")}`;
 
   let cachedToken: string | null = null;
   let cachedAt = 0;
   return {
-    origin: profile.origin,
+    origin: apiOrigin,
     token: async () => {
       if (cachedToken !== null && Date.now() - cachedAt < tokenCacheMilliseconds) {
         return cachedToken;

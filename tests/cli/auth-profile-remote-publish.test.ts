@@ -79,10 +79,10 @@ describe("authenticated CLI profiles and remote publication", () => {
       const backendOrigin = `http://127.0.0.1:${port}`;
       proxy = await startOrganizationAddressProxy(backendOrigin);
       const token = (await readFile(path.join(serverData, "local-api-token"), "utf8")).trim();
-      const address = `${proxy.origin}/o/orvex`;
+      const address = proxy.origin;
       expect(artifactServerRouteUrl("/api", address).toString()).toBe(`${address}/api`);
       expect(artifactServerProtectedResourceMetadataUrl(address, "api").toString())
-        .toBe(`${proxy.origin}/.well-known/oauth-protected-resource/o/orvex/api`);
+        .toBe(`${proxy.origin}/.well-known/oauth-protected-resource/api`);
       const login = await runCli([
         "auth", "login", address, "--api-key-stdin", "--name", "organization",
         "--profile-data", profileData,
@@ -94,6 +94,7 @@ describe("authenticated CLI profiles and remote publication", () => {
         origin: address,
         status: "authenticated",
       });
+      expect(JSON.parse(login.stdout)).toMatchObject({apiBasePath: "/o/orvex"});
 
       const published = await runCli([
         "publish", fixture, "--public", "--profile-data", profileData,
@@ -104,7 +105,21 @@ describe("authenticated CLI profiles and remote publication", () => {
       });
       expect(publicationSchema.parse(JSON.parse(published.stdout)).version.number).toBe(1);
       expect(proxy.paths().length).toBeGreaterThan(3);
-      expect(proxy.paths().every((pathname) => pathname.startsWith("/o/orvex/api/"))).toBe(true);
+      expect(proxy.paths().some((pathname) => pathname.startsWith("/o/orvex/api/"))).toBe(true);
+      expect(proxy.paths().filter((pathname) => pathname.endsWith("/api/v1/session"))
+        .every((pathname) => pathname.startsWith("/o/orvex/api/"))).toBe(true);
+
+      const tenantAddress = `${proxy.origin}/o/orvex`;
+      const tenantLogin = await runCli([
+        "auth", "login", tenantAddress, "--api-key-stdin", "--name", "tenant",
+        "--profile-data", profileData,
+      ], environment, `${token}\n`);
+      expect(tenantLogin.exitCode).toBe(0);
+      expect(JSON.parse(tenantLogin.stdout)).toMatchObject({apiBasePath: "/o/orvex"});
+      const tenantPublish = await runCli([
+        "publish", fixture, "--public", "--profile", "tenant", "--profile-data", profileData,
+      ], environment);
+      expect(tenantPublish.exitCode).toBe(0);
     } finally {
       await proxy?.stop();
       await stopProcess(backend);
@@ -258,6 +273,7 @@ describe("authenticated CLI profiles and remote publication", () => {
         origin: firstOrigin,
         status: "authenticated",
       });
+      expect(JSON.parse(login.stdout)).toMatchObject({apiBasePath: "/o/orvex"});
       expect(login.stdout).not.toContain(token);
       expect(login.stderr).not.toContain(token);
 
@@ -559,13 +575,65 @@ describe("authenticated CLI profiles and remote publication", () => {
         profileData,
       ], environment);
       expect(rejected.exitCode).not.toBe(0);
-      expect(rejected.stderr).toContain("authorization metadata is invalid");
+      expect(rejected.stderr).toContain("advertised an unexpected resource");
       expect(oauth.observations.authorizationCount).toBe(1);
     } finally {
       await oauth.stop();
       await rm(temporaryDirectory, {force: true, recursive: true});
     }
   }, 30_000);
+
+  test("selects one root-login organization, rejects ambiguous noninteractive and zero-org access, and keeps audiences scoped", async () => {
+    const temporaryDirectory = await mkdtemp(
+      path.join(tmpdir(), "artifact-server-cli-oauth-orgs-"),
+    );
+    const profileData = path.join(temporaryDirectory, "profiles");
+    const helperState = path.join(temporaryDirectory, "credential-helper.json");
+    const helper = path.join(temporaryDirectory, "credential-helper.mjs");
+    const browser = path.join(temporaryDirectory, "browser.mjs");
+    const environment = await credentialHelperEnvironment(helper, helperState);
+    await writeBrowserHelper(browser);
+    environment["ARTIFACT_SERVER_BROWSER_COMMAND"] = browser;
+    const oauth = await startOAuthFixture([
+      {displayName: "Acme", role: "owner", slug: "acme"},
+      {displayName: "Orvex", role: "administrator", slug: "orvex"},
+    ]);
+    try {
+      const ambiguous = await runCli([
+        "auth", "login", oauth.origin, "--profile-data", profileData,
+      ], environment);
+      expect(ambiguous.exitCode).not.toBe(0);
+      expect(ambiguous.stderr).toContain("Several organizations are available: acme, orvex");
+
+      const selected = await runCli([
+        "auth", "login", oauth.origin, "--org", "acme", "--profile-data", profileData,
+      ], environment);
+      expect(selected.exitCode).toBe(0);
+      expect(JSON.parse(selected.stdout)).toMatchObject({
+        apiBasePath: "/o/acme",
+        origin: `${oauth.origin}/o/acme`,
+        status: "authenticated",
+      });
+      const reused = await fetch(`${oauth.origin}/o/orvex/api/v1/session`, {
+        headers: {Authorization: "Bearer oauth-access-acme"},
+      });
+      expect(reused.status).toBe(401);
+
+      const empty = await startOAuthFixture([]);
+      try {
+        const noOrganizations = await runCli([
+          "auth", "login", empty.origin, "--profile-data", path.join(temporaryDirectory, "empty-profiles"),
+        ], environment);
+        expect(noOrganizations.exitCode).not.toBe(0);
+        expect(noOrganizations.stderr).toContain("belongs to no active organizations");
+      } finally {
+        await empty.stop();
+      }
+    } finally {
+      await oauth.stop();
+      await rm(temporaryDirectory, {force: true, recursive: true});
+    }
+  }, 45_000);
 
   test("fails fast with the authorization URL when no browser can be opened", async () => {
     const temporaryDirectory = await mkdtemp(
@@ -771,6 +839,10 @@ async function startOrganizationAddressProxy(
     try {
       const requestUrl = new URL(request.url ?? "/", "http://localhost");
       observedPaths.push(requestUrl.pathname);
+      if (requestUrl.pathname === "/api/v1/installation") {
+        response.writeHead(308, {Location: "/o/orvex/api/v1/installation"}).end();
+        return;
+      }
       if (!requestUrl.pathname.startsWith("/o/orvex/api/")) {
         response.writeHead(404).end();
         return;
@@ -1053,7 +1125,9 @@ interface OAuthFixture {
   stop(): Promise<void>;
 }
 
-async function startOAuthFixture(): Promise<OAuthFixture> {
+async function startOAuthFixture(organizations = [
+  {displayName: "Orvex", role: "administrator", slug: "orvex"},
+]): Promise<OAuthFixture> {
   const observations: OAuthFixtureObservations = {
     authorizationCount: 0,
     codeExchangeCount: 0,
@@ -1073,13 +1147,34 @@ async function startOAuthFixture(): Promise<OAuthFixture> {
   let origin = "";
   const server = createHttpServer(async (request, response) => {
     const target = new URL(request.url ?? "/", origin);
-    if (target.pathname === "/.well-known/oauth-protected-resource/api") {
+    const metadataSlug = /^\/\.well-known\/oauth-protected-resource\/o\/([^/]+)\/api$/u.exec(target.pathname)?.[1];
+    if (
+      target.pathname === "/.well-known/oauth-protected-resource/api"
+      || metadataSlug !== undefined
+    ) {
       sendJson(response, 200, {
         authorization_servers: [origin],
         bearer_methods_supported: ["header"],
-        resource: wrongResource ? `${origin}/wrong` : `${origin}/api`,
+        resource: wrongResource ? `${origin}/wrong` : metadataSlug === undefined
+          ? `${origin}/api`
+          : `${origin}/o/${metadataSlug}/api`,
         scopes_supported: ["artifactserver"],
       });
+      return;
+    }
+    if (/^(?:\/o\/[a-z0-9-]+)?\/api\/v1\/installation$/u.test(target.pathname)) {
+      const slug = /^\/o\/([^/]+)\//u.exec(target.pathname)?.[1];
+      response.writeHead(401, {
+        "WWW-Authenticate": `Bearer resource_metadata="${origin}${slug === undefined || slug === "orvex" ? "/.well-known/oauth-protected-resource/api" : `/.well-known/oauth-protected-resource/o/${slug}/api`}" scope="artifactserver"`,
+      }).end();
+      return;
+    }
+    if (target.pathname === "/api/v1/platform/me/orgs" && request.method === "GET") {
+      if (request.headers.authorization !== "Bearer oauth-access-one") {
+        sendJson(response, 401, {error: "Authentication required."});
+        return;
+      }
+      sendJson(response, 200, organizations);
       return;
     }
     if (
@@ -1152,9 +1247,12 @@ async function startOAuthFixture(): Promise<OAuthFixture> {
           sendJson(response, 400, {error: "invalid_grant"});
           return;
         }
+        const requestedResource = body.get("resource");
         sendJson(response, 200, {
-          access_token: "oauth-access-one",
-          expires_in: 3_600,
+          access_token: requestedResource?.endsWith("/o/acme/api") === true
+            ? "oauth-access-acme"
+            : "oauth-access-one",
+          expires_in: 30,
           refresh_token: "oauth-refresh-one",
           scope: "artifactserver offline_access",
           token_type: "Bearer",
@@ -1177,15 +1275,18 @@ async function startOAuthFixture(): Promise<OAuthFixture> {
         return;
       }
     }
-    if (target.pathname === "/api/v1/session" && request.method === "GET") {
+    if (/^(?:\/o\/[a-z0-9-]+)?\/api\/v1\/session$/u.test(target.pathname) && request.method === "GET") {
       const authorization = request.headers.authorization;
       const bearer = authorization?.startsWith("Bearer ") === true
         ? authorization.slice("Bearer ".length)
         : null;
+      const slug = /^\/o\/([^/]+)\//u.exec(target.pathname)?.[1];
       observations.lastSessionBearer = bearer;
       observations.sessionCount += 1;
-      const accepted = bearer === "oauth-access-two"
-        || (bearer === "oauth-access-one" && observations.sessionCount === 1);
+      const accepted = slug === "acme"
+        ? bearer === "oauth-access-acme"
+        : bearer === "oauth-access-two"
+          || bearer === "oauth-access-one";
       if (!accepted) {
         sendJson(response, 401, {error: {code: "AUTHENTICATION_REQUIRED"}});
         return;

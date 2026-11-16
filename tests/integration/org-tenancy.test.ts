@@ -56,6 +56,7 @@ import type {GitHistoryProviderHealthProbe} from
 import {RecordingGitHistoryProvider} from "../support/git-history-provider.js";
 import {isLiveContentToken, liveContentToken} from
   "../../src/application/linked-artifacts.js";
+import {AuthenticationRequired} from "../../src/core/errors.js";
 import type {ExternalMcpBearerVerifier} from
   "../../src/application/authentication.js";
 import type {
@@ -468,7 +469,9 @@ describe.sequential("organization tenancy security boundary", () => {
       forApplicationResources: () => testMcpVerifier,
       forOrganization: () => testMcpVerifier,
       verify: (credential) => {
-        const staffMailbox = Redacted.value(credential) === "tenant-staff-mailbox-token";
+        const token = Redacted.value(credential);
+        if (token === "invalid") return Effect.fail(new AuthenticationRequired({message: "Invalid test bearer."}));
+        const staffMailbox = token === "tenant-staff-mailbox-token";
         return Effect.succeed({
           clientId: staffMailbox ? "tenant-staff-mailbox" : "orgvex-service",
           expiresAt: Math.floor(Date.now() / 1_000) + 60,
@@ -517,6 +520,7 @@ describe.sequential("organization tenancy security boundary", () => {
       gitHistoryHealthProbe: orgTenancyGitHistoryProbe,
       gitHistoryProvider: orgTenancyGitProvider,
       externalMcpOAuthVerifier: testMcpVerifier,
+      externalApiOAuthVerifier: testMcpVerifier,
       mcpOAuthResource: {
         authorizationServerMetadata: {
           authorization_endpoint: `${oidc.issuer}/authorize`,
@@ -665,6 +669,16 @@ describe.sequential("organization tenancy security boundary", () => {
       {displayName: "Org B", role: "viewer", slug: orgB.slug},
       {displayName: "Unregistered", role: "owner", slug: "not-a-member"},
     ];
+    const bearerOrgs = await fetch(`${baseUrl}/api/v1/platform/me/orgs`, {
+      headers: {Authorization: "Bearer tenant-staff-mailbox-token"},
+    });
+    expect(bearerOrgs.status).toBe(200);
+    expect(await bearerOrgs.json()).toEqual([{displayName: "Org B", role: "viewer", slug: orgB.slug}]);
+    const bearerMissing = await fetch(`${baseUrl}/api/v1/platform/me/orgs`, {
+      headers: {Authorization: "Bearer invalid"},
+    });
+    expect(bearerMissing.status).toBe(401);
+    expect(bearerMissing.headers.get("www-authenticate")).toContain("resource_metadata=");
     const memberOrgs = await fetch(`${baseUrl}/api/v1/platform/me/orgs`, {headers: {Cookie: cookie}});
     expect(await memberOrgs.json()).toEqual([{displayName: "Org B", role: "viewer", slug: orgB.slug}]);
     const memberLanding = await fetch(`${baseUrl}/`, {headers: {Cookie: cookie}, redirect: "manual"});

@@ -15,6 +15,7 @@ import {
   type Principal,
 } from "../core/identity.js";
 import {artifactServerRouteUrl} from "../core/server-address.js";
+import {resolveCliApiBasePath} from "./cli-api-discovery.js";
 
 const oauthClientInformationSchema = z.object({
   client_id: z.string().min(1),
@@ -134,6 +135,7 @@ export type StoredCliCredential =
 
 /** Verified account information returned by one exact Artifact Server. */
 export interface VerifiedCliAccount {
+  readonly apiBasePath: string;
   readonly principal: Principal;
 }
 
@@ -231,29 +233,36 @@ export const verifyCliCredential = Effect.fn("CliAuthentication.verifyCredential
   function*(
     origin: string,
     bearer: Redacted.Redacted,
+    initialApiBasePath = "",
   ): Effect.fn.Return<
     VerifiedCliAccount,
     CliAuthenticationError,
     HttpClient.HttpClient
   > {
-    const request = HttpClientRequest.get(
-      artifactServerRouteUrl("/api/v1/session", origin),
-    ).pipe(HttpClientRequest.bearerToken(bearer));
+    const apiBasePath = yield* Effect.tryPromise({
+      try: () => resolveCliApiBasePath(origin, initialApiBasePath),
+      catch: (cause) => new CliAuthenticationError({
+        message: cause instanceof Error ? cause.message : `API base discovery at ${origin} failed.`,
+        reason: "server_unavailable",
+      }),
+    });
+    const sessionUrl = artifactServerRouteUrl("/api/v1/session", `${new URL(origin).origin}${apiBasePath}`);
+    const request = HttpClientRequest.get(sessionUrl).pipe(HttpClientRequest.bearerToken(bearer));
     const response = yield* HttpClient.execute(request).pipe(
       Effect.mapError(() => new CliAuthenticationError({
-        message: `Artifact Server at ${origin} could not be reached.`,
+        message: `Artifact Server at ${sessionUrl} could not be reached (HTTP status unavailable).`,
         reason: "server_unavailable",
       })),
     );
     if (response.status === 401 || response.status === 403) {
       return yield* new CliAuthenticationError({
-        message: "The saved Artifact Server credential is invalid or no longer active.",
+        message: `The saved Artifact Server credential is invalid or no longer active (HTTP ${response.status} at ${sessionUrl}).`,
         reason: "credential_revoked",
       });
     }
     if (response.status < 200 || response.status >= 300) {
       return yield* new CliAuthenticationError({
-        message: `Artifact Server rejected credential inspection with HTTP ${response.status}.`,
+        message: `Artifact Server credential inspection at ${sessionUrl} returned HTTP ${response.status}.`,
         reason: "server_unavailable",
       });
     }
@@ -265,7 +274,7 @@ export const verifyCliCredential = Effect.fn("CliAuthentication.verifyCredential
         reason: "invalid_metadata",
       })),
     );
-    return {principal: decoded.principal};
+    return {apiBasePath, principal: decoded.principal};
   },
 );
 
