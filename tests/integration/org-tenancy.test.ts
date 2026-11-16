@@ -1010,9 +1010,11 @@ describe.sequential("organization tenancy security boundary", () => {
         const callbackLocation = authorization.headers.get("location");
         if (callbackLocation === null) throw new Error("OIDC did not redirect to its callback.");
         const callbackUrl = new URL(callbackLocation);
+        const callbackHeaders = new Headers({Cookie: cookie.split(";", 1)[0] ?? ""});
+        if (accept !== undefined) callbackHeaders.set("Accept", accept);
         return admissionRuntime.app.fetch(new Request(
           `https://artifacts.example.com/auth/callback${callbackUrl.search}`,
-          {headers: {Cookie: cookie.split(";", 1)[0] ?? "", ...(accept === undefined ? {} : {Accept: accept})}},
+          {headers: callbackHeaders},
         ));
       };
       const foreignRoot = await loginWithGroups(["/orvex/admin"], "foreign-root-user");
