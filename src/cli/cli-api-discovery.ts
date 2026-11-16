@@ -40,6 +40,16 @@ export async function discoverCliApi(
   const challenge = response.headers.get("www-authenticate") ?? "";
   await response.body?.cancel();
   const metadataUrl = resourceMetadataUrl(challenge, origin, response.url);
+  if (
+    (metadataUrl.protocol !== "https:" && !isLoopbackHttpUrl(metadataUrl))
+    || metadataUrl.origin !== origin
+    || metadataUrl.username !== ""
+    || metadataUrl.password !== ""
+  ) {
+    throw new Error(
+      `Authentication challenge at ${response.url} advertised an unsafe resource_metadata URL ${metadataUrl.toString()}; it must use HTTPS (or HTTP for a loopback profile) on ${origin}.`,
+    );
+  }
   const metadataResponse = await fetch(metadataUrl, {
     headers: {Accept: "application/json"},
     redirect: "error",
@@ -116,4 +126,9 @@ function resourceMetadataUrl(challenge: string, origin: string, responseUrl: str
     throw new Error(`Authentication challenge at ${responseUrl} omitted resource_metadata.`);
   }
   return new URL(value, origin);
+}
+
+function isLoopbackHttpUrl(url: URL): boolean {
+  return url.protocol === "http:"
+    && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
 }

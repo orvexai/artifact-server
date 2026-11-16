@@ -22,6 +22,26 @@ export interface McpCliProfileConnection {
   readonly token: () => Promise<string>;
 }
 
+/** Safe address fields for the selected remote profile, whether or not its credential verifies. */
+export async function readDefaultMcpCliProfileAddress(
+  profileDirectory: string,
+): Promise<{readonly apiBasePath: string; readonly origin: string} | null> {
+  let state: CliProfileState;
+  try {
+    state = await Effect.runPromise(readCliProfileState(profileDirectory));
+  } catch (cause) {
+    if (cause instanceof CliProfileError) return null;
+    throw cause;
+  }
+  if (state.defaultProfileId === null) return null;
+  const profile = state.profiles.find(({id}) => id === state.defaultProfileId);
+  if (profile === undefined) return null;
+  return {
+    apiBasePath: profile.apiBasePath ?? new URL(profile.origin).pathname.replace(/\/$/u, ""),
+    origin: profile.origin,
+  };
+}
+
 /**
  * Resolve the default CLI profile for MCP, or return null when it is absent or
  * cannot authenticate. The short shared cache coalesces auth lookups from many
