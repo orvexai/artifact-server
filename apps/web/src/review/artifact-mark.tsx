@@ -5,12 +5,14 @@ export function ArtifactMark({className}: {readonly className?: string}) {
       aria-hidden="true"
       className={className}
       fill="none"
-      viewBox="0 0 16 16"
+      viewBox="0 0 48 48"
     >
-      <rect height="14" rx="4" stroke="currentColor" strokeWidth="2" width="14" x="1" y="1" />
-      <circle cx="8" cy="8" r="4.5" stroke="currentColor" strokeWidth="1" />
-      <circle cx="8" cy="8" r="1" fill="currentColor" />
-      <circle cx="4.818" cy="11.182" r="1.8" fill="#0891b2" />
+      <rect height="41.2" rx="9.6" stroke="currentColor" strokeWidth="6.8" width="41.2" x="3.4" y="3.4" />
+      <circle cx="24" cy="24" r="13" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="24" cy="24" r="7" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M24 24 33.192 14.808" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+      <circle cx="24" cy="24" r="1.2" fill="currentColor" />
+      <circle cx="14.808" cy="33.192" r="3" fill="#0891b2" />
     </svg>
   );
 }

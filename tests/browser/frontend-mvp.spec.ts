@@ -46,7 +46,7 @@ test.describe("Houston Artifacts frontend MVP", () => {
     try {
       await localLogin(fixture);
       await expect(fixture.page).toHaveTitle("Houston Artifacts");
-      const tenantReview = new URL("/o/example-org/review", fixture.server.baseUrl);
+      const tenantReview = new URL("/o/orvex/review", fixture.server.baseUrl);
       const hrefs = await fixture.page.locator(
         'link[rel~="icon"], link[rel="apple-touch-icon"], link[rel="manifest"]',
       ).evaluateAll((links) => links.map((link) => link.getAttribute("href")));
@@ -58,7 +58,7 @@ test.describe("Houston Artifacts frontend MVP", () => {
       ]);
       for (const href of hrefs) {
         expect(href).not.toBeNull();
-        expect(new URL(href!, tenantReview).pathname).toMatch(/^\/o\/example-org\//u);
+        expect(new URL(href!, tenantReview).pathname).toMatch(/^\/o\/orvex\//u);
       }
 
       const manifest = JSON.parse(await readFile(
@@ -76,7 +76,38 @@ test.describe("Houston Artifacts frontend MVP", () => {
       const tenantManifest = new URL("./site.webmanifest", tenantReview);
       for (const icon of manifest.icons) {
         expect(new URL(icon.src, tenantManifest).pathname)
-          .toMatch(/^\/o\/example-org\//u);
+          .toMatch(/^\/o\/orvex\//u);
+      }
+
+      const brandingAssets = [
+        ["favicon.svg", "image/svg+xml"],
+        ["favicon.ico", "image/vnd.microsoft.icon"],
+        ["apple-touch-icon-180.png", "image/png"],
+        ["site.webmanifest", "application/manifest+json"],
+        ["icon-192.png", "image/png"],
+        ["icon-512.png", "image/png"],
+        ["maskable-512.png", "image/png"],
+      ] as const;
+      for (const [assetPath, contentType] of brandingAssets) {
+        const rootResponse = await fixture.page.request.get(
+          new URL(`/${assetPath}`, fixture.server.baseUrl).toString(),
+        );
+        expect(rootResponse.status(), `root /${assetPath}`).toBe(200);
+        expect(rootResponse.headers()["content-type"], `root /${assetPath}`)
+          .toContain(contentType);
+
+        const tenantUrl = new URL(`./${assetPath}`, tenantReview);
+        expect(tenantUrl.pathname).toBe(`/o/orvex/${assetPath}`);
+        // The organization ingress removes /o/orvex before forwarding to its
+        // app instance; verify the tenant URL's routed asset response as well.
+        const routedTenantUrl = new URL(
+          tenantUrl.pathname.slice("/o/orvex".length),
+          fixture.server.baseUrl,
+        );
+        const tenantResponse = await fixture.page.request.get(routedTenantUrl.toString());
+        expect(tenantResponse.status(), `tenant ${tenantUrl.pathname}`).toBe(200);
+        expect(tenantResponse.headers()["content-type"], `tenant ${tenantUrl.pathname}`)
+          .toContain(contentType);
       }
     } finally {
       await stopBrowserFixture(fixture);

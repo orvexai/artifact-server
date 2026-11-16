@@ -945,6 +945,21 @@ export function createHttpApp(
       "static-asset",
     ));
 
+  // Public branding assets have fixed routes because the web asset store only
+  // exposes the compiled /assets tree through its parameterized route.
+  for (const assetPath of [
+    "/favicon.svg",
+    "/favicon.ico",
+    "/apple-touch-icon-180.png",
+    "/site.webmanifest",
+    "/icon-192.png",
+    "/icon-512.png",
+    "/maskable-512.png",
+  ] as const) {
+    app.on(["GET", "HEAD"], assetPath, (context) =>
+      serveWebAsset(context, dependencies, assetPath, "static-asset"));
+  }
+
   app.on(
     ["GET", "HEAD"],
     "/review-frame",
