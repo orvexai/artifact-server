@@ -29,7 +29,7 @@ describe("organization application base paths", () => {
     await mkdir(path.join(webAssetsRoot, "assets"), {recursive: true});
     await writeFile(
       path.join(webAssetsRoot, "review-frame.html"),
-      '<!doctype html><html><head><script type="module" src="/assets/review-frame.js"></script><link rel="stylesheet" href="/assets/review-frame.css"></head></html>',
+      '<!doctype html><html><head><script type="module" src="/assets/review-frame.js"></script><link rel="stylesheet" href="/assets/review-frame.css"><link rel="icon" href="/favicon.svg"><link rel="preload" href="/o/org-b/assets/already-prefixed.js"></head></html>',
     );
     const server = await startTestServer(installation, {
       applicationOrigin: "https://artifacts.example.test/o/org-b",
@@ -44,6 +44,8 @@ describe("organization application base paths", () => {
       expect(response.status).toBe(200);
       expect(html).toContain('src="/o/org-b/assets/review-frame.js"');
       expect(html).toContain('href="/o/org-b/assets/review-frame.css"');
+      expect(html).toContain('href="/o/org-b/favicon.svg"');
+      expect(html).toContain('href="/o/org-b/assets/already-prefixed.js"');
       expect(response.headers.get("etag")).toBeNull();
     } finally {
       await server.stop();

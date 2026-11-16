@@ -5684,9 +5684,7 @@ async function serveWebAsset(
   if ((kind === "application-shell" || kind === "review-frame") && body !== null) {
     const suffix = dependencies.organizationCookieSuffix ?? "";
     const html = await new Response(body).text();
-    let rewrittenHtml = html
-      .replaceAll('src="/assets/', `src="${basePath}/assets/`)
-      .replaceAll('href="/assets/', `href="${basePath}/assets/`);
+    let rewrittenHtml = rewriteOrganizationRootRelativeReferences(html, basePath);
     if (kind === "application-shell") {
       rewrittenHtml = rewrittenHtml.replace(
         "</head>",
@@ -5703,6 +5701,19 @@ async function serveWebAsset(
     headers,
     status: 200,
   });
+}
+
+function rewriteOrganizationRootRelativeReferences(html: string, basePath: string): string {
+  if (basePath === "") return html;
+  return html.replace(
+    /(^|\s)(src|href)=(['"])(\/[^'"]*)\3/giu,
+    (_match, whitespace: string, attribute: string, quote: string, value: string) => {
+      if (value.startsWith("//") || value === basePath || value.startsWith(`${basePath}/`)) {
+        return `${whitespace}${attribute}=${quote}${value}${quote}`;
+      }
+      return `${whitespace}${attribute}=${quote}${basePath}${value}${quote}`;
+    },
+  );
 }
 
 function copyAssetHeader(
