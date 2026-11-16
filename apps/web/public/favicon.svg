@@ -1,13 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" fill="#4a25d9" />
-  <g
-    fill="none"
-    stroke="#fff"
-    stroke-linejoin="round"
-    stroke-width="2"
-  >
-    <circle cx="16" cy="9" r="4" />
-    <rect x="6" y="18" width="9" height="8" rx="2" />
-    <path d="M21 17.5 27 26H17z" />
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16.0000 16.0000" width="16" height="16" role="img" aria-label="Houston favicon, micro cut"><style>:root{--ink:#0f172a;--accent:#0891b2}@media(prefers-color-scheme:dark){:root{--ink:#f1f5f9;--accent:#23b5d1}}</style><rect x="1" y="1" width="14" height="14" rx="4" fill="none" stroke="var(--ink)" stroke-width="2"/><circle cx="8" cy="8" r="4.5" fill="none" stroke="var(--ink)" stroke-width="1"/><circle cx="8" cy="8" r="1" fill="var(--ink)"/><circle cx="4.818" cy="11.182" r="1.8" fill="var(--accent)"/></svg>

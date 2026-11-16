@@ -23,7 +23,7 @@ const page = await context.newPage();
 try {
   await mkdir(outputDirectory, {recursive: true});
   await page.goto(server.baseUrl);
-  await page.getByRole("link", {name: "Artifact Server"}).waitFor();
+  await page.getByRole("link", {name: "Houston Artifacts"}).waitFor();
 
   await page.goto(`${server.baseUrl}/review/settings/projects`);
   await page.getByRole("heading", {name: "Projects"}).waitFor();

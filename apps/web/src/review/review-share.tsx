@@ -340,7 +340,7 @@ export function ReviewShareControl({
                     strokeWidth={1.8}
                   />
                   <p>
-                    People with access to this Artifact Server can review this exact version.
+                    People with access to Houston Artifacts can review this exact version.
                     {publicArtifact ? " The latest raw artifact is public." : ""}
                   </p>
                   <button
@@ -431,7 +431,7 @@ export function ReviewShareControl({
               </div>
             ) : screen === "agents" ? (
               <div className="as-share-agent-setup">
-                <p>Choose the connection that matches where Artifact Server is running.</p>
+                <p>Choose the connection that matches where Houston Artifacts is running.</p>
 
                 <section>
                   <header>
@@ -692,7 +692,7 @@ function buildAgentReviewPrompt(
   apiUrl.searchParams.set("projectId", details.artifact.projectId);
   const manifestResource = `artifact://projects/${details.artifact.projectId}/artifacts/${details.artifact.id}/versions/${selectedVersion.version.id}/manifest`;
 
-  return `Review this Artifact Server artifact. Inspect the exact saved version below and do not silently substitute a newer version.
+  return `Review this artifact in Houston Artifacts. Inspect the exact saved version below and do not silently substitute a newer version.
 
 Artifact: ${details.artifact.name}
 Project ID: ${details.artifact.projectId}

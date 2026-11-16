@@ -40,8 +40,50 @@ const reviewWebpBase64 = "UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v
 const reviewGifBase64 = "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
 const reviewWebmBase64 = "GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAK0EU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggElTbuMU6uEHFO7a1OsggKe7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjIuMTIuMTAxV0GNTGF2ZjYyLjEyLjEwMUSJiEB5AAAAAAAAFlSua8iuAQAAAAAAAD/XgQFzxYj918nP8i2d+ZyBACK1nIN1bmSIgQCGhVZfVlA5g4EBI+ODhAJiWgDgkLCBILqBGJqBAlWwhFW5gQESVMNnQIBzc6BjwIBnyJpFo4dFTkNPREVSRIeNTGF2ZjYyLjEyLjEwMXNz2mPAi2PFiP3Xyc/yLZ35Z8ilRaOHRU5DT0RFUkSHmExhdmM2Mi4yOC4xMDEgbGlidnB4LXZwOWfIoUWjiERVUkFUSU9ORIeTMDA6MDA6MDAuNDAwMDAwMDAwAB9DtnVA7eeBAKOrgQAAgIJJg0IAAfABdgA4JBwYSgAAMGAAABDf//Xtp/////2Ecf//+rwAAKOTgQAoAIYAQJKcAFAAAAMgAABDQKOTgQBQAIYAQJKcAE7gAAMgAABDQKOTgQB4AIYAQJKcAFAAAAMgAABDQKOTgQCgAIYAQJKcAE1AAAMgAABDQKOTgQDIAIYAQJKcAFAAAAMgAABDQKOTgQDwAIYAQJKcAE7gAAMgAABDQKOTgQEYAIYAQJKcAFAAAAMgAABDQKOTgQFAAIYAQJKcAEogAAMgAABDQKOTgQFoAIYAQJKcAFAAAAMgAABDQBxTu2uRu4+zgQC3iveBAfGCAavwgQM=";
 
-test.describe("Artifact Server frontend MVP", () => {
-  test("CMT-015-B CMT-015-F: the Artifact Server review application navigates projects and artifacts", async ({browser}) => {
+test.describe("Houston Artifacts frontend MVP", () => {
+  test("branding assets stay inside the organization mount", async ({browser}) => {
+    const fixture = await startBrowserFixture(browser);
+    try {
+      await localLogin(fixture);
+      await expect(fixture.page).toHaveTitle("Houston Artifacts");
+      const tenantReview = new URL("/o/example-org/review", fixture.server.baseUrl);
+      const hrefs = await fixture.page.locator(
+        'link[rel~="icon"], link[rel="apple-touch-icon"], link[rel="manifest"]',
+      ).evaluateAll((links) => links.map((link) => link.getAttribute("href")));
+      expect(hrefs).toEqual([
+        "./favicon.svg",
+        "./favicon.ico",
+        "./apple-touch-icon-180.png",
+        "./site.webmanifest",
+      ]);
+      for (const href of hrefs) {
+        expect(href).not.toBeNull();
+        expect(new URL(href!, tenantReview).pathname).toMatch(/^\/o\/example-org\//u);
+      }
+
+      const manifest = JSON.parse(await readFile(
+        new URL("../../apps/web/public/site.webmanifest", import.meta.url),
+        "utf8",
+      )) as {
+        readonly id: string;
+        readonly icons: readonly {readonly src: string}[];
+        readonly scope: string;
+        readonly start_url: string;
+      };
+      expect(manifest.id).toBe("./");
+      expect(manifest.scope).toBe("./");
+      expect(manifest.start_url).toBe("./review");
+      const tenantManifest = new URL("./site.webmanifest", tenantReview);
+      for (const icon of manifest.icons) {
+        expect(new URL(icon.src, tenantManifest).pathname)
+          .toMatch(/^\/o\/example-org\//u);
+      }
+    } finally {
+      await stopBrowserFixture(fixture);
+    }
+  });
+
+  test("CMT-015-B CMT-015-F: the Houston Artifacts review application navigates projects and artifacts", async ({browser}) => {
     const fixture = await startBrowserFixture(browser);
     try {
       const first = await publishNew(fixture.server, fixture.installation, {
@@ -646,9 +688,9 @@ test.describe("Artifact Server frontend MVP", () => {
       await review.evaluate((node, identity) => {
         if (node instanceof HTMLElement) node.dataset["documentIdentity"] = identity;
       }, documentIdentity);
-      const reviewHomeLink = fixture.page.getByRole("link", {name: "Artifact Server"});
+      const reviewHomeLink = fixture.page.getByRole("link", {name: "Houston Artifacts"});
       await reviewHomeLink.click();
-      const homeOverlay = fixture.page.getByRole("dialog", {name: "Artifact Server home"});
+      const homeOverlay = fixture.page.getByRole("dialog", {name: "Houston Artifacts home"});
       await expect(homeOverlay).toBeVisible();
       const homeAnimation = homeOverlay.locator(".as-home-overlay__animation");
       await expect(homeAnimation).toBeVisible();
@@ -680,7 +722,7 @@ test.describe("Artifact Server frontend MVP", () => {
       await expect(reviewHomeLink).toBeFocused();
 
       await reviewHomeLink.click();
-      await fixture.page.getByRole("button", {name: "Close Artifact Server home"}).click();
+      await fixture.page.getByRole("button", {name: "Close Houston Artifacts home"}).click();
       await expect(homeOverlay).toHaveCount(0);
       expect(new URL(fixture.page.url()).pathname).toBe("/review");
       expect(new URL(fixture.page.url()).searchParams.get("artifact")).not.toBeNull();
@@ -688,7 +730,7 @@ test.describe("Artifact Server frontend MVP", () => {
       expect(await review.evaluate((node) =>
         node instanceof HTMLElement ? node.dataset["documentIdentity"] : undefined
       )).toBe(documentIdentity);
-      await expect(fixture.page.getByRole("link", {name: "Artifact Server"}))
+      await expect(fixture.page.getByRole("link", {name: "Houston Artifacts"}))
         .toBeVisible();
       await expect(
         fixture.page.getByRole("heading", {exact: true, name: "Review fixture"}),
@@ -721,8 +763,8 @@ test.describe("Artifact Server frontend MVP", () => {
       await expect(fixture.page.locator(".as-focus-controls-dock"))
         .toHaveAttribute("data-collapsed", "false");
       await fixture.page.getByRole("button", {name: "Exit full screen"}).click();
-      await fixture.page.getByRole("link", {name: "Artifact Server"}).click();
-      const reducedHomeOverlay = fixture.page.getByRole("dialog", {name: "Artifact Server home"});
+      await fixture.page.getByRole("link", {name: "Houston Artifacts"}).click();
+      const reducedHomeOverlay = fixture.page.getByRole("dialog", {name: "Houston Artifacts home"});
       await expect(reducedHomeOverlay).toBeVisible();
       await expect(reducedHomeOverlay.locator(".as-home-overlay__animation"))
         .toHaveCSS("animation-name", "none");
@@ -770,7 +812,7 @@ test.describe("Artifact Server frontend MVP", () => {
       );
       const backToReview = fixture.page.getByRole("link", {name: "Back to review"});
       await expect(backToReview).toHaveAttribute("href", canonicalReviewUrl);
-      await expect(fixture.page.getByRole("link", {name: "Artifact Server"}))
+      await expect(fixture.page.getByRole("link", {name: "Houston Artifacts"}))
         .toHaveAttribute("href", canonicalReviewUrl);
 
       await backToReview.click();
@@ -1120,7 +1162,7 @@ test.describe("Artifact Server frontend MVP", () => {
       await expect(share.getByText(exactReviewLink.toString(), {exact: true})).toBeVisible();
       await expect(share.getByText(published.body.links.artifact, {exact: true})).toBeVisible();
       await expect(share.getByText(
-        "People with access to this Artifact Server can review this exact version.",
+        "People with access to Houston Artifacts can review this exact version.",
         {exact: true},
       )).toBeVisible();
       await expect(share.getByText(published.body.links.version, {exact: true})).toBeVisible();
@@ -1213,7 +1255,7 @@ test.describe("Artifact Server frontend MVP", () => {
     }
   });
 
-  test("PRV-001-B PRV-001-F PRV-002-B PRV-002-F PRV-004-B PRV-004-F PRV-005-B PRV-005-F: Artifact Server selects and settles exact image and video previews", async ({browser}) => {
+  test("PRV-001-B PRV-001-F PRV-002-B PRV-002-F PRV-004-B PRV-004-F PRV-005-B PRV-005-F: Houston Artifacts selects and settles exact image and video previews", async ({browser}) => {
     const fixture = await startBrowserFixture(browser);
     try {
       const media = await publishReviewMediaFixture(fixture);
@@ -1648,7 +1690,7 @@ test.describe("Artifact Server frontend MVP", () => {
       await defaultProjectRow.getByRole("link", {name: "Settings"}).click();
       await expect(fixture.page.getByRole("heading", {name: "Project identity"})).toBeVisible();
       await expect(fixture.page.getByRole("heading", {name: "Git history"})).toHaveCount(0);
-      await expect(fixture.page.getByRole("link", {name: "Artifact Server"})).toContainText("Settings");
+      await expect(fixture.page.getByRole("link", {name: "Houston Artifacts"})).toContainText("Settings");
       const settingsHeaderBox = await fixture.page.locator(".as-settings__header-inner").boundingBox();
       const settingsMarkBox = await fixture.page.locator(".as-settings__brand-mark").boundingBox();
       expect(settingsHeaderBox?.height).toBeLessThanOrEqual(48);
@@ -1716,12 +1758,12 @@ test.describe("Artifact Server frontend MVP", () => {
         });
       });
       await localLogin(fixture, false);
-      await expect(fixture.page.getByRole("heading", {name: "Artifact Server unavailable"})).toBeVisible();
+      await expect(fixture.page.getByRole("heading", {name: "Houston Artifacts unavailable"})).toBeVisible();
       await expect(fixture.page.getByRole("heading", {name: "No projects"})).toHaveCount(0);
 
       await fixture.page.unroute("**/api/v1/projects");
       await fixture.page.getByRole("button", {name: "Try again"}).click();
-      await expect(fixture.page.getByRole("link", {name: "Artifact Server"})).toBeVisible();
+      await expect(fixture.page.getByRole("link", {name: "Houston Artifacts"})).toBeVisible();
 
       await fixture.page.goto(`${fixture.server.baseUrl}/review/settings/api-keys`);
       await fixture.page.getByRole("button", {name: "Issue API key"}).click();

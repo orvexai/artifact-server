@@ -35,7 +35,7 @@ setSkillCatalogTransport(() => Promise.resolve([]));
 const rootElement = document.querySelector("#review-root");
 
 if (!(rootElement instanceof HTMLElement)) {
-  throw new Error("Artifact Server could not find its review root element.");
+  throw new Error("Houston Artifacts could not find its review root element.");
 }
 
 createRoot(rootElement).render(

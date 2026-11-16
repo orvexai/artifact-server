@@ -1,19 +1,16 @@
-/** Artifact Server's three-shape product mark. */
+/** Houston's radar-scope mark, using the micro cut below 24px. */
 export function ArtifactMark({className}: {readonly className?: string}) {
   return (
     <svg
       aria-hidden="true"
       className={className}
       fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="1.7"
-      viewBox="0 0 24 24"
+      viewBox="0 0 16 16"
     >
-      <circle cx="12.125" cy="5.5" r="3.5" />
-      <rect height="7" rx="1.75" width="7" x="3.75" y="12" />
-      <path d="m17 11.75 4 7h-8Z" />
+      <rect height="14" rx="4" stroke="currentColor" strokeWidth="2" width="14" x="1" y="1" />
+      <circle cx="8" cy="8" r="4.5" stroke="currentColor" strokeWidth="1" />
+      <circle cx="8" cy="8" r="1" fill="currentColor" />
+      <circle cx="4.818" cy="11.182" r="1.8" fill="#0891b2" />
     </svg>
   );
 }
