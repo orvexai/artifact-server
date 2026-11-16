@@ -1,3 +1,7 @@
+import {mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import path from "node:path";
+
 import {describe, expect, test} from "vitest";
 
 import {applicationPathUrl, artifactReviewUrl} from
@@ -17,6 +21,35 @@ describe("organization application base paths", () => {
       .toBe("https://artifacts.example.com/o/org-b/api/v1/projects?cursor=next");
     expect(artifactReviewUrl(origin, "prj_1", "art_1", "ver_1"))
       .toContain("https://artifacts.example.com/o/org-b/review?");
+  });
+
+  test("rewrites review-frame module assets under the organization base path", async () => {
+    const installation = await createTestInstallation();
+    const webAssetsRoot = await mkdtemp(path.join(tmpdir(), "artifact-server-review-frame-"));
+    await mkdir(path.join(webAssetsRoot, "assets"), {recursive: true});
+    await writeFile(
+      path.join(webAssetsRoot, "review-frame.html"),
+      '<!doctype html><html><head><script type="module" src="/assets/review-frame.js"></script><link rel="stylesheet" href="/assets/review-frame.css"></head></html>',
+    );
+    const server = await startTestServer(installation, {
+      applicationOrigin: "https://artifacts.example.test/o/org-b",
+      webAssetsRoot,
+    });
+    try {
+      const response = await fetch(`${server.baseUrl}/review-frame`, {
+        headers: {"If-None-Match": "*"},
+      });
+      const html = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(html).toContain('src="/o/org-b/assets/review-frame.js"');
+      expect(html).toContain('href="/o/org-b/assets/review-frame.css"');
+      expect(response.headers.get("etag")).toBeNull();
+    } finally {
+      await server.stop();
+      await removeTestInstallation(installation);
+      await rm(webAssetsRoot, {force: true, recursive: true});
+    }
   });
 
   test.each([
