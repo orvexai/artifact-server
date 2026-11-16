@@ -13,7 +13,7 @@
   --muted-foreground: var(--ox-color-text-secondary);
   --accent: var(--ox-color-surface-2);
   --accent-foreground: var(--ox-color-text);
-  --destructive: oklch(0.577 0.245 27.325);
+  --destructive: oklch(0.42 0.14 27.325);
   --border: var(--ox-color-border);
   --input: var(--ox-color-border-strong);
   --ring: var(--ox-color-focus);
