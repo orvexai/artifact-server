@@ -70,10 +70,13 @@ import {createS3ObjectStorageProviderFactory} from
   "../../src/storage/s3-object-storage.js";
 import {PostgresDatabase} from "../../src/storage/postgres-database.js";
 import {PostgresIdentityRepository} from "../../src/storage/postgres-identity-repository.js";
+import {houstonServerPageStyles} from "../../src/shared/houston-server-pages.js";
 
 const region = "us-east-1";
 const applicationOrigin = "https://artifacts.example.com";
 const embedBindingSecret = "org-tenancy-test-embed-binding-secret-with-32-bytes-minimum";
+const chooserCsp = `default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; img-src 'self' data:; style-src 'self' 'sha256-${createHash("sha256").update(houstonServerPageStyles()).digest("base64")}'; font-src 'self'`;
+const signInUnavailableCsp = "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'; font-src 'self'";
 const orgTenancyGitProvider = new RecordingGitHistoryProvider();
 const orgTenancyGitHistory: NodeGitHistoryConfiguration = {
   _tag: "CloudflareArtifactsRest",
@@ -762,7 +765,10 @@ describe.sequential("organization tenancy security boundary", () => {
     );
     expect(multiTenantLanding.status).toBe(200);
     expect(multiTenantLanding.headers.get("content-type")).toContain("text/html");
-    expect(await multiTenantLanding.text()).toContain("Choose an organization");
+    expect(multiTenantLanding.headers.get("content-security-policy")).toBe(chooserCsp);
+    const multiTenantHtml = await multiTenantLanding.text();
+    expect(multiTenantHtml).toContain("Choose an organization");
+    expect(multiTenantHtml).toContain("Houston Artifacts");
 
     const staffLanding = await completePlatformLogin(
       ["/orvex/admin"],
@@ -779,9 +785,10 @@ describe.sequential("organization tenancy security boundary", () => {
     );
     expect(noTenantLanding.status).toBe(200);
     expect(noTenantLanding.headers.get("content-type")).toContain("text/html");
-    expect(noTenantLanding.headers.get("content-security-policy")).toContain("style-src");
+    expect(noTenantLanding.headers.get("content-security-policy")).toBe(chooserCsp);
     const noTenantHtml = await noTenantLanding.text();
     expect(noTenantHtml).toContain("No organization available");
+    expect(noTenantHtml).toContain("Houston Artifacts");
     expect(noTenantHtml).toContain("Sign out");
     const rowsAfterAllRootLogins = await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
@@ -982,7 +989,7 @@ describe.sequential("organization tenancy security boundary", () => {
       slug: orgB.slug,
     }, withoutGitHistory(config), database);
     try {
-      const loginWithGroups = async (groups: readonly string[], subject: string) => {
+      const loginWithGroups = async (groups: readonly string[], subject: string, accept?: string) => {
         oidc.claims.email = `${subject}@example.test`;
         oidc.claims.emailVerified = true;
         oidc.claims.groups = groups;
@@ -1003,9 +1010,11 @@ describe.sequential("organization tenancy security boundary", () => {
         const callbackLocation = authorization.headers.get("location");
         if (callbackLocation === null) throw new Error("OIDC did not redirect to its callback.");
         const callbackUrl = new URL(callbackLocation);
+        const callbackHeaders = new Headers({Cookie: cookie.split(";", 1)[0] ?? ""});
+        if (accept !== undefined) callbackHeaders.set("Accept", accept);
         return admissionRuntime.app.fetch(new Request(
           `https://artifacts.example.com/auth/callback${callbackUrl.search}`,
-          {headers: {Cookie: cookie.split(";", 1)[0] ?? ""}},
+          {headers: callbackHeaders},
         ));
       };
       const foreignRoot = await loginWithGroups(["/orvex/admin"], "foreign-root-user");
@@ -1013,6 +1022,12 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(foreignRoot.headers.getSetCookie().some((cookie) =>
         cookie.startsWith(`__Host-artifact_login-${orgB.routeId}=`) && /Max-Age=0/iu.test(cookie)
       )).toBe(true);
+      const foreignRootHtml = await loginWithGroups(["/orvex/admin"], "foreign-root-html-user", "text/html");
+      expect(foreignRootHtml.status).toBe(403);
+      expect(foreignRootHtml.headers.get("content-security-policy")).toBe(signInUnavailableCsp);
+      const foreignRootHtmlBody = await foreignRootHtml.text();
+      expect(foreignRootHtmlBody).toContain("Houston Artifacts");
+      expect(foreignRootHtmlBody).toContain(`/o/${orgB.slug}/assets/fonts/houston/inter-latin-wght-normal.woff2`);
       const siblingRoot = await loginWithGroups(["/teams/other/admins"], "sibling-root-user");
       expect(siblingRoot.status).toBe(403);
       const admitted = await loginWithGroups([`/teams/${orgB.slug}/admins`], "org-b-admin-user");
