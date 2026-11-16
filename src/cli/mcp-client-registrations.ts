@@ -324,19 +324,10 @@ function isAdoptableLoopbackEntry(
   command: ManagedCommand | null,
 ): command is Extract<ManagedCommand, {url: string}> {
   if (command === null || !("url" in command)) return false;
-  try {
-    const url = new URL(command.url);
-    return url.protocol === "http:"
-      && url.hostname === "127.0.0.1"
-      && url.port !== ""
-      && url.pathname === "/mcp"
-      && url.username === ""
-      && url.password === ""
-      && url.search === ""
-      && url.hash === "";
-  } catch {
-    return false;
-  }
+  const match = /^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})\/mcp$/u.exec(command.url);
+  if (match === null) return false;
+  const port = Number(match[1]);
+  return port <= 65_535;
 }
 
 async function planJsonChange(

@@ -8,6 +8,7 @@ import {
   readFile,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import {tmpdir} from "node:os";
@@ -78,6 +79,18 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
   test("stdio reuses one service and preserves modern discovery", async () => {
     const workspace = await temporaryWorkspace("artifact-server-mcp-stdio-");
     const dataDirectory = path.join(workspace, "data");
+    const isolatedHome = path.join(workspace, "home");
+    const isolatedPath = path.join(workspace, "bin");
+    await Promise.all([
+      mkdir(isolatedHome, {recursive: true}),
+      mkdir(isolatedPath, {recursive: true}),
+    ]);
+    await Promise.all([
+      symlink(process.execPath, path.join(isolatedPath, "node")),
+      symlink("/usr/bin/dirname", path.join(isolatedPath, "dirname")),
+      symlink("/usr/bin/sed", path.join(isolatedPath, "sed")),
+      symlink("/usr/bin/uname", path.join(isolatedPath, "uname")),
+    ]);
 
     const first = await connectStdio(dataDirectory);
     const firstTools = await first.client.listTools();
@@ -121,8 +134,18 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     )));
     expect(secondRecord.pid).toBe(serviceRecord.pid);
 
-    const doctor = await runCli(["doctor", "--data", dataDirectory]);
-    expect(doctor.exitCode).toBe(0);
+    // The doctor subprocess gets a private HOME and a PATH containing only Node,
+    // so it cannot inspect host Claude/Codex installs or the developer's config.
+    const doctorEnvironment = {
+      ...process.env,
+      HOME: isolatedHome,
+      PATH: isolatedPath,
+    };
+    const doctor = await runCli(
+      ["doctor", "--data", dataDirectory],
+      doctorEnvironment,
+    );
+    expect(doctor.exitCode, `${doctor.stdout}\n${doctor.stderr}`).toBe(0);
     expect(doctorSchema.parse(JSON.parse(doctor.stdout))).toMatchObject({
       discovery: {protocol: "streamable-http"},
       status: "healthy",
@@ -576,6 +599,29 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
       mcpServers: {"artifact-server": foreignEntry},
     });
+
+    const assertUnadoptableEntry = async (url: string): Promise<void> => {
+      const aliasEntry = {type: "http", url};
+      const configText = JSON.stringify({mcpServers: {"artifact-server": aliasEntry}});
+      await writeFile(configPath, configText);
+      await writeFile(path.join(workspace, "claude.connected"),
+        `${JSON.stringify({transport: "http", url})}\n`);
+      await expect(connectMcpClient(
+        "claude", dataDirectory, invocation, environment, "http://127.0.0.1:43127/mcp",
+      )).rejects.toThrow("unmanaged artifact-server entry");
+      expect(await readFile(configPath, "utf8")).toBe(configText);
+    };
+    const rejectedUrls = [
+      "http://127.1:43128/mcp",
+      "http://2130706433:43128/mcp",
+      "http://0x7f000001:43128/mcp",
+      "http://localhost:43128/mcp",
+    ];
+    // Each case rewrites and inspects one user config, so preserve their order.
+    await rejectedUrls.reduce<Promise<void>>(
+      (previous, url) => previous.then(() => assertUnadoptableEntry(url)),
+      Promise.resolve(),
+    );
 
     const adoptedEntry = {type: "http", url: "http://127.0.0.1:43128/mcp"};
     await writeFile(configPath, JSON.stringify({
