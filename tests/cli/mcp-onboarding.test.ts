@@ -545,6 +545,120 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     expect(await readFile(vscodeConfig, "utf8")).toBe("{not valid JSONC");
   });
 
+  test("adopts only loopback HTTP entries and disconnect restores the adopted entry", async () => {
+    const workspace = await temporaryWorkspace("artifact-server-mcp-adopt-");
+    const dataDirectory = path.join(workspace, "data");
+    const binaryDirectory = path.join(workspace, "bin");
+    const home = path.join(workspace, "home");
+    await Promise.all([
+      mkdir(binaryDirectory, {recursive: true}),
+      mkdir(home, {recursive: true}),
+    ]);
+    await writeFakeClient(path.join(binaryDirectory, "claude"));
+    const configPath = path.join(home, ".claude.json");
+    const environment = {
+      ...process.env,
+      FAKE_CLIENT_STATE_DIRECTORY: workspace,
+      HOME: home,
+      PATH: [binaryDirectory, process.env["PATH"] ?? ""].join(path.delimiter),
+    };
+    const invocation: CliInvocation = {
+      command: "/opt/artifact-server/node",
+      prefixArguments: ["/opt/artifact-server/main.js"],
+    };
+    const foreignEntry = {type: "http", url: "https://elsewhere.example/mcp"};
+    await writeFile(configPath, JSON.stringify({mcpServers: {"artifact-server": foreignEntry}}));
+    await writeFile(path.join(workspace, "claude.connected"),
+      "{\"transport\":\"http\",\"url\":\"https://elsewhere.example/mcp\"}\n");
+    await expect(connectMcpClient(
+      "claude", dataDirectory, invocation, environment, "http://127.0.0.1:43127/mcp",
+    )).rejects.toThrow("unmanaged artifact-server entry");
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
+      mcpServers: {"artifact-server": foreignEntry},
+    });
+
+    const adoptedEntry = {type: "http", url: "http://127.0.0.1:43128/mcp"};
+    await writeFile(configPath, JSON.stringify({
+      mcpServers: {"artifact-server": adoptedEntry},
+    }));
+    await writeFile(path.join(workspace, "claude.connected"),
+      `{"transport":"http","url":"${adoptedEntry.url}"}\n`);
+    await connectMcpClient(
+      "claude", dataDirectory, invocation, environment, "http://127.0.0.1:43127/mcp",
+    );
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
+      mcpServers: {
+        "artifact-server": {type: "http", url: "http://127.0.0.1:43127/mcp"},
+      },
+    });
+    await expect(disconnectMcpClient("claude", dataDirectory, environment)).resolves.toBe(true);
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
+      mcpServers: {
+        "artifact-server": adoptedEntry,
+      },
+    });
+  }, testTimeoutMilliseconds);
+
+  test("doctor checks configured HTTP endpoints against the saved relay and TCP listener", async () => {
+    const workspace = await temporaryWorkspace("artifact-server-mcp-doctor-endpoint-");
+    const dataDirectory = path.join(workspace, "data");
+    const binaryDirectory = path.join(workspace, "bin");
+    const home = path.join(workspace, "home");
+    await Promise.all([
+      mkdir(dataDirectory, {recursive: true}),
+      mkdir(binaryDirectory, {recursive: true}),
+      mkdir(home, {recursive: true}),
+    ]);
+    await writeFakeClient(path.join(binaryDirectory, "claude"));
+    const relay = createServer((_request, response) => response.end("ok"));
+    relay.listen(0, "127.0.0.1");
+    await once(relay, "listening");
+    const port = z.object({port: z.number().int().positive()}).passthrough().parse(relay.address()).port;
+    const addressFile = path.join(dataDirectory, "mcp-http-relay.json");
+    await writeFile(addressFile, JSON.stringify({pid: process.pid, port, schemaVersion: 1}));
+    const endpoint = `http://127.0.0.1:${port}/mcp`;
+    const configPath = path.join(home, ".claude.json");
+    const statePath = path.join(workspace, "claude.connected");
+    const environment = {
+      ...process.env,
+      FAKE_CLIENT_STATE_DIRECTORY: workspace,
+      HOME: home,
+      PATH: [binaryDirectory, process.env["PATH"] ?? ""].join(path.delimiter),
+    };
+    await writeFile(path.join(dataDirectory, "mcp-registrations.json"), JSON.stringify({
+      registrations: [{client: "claude", configuredAt: new Date().toISOString(), transport: "http", url: endpoint}],
+      schemaVersion: 1,
+    }));
+    await writeFile(configPath, JSON.stringify({mcpServers: {
+      "artifact-server": {type: "http", url: "http://127.0.0.1:1/mcp"},
+    }}));
+    await writeFile(statePath, '{"transport":"http","url":"http://127.0.0.1:1/mcp"}\n');
+    try {
+      const mismatch = await runCli(["doctor", "claude", "--data", dataDirectory], environment);
+      expect(mismatch.exitCode).toBe(2);
+      expect(JSON.parse(mismatch.stdout)).toMatchObject({
+        clients: [{endpoint: "http://127.0.0.1:1/mcp", relayEndpointHealthy: false}],
+        remediation: ["artifactserver connect claude"],
+        status: "unhealthy",
+      });
+
+      await writeFile(configPath, JSON.stringify({mcpServers: {
+        "artifact-server": {type: "http", url: endpoint},
+      }}));
+      await writeFile(statePath, `${JSON.stringify({transport: "http", url: endpoint})}\n`);
+      await new Promise<void>((resolve, reject) => relay.close((error) => error ? reject(error) : resolve()));
+      const stopped = await runCli(["doctor", "claude", "--data", dataDirectory], environment);
+      expect(stopped.exitCode).toBe(2);
+      expect(JSON.parse(stopped.stdout)).toMatchObject({
+        clients: [{endpoint, relayEndpointHealthy: false}],
+        remediation: ["artifactserver connect claude"],
+        status: "unhealthy",
+      });
+    } finally {
+      if (relay.listening) await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  }, testTimeoutMilliseconds);
+
   test("ambiguous connect and doctor failures do not create or repair state", async () => {
     const workspace = await temporaryWorkspace("artifact-server-mcp-diagnostics-");
     const binaryDirectory = path.join(workspace, "bin");

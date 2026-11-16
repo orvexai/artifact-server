@@ -1,4 +1,6 @@
 import path from "node:path";
+import {connect as connectTcp} from "node:net";
+import {once} from "node:events";
 
 import {type Command, Option} from "commander";
 
@@ -161,8 +163,9 @@ function configureDoctorCommand(
       const requestedClient = clientName === undefined
         ? null
         : await runCliEffect(parseMcpClientId(clientName));
-      const [reachable, localService, profileResult, profileAddress, clients] = await Promise.all([
+      const [reachable, relayAddress, localService, profileResult, profileAddress, clients] = await Promise.all([
         relayIsHealthy(dataDirectory),
+        readLocalMcpHttpRelayAddress(localMcpHttpRelayAddressPath(dataDirectory)),
         inspectManagedLocalService(dataDirectory),
         resolveDefaultMcpCliProfile(dataDirectory).then(
           (profile) => ({error: null, profile}),
@@ -175,6 +178,24 @@ function configureDoctorCommand(
       const selectedClients = requestedClient === null
         ? clients
         : clients.filter((client) => client.client === requestedClient);
+      const expectedEndpoint = relayAddress === null
+        ? null
+        : `${localMcpHttpRelayOrigin(relayAddress.port)}/mcp`;
+      const reportedClients = selectedClients.map((client) => {
+        const relayEndpointHealthy = client.client !== "claude" && client.client !== "codex"
+          ? null
+          : client.installed
+            && expectedEndpoint !== null
+            && client.endpoint === expectedEndpoint
+            && reachable;
+        return {
+          client: client.client,
+          endpoint: client.endpoint,
+          installed: client.installed,
+          managed: client.managed,
+          relayEndpointHealthy,
+        };
+      });
       const isHttpClient = requestedClient === "claude" || requestedClient === "codex";
       const serviceReachable = requestedClient === null
         ? reachable || localService.reachable
@@ -186,18 +207,33 @@ function configureDoctorCommand(
         : {reason: isHttpClient || requestedClient === null
           ? "The local HTTP auth relay is not reachable."
           : "The local Artifact Server service is not reachable.", status: "unhealthy" as const};
-      const clientHealthy = requestedClient === null
-        || selectedClients.every((client) => client.installed && client.managed);
+      const clientHealthy = reportedClients.every((client) => {
+        if (!client.installed) return true;
+        if (client.client === "claude" || client.client === "codex") {
+          return client.managed && client.relayEndpointHealthy === true;
+        }
+        return requestedClient === null || client.managed;
+      });
       const healthy = serviceReachable
         && discovery.status === "healthy"
         && clientHealthy;
       console.log(JSON.stringify({
-        clients: selectedClients,
+        clients: reportedClients,
         dataDirectory,
         discovery,
         remediation: healthy
           ? (profile === null ? ["Run artifactserver auth login when remote MCP access is needed."] : [])
-          : [`artifactserver connect${requestedClient === null ? "" : ` ${requestedClient}`}`],
+          : [...new Set([
+            ...reportedClients
+              .filter((client) => client.relayEndpointHealthy === false)
+              .map((client) => `artifactserver connect ${client.client}`),
+            ...(serviceReachable ? [] : [
+              `artifactserver connect${requestedClient === null ? "" : ` ${requestedClient}`}`,
+            ]),
+            ...reportedClients
+              .filter((client) => client.installed && !client.managed)
+              .map((client) => `artifactserver connect ${client.client}`),
+          ])],
         service: {
           remoteProfile: profileAddress,
           profileError: profileResult.error ?? undefined,
@@ -259,12 +295,29 @@ async function relayIsHealthy(dataDirectory: string): Promise<boolean> {
   const address = await readLocalMcpHttpRelayAddress(localMcpHttpRelayAddressPath(dataDirectory));
   if (address === null) return false;
   try {
+    await tcpPortIsReachable(address.port);
     const response = await fetch(`${localMcpHttpRelayOrigin(address.port)}/health`, {
       signal: AbortSignal.timeout(750),
     });
     return response.ok;
   } catch {
     return false;
+  }
+}
+
+async function tcpPortIsReachable(port: number): Promise<void> {
+  const socket = connectTcp({host: "127.0.0.1", port});
+  try {
+    await Promise.race([
+      once(socket, "connect").then(() => undefined),
+      once(socket, "error").then(([error]) => Promise.reject(error)),
+      new Promise<never>((_resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("TCP connection timed out.")), 750);
+        socket.once("close", () => clearTimeout(timeout));
+      }),
+    ]);
+  } finally {
+    socket.destroy();
   }
 }
 
