@@ -1,10 +1,4 @@
 @import "../theme-tokens.css";
-@import "@fontsource/atkinson-hyperlegible-next/latin-400.css";
-@import "@fontsource/atkinson-hyperlegible-next/latin-500.css";
-@import "@fontsource/atkinson-hyperlegible-next/latin-600.css";
-@import "@fontsource/atkinson-hyperlegible-mono/latin-400.css";
-@import "@fontsource/atkinson-hyperlegible-mono/latin-500.css";
-
 :root {
   --as-focus-comments-width: min(22rem, calc(100vw - 3rem));
   --as-gap: 0.75rem;
@@ -18,14 +12,14 @@
   --as-subtle: var(--muted-foreground);
   --as-muted: var(--muted-foreground);
   --as-border: var(--border);
-  --as-iris: var(--sidebar-primary);
-  --as-iris-soft: color-mix(in oklab, var(--sidebar-primary) 12%, transparent);
-  --as-action: var(--primary);
-  --as-on-action: var(--primary-foreground);
+  --as-iris: var(--ox-color-accent-text);
+  --as-iris-soft: var(--ox-color-accent-soft);
+  --as-action: var(--ox-color-accent);
+  --as-on-action: var(--ox-color-on-accent);
   --as-love: var(--destructive);
   --as-gold: var(--chart-2);
-  color-scheme: dark;
-  font-family: "Atkinson Hyperlegible Next", ui-sans-serif, system-ui, sans-serif;
+  color-scheme: light dark;
+  font-family: var(--ox-font-body);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -427,7 +421,7 @@ select:focus-visible {
   background: var(--as-surface-raised);
   border: 1px solid var(--as-border);
   color: var(--as-subtle);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.68rem;
   line-height: 1;
   padding: 0.45rem 0.55rem;
@@ -660,7 +654,7 @@ select:focus-visible {
 
 .as-project-option__status {
   color: var(--as-subtle);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.65rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -706,7 +700,7 @@ select:focus-visible {
   border-radius: 0;
   color: var(--as-muted);
   color-scheme: inherit;
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.66rem;
   min-height: 1.85rem;
   padding: 0.28rem 0.45rem;
@@ -821,7 +815,7 @@ select:focus-visible {
 
 .as-catalog-filter-popover legend {
   color: var(--as-subtle);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.61rem;
   letter-spacing: 0.08em;
   padding: 0.1rem 0.15rem 0.35rem;
@@ -970,7 +964,7 @@ select:focus-visible {
 .as-search input {
   background: transparent;
   border: 0;
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.8rem;
   min-height: 2.15rem;
   min-width: 0;
@@ -1091,7 +1085,7 @@ select:focus-visible {
 .as-mono,
 .as-tabular,
 .as-file-list code {
-  font-family: "Atkinson Hyperlegible Mono", ui-monospace, monospace;
+  font-family: var(--ox-font-code);
 }
 
 .as-tabular,
@@ -1104,7 +1098,7 @@ select:focus-visible {
 .as-tag {
   border-radius: var(--as-radius);
   display: inline-flex;
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.64rem;
   line-height: 1;
   padding: 0.27rem 0.45rem;
@@ -1125,7 +1119,7 @@ select:focus-visible {
   align-items: center;
   color: var(--as-muted);
   display: flex;
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.72rem;
   min-height: var(--as-footer-height);
 }
@@ -1229,7 +1223,7 @@ select:focus-visible {
 
 .as-keyboard-shortcuts h3 {
   color: var(--as-subtle);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.6rem;
   font-weight: 500;
   letter-spacing: 0.08em;
@@ -1277,7 +1271,7 @@ select:focus-visible {
   box-shadow: 0 1px 0 color-mix(in oklab, var(--as-text) 10%, transparent);
   color: var(--as-text);
   display: inline-flex;
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.64rem;
   justify-content: center;
   min-height: 1.35rem;
@@ -1401,7 +1395,7 @@ select:focus-visible {
   background: var(--as-iris-soft);
   color: var(--as-iris);
   display: inline-flex;
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.6rem;
   justify-content: center;
   min-height: 1.1rem;
@@ -1522,7 +1516,7 @@ select:focus-visible {
 .as-focus-comments__header span {
   background: var(--as-iris-soft);
   color: var(--as-iris);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.6rem;
   min-width: 1.15rem;
   padding: 0.13rem 0.35rem;
@@ -1700,7 +1694,7 @@ select:focus-visible {
   background: color-mix(in oklab, var(--as-surface-raised) 60%, transparent);
   border: 1px solid var(--as-border);
   color: var(--as-subtle);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.68rem;
   min-width: 0;
   overflow: hidden;
@@ -1772,7 +1766,7 @@ select:focus-visible {
 
 .as-share-secondary__row code {
   color: var(--as-subtle);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.65rem;
   min-width: 0;
   overflow: hidden;
@@ -1940,7 +1934,7 @@ select:focus-visible {
 
 .as-share-agent-setup section > header span {
   color: var(--as-iris);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.64rem;
 }
 
@@ -1961,7 +1955,7 @@ select:focus-visible {
   background: color-mix(in oklab, var(--as-surface-raised) 60%, transparent);
   border: 1px solid var(--as-border);
   color: var(--as-text);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.68rem;
   min-width: 0;
   overflow: hidden;
@@ -2313,7 +2307,7 @@ select:focus-visible {
 .as-tab > span {
   background: var(--as-iris-soft);
   border-radius: var(--as-radius);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.62rem;
   min-width: 1.15rem;
   padding: 0.15rem 0.32rem;
@@ -2356,7 +2350,7 @@ select:focus-visible {
   background: var(--as-iris-soft);
   border-radius: var(--as-radius);
   color: var(--as-subtle);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.6rem;
   min-width: 1.15rem;
   padding: 0.13rem 0.35rem;
@@ -2453,7 +2447,7 @@ select:focus-visible {
   border: 1px solid var(--as-border);
   border-radius: var(--as-radius);
   color: var(--as-text);
-  font: 0.78rem/1.4 "Atkinson Hyperlegible Mono", monospace;
+  font: 0.78rem/1.4 var(--ox-font-code);
   min-height: 2.3rem;
   outline: none;
   padding: 0.4rem 0.55rem;
@@ -2705,7 +2699,7 @@ select:focus-visible {
 .as-comment-card > header span {
   background: var(--as-iris-soft);
   color: var(--as-iris);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.58rem;
   letter-spacing: 0.05em;
   padding: 0.15rem 0.35rem;
@@ -3061,7 +3055,7 @@ select:focus-visible {
 .as-version-list time,
 .as-version-list__state {
   color: var(--as-muted);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.65rem;
 }
 
@@ -3089,7 +3083,7 @@ select:focus-visible {
   border: 1px solid var(--as-border);
   border-radius: var(--as-radius);
   color: var(--as-text);
-  font: 0.75rem/1.4 "Atkinson Hyperlegible Mono", monospace;
+  font: 0.75rem/1.4 var(--ox-font-code);
   min-height: 2.25rem;
   padding: 0.4rem 0.55rem;
   width: 100%;
@@ -3163,7 +3157,7 @@ select:focus-visible {
 }
 
 .as-diff__stats span[data-kind] {
-  font: 600 0.7rem/1.2 "Atkinson Hyperlegible Mono", ui-monospace, monospace;
+  font: 600 0.7rem/1.2 var(--ox-font-code);
 }
 
 .as-diff__stats span[data-kind="added"] {
@@ -3178,7 +3172,7 @@ select:focus-visible {
   background: var(--as-canvas);
   border: 1px solid color-mix(in oklab, var(--as-border) 80%, transparent);
   border-radius: 0.375rem;
-  font: 0.68rem/1.55 "Atkinson Hyperlegible Mono", ui-monospace, monospace;
+  font: 0.68rem/1.55 var(--ox-font-code);
   overflow: hidden;
 }
 
@@ -3285,7 +3279,7 @@ select:focus-visible {
 
 .as-preview-welcome p {
   color: var(--as-iris);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.65rem;
   letter-spacing: 0.1em;
   margin: 1rem 0 0;
@@ -3372,7 +3366,7 @@ select:focus-visible {
 
 .as-media-preview__loading small {
   color: var(--as-subtle);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.68rem;
   max-width: 100%;
   overflow: hidden;
@@ -3439,7 +3433,7 @@ select:focus-visible {
 }
 
 .as-preview-state__details code {
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
 }
 
 .as-preview-state__actions {
@@ -3499,7 +3493,7 @@ select:focus-visible {
   border-radius: var(--as-radius);
   color: var(--as-on-action);
   display: flex;
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-weight: 600;
   height: 2.5rem;
   justify-content: center;
@@ -3508,7 +3502,7 @@ select:focus-visible {
 
 .as-gate p {
   color: var(--as-iris);
-  font-family: "Atkinson Hyperlegible Mono", monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.7rem;
   letter-spacing: 0.08em;
   margin: 1.25rem 0 0;
@@ -3702,7 +3696,7 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
 
 .as-settings__nav > p {
   color: var(--as-subtle);
-  font-family: "Atkinson Hyperlegible Mono", ui-monospace, monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.68rem;
   letter-spacing: 0.15em;
   margin: 0 0 0.55rem;
@@ -3808,7 +3802,7 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
 .as-public-links-table__url {
   color: var(--as-settings-accent);
   display: block;
-  font-family: "Atkinson Hyperlegible Mono", ui-monospace, monospace;
+  font-family: var(--ox-font-code);
   font-size: 0.72rem;
   line-height: 1.35;
   min-width: 0;
