@@ -12,6 +12,7 @@ const profileNameSchema = z.string().min(1).max(64).regex(profileNamePattern);
 const profileSchema = z.object({
   accountId: z.string().min(1).max(200),
   authentication: z.enum(["api_key", "oauth"]),
+  apiBasePath: z.string().regex(/^$|^\/o\/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u).optional(),
   createdAt: z.iso.datetime(),
   credentialId: z.string().uuid(),
   id: z.string().uuid(),
@@ -52,6 +53,7 @@ export type CliProfileState = z.infer<typeof profileStateSchema>;
 export interface SaveCliProfileInput {
   readonly accountId: string;
   readonly authentication: CliProfile["authentication"];
+  readonly apiBasePath?: string;
   readonly credentialId: string;
   readonly installationId: string;
   readonly name?: string;
@@ -122,6 +124,7 @@ export const saveCliProfile = Effect.fn("CliProfileStore.save")(
     const profile = profileSchema.parse({
       accountId: input.accountId,
       authentication: input.authentication,
+      apiBasePath: input.apiBasePath,
       createdAt: existing?.createdAt ?? now,
       credentialId: input.credentialId,
       id: existing?.id ?? randomUUID(),
@@ -147,12 +150,14 @@ export const markCliProfileVerified = Effect.fn("CliProfileStore.markVerified")(
   function*(
     dataDirectory: string,
     profileId: string,
+    apiBasePath?: string,
   ): Effect.fn.Return<CliProfile, CliProfileError> {
     const state = yield* readCliProfileState(dataDirectory);
     const current = state.profiles.find((profile) => profile.id === profileId);
     if (current === undefined) return yield* missingProfile();
     const profile: CliProfile = {
       ...current,
+      apiBasePath,
       lastVerifiedAt: new Date().toISOString(),
     };
     yield* writeCliProfileState(dataDirectory, {

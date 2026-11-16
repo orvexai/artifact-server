@@ -22,7 +22,10 @@ import {
   type McpClientId,
 } from "./mcp-client-registrations.js";
 import {ensureMcpHttpRelayService} from "./mcp-http-relay-service.js";
-import {resolveDefaultMcpCliProfile} from "./mcp-cli-profile.js";
+import {
+  readDefaultMcpCliProfileAddress,
+  resolveDefaultMcpCliProfile,
+} from "./mcp-cli-profile.js";
 
 
 interface DataOptions {
@@ -158,12 +161,17 @@ function configureDoctorCommand(
       const requestedClient = clientName === undefined
         ? null
         : await runCliEffect(parseMcpClientId(clientName));
-      const [reachable, localService, profile, clients] = await Promise.all([
+      const [reachable, localService, profileResult, profileAddress, clients] = await Promise.all([
         relayIsHealthy(dataDirectory),
         inspectManagedLocalService(dataDirectory),
-        resolveDefaultMcpCliProfile(dataDirectory).catch(() => null),
+        resolveDefaultMcpCliProfile(dataDirectory).then(
+          (profile) => ({error: null, profile}),
+          (cause) => ({error: cause instanceof Error ? cause.message : String(cause), profile: null}),
+        ),
+        readDefaultMcpCliProfileAddress(dataDirectory),
         inspectMcpClientRegistrations(dataDirectory),
       ]);
+      const profile = profileResult.profile;
       const selectedClients = requestedClient === null
         ? clients
         : clients.filter((client) => client.client === requestedClient);
@@ -191,7 +199,11 @@ function configureDoctorCommand(
           ? (profile === null ? ["Run artifactserver auth login when remote MCP access is needed."] : [])
           : [`artifactserver connect${requestedClient === null ? "" : ` ${requestedClient}`}`],
         service: {
-          authentication: profile === null ? "logged_out" : "authenticated",
+          remoteProfile: profileAddress,
+          profileError: profileResult.error ?? undefined,
+          authentication: profile === null
+            ? profileResult.error === null ? "logged_out" : "invalid"
+            : "authenticated",
           processAlive: isHttpClient || (requestedClient === null && reachable)
             ? reachable
             : localService.processAlive,

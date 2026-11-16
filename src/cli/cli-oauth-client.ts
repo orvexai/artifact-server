@@ -20,8 +20,8 @@ import {z} from "zod";
 
 import {
   artifactServerProtectedResourceMetadataUrl,
-  artifactServerRouteUrl,
 } from "../core/server-address.js";
+import {discoverCliApi} from "./cli-api-discovery.js";
 
 import {
   CliAuthenticationError,
@@ -58,6 +58,7 @@ const ignoreCallbackResult = (): void => undefined;
 
 /** Result of one successful browser OAuth login. */
 export interface CliOAuthLoginResult {
+  readonly apiBasePath: string;
   readonly credential: Extract<StoredCliCredential, {readonly kind: "oauth"}>;
 }
 
@@ -66,8 +67,9 @@ export const loginWithBrowserOAuth = Effect.fn("CliOAuth.login")(
   function*(
     origin: string,
     environment: NodeJS.ProcessEnv = process.env,
+    basePath = "",
   ): Effect.fn.Return<CliOAuthLoginResult, CliAuthenticationError> {
-    return yield* loginWithOAuth(origin, false, environment);
+    return yield* loginWithOAuth(origin, false, environment, basePath);
   },
 );
 
@@ -76,8 +78,9 @@ export const loginWithHeadlessOAuth = Effect.fn("CliOAuth.loginHeadless")(
   function*(
     origin: string,
     environment: NodeJS.ProcessEnv = process.env,
+    basePath = "",
   ): Effect.fn.Return<CliOAuthLoginResult, CliAuthenticationError> {
-    return yield* loginWithOAuth(origin, true, environment);
+    return yield* loginWithOAuth(origin, true, environment, basePath);
   },
 );
 
@@ -85,10 +88,17 @@ function loginWithOAuth(
   origin: string,
   headless: boolean,
   environment: NodeJS.ProcessEnv,
+  basePath: string,
 ): Effect.Effect<CliOAuthLoginResult, CliAuthenticationError> {
   return Effect.gen(function*() {
-    const resource = artifactServerRouteUrl("/api", origin);
-    const metadataUrl = protectedResourceMetadataUrl(origin);
+    const discovery = yield* Effect.tryPromise({
+      try: () => discoverCliApi(origin, basePath),
+      catch: (cause) => new CliAuthenticationError({
+        message: cause instanceof Error ? cause.message : "The Artifact Server API resource could not be discovered.",
+        reason: "invalid_metadata",
+      }),
+    });
+    const {metadataUrl, resource} = discovery;
     const issuer = yield* verifyProtectedResourceMetadata(resource, metadataUrl);
     const state = randomBytes(32).toString("base64url");
     const callback = yield* openLoopbackCallback(state);
@@ -148,7 +158,7 @@ function loginWithOAuth(
           reason: "oauth_failed",
         }),
     });
-    return {credential: result};
+    return {apiBasePath: discovery.apiBasePath, credential: result};
   });
 }
 
@@ -275,6 +285,7 @@ export const refreshCliOAuthCredential = Effect.fn("CliOAuth.refresh")(
     credential: Extract<StoredCliCredential, {readonly kind: "oauth"}>,
     environment: NodeJS.ProcessEnv = process.env,
     forceRefresh = false,
+    apiBasePath = "",
   ): Effect.fn.Return<
     Extract<StoredCliCredential, {readonly kind: "oauth"}>,
     CliAuthenticationError
@@ -290,10 +301,14 @@ export const refreshCliOAuthCredential = Effect.fn("CliOAuth.refresh")(
     return yield* Effect.tryPromise({
       try: async () => {
         try {
+          const discovery = await discoverCliApi(origin, apiBasePath);
+          await Effect.runPromise(
+            verifyProtectedResourceMetadata(discovery.resource, discovery.metadataUrl),
+          );
           const result = await auth(provider, {
-            resourceMetadataUrl: protectedResourceMetadataUrl(origin),
+            resourceMetadataUrl: discovery.metadataUrl,
             scope: cliScope,
-            serverUrl: artifactServerRouteUrl("/api", origin),
+            serverUrl: discovery.resource,
           });
           if (result !== "AUTHORIZED") {
             throw new Error("OAuth refresh requires a new login.");
@@ -324,13 +339,12 @@ export const revokeCliOAuthCredential = Effect.fn("CliOAuth.revoke")(
   function*(
     origin: string,
     credential: Extract<StoredCliCredential, {readonly kind: "oauth"}>,
+    apiBasePath = "",
   ): Effect.fn.Return<boolean> {
     return yield* Effect.promise(async () => {
       try {
-        const discovered = await discoverOAuthServerInfo(
-          artifactServerRouteUrl("/api", origin),
-          {resourceMetadataUrl: protectedResourceMetadataUrl(origin)},
-        );
+        const api = await discoverCliApi(origin, apiBasePath);
+        const discovered = await discoverOAuthServerInfo(api.resource, {resourceMetadataUrl: api.metadataUrl});
         const metadata = revocationMetadataSchema.safeParse(
           discovered.authorizationServerMetadata,
         );
@@ -564,6 +578,7 @@ function verifyProtectedResourceMetadata(
     try: async () => {
       const response = await fetch(metadataUrl, {
         headers: {Accept: "application/json"},
+        redirect: "error",
         signal: AbortSignal.timeout(10_000),
       });
       if (response.status === 404) {

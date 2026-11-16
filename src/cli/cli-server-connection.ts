@@ -136,7 +136,7 @@ async function resolveProfileConnection(
   ).pipe(Effect.provide(authenticatedCliHttpClientLayer)));
   return {
     apiToken: resolved.bearer,
-    origin: profile.origin,
+    origin: `${new URL(profile.origin).origin}${resolved.profile.apiBasePath ?? new URL(profile.origin).pathname.replace(/\/$/u, "")}`,
     profile,
     source: "profile",
   };
