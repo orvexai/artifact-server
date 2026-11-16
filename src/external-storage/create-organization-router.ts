@@ -17,6 +17,7 @@ import {PlatformSessions} from "./platform-sessions.js";
 import {requireOrganizationStaffGroups} from "./organization-staff-groups.js";
 import {platformRootRedirectHeader} from "../http/create-http-app.js";
 import {createHash} from "node:crypto";
+import {houstonServerPageMark, houstonServerPageStyles} from "../shared/houston-server-pages.js";
 
 const maximumCachedOrganizations = 16;
 const idleOrganizationMilliseconds = 5 * 60 * 1_000;
@@ -27,14 +28,10 @@ const organizationEvictionIntervalMilliseconds = 30_000;
 const legacyInstallationlessBindingExpiresAt = Math.floor(Date.now() / 1_000) + 60 * 60;
 const notFound = () => new Response("Not Found", {status: 404});
 
-const organizationChooserStyles = `
-:root{color-scheme:light dark;--background:oklch(1 0 0);--foreground:oklch(.145 .008 326);--card:oklch(1 0 0);--card-foreground:oklch(.145 .008 326);--primary:oklch(.457 .24 277.023);--primary-foreground:oklch(.962 .018 272.314);--muted:oklch(.96 .003 325.6);--muted-foreground:oklch(.542 .034 322.5);--border:oklch(.922 .005 325.62);--radius:.625rem}
-@media(prefers-color-scheme:dark){:root{--background:oklch(.145 .008 326);--foreground:oklch(.985 0 0);--card:oklch(.212 .019 322.12);--card-foreground:oklch(.985 0 0);--primary:oklch(.398 .195 277.366);--primary-foreground:oklch(.962 .018 272.314);--muted:oklch(.263 .024 320.12);--muted-foreground:oklch(.711 .019 323.02);--border:oklch(1 0 0 / 10%)}}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--background);color:var(--foreground);font:16px/1.5 ui-sans-serif,system-ui,sans-serif}.shell{width:min(100% - 32px,720px);margin:0 auto;padding:clamp(48px,12vh,112px) 0 48px}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:42px}.brand{font-size:14px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-foreground)}h1{margin:0 0 8px;font-size:clamp(28px,5vw,36px);line-height:1.15;letter-spacing:-.035em}.intro{margin:0 0 28px;color:var(--muted-foreground)}.org-list{display:grid;gap:12px}.org-card{display:flex;align-items:center;gap:16px;padding:18px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card);color:var(--card-foreground);text-decoration:none;transition:border-color .15s,box-shadow .15s,transform .15s}.org-card:hover{border-color:var(--primary);box-shadow:0 8px 24px color-mix(in srgb,var(--foreground) 8%,transparent);transform:translateY(-1px)}.avatar{display:grid;flex:none;place-items:center;width:48px;height:48px;border-radius:calc(var(--radius) * .8);background:var(--muted);color:var(--primary);font-weight:700;font-size:16px}.org-name{font-size:16px;font-weight:650}.org-action{margin-left:auto;color:var(--muted-foreground);font-size:20px}.footer{margin-top:36px;padding-top:20px;border-top:1px solid var(--border);text-align:right}.signout{border:0;padding:4px 0;background:none;color:var(--muted-foreground);font:inherit;text-decoration:underline;text-underline-offset:3px;cursor:pointer}.signout:hover{color:var(--foreground)}
-`;
+const organizationChooserStyles = houstonServerPageStyles();
 
 export function renderNoOrganizationPage(): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>No organization</title><style>${organizationChooserStyles}</style></head><body><main class="shell"><div class="top"><span class="brand">Artifact Server</span></div><h1>No organization available</h1><section class="org-card"><span class="org-name">You don't belong to any organization yet.</span></section><footer class="footer"><form method="post" action="/api/v1/platform/session/logout"><button class="signout" type="submit">Sign out</button></form></footer></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>Houston Artifacts — No organization</title><style>${organizationChooserStyles}</style></head><body><main class="shell"><div class="top">${houstonServerPageMark()}<span class="brand">Houston Artifacts</span></div><h1>No organization available</h1><section class="org-card"><span class="org-name">You don't belong to any organization yet.</span></section><footer class="footer"><form method="post" action="/api/v1/platform/session/logout"><button class="signout" type="submit">Sign out</button></form></footer></main></body></html>`;
 }
 
 export function renderOrganizationChooser(
@@ -45,7 +42,7 @@ export function renderOrganizationChooser(
       .join("").toLocaleUpperCase();
     return `<a class="org-card" href="/o/${encodeURIComponent(slug)}/"><span class="avatar" aria-hidden="true">${escapeHtml(initials)}</span><span class="org-name">${escapeHtml(displayName)}</span><span class="org-action" aria-hidden="true">&#8594;</span></a>`;
   }).join("");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>Choose an organization</title><style>${organizationChooserStyles}</style></head><body><main class="shell"><div class="top"><span class="brand">Artifact Server</span></div><h1>Choose an organization</h1><p class="intro">Select the organization you want to continue to.</p><nav class="org-list" aria-label="Organizations">${choices}</nav><footer class="footer"><form method="post" action="/api/v1/platform/session/logout"><button class="signout" type="submit">Sign out</button></form></footer></main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>Houston Artifacts — Choose an organization</title><style>${organizationChooserStyles}</style></head><body><main class="shell"><div class="top">${houstonServerPageMark()}<span class="brand">Houston Artifacts</span></div><h1>Choose an organization</h1><p class="intro">Select the organization you want to continue to.</p><nav class="org-list" aria-label="Organizations">${choices}</nav><footer class="footer"><form method="post" action="/api/v1/platform/session/logout"><button class="signout" type="submit">Sign out</button></form></footer></main></body></html>`;
 }
 
 export function organizationRootRedirect(
@@ -313,7 +310,7 @@ export async function createOrganizationRouter(
             return new Response(html, {headers: {
               "Content-Type": "text/html; charset=utf-8",
               "Cache-Control": "private, no-store",
-              "Content-Security-Policy": `default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; img-src 'self' data:; style-src 'self' 'sha256-${styleHash}'`,
+              "Content-Security-Policy": `default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; img-src 'self' data:; style-src 'self' 'sha256-${styleHash}'; font-src 'self'`,
             }});
           }
           const rootRedirect = organizationRootRedirect(organizations, session.lastOrg);
@@ -323,7 +320,7 @@ export async function createOrganizationRouter(
           return new Response(html, {headers: {
             "Content-Type": "text/html; charset=utf-8",
             "Cache-Control": "private, no-store",
-            "Content-Security-Policy": `default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; img-src 'self' data:; style-src 'self' 'sha256-${styleHash}'`,
+            "Content-Security-Policy": `default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; img-src 'self' data:; style-src 'self' 'sha256-${styleHash}'; font-src 'self'`,
           }});
         }
         if (!contentHost && (sourceUrl.pathname === "/auth/login" || sourceUrl.pathname === "/auth/platform/login")) {

@@ -737,6 +737,10 @@ describe("authenticated CLI profiles and remote publication", () => {
       const authorizationUrl = await login.authorizationUrl();
       const browser = await fetch(authorizationUrl, {redirect: "follow"});
       expect(browser.ok).toBe(true);
+      expect(browser.headers.get("content-security-policy")).toBe(
+        "default-src 'none'; style-src 'unsafe-inline'",
+      );
+      expect(await browser.text()).toContain("Houston Artifacts is connected.");
       const result = await login.finished;
       expect(result.exitCode).toBe(0);
       expect(profileOutputSchema.parse(JSON.parse(result.stdout))).toMatchObject({

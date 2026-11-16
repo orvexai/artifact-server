@@ -21,10 +21,22 @@ describe("organization chooser", () => {
 
   test("renders a styled no-organization page with sign-out", () => {
     const html = renderNoOrganizationPage();
-    expect(html).toContain("<title>No organization</title>");
+    expect(html).toContain("<title>Houston Artifacts — No organization</title>");
+    expect(html).toContain("Houston Artifacts");
     expect(html).toContain("You don't belong to any organization yet.");
     expect(html).toContain('action="/api/v1/platform/session/logout"');
     expect(html).toContain("prefers-color-scheme:dark");
+  });
+
+  test("renders Houston branding and the self-hosted font URLs", () => {
+    const html = renderOrganizationChooser([
+      {displayName: "Research", slug: "research"},
+    ]);
+    expect(html).toContain("<title>Houston Artifacts — Choose an organization</title>");
+    expect(html).toContain("Houston Artifacts");
+    expect(html).toContain("<svg class=\"mark\"");
+    expect(html).toContain("/assets/fonts/houston/inter-latin-wght-normal.woff2");
+    expect(html).toContain("/assets/fonts/houston/space-grotesk-latin-wght-normal.woff2");
   });
 
   test("redirects the sole active organization regardless of stale lastOrg", () => {
