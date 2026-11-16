@@ -1,6 +1,6 @@
 {
   "name": "artifact-server",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "private": true,
   "description": "Publish, version, and serve finished browser artifacts.",
   "type": "module",

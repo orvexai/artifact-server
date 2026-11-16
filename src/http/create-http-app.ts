@@ -5664,7 +5664,13 @@ async function serveWebAsset(
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
   });
+  const basePath = new URL(dependencies.trustedApplicationOrigin ?? "http://localhost").pathname
+    .replace(/\/$/u, "");
   copyAssetHeader(asset.headers, headers, "ETag");
+  // The review-frame shell is mounted separately for each organization. Its
+  // rewritten asset paths differ from the shared build artifact, so a cached
+  // build ETag must not turn that organization-specific document into a 304.
+  if (kind === "review-frame" && basePath !== "") headers.delete("ETag");
   const assetEtag = headers.get("ETag");
   if (
     assetEtag !== null
@@ -5675,22 +5681,39 @@ async function serveWebAsset(
   copyAssetHeader(asset.headers, headers, "Content-Length");
   copyAssetHeader(asset.headers, headers, "Content-Type");
   let body: BodyInit | null = method === "HEAD" ? null : asset.body;
-  if (kind === "application-shell" && body !== null) {
-    const basePath = new URL(dependencies.trustedApplicationOrigin ?? "http://localhost").pathname
-      .replace(/\/$/u, "");
+  if ((kind === "application-shell" || kind === "review-frame") && body !== null) {
     const suffix = dependencies.organizationCookieSuffix ?? "";
     const html = await new Response(body).text();
-    body = html
-      .replaceAll('src="/assets/', `src="${basePath}/assets/`)
-      .replaceAll('href="/assets/', `href="${basePath}/assets/`)
-      .replace("</head>", `<meta name="as-organization-base" content="${escapeHtmlAttribute(basePath)}"><meta name="as-cookie-suffix" content="${escapeHtmlAttribute(suffix)}"></head>`);
-    headers.delete("Content-Length");
-    headers.delete("ETag");
+    let rewrittenHtml = rewriteOrganizationRootRelativeReferences(html, basePath);
+    if (kind === "application-shell") {
+      rewrittenHtml = rewrittenHtml.replace(
+        "</head>",
+        `<meta name="as-organization-base" content="${escapeHtmlAttribute(basePath)}"><meta name="as-cookie-suffix" content="${escapeHtmlAttribute(suffix)}"></head>`,
+      );
+    }
+    if (rewrittenHtml !== html) {
+      headers.delete("Content-Length");
+      headers.delete("ETag");
+    }
+    body = rewrittenHtml;
   }
   return new Response(body, {
     headers,
     status: 200,
   });
+}
+
+function rewriteOrganizationRootRelativeReferences(html: string, basePath: string): string {
+  if (basePath === "") return html;
+  return html.replace(
+    /(^|\s)(src|href)=(['"])(\/[^'"]*)\3/giu,
+    (_match, whitespace: string, attribute: string, quote: string, value: string) => {
+      if (value.startsWith("//") || value === basePath || value.startsWith(`${basePath}/`)) {
+        return `${whitespace}${attribute}=${quote}${value}${quote}`;
+      }
+      return `${whitespace}${attribute}=${quote}${basePath}${value}${quote}`;
+    },
+  );
 }
 
 function copyAssetHeader(
