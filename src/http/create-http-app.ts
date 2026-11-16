@@ -945,6 +945,9 @@ export function createHttpApp(
       "static-asset",
     ));
 
+  app.on(["GET", "HEAD"], "/theme-bootstrap.js", (context) =>
+    serveWebAsset(context, dependencies, "/theme-bootstrap.js", "static-asset"));
+
   app.on(
     ["GET", "HEAD"],
     "/review-frame",
