@@ -273,7 +273,8 @@ describe("authenticated CLI profiles and remote publication", () => {
         origin: firstOrigin,
         status: "authenticated",
       });
-      expect(JSON.parse(login.stdout)).toMatchObject({apiBasePath: "/o/orvex"});
+      // This fixture starts the server at its root address, so discovery keeps the root API base.
+      expect(JSON.parse(login.stdout)).toMatchObject({apiBasePath: ""});
       expect(login.stdout).not.toContain(token);
       expect(login.stderr).not.toContain(token);
 

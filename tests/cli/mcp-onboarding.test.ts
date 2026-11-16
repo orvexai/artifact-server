@@ -205,6 +205,11 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     const dataDirectory = path.join(workspace, "data");
     const home = path.join(workspace, "home");
     const remote = createServer((request, response) => {
+      if (request.url === "/api/v1/installation" && request.method === "GET") {
+        response.writeHead(200, {"content-type": "application/json"});
+        response.end(JSON.stringify({installationId: "installation-relay-test"}));
+        return;
+      }
       if (request.url !== "/api/v1/session" || request.method !== "GET") {
         response.writeHead(404).end();
         return;
