@@ -24,11 +24,11 @@ secret:
     apiToken: api-token
     databaseUrl: database-url
     embedBindingSecret: embed-binding-secret
-# Public OIDC metadata is read-only so readiness can validate the provider. This client is not
+# Public OIDC metadata is read-only from Manchester so readiness can validate the provider. This client is not
 # provisioned/enabled in Keycloak; no sign-in is possible. No client secret or directory sync.
 identity:
   oidcClientId: artifact-server-rehearsal
-  oidcIssuer: https://auth.eu-central-1.myidp.cloud/realms/my-idp
+  oidcIssuer: https://auth.eu-west-2.orvex.dev/realms/orvex
 resources:
   requests:
     cpu: 100m

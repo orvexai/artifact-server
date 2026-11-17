@@ -11,7 +11,6 @@ resources:
   - database.yaml
   - runtime-secret.yaml
   - chart.yaml
-  - scheduled-backup.yaml
   - routes.yaml
 patches:
   - target:
@@ -29,7 +28,7 @@ patches:
               - name: artifact-server
                 env:
                   - name: ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL
-                    $patch: replace
+                    value: null
                     valueFrom:
                       secretKeyRef:
                         name: artifact-server-runtime

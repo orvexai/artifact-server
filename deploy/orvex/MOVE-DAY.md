@@ -17,6 +17,7 @@ No values or hashes belong in this list. The move-day read token is limited to t
 ### Stage 1 GO check
 
 Stage-1 GO: bootstrap admin address present in the secret store and valid (checked by name, never printed).
+Stage-1 GO: a wildcard HTTPRoute for the content domain is admitted (R12 new rule live) and the wildcard certificate is on Manchester (QMK C1-11).
 
 ### GO check: re-resolve today's Keycloak
 
@@ -28,9 +29,9 @@ the sorted A records were unchanged: `104.21.80.137`, `172.67.183.128`. ARIN RDA
 both addresses as Cloudflare, Inc. (`CLOUDFLARENET`). If the set changes, open a one-line PR that
 morning and tell QMK through the Team Leader before proceeding.
 
-Pending: `app.yaml` lists `artifacts.orvex.ai` only until the schema allows one leading wildcard
-label. Recommended option (a) is pending the Captain; the chart and HTTPRoute retain the content
-wildcard `*.houstonartifacts.com`.
+`app.yaml` lists `artifacts.orvex.ai` only. The wildcard hostname and HTTPRoute remain disabled until
+the Platform R12 change for the registered content domain is live in a pin (platform #21); add both
+before the Wed 25 pin. The content-domain certificate must also be on Manchester (QMK C1-11).
 
 These are shared Cloudflare anycast addresses. A `/32:443` policy for both addresses lets every
 site behind either address be reached from the Artifact Server namespace, not only Keycloak. The
@@ -98,9 +99,12 @@ Confirm both evidence lines before the Team Leader declares the stage done:
 2. QMK's TL3 or the Captain performs a list-only read of the exact backup folder in Backblaze and
    records object names and sizes. An empty or missing folder means STOP.
 
-The routine daily base-backup schedule is 12:00 UTC, outside QMK's 23:30-07:00 UTC copy window.
-QMK's TL3 must receive the database name, UTC start and expected size, with the Captain copied,
-before the first scheduled base backup.
+The by-hand base backup above still applies before stage 1 is declared done. The barman-cloud plug-in
+and routine daily base-backup schedule remain deferred until the admin's ObjectStore `orvex-backup`
+is live (orvex-apps PR G / MP-06) and app.yaml declares `backups: {postgres: true}`. Once enabled,
+the daily schedule is 12:00 UTC, outside QMK's 23:30-07:00 UTC copy window. QMK's TL3 must receive
+the database name, UTC start and expected size, with the Captain copied, before the first scheduled
+base backup.
 
 ## Stage 2: Friday 27 November 2026
 

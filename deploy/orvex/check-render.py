@@ -115,18 +115,28 @@ def check(env: str, documents: list[dict[str, Any]]) -> None:
         if spec.get("postgresql", {}).get("synchronous", {}).get("dataDurability") != "required":
             raise SystemExit("production: CNPG durability must be required")
         backups = [d for d in documents if d and d.get("kind") == "ScheduledBackup"]
-        if len(backups) != 1 or backups[0].get("spec", {}).get("schedule") != "0 0 12 * * *":
-            raise SystemExit("production: expected one daily backup at 12:00 UTC")
+        if backups:
+            raise SystemExit("production: ScheduledBackup waits for the admin ObjectStore and app.yaml backups declaration")
+        if spec.get("plugins"):
+            raise SystemExit("production: barman-cloud plug-in waits for the admin ObjectStore and app.yaml backups declaration")
+        deployments = [d for d in documents if d and d.get("kind") == "Deployment" and d.get("metadata", {}).get("name") == "artifact-server"]
+        if len(deployments) != 1:
+            raise SystemExit("production: expected one artifact-server Deployment")
+        admin_env = [e for e in deployments[0].get("spec", {}).get("template", {}).get("spec", {}).get("containers", [{}])[0].get("env", []) if e.get("name") == "ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL"]
+        if len(admin_env) != 1 or "value" in admin_env[0] or admin_env[0].get("valueFrom", {}).get("secretKeyRef") != {"name": "artifact-server-runtime", "key": "bootstrap-admin-email"}:
+            raise SystemExit("production: bootstrap admin address must come from the carried runtime Secret")
         if not any(d and d.get("kind") == "HTTPRoute" for d in documents):
             raise SystemExit("production: expected gateway HTTPRoutes")
     else:
+        if any(d and "auth.eu-central-1.myidp.cloud" in str(d) for d in documents):
+            raise SystemExit("rehearsal: today's Keycloak hostname is production-only")
         if any(d and d.get("kind") in {"ScheduledBackup", "HTTPRoute"} for d in documents):
             raise SystemExit("rehearsal: backups and HTTPRoutes are forbidden")
         if any(d and d.get("kind") == "CronJob" and not (d.get("spec") or {}).get("suspend") for d in documents):
             raise SystemExit("rehearsal: every outbound worker CronJob must be suspended")
         if any(d and d.get("kind") == "ExternalSecret" and any(x.get("secretKey") == "oidc-directory-client-secret" for x in (d.get("spec", {}).get("data") or [])) for d in documents):
             raise SystemExit("rehearsal: directory client secret is forbidden")
-    print(f"{env}: PASS ({len(documents)} resources; digest pins, allow-list, CNPG, routes/backups and pod-label guard)")
+    print(f"{env}: PASS ({len(documents)} resources; digest pins, allow-list, CNPG, routes, deferred backups and pod-label guard)")
 
 
 if len(sys.argv) == 2 and sys.argv[1] == "--self-test":

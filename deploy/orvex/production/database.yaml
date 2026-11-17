@@ -8,6 +8,8 @@ metadata:
     app.kubernetes.io/component: database
   annotations:
     argocd.argoproj.io/sync-wave: "3"
+# barman-cloud plug-in and daily base backup once the admin's ObjectStore orvex-backup
+# is live (orvex-apps PR G / MP-06) and app.yaml declares backups: {postgres: true}.
 spec:
   instances: 3
   bootstrap:
@@ -21,9 +23,3 @@ spec:
       method: any
       number: 1
       dataDurability: required
-  plugins:
-    - name: barman-cloud.cloudnative-pg.io
-      isWALArchiver: true
-      parameters:
-        barmanObjectName: orvex-backup
-        serverName: artifact-server-production-v1
