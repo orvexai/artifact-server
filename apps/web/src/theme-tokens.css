@@ -17,11 +17,11 @@
   --border: var(--ox-color-border);
   --input: var(--ox-color-border-strong);
   --ring: var(--ox-color-focus);
-  --chart-1: #cbd5e1;
-  --chart-2: #94a3b8;
-  --chart-3: #64748b;
-  --chart-4: #475569;
-  --chart-5: #334155;
+  --chart-1: var(--ox-color-border-subtle);
+  --chart-2: var(--ox-color-border);
+  --chart-3: var(--ox-color-border-strong);
+  --chart-4: var(--ox-color-text-secondary);
+  --chart-5: var(--ox-color-text);
   --radius: var(--ox-radius-md);
   --sidebar: var(--ox-color-surface-1);
   --sidebar-foreground: var(--ox-color-text);
