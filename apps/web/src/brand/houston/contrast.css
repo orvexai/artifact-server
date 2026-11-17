@@ -1,0 +1,31 @@
+/* Derived brand tokens for text and destructive interaction contrast. */
+:root {
+  --ox-color-accent-text-strong: color-mix(
+    in oklch,
+    var(--ox-color-accent-text) 90%,
+    black
+  );
+  --ox-color-danger-hover: color-mix(in srgb, var(--destructive) 20%, transparent);
+}
+
+.dark,
+[data-theme="dark"] {
+  --ox-color-accent-text-strong: var(--ox-color-accent-text);
+  --ox-color-danger-hover: color-mix(in srgb, var(--destructive) 14%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not(.dark) {
+    --ox-color-accent-text-strong: var(--ox-color-accent-text);
+    --ox-color-danger-hover: color-mix(in srgb, var(--destructive) 14%, transparent);
+  }
+}
+
+[data-theme="light"] {
+  --ox-color-accent-text-strong: color-mix(
+    in oklch,
+    var(--ox-color-accent-text) 90%,
+    black
+  );
+  --ox-color-danger-hover: color-mix(in srgb, var(--destructive) 20%, transparent);
+}
