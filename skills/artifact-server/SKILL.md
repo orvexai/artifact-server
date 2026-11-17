@@ -5,6 +5,8 @@ description: Publish, review, organize, and share work with Artifact Server, or 
 
 # Artifact Server
 
+The web interface is branded **Houston Artifacts**. The `artifact-server` skill, CLI, and MCP identifiers retain their Artifact Server names.
+
 Use one skill for Artifact Server work. Route the request before loading detailed
 instructions.
 

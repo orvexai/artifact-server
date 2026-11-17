@@ -1,6 +1,6 @@
 # Documentation
 
-Use these guides to install, connect, operate, and extend Artifact Server.
+Use these guides to install, connect, operate, and extend Artifact Server. The web interface is branded **Houston Artifacts**; Artifact Server remains the name used for its CLI, MCP server, skill, packages, and API.
 
 ## Start here
 
