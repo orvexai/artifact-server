@@ -367,7 +367,7 @@ function ReviewKeyboardShortcuts() {
   );
 }
 
-/** Start the artifact-first Artifact Server review application. */
+/** Start the artifact-first Houston Artifacts review application. */
 export function ReviewApp() {
   const [session, setSession] = useState<Session | null>(null);
   useEffect(() => {
@@ -432,7 +432,7 @@ export function ReviewApp() {
         setError(
           caught instanceof Error
             ? caught
-            : new Error("Artifact Server could not start."),
+            : new Error("Houston Artifacts could not start."),
         );
         setSessionState("ready");
       }
@@ -496,7 +496,7 @@ export function ReviewApp() {
     return <ReviewGate description="This path is outside the current organization." title="Page not found" />;
   }
   if (sessionState === "loading") {
-    return <ReviewGate description="Opening the local artifact catalog." title="Loading Artifact Server" />;
+    return <ReviewGate description="Opening the local artifact catalog." title="Loading Houston Artifacts" />;
   }
   if (sessionState === "unauthenticated") {
     const returnTo = `${window.location.pathname}${window.location.search}`;
@@ -521,7 +521,7 @@ export function ReviewApp() {
       <ReviewGate
         action={<button className="as-button" onClick={() => void bootstrap()} type="button">Try again</button>}
         description={error.message}
-        title="Artifact Server unavailable"
+        title="Houston Artifacts unavailable"
       />
     );
   }
@@ -1361,11 +1361,11 @@ function ArtifactReview({
         <Dialog.Portal>
           <Dialog.Backdrop className="as-home-overlay__backdrop" />
           <Dialog.Popup className="as-home-overlay">
-            <Dialog.Title className="as-visually-hidden">Artifact Server home</Dialog.Title>
+            <Dialog.Title className="as-visually-hidden">Houston Artifacts home</Dialog.Title>
             <Dialog.Close
-              aria-label="Close Artifact Server home"
+              aria-label="Close Houston Artifacts home"
               className="as-icon-button as-home-overlay__close"
-              title="Close Artifact Server home"
+              title="Close Houston Artifacts home"
             >
               <HugeiconsIcon aria-hidden="true" icon={Cancel01Icon} strokeWidth={1.8} />
             </Dialog.Close>
@@ -1376,7 +1376,7 @@ function ArtifactReview({
                 className="as-home-overlay__animation"
               src={artifactServerAnimationUrl}
             />
-              <nav aria-label="Artifact Server resources" className="as-home-resources">
+              <nav aria-label="Houston Artifacts resources" className="as-home-resources">
                 <a
                   className="as-home-resources__link"
                   href="https://github.com/plannotator/artifact-server"
@@ -1462,11 +1462,11 @@ function ArtifactReview({
         <header className="as-pane-header as-catalog__header">
           <div className="as-catalog__context">
             <a
-              aria-label="Artifact Server"
+              aria-label="Houston Artifacts"
               className="as-catalog__brand"
               href={organizationPath("/review")}
               onClick={returnHome}
-              title="Artifact Server"
+              title="Houston Artifacts"
             >
               <ArtifactMark className="as-catalog__brand-mark" />
             </a>
@@ -1808,7 +1808,7 @@ function ArtifactReview({
                   <HugeiconsIcon icon={LayoutLeftIcon} strokeWidth={1.8} />
                 </IconButton>
               ) : null}
-              <h1>{details?.artifact.name ?? selectedItem?.artifact.name ?? "Artifact Server"}</h1>
+              <h1>{details?.artifact.name ?? selectedItem?.artifact.name ?? "Houston Artifacts"}</h1>
             </div>
             <div className="as-preview-header__actions">
               {annotatablePreview && canComment ? (
@@ -2888,7 +2888,7 @@ function PublicArtifactReview({
     </a>
   );
   if (state.kind === "loading") {
-    return <ReviewGate description="Opening the shared artifact." title="Loading Artifact Server" />;
+    return <ReviewGate description="Opening the shared artifact." title="Loading Houston Artifacts" />;
   }
   if (state.kind === "invite") {
     return <main className="as-gate"><form onSubmit={(event) => void joinAsGuest(event)}><h1>Join artifact review</h1><label>Your name<input autoComplete="name" maxLength={80} minLength={1} onChange={(event) => setGuestName(event.target.value)} required value={guestName} /></label><button className="as-button as-button--primary" type="submit">Continue</button>{guestMessage === null ? null : <p role="alert">{guestMessage}</p>}</form></main>;
@@ -2949,7 +2949,7 @@ function ReviewGate({
     <main className="as-gate">
       <section>
         <span aria-hidden="true" className="as-gate__mark">A</span>
-        <p>Artifact Server</p>
+        <p>Houston Artifacts</p>
         <h1>{title}</h1>
         <small>{description}</small>
         {action}

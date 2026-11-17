@@ -82,6 +82,10 @@ function assetMediaType(relativePath: string): string {
       return "text/javascript; charset=utf-8";
     case ".json":
       return "application/json; charset=utf-8";
+    case ".ico":
+      return "image/vnd.microsoft.icon";
+    case ".webmanifest":
+      return "application/manifest+json; charset=utf-8";
     case ".png":
       return "image/png";
     case ".svg":

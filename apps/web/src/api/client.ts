@@ -580,7 +580,7 @@ const createdCommentReplySchema = z.object({
   reply: commentReplySchema,
 });
 
-/** Client-owned anchor JSON; Artifact Server stores and returns it unread. */
+  /** Client-owned anchor JSON; Houston Artifacts stores and returns it unread. */
 export type CommentAnchor = z.infer<typeof commentAnchorSchema>;
 export type CommentThreadState = z.infer<typeof commentThreadStateSchema>;
 export type CommentAuthor = z.infer<typeof commentAuthorSchema>;
@@ -922,13 +922,13 @@ async function parseFailure(response: Response): Promise<ApiError> {
   } catch {
     return new ApiError(
       "INVALID_ERROR_RESPONSE",
-      "Artifact Server returned an unreadable error response.",
+    "Houston Artifacts returned an unreadable error response.",
       response.status,
     );
   }
   return new ApiError(
     "UNEXPECTED_ERROR_RESPONSE",
-    "Artifact Server could not complete the request.",
+    "Houston Artifacts could not complete the request.",
     response.status,
   );
 }
@@ -974,7 +974,7 @@ async function request<T>(
   if (noContentStatuses.has(response.status)) {
     throw new ApiError(
       "EMPTY_RESPONSE",
-      "Artifact Server returned no response data.",
+    "Houston Artifacts returned no response data.",
       response.status,
     );
   }
@@ -982,7 +982,7 @@ async function request<T>(
   if (!parsed.success) {
     throw new ApiError(
       "INVALID_SUCCESS_RESPONSE",
-      "Artifact Server returned data that does not match the expected contract.",
+    "Houston Artifacts returned data that does not match the expected contract.",
       response.status,
     );
   }
@@ -1015,7 +1015,7 @@ async function requestNoContent(path: string, init: RequestInit): Promise<void> 
   if (!noContentStatuses.has(response.status)) {
     throw new ApiError(
       "UNEXPECTED_RESPONSE",
-      "Artifact Server returned unexpected response data.",
+    "Houston Artifacts returned unexpected response data.",
       response.status,
     );
   }

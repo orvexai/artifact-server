@@ -67,7 +67,7 @@ export function ReviewSettings({
     <div className="as-settings">
       <header className="as-settings__header">
         <div className="as-settings__header-inner">
-          <a aria-label="Artifact Server" className="as-settings__brand" href={reviewHref}>
+          <a aria-label="Houston Artifacts" className="as-settings__brand" href={reviewHref}>
             <span className="as-settings__brand-mark">
               <ArtifactMark className="as-settings__mark" />
             </span>
@@ -173,7 +173,7 @@ function SettingsContent({
             View settings
           </ButtonLink>
         )}
-        description="This Artifact Server settings route does not exist."
+        description="This Houston Artifacts settings route does not exist."
         title="Page not found"
       />
     );

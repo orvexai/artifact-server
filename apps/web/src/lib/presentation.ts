@@ -45,7 +45,7 @@ export function formatBytes(value: number): string {
 /** Returns a useful operator-facing message for expected API failures. */
 export function errorMessage(error: Error): string {
   if (!(error instanceof ApiError)) {
-    return "Artifact Server could not complete the request.";
+  return "Houston Artifacts could not complete the request.";
   }
   if (error.status === 401) {
     return "Your session expired. Sign in again to continue.";

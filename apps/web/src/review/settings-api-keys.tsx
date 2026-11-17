@@ -340,7 +340,7 @@ function SecretDialog({
           <DialogTitle>Copy API key now</DialogTitle>
           <DialogDescription>
             This secret is displayed once. Store it in the intended client's secret input or a
-            deployment secret manager. Artifact Server cannot show it again.
+              deployment secret manager. Houston Artifacts cannot show it again.
           </DialogDescription>
         </DialogHeader>
         <code className="max-h-32 overflow-auto border bg-muted p-3 font-mono text-xs break-all">

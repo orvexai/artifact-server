@@ -74,6 +74,16 @@ import {houstonServerPageStyles} from "../../src/shared/houston-server-pages.js"
 
 const region = "us-east-1";
 const applicationOrigin = "https://artifacts.example.com";
+const brandingAssetContentTypes = [
+  ["/favicon.svg", "image/svg+xml"],
+  ["/favicon.ico", "image/vnd.microsoft.icon"],
+  ["/apple-touch-icon-180.png", "image/png"],
+  ["/site.webmanifest", "application/manifest+json; charset=utf-8"],
+  ["/icon-192.png", "image/png"],
+  ["/icon-512.png", "image/png"],
+  ["/maskable-512.png", "image/png"],
+] as const;
+const brandingAssetContentTypeByPath: ReadonlyMap<string, string> = new Map(brandingAssetContentTypes);
 const embedBindingSecret = "org-tenancy-test-embed-binding-secret-with-32-bytes-minimum";
 const chooserCsp = `default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; img-src 'self' data:; style-src 'self' 'sha256-${createHash("sha256").update(houstonServerPageStyles()).digest("base64")}'; font-src 'self'`;
 const signInUnavailableCsp = "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'; font-src 'self'";
@@ -184,6 +194,15 @@ const pendingCrossOrgCases = [
   {identifier: "hono:GET /api/v1/public/embed/artifacts/:artifactId/bootstrap", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
   {identifier: "hono:GET /artifacts/:artifactId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
   {identifier: "hono:GET /assets/*", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  // Fixed public branding assets contain no tenant data; direct root and tenant URL responses are asserted below.
+  {identifier: "hono:GET /apple-touch-icon-180.png", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:GET /favicon.ico", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:GET /favicon.svg", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:GET /icon-192.png", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:GET /icon-512.png", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:GET /maskable-512.png", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:GET /site.webmanifest", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:GET /theme-bootstrap.js", group: "static and shell routes", justification: "This public theme bootstrap script contains no cross-installation artifact data; root and tenant responses are tested directly."},
   {identifier: "hono:GET /auth/context", group: "authentication routes", justification: "Authentication state is scoped by the organization cookie suffix; the login and callback probes verify foreign handshakes are rejected."},
   {identifier: "hono:GET /auth/local", group: "authentication routes", justification: "Local bootstrap login is an installation-local authentication flow and carries no foreign artifact identifier; org-specific OAuth handshake and callback isolation are tested separately."},
   {identifier: "hono:GET /health", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
@@ -202,6 +221,15 @@ const pendingCrossOrgCases = [
   {identifier: "hono:HEAD /api/v1/artifacts/:artifactId/versions/:versionId/archive", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
   {identifier: "hono:HEAD /api/v1/artifacts/:artifactId/versions/:versionId/media", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
   {identifier: "hono:HEAD /assets/*", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
+  // Keep the HEAD inventory explicit too; these fixed public routes share the GET routes' no-tenant-data contract.
+  {identifier: "hono:HEAD /apple-touch-icon-180.png", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:HEAD /favicon.ico", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:HEAD /favicon.svg", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:HEAD /icon-192.png", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:HEAD /icon-512.png", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:HEAD /maskable-512.png", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:HEAD /site.webmanifest", group: "static and shell routes", justification: "This fixed public branding asset contains no cross-installation artifact data; root and tenant URL responses are tested directly."},
+  {identifier: "hono:HEAD /theme-bootstrap.js", group: "static and shell routes", justification: "This public theme bootstrap script contains no cross-installation artifact data; root and tenant responses are tested directly."},
   {identifier: "hono:HEAD /embed/artifacts/:artifactId", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
   {identifier: "hono:HEAD /projects", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
   {identifier: "hono:HEAD /projects/:projectId/artifacts", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
@@ -335,7 +363,9 @@ function assertCrossOrgMatrixComplete(
   expect(knownCaseSet.size).toBe(knownCases.length);
   expect(currentCases.size).toBeGreaterThan(0);
   for (const identifier of currentCases) {
-    expect(knownCaseSet.has(identifier)).toBe(true);
+    if (!knownCaseSet.has(identifier)) {
+      throw new Error(`Cross-org matrix is missing registered route or tool: ${identifier}`);
+    }
   }
   for (const identifier of knownCaseSet) {
     if (!currentCases.has(identifier)) throw new Error(`Cross-org matrix case is no longer registered: ${identifier}`);
@@ -547,17 +577,27 @@ describe.sequential("organization tenancy security boundary", () => {
       }),
       objectStorage,
       webAssets: {
-        fetch: async (assetPath) => assetPath === "/embed.html"
-          ? new Response("<!doctype html><html><head></head><body>embed</body></html>")
-          : assetPath === "/review-frame.html"
-          ? new Response("<!doctype html><html><head></head><body>review frame</body></html>")
-          : assetPath === "/assets/embed-signed-in.js"
-          ? new Response("window.close();")
-          : assetPath === "/theme-bootstrap.js"
-          ? new Response("window.__themeBootstrapServed = true;", {
-            headers: {"Content-Type": "text/javascript; charset=utf-8"},
-          })
-          : null,
+        fetch: async (assetPath) => {
+          const brandingContentType = brandingAssetContentTypeByPath.get(assetPath);
+          if (brandingContentType !== undefined) {
+            return new Response("branding fixture", {
+              headers: {"Content-Type": brandingContentType},
+            });
+          }
+          if (assetPath === "/embed.html") {
+            return new Response("<!doctype html><html><head></head><body>embed</body></html>");
+          }
+          if (assetPath === "/review-frame.html") {
+            return new Response("<!doctype html><html><head></head><body>review frame</body></html>");
+          }
+          if (assetPath === "/assets/embed-signed-in.js") return new Response("window.close();");
+          if (assetPath === "/theme-bootstrap.js") {
+            return new Response("window.__themeBootstrapServed = true;", {
+              headers: {"Content-Type": "text/javascript; charset=utf-8"},
+            });
+          }
+          return null;
+        },
       },
     };
 
@@ -917,6 +957,23 @@ describe.sequential("organization tenancy security boundary", () => {
       return {body: routedBody, status: routedResponse.status};
     };
     try {
+      await Promise.all(brandingAssetContentTypes.map(async ([assetPath, contentType]) => {
+        const standaloneResponse = await standalone.app.fetch(
+          new Request(new URL(assetPath, applicationOrigin)),
+        );
+        expect(standaloneResponse.status, `root ${assetPath}`).toBe(200);
+        expect(standaloneResponse.headers.get("content-type"), `root ${assetPath}`)
+          .toContain(contentType);
+        const orgResponse = await fetchWithHost(
+          `${baseUrl}/o/orvex${assetPath}`,
+          {headers: {Host: "artifacts.example.com"}},
+          router.hostname,
+          router.port,
+        );
+        expect(orgResponse.status, `/o/orvex${assetPath}`).toBe(200);
+        expect(orgResponse.headers.get("content-type"), `/o/orvex${assetPath}`)
+          .toContain(contentType);
+      }));
       const rootThemeBootstrap = await standalone.app.fetch(
         new Request(applicationOrigin + "/theme-bootstrap.js"),
       );

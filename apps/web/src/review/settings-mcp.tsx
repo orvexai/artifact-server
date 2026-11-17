@@ -43,7 +43,7 @@ export function McpScreen({administrator}: {readonly administrator: boolean}) {
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
-        description="Give AI clients authenticated access to projects, artifacts, versions, and comments. Choose the setup that matches where Artifact Server runs."
+        description="Give AI clients authenticated access to projects, artifacts, versions, and comments. Choose the setup that matches where Houston Artifacts runs."
         eyebrow="Connections"
         title="Connect agents with MCP"
       />
@@ -56,7 +56,7 @@ export function McpScreen({administrator}: {readonly administrator: boolean}) {
 
       <div className="grid gap-4 xl:grid-cols-2">
         <ConnectionCard
-          description="Run this on the computer where Artifact Server and your AI client are installed. It detects Codex, Claude Code, Cursor, or VS Code, updates the client configuration, and verifies the connection."
+        description="Run this on the computer where Houston Artifacts and your AI client are installed. It detects Codex, Claude Code, Cursor, or VS Code, updates the client configuration, and verifies the connection."
           eyebrow="Local installation"
           title="Connect automatically"
         >

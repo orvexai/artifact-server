@@ -47,7 +47,7 @@ interface PreviewActions {
   readonly opening: boolean;
 }
 
-/** Render one exact immutable manifest entry in the Artifact Server preview surface. */
+/** Render one exact immutable manifest entry in the Houston Artifacts preview surface. */
 export function ReviewPreview({
   annotateModeActive,
   annotations,
@@ -216,7 +216,7 @@ export function ReviewPreview({
   return (
     <TerminalPreviewState
       actions={commonActions}
-      description="Artifact Server does not preview this declared media type."
+      description="Houston Artifacts does not preview this declared media type."
       mediaType={entry.mediaType}
       path={entry.path}
       size={entry.size}

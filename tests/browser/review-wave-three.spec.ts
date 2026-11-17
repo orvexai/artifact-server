@@ -9,7 +9,7 @@ import {
 } from "./browser-fixture.js";
 import {createReplyOverApi, createThreadOverApi} from "./comment-api.js";
 
-test.describe("Artifact Server Review wave three", () => {
+test.describe("Houston Artifacts Review wave three", () => {
   test("ART-010-B ART-010-F: Make current confirms, handles pointer conflicts, and preserves the exact review", async ({browser}) => {
     const fixture = await startBrowserFixture(browser);
     try {

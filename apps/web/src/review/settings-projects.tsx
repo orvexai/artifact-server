@@ -372,7 +372,7 @@ export function SettingsProject({
             <div>
               <h2 className="font-heading text-lg font-semibold" id="project-git-heading">Git history</h2>
               <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-                Cloudflare Artifacts keeps a derived Git repository for each artifact. Artifact Server remains the source of truth.
+              Cloudflare Artifacts keeps a derived Git repository for each artifact. Houston Artifacts remains the source of truth.
               </p>
             </div>
             <StatusBadge tone={gitSetting?.enabled === true ? "primary" : "neutral"}>

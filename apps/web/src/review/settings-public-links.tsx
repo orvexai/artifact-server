@@ -520,7 +520,7 @@ export function PublicLinksScreen() {
             </DialogTitle>
             <DialogDescription>
               New requests to successful items will require an admitted account. Copies already
-              downloaded or cached outside Artifact Server cannot be recalled.
+              downloaded or cached outside Houston Artifacts cannot be recalled.
             </DialogDescription>
           </DialogHeader>
           <p className="text-sm leading-6 text-muted-foreground">

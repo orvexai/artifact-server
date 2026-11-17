@@ -19,7 +19,7 @@ document.documentElement.classList.toggle("dark", initialTheme === "moon");
 const rootElement = document.querySelector("#review-root");
 
 if (!(rootElement instanceof HTMLElement)) {
-  throw new Error("Artifact Server could not find its root element.");
+  throw new Error("Houston Artifacts could not find its root element.");
 }
 
 createRoot(rootElement).render(
