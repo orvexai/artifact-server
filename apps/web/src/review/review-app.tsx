@@ -381,6 +381,17 @@ export function ReviewApp() {
   >("loading");
   const [error, setError] = useState<Error | null>(null);
   const [theme, setTheme] = useState<ReviewTheme>(readInitialTheme);
+  const changeTheme = useCallback(() => {
+    setTheme((current) => {
+      const nextTheme = current === "moon" ? "dawn" : "moon";
+      try {
+        window.localStorage.setItem("artifact-review-theme", nextTheme);
+      } catch {
+        // The theme still changes when storage is unavailable.
+      }
+      return nextTheme;
+    });
+  }, []);
 
   const bootstrap = useCallback(async (): Promise<void> => {
     if (bootstrapInFlightRef.current) return;
@@ -445,10 +456,27 @@ export function ReviewApp() {
   }, [bootstrap]);
 
   useEffect(() => {
-    document.documentElement.dataset["reviewTheme"] = theme;
-    document.documentElement.classList.toggle("dark", theme === "moon");
-    window.localStorage.setItem("artifact-review-theme", theme);
+    const root = document.documentElement;
+    root.dataset["reviewTheme"] = theme;
+    root.dataset["theme"] = theme === "dawn" ? "light" : "dark";
+    root.classList.toggle("dark", theme === "moon");
   }, [theme]);
+
+  useEffect(() => {
+    const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+    const followSystemTheme = (): void => {
+      let savedTheme: string | null = null;
+      try {
+        savedTheme = window.localStorage.getItem("artifact-review-theme");
+      } catch {
+        // Storage can be unavailable; keep following the device preference.
+      }
+      if (savedTheme === "dawn" || savedTheme === "moon") return;
+      setTheme(systemTheme.matches ? "moon" : "dawn");
+    };
+    systemTheme.addEventListener("change", followSystemTheme);
+    return () => systemTheme.removeEventListener("change", followSystemTheme);
+  }, []);
 
   const createProject = useCallback(async (name: string): Promise<Project> => {
     const created = await api.createProject(name);
@@ -505,7 +533,7 @@ export function ReviewApp() {
         <OrganizationSwitcher />
         <ReviewSettings
           onProjectsChanged={loadProjects}
-          onThemeChange={() => setTheme((current) => current === "moon" ? "dawn" : "moon")}
+          onThemeChange={changeTheme}
           projects={projects}
           session={session}
           theme={theme}
@@ -519,7 +547,7 @@ export function ReviewApp() {
       <OrganizationSwitcher />
       <ArtifactReview
         onCreateProject={createProject}
-        onThemeChange={() => setTheme((current) => current === "moon" ? "dawn" : "moon")}
+        onThemeChange={changeTheme}
         projects={projects}
         session={session}
         theme={theme}
@@ -2931,9 +2959,14 @@ function ReviewGate({
 }
 
 function readInitialTheme(): ReviewTheme {
-  return window.localStorage.getItem("artifact-review-theme") === "dawn"
-    ? "dawn"
-    : "moon";
+  let savedTheme: string | null = null;
+  try {
+    savedTheme = window.localStorage.getItem("artifact-review-theme");
+  } catch {
+    // Storage can be unavailable; continue with the device preference.
+  }
+  if (savedTheme === "dawn" || savedTheme === "moon") return savedTheme;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "moon" : "dawn";
 }
 
 function readInitialInspectorOpen(): boolean {

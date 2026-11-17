@@ -1,7 +1,7 @@
-import monoRegular from "@fontsource/atkinson-hyperlegible-mono/files/atkinson-hyperlegible-mono-latin-400-normal.woff2?url&inline";
-import sansBold from "@fontsource/atkinson-hyperlegible-next/files/atkinson-hyperlegible-next-latin-700-normal.woff2?url&inline";
-import sansItalic from "@fontsource/atkinson-hyperlegible-next/files/atkinson-hyperlegible-next-latin-400-italic.woff2?url&inline";
-import sansRegular from "@fontsource/atkinson-hyperlegible-next/files/atkinson-hyperlegible-next-latin-400-normal.woff2?url&inline";
+import interLatin from "@/brand/houston/fonts/inter-latin-wght-normal.woff2?url&inline";
+import interLatinExt from "@/brand/houston/fonts/inter-latin-ext-wght-normal.woff2?url&inline";
+import spaceGroteskLatin from "@/brand/houston/fonts/space-grotesk-latin-wght-normal.woff2?url&inline";
+import spaceGroteskLatinExt from "@/brand/houston/fonts/space-grotesk-latin-ext-wght-normal.woff2?url&inline";
 import DOMPurify, {type Config} from "dompurify";
 import {Marked, type Tokens} from "marked";
 
@@ -153,20 +153,18 @@ function documentParser(): Marked {
  * `color-scheme`; every token has a system-color fallback.
  *
  * The opaque-origin sandbox cannot fetch the application's font files, so
- * Review's own Atkinson Hyperlegible faces travel inside the document (about
- * 50 KB, latin subset) and the reader matches Review on every operating
- * system instead of depending on the local `system-ui` mapping.
+ * the self-hosted Houston faces travel inside the generated reader document.
  */
 const readerFontFaces = [
-  ["Atkinson Hyperlegible Next", "normal", 400, sansRegular],
-  ["Atkinson Hyperlegible Next", "italic", 400, sansItalic],
-  ["Atkinson Hyperlegible Next", "normal", 700, sansBold],
-  ["Atkinson Hyperlegible Mono", "normal", 400, monoRegular],
+  ["Inter", "normal", "100 900", interLatin, "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD"],
+  ["Inter", "normal", "100 900", interLatinExt, "U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF"],
+  ["Space Grotesk", "normal", "300 700", spaceGroteskLatin, "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD"],
+  ["Space Grotesk", "normal", "300 700", spaceGroteskLatinExt, "U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF"],
 ] as const;
 
 const readerFontStylesheet = readerFontFaces
-  .map(([family, style, weight, source]) =>
-    `@font-face { font-display: swap; font-family: "${family}"; font-style: ${style}; font-weight: ${weight}; src: url("${source}") format("woff2"); }`
+  .map(([family, style, weight, source, unicodeRange]) =>
+    `@font-face { font-display: swap; font-family: "${family}"; font-style: ${style}; font-weight: ${weight}; src: url("${source}") format("woff2"); unicode-range: ${unicodeRange}; }`
   )
   .join("\n");
 
@@ -183,8 +181,9 @@ const readerStylesheet = String.raw`
   --md-surface: color-mix(in oklab, var(--md-fg) 8%, var(--md-bg));
   --md-radius: 0.5rem;
   --md-gutter: clamp(1.25rem, 5vw, 3rem);
-  --md-font: "Atkinson Hyperlegible Next", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Noto Sans", Helvetica, Arial, sans-serif;
-  --md-mono: "Atkinson Hyperlegible Mono", ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --md-font: "Inter", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Helvetica, Arial, sans-serif;
+  --md-heading-font: "Space Grotesk", "Inter", ui-sans-serif, sans-serif;
+  --md-mono: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
   background: var(--md-bg);
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
@@ -209,6 +208,7 @@ body {
 .markdown-body > :last-child { margin-bottom: 0; }
 h1, h2, h3, h4, h5, h6 {
   color: var(--md-fg);
+  font-family: var(--md-heading-font);
   font-weight: 700;
   letter-spacing: -0.012em;
   line-height: 1.25;

@@ -41,10 +41,12 @@ const httpConnectionSchema = z.object({
 const managedCommandSchema = z.union([stdioConnectionSchema, httpConnectionSchema]);
 const registrationSchema = z.union([
   stdioConnectionSchema.extend({
+    adoptedFrom: managedCommandSchema.optional(),
     client: clientIdSchema,
     configuredAt: z.iso.datetime(),
   }),
   httpConnectionSchema.extend({
+    adoptedFrom: managedCommandSchema.optional(),
     client: clientIdSchema,
     configuredAt: z.iso.datetime(),
   }),
@@ -124,6 +126,7 @@ export type McpClientId = z.infer<typeof clientIdSchema>;
 /** Safe registration inspection for one supported client. */
 export interface McpClientRegistrationInspection {
   readonly client: McpClientId;
+  readonly endpoint: string | null;
   readonly installed: boolean;
   readonly managed: boolean;
 }
@@ -176,14 +179,18 @@ export async function connectMcpClient(
   const change = client === "codex" || client === "claude"
     ? await planNativeChange(client, owned, command, environment)
     : await planJsonChange(client, owned, command, environment);
+  const nextRegistration: Registration & {adoptedFrom?: ManagedCommand} = {
+    ...cloneConnection(command),
+    client,
+    configuredAt: new Date().toISOString(),
+  };
+  if (change.kind === "native" && change.before !== null && owned === undefined) {
+    nextRegistration.adoptedFrom = cloneConnection(change.before);
+  }
   const registrationAfter = {
     registrations: [
       ...state.registrations.filter((item) => item.client !== client),
-      {
-        ...cloneConnection(command),
-        client,
-        configuredAt: new Date().toISOString(),
-      },
+      nextRegistration,
     ],
     schemaVersion: 1 as const,
   };
@@ -208,7 +215,7 @@ export async function disconnectMcpClient(
   const owned = state.registrations.find((item) => item.client === client);
   if (owned === undefined) return false;
   const change = client === "codex" || client === "claude"
-    ? await planNativeChange(client, owned, null, environment)
+    ? await planNativeChange(client, owned, owned?.adoptedFrom ?? null, environment)
     : await planJsonChange(client, owned, null, environment);
   const registrationAfter = {
     registrations: state.registrations.filter((item) => item.client !== client),
@@ -233,10 +240,24 @@ export async function inspectMcpClientRegistrations(
     detectInstalledMcpClients(environment),
     readRegistrationState(dataDirectory),
   ]);
-  return clientIdSchema.options.map((client) => ({
-    client,
-    installed: installed.includes(client),
-    managed: state.registrations.some((item) => item.client === client),
+  return Promise.all(clientIdSchema.options.map(async (client) => {
+    let endpoint: string | null = null;
+    if ((client === "claude" || client === "codex") && installed.includes(client)) {
+      try {
+        const inspection = await inspectNativeClient(client, environment);
+        endpoint = inspection.parsed !== null && "url" in inspection.parsed
+          ? inspection.parsed.url
+          : null;
+      } catch {
+        endpoint = null;
+      }
+    }
+    return {
+      client,
+      endpoint,
+      installed: installed.includes(client),
+      managed: state.registrations.some((item) => item.client === client),
+    };
   }));
 }
 
@@ -276,7 +297,7 @@ async function planNativeChange(
   environment: NodeJS.ProcessEnv,
 ): Promise<z.infer<typeof nativeClientChangeSchema>> {
   const current = await inspectNativeClient(client, environment);
-  if (current.exists && owned === undefined) {
+  if (current.exists && owned === undefined && !isAdoptableLoopbackEntry(current.parsed)) {
     throw new Error(
       `${displayName(client)} already has an unmanaged ${managedServerName} entry.`,
     );
@@ -284,16 +305,29 @@ async function planNativeChange(
   const before = owned === undefined || !current.exists
     ? null
     : cloneConnection(owned);
-  if (current.exists && !nativeInspectionMatches(current, before)) {
+  const adoptedBefore = owned === undefined && isAdoptableLoopbackEntry(current.parsed)
+    ? cloneConnection(current.parsed)
+    : before;
+  if (current.exists && !nativeInspectionMatches(current, adoptedBefore)) {
     throw new Error(
       `${displayName(client)}'s ${managedServerName} entry changed after Artifact Server created it.`,
     );
   }
   return {
     after: after === null ? null : cloneConnection(after),
-    before,
+    before: adoptedBefore,
     kind: "native",
   };
+}
+
+function isAdoptableLoopbackEntry(
+  command: ManagedCommand | null,
+): command is Extract<ManagedCommand, {url: string}> {
+  if (command === null || !("url" in command)) return false;
+  const match = /^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})\/mcp$/u.exec(command.url);
+  if (match === null) return false;
+  const port = Number(match[1]);
+  return port <= 65_535;
 }
 
 async function planJsonChange(

@@ -49,27 +49,24 @@ test.describe("Houston Artifacts frontend MVP", () => {
       const tenantReview = new URL("/o/orvex/review", fixture.server.baseUrl);
       const hrefs = await fixture.page.locator(
         'link[rel~="icon"], link[rel="apple-touch-icon"], link[rel="manifest"]',
-      ).evaluateAll((links) => links.map((link) => link.getAttribute("href")));
+      ).evaluateAll((links) => links
+        .map((link) => link.getAttribute("href"))
+        .filter((href): href is string => href !== null));
       expect(hrefs).toEqual([
         "./favicon.svg",
         "./favicon.ico",
         "./apple-touch-icon-180.png",
         "./site.webmanifest",
       ]);
-      for (const href of hrefs) {
-        expect(href).not.toBeNull();
-        expect(new URL(href!, tenantReview).pathname).toMatch(/^\/o\/orvex\//u);
-      }
-
-      const manifest = JSON.parse(await readFile(
+      const manifest = z.object({
+        id: z.string(),
+        icons: z.array(z.object({src: z.string()})),
+        scope: z.string(),
+        start_url: z.string(),
+      }).parse(JSON.parse(await readFile(
         new URL("../../apps/web/public/site.webmanifest", import.meta.url),
         "utf8",
-      )) as {
-        readonly id: string;
-        readonly icons: readonly {readonly src: string}[];
-        readonly scope: string;
-        readonly start_url: string;
-      };
+      )));
       expect(manifest.id).toBe("./");
       expect(manifest.scope).toBe("./");
       expect(manifest.start_url).toBe("./review");
@@ -88,14 +85,14 @@ test.describe("Houston Artifacts frontend MVP", () => {
         ["icon-512.png", "image/png"],
         ["maskable-512.png", "image/png"],
       ] as const;
-      for (const [assetPath, contentType] of brandingAssets) {
+      await Promise.all(brandingAssets.map(async ([assetPath, contentType]) => {
         const rootResponse = await fixture.page.request.get(
           new URL(`/${assetPath}`, fixture.server.baseUrl).toString(),
         );
         expect(rootResponse.status(), `root /${assetPath}`).toBe(200);
         expect(rootResponse.headers()["content-type"], `root /${assetPath}`)
           .toContain(contentType);
-      }
+      }));
     } finally {
       await stopBrowserFixture(fixture);
     }
@@ -667,6 +664,8 @@ test.describe("Houston Artifacts frontend MVP", () => {
       expect(accessibility.violations).toEqual([]);
 
       await fixture.page.getByRole("button", {name: /^Interact mode:/u}).click();
+      await fixture.page.getByRole("button", {name: "Use dark theme"}).click();
+      await expect(fixture.page.locator("html")).toHaveAttribute("data-review-theme", "moon");
       await preview.locator("#review-theme-target").click();
       const themedCommentPopover = reviewFrame.locator('[data-comment-popover="true"]');
       await expect(themedCommentPopover).toBeVisible();
@@ -1536,7 +1535,7 @@ test.describe("Houston Artifacts frontend MVP", () => {
       await expect(fixture.page.getByText(secretValue ?? "missing-secret")).toHaveCount(0);
       expect(await browserStorage(fixture.page)).toEqual({
         indexedDatabaseNames: [],
-        localStorageKeys: ["artifact-review-theme"],
+        localStorageKeys: [],
         sessionStorageKeys: ["artifact-review-return-url"],
       });
 

@@ -269,7 +269,6 @@ test.describe("PRS-006 presence avatar", () => {
         indexedDatabaseNames: [],
         localStorageKeys: [
           expect.stringMatching(/^dispatch-default:/u),
-          "artifact-review-theme",
         ],
         sessionStorageKeys: ["artifact-review-return-url"],
       });

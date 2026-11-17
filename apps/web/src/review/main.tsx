@@ -11,10 +11,9 @@ import "./review.css";
 // logout purge must not depend on which screen is mounted.
 installDraftGuard();
 
-const initialTheme = window.localStorage.getItem("artifact-review-theme") === "dawn"
-  ? "dawn"
-  : "moon";
+const initialTheme = readInitialTheme();
 document.documentElement.dataset["reviewTheme"] = initialTheme;
+document.documentElement.dataset["theme"] = initialTheme === "dawn" ? "light" : "dark";
 document.documentElement.classList.toggle("dark", initialTheme === "moon");
 
 const rootElement = document.querySelector("#review-root");
@@ -28,3 +27,14 @@ createRoot(rootElement).render(
     <ReviewApp />
   </StrictMode>,
 );
+
+function readInitialTheme(): "dawn" | "moon" {
+  let savedTheme: string | null = null;
+  try {
+    savedTheme = window.localStorage.getItem("artifact-review-theme");
+  } catch {
+    // Storage can be unavailable; continue with the device preference.
+  }
+  if (savedTheme === "dawn" || savedTheme === "moon") return savedTheme;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "moon" : "dawn";
+}
