@@ -10,6 +10,7 @@ import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import {routePath} from "hono/route";
+import {houstonServerPageMark, houstonServerPageStyles} from "../shared/houston-server-pages.js";
 import {validateEmbedOrigins} from "./embed-origins.js";
 import { z } from "zod";
 
@@ -564,8 +565,14 @@ function isPlatformLoginReturnTo(value: string): boolean {
   }
 }
 
-function renderIdentityAdmissionDeniedPage(): string {
-  return "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>Sign-in unavailable</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f8f7fa;color:#211f26;font:16px/1.5 ui-sans-serif,system-ui,sans-serif}.card{width:min(100% - 40px,440px);padding:32px;border:1px solid #e4e1e8;border-radius:12px;background:white;box-shadow:0 12px 36px #211f2612}h1{margin:0 0 12px;font-size:26px;line-height:1.2}p{color:#625e69}.actions{display:flex;gap:20px;align-items:center;margin-top:24px}a,button{font:inherit}a{color:#5140a3}button{border:0;padding:0;background:none;color:#625e69;text-decoration:underline;cursor:pointer}@media(prefers-color-scheme:dark){body{background:#17151b;color:#f5f2f8}.card{background:#24212a;border-color:#393540}p,button{color:#c3bdca}}</style></head><body><main class=\"card\"><h1>We couldn’t sign you in to Orvex</h1><p>Your account does not have access to this organization.</p><div class=\"actions\"><a href=\"/\">Choose another organization</a><form method=\"post\" action=\"/api/v1/platform/session/logout\"><button type=\"submit\">Sign out</button></form></div></main></body></html>";
+function renderIdentityAdmissionDeniedPage(fontBase = "/assets/fonts/houston/"): string {
+  const styles = houstonServerPageStyles(fontBase) +
+    ".card{width:min(100% - 40px,440px);padding:32px;border:1px solid var(--page-border);border-radius:12px;background:var(--page-surface);box-shadow:0 12px 36px #0f172a12}.card h1{margin:0 0 12px;font-size:26px;line-height:1.2}.card p{color:var(--page-secondary)}.actions{display:flex;gap:20px;align-items:center;margin-top:24px}.actions a,.actions button{font:inherit}.actions a{color:var(--page-accent-text)}.actions button{border:0;padding:0;background:none;color:var(--page-secondary);text-decoration:underline;cursor:pointer}";
+  return "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>Houston Artifacts — Sign-in unavailable</title><style>" +
+    styles +
+    "</style></head><body><main class=\"shell\"><section class=\"card\"><div class=\"top\">" +
+    houstonServerPageMark() +
+    "<span class=\"brand\">Houston Artifacts</span></div><h1>We couldn’t sign you in to Houston Artifacts</h1><p>Your account does not have access to this organization.</p><div class=\"actions\"><a href=\"/\">Choose another organization</a><form method=\"post\" action=\"/api/v1/platform/session/logout\"><button type=\"submit\">Sign out</button></form></div></section></main></body></html>";
 }
 
 export interface HttpAppDependencies {
@@ -1594,9 +1601,13 @@ export function createHttpApp(
         if (response.code === errorCodes.identityAdmissionDenied &&
           (context.req.header("accept") ?? "").split(",").some((value) => value.trim().startsWith("text/html"))
         ) {
-          return new Response(renderIdentityAdmissionDeniedPage(), {status: response.status, headers: {
+          return new Response(renderIdentityAdmissionDeniedPage(
+            dependencies.organizationSlug === undefined
+              ? "/assets/fonts/houston/"
+              : "/o/" + encodeURIComponent(dependencies.organizationSlug) + "/assets/fonts/houston/",
+          ), {status: response.status, headers: {
             "Cache-Control": "private, no-store",
-            "Content-Security-Policy": "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'",
+            "Content-Security-Policy": "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'; font-src 'self'",
             "Content-Type": "text/html; charset=utf-8",
           }});
         }
