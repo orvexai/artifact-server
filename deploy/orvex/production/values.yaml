@@ -1,0 +1,50 @@
+replicaCount: 2
+image:
+  repository: repos.eu-central-1.myidp.cloud/artifact-server/artifact-server
+  digest: sha256:12c478cd02bbdd95b4b4707b6cfc99d6860c9a852117572953a10eecc3ce46e1
+  tag: "orvex-v0.1.16"
+  pullPolicy: IfNotPresent
+imagePullSecrets:
+  - name: registry-pull
+configuration:
+  installationId: orvex-artifacts
+  bootstrapAdministratorEmail: ""
+  applicationOrigin: https://artifacts.orvex.ai
+  contentDomain: houstonartifacts.com
+  postgresConnectionBudget: 23
+  postgresPoolSize: 10
+  s3:
+    bucket: "$(BUCKET_NAME)"
+    region: us-east-1
+    endpoint: "http://$(BUCKET_HOST):$(BUCKET_PORT)"
+    forcePathStyle: true
+secret:
+  name: artifact-server-runtime
+  keys:
+    apiToken: api-token
+    databaseUrl: database-url
+    s3AccessKeyId: s3-access-key-id
+    s3SecretAccessKey: s3-secret-access-key
+    oidcDirectoryClientSecret: oidc-directory-client-secret
+    embedBindingSecret: embed-binding-secret
+identity:
+  oidcClientId: artifact-server
+  oidcIssuer: https://auth.eu-central-1.myidp.cloud/realms/my-idp
+  oidcServiceClients:
+    - houston-v2-backend
+    - tenant-cli
+  oidcEmbedBindClients:
+    - houston-v2-backend
+  oidcGroupsClaim: group_paths,groups
+  oidcGroupRoleSeed:
+    - Administrators=owner
+    - Developers=operator
+  oidcDirectoryProvider: keycloak
+  oidcDirectoryClientId: artifact-server-directory
+  oidcDirectoryKeycloakUrl: https://auth.eu-central-1.myidp.cloud
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi

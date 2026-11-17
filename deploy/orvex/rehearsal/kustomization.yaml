@@ -1,0 +1,97 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: artifact-server-rehearsal
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: artifact-server
+    includeSelectors: false
+resources:
+  - env-values.yaml
+  - object-storage.yaml
+  - database.yaml
+  - runtime-secret.yaml
+  - chart.yaml
+patches:
+  - target:
+      kind: Deployment
+      name: artifact-server
+    patch: |-
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1sync-wave
+        value: "6"
+      - op: add
+        path: /metadata/annotations/secret.reloader.stakater.com~1reload
+        value: artifact-server-runtime
+      - op: add
+        path: /spec/template/spec/containers/0/env/0
+        value:
+          name: BUCKET_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: artifact-server-rehearsal-storage
+              key: BUCKET_HOST
+      - op: add
+        path: /spec/template/spec/containers/0/env/1
+        value:
+          name: BUCKET_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: artifact-server-rehearsal-storage
+              key: BUCKET_PORT
+      - op: add
+        path: /spec/template/spec/containers/0/env/2
+        value:
+          name: BUCKET_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: artifact-server-rehearsal-storage
+              key: BUCKET_NAME
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: ARTIFACT_SERVER_S3_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: artifact-server-rehearsal-storage
+              key: AWS_ACCESS_KEY_ID
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: ARTIFACT_SERVER_S3_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: artifact-server-rehearsal-storage
+              key: AWS_SECRET_ACCESS_KEY
+  - target:
+      kind: CronJob
+      name: artifact-server-cleanup-staging
+    patch: |-
+      - op: add
+        path: /spec/suspend
+        value: true
+  - target:
+      kind: Job
+      name: artifact-server-migrate
+    patch: |-
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1hook
+        value: Sync
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1sync-wave
+        value: "5"
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1hook-delete-policy
+        value: BeforeHookCreation
+replacements:
+  - source:
+      kind: ConfigMap
+      name: env-values
+      fieldPath: data.secretPath
+    targets:
+      - select:
+          kind: ExternalSecret
+        fieldPaths:
+          - spec.data.*.remoteRef.key
+        options:
+          delimiter: /
+          index: 0

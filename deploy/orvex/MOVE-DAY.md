@@ -1,0 +1,108 @@
+# Artifact Server move-day steps
+
+For Bring-up. Run only after the Team Leader's GO between steps. Print counts, statuses, object
+names and sizes only. Never print secret values or credentials.
+
+## Stage 1: Thursday 26 November 2026
+
+### Carried at the move: confirmed names and path
+
+| Name and OpenBao path | Owner | Reason |
+|---|---|---|
+| `oidc-directory-client-secret`, `apps/artifact-server/oidc` | C1-4 carry via QMK TL3 | Must match today's production Keycloak directory-sync client registration. |
+| `bootstrap-admin-email`, `apps/artifact-server/oidc` | C1-4 carry via QMK TL3 | The app requires a valid address at startup; must equal today's because the first admin policy and the local-owner path use it. |
+
+No values or hashes belong in this list. The move-day read token is limited to these carried properties.
+
+### Stage 1 GO check
+
+Stage-1 GO: bootstrap admin address present in the secret store and valid (checked by name, never printed).
+
+### GO check: re-resolve today's Keycloak
+
+Hostname: `auth.eu-central-1.myidp.cloud`. On Wednesday 25 November and again on Thursday 26
+November morning, record `date -u` and the complete sorted A-record set from a read-only DNS lookup.
+Compare each answer with the prior recorded set. The baseline lookup was Tue 17 Nov 2026 at
+18:30:58Z: `104.21.80.137`, `172.67.183.128`. Re-resolved Tue 17 Nov 2026 at 19:17:15Z;
+the sorted A records were unchanged: `104.21.80.137`, `172.67.183.128`. ARIN RDAP at Tue 17 Nov 2026 18:35:19Z reports
+both addresses as Cloudflare, Inc. (`CLOUDFLARENET`). If the set changes, open a one-line PR that
+morning and tell QMK through the Team Leader before proceeding.
+
+Pending: `app.yaml` lists `artifacts.orvex.ai` only until the schema allows one leading wildcard
+label. Recommended option (a) is pending the Captain; the chart and HTTPRoute retain the content
+wildcard `*.houstonartifacts.com`.
+
+These are shared Cloudflare anycast addresses. A `/32:443` policy for both addresses lets every
+site behind either address be reached from the Artifact Server namespace, not only Keycloak. The
+rendered D107 `orvex-allow-internet` already allows every app namespace public internet egress
+(`0.0.0.0/0` and `::/0`, except private, link-local, node, pod, service and LB-pool ranges) until
+the egress gateway. The Artifact Server door documents the Keycloak address; it adds no reachability
+and restricts none. No D107 rule is changed here.
+
+If the addresses change at the wrong moment, sign-in to today's Keycloak breaks. The fallback is a
+one-line PR to correct the recorded addresses, or stage 1 without Artifact Server sign-in; the
+Captain decides on the day. Do not guess or widen the address set.
+
+### Rehearsal handling
+
+Do not restore data until the rehearsal no-outbound-secret and worker-suspended checks are merged
+and verified. Immediately after the cutover, delete the rehearsal environment using MA-21 tooling;
+if it is not ready, the platform engineer deletes the rehearsal by hand. The rehearsal has no
+hostname and no external door. Its database is never archived.
+
+After a rehearsal restore and before port-forwarding, scrub credential-bearing data from the
+rehearsal database. Credential-bearing fields found in the schema (table.column only):
+
+- `versions.content_token`
+- `staged_upload_files.storage_token`
+- `content_bootstraps.token_digest`, `content_bootstraps.content_token`
+- `content_sessions.token_digest`, `content_sessions.content_token`
+- `application_sessions.token_digest`, `application_sessions.csrf_digest`
+- `managed_api_keys.secret_digest`
+- `login_attempts.state_digest`, `login_attempts.code_verifier`
+- `guest_review_invitations.token_digest`
+- `guest_review_sessions.token_digest`, `guest_review_sessions.csrf_digest`
+- `artifact_platform_sessions.token_digest`
+
+In one transaction against only `artifactserver` in namespace `artifact-server-rehearsal`, rotate
+all `versions.content_token` values to fresh random values to invalidate existing content URLs;
+delete all staged upload file rows before their staging parent rows; and delete rows from
+`content_bootstraps`, `content_sessions`, `application_sessions`, `managed_api_keys`,
+`login_attempts`, `guest_review_invitations`, `guest_review_sessions`, and
+`artifact_platform_sessions`. Print table names and row counts only. Do not copy production tokens or
+any secret values to a file or command argument.
+
+### Production hand-sync backup
+
+After the production database data is loaded on Manchester and before stage 1 is declared done,
+apply this one-time `Backup` manifest:
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  name: artifact-server-stage-1-base
+  namespace: artifact-server
+spec:
+  method: plugin
+  cluster:
+    name: artifact-server-db
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+```
+
+Confirm both evidence lines before the Team Leader declares the stage done:
+
+1. `kubectl -n artifact-server get backup artifact-server-stage-1-base -o jsonpath='{.status.phase}'`
+   reports `completed`, and the current primary's instance log has the plugin upload-complete line.
+2. QMK's TL3 or the Captain performs a list-only read of the exact backup folder in Backblaze and
+   records object names and sizes. An empty or missing folder means STOP.
+
+The routine daily base-backup schedule is 12:00 UTC, outside QMK's 23:30-07:00 UTC copy window.
+QMK's TL3 must receive the database name, UTC start and expected size, with the Captain copied,
+before the first scheduled base backup.
+
+## Stage 2: Friday 27 November 2026
+
+In the stage 2 change itself: remove external door (stage 2 change). Remove both production-only external address entries. Owner: TL; tracking bead `quornex-74w`. Confirm the new Manchester Keycloak issuer and directory URL
+render, then remove the rehearsal immediately as above.

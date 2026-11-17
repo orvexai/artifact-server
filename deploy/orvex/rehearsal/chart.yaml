@@ -1,0 +1,434 @@
+---
+# Source: artifact-server/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: artifact-server
+  labels:
+    helm.sh/chart: artifact-server-0.1.18
+    app.kubernetes.io/name: artifact-server
+    app.kubernetes.io/instance: artifact-server
+    app.kubernetes.io/version: "0.1.18"
+    app.kubernetes.io/managed-by: Helm
+automountServiceAccountToken: false
+
+---
+# Source: artifact-server/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: artifact-server
+  labels:
+    helm.sh/chart: artifact-server-0.1.18
+    app.kubernetes.io/name: artifact-server
+    app.kubernetes.io/instance: artifact-server
+    app.kubernetes.io/version: "0.1.18"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: artifact-server
+    app.kubernetes.io/instance: artifact-server
+    app.kubernetes.io/component: server
+
+---
+# Source: artifact-server/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: artifact-server
+  labels:
+    helm.sh/chart: artifact-server-0.1.18
+    app.kubernetes.io/name: artifact-server
+    app.kubernetes.io/instance: artifact-server
+    app.kubernetes.io/version: "0.1.18"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: server
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  minReadySeconds: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: artifact-server
+      app.kubernetes.io/instance: artifact-server
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      annotations:
+        artifactserver.com/configuration-checksum: "5a7a41ae75472ef5a426c4284792830388c172ee1b30f910e5fad1196689bd44"
+        artifactserver.com/secret-rollout-checksum: "unmanaged"
+        artifactserver.com/rollout-revision: "initial"
+      labels:
+        app.kubernetes.io/name: artifact-server
+        app.kubernetes.io/instance: artifact-server
+        app.kubernetes.io/component: server
+    spec:
+      serviceAccountName: artifact-server
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: registry-pull
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: "kubernetes.io/hostname"
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: artifact-server
+              app.kubernetes.io/instance: artifact-server
+              app.kubernetes.io/component: server
+      containers:
+        - name: artifact-server
+          image: "repos.eu-central-1.myidp.cloud/artifact-server/artifact-server@sha256:12c478cd02bbdd95b4b4707b6cfc99d6860c9a852117572953a10eecc3ce46e1"
+          imagePullPolicy: IfNotPresent
+          args:
+            - start-external-storage
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8787"
+          env:
+            - name: ARTIFACT_SERVER_API_TOKEN_FILE
+              value: /run/secrets/artifact-server/api-token
+            - name: ARTIFACT_SERVER_EMBED_BINDING_SECRET_FILE
+              value: /run/secrets/artifact-server/embed-binding-secret
+            - name: ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL
+              value: "rehearsal-admin@example.invalid"
+            - name: ARTIFACT_SERVER_CONTENT_DOMAIN
+              value: "artifact-server-content-rehearsal.invalid"
+            - name: ARTIFACT_SERVER_DATABASE_URL_FILE
+              value: /run/secrets/artifact-server/database-url
+            - name: ARTIFACT_SERVER_INSTALLATION_ID
+              value: "orvex-artifacts-rehearsal"
+            - name: ARTIFACT_SERVER_ORIGIN
+              value: "https://artifact-server-rehearsal.invalid"
+            - name: ARTIFACT_SERVER_ORG_TENANCY
+              value: "off"
+            - name: ARTIFACT_SERVER_OBJECT_STORAGE_PROVIDER
+              value: "s3"
+            - name: ARTIFACT_SERVER_POSTGRES_MAX_CONNECTIONS
+              value: "5"
+            - name: ARTIFACT_SERVER_READINESS_WITHDRAWAL_MS
+              value: "1000"
+            - name: ARTIFACT_SERVER_REQUEST_LOG_SAMPLE_RATE
+              value: "0.01"
+            - name: ARTIFACT_SERVER_S3_BUCKET
+              value: "$(BUCKET_NAME)"
+            - name: ARTIFACT_SERVER_S3_FORCE_PATH_STYLE
+              value: "true"
+            - name: ARTIFACT_SERVER_S3_REGION
+              value: "us-east-1"
+            - name: ARTIFACT_SERVER_SHUTDOWN_DEADLINE_MS
+              value: "10000"
+            - name: ARTIFACT_SERVER_STAGING_CLEANUP_BATCH_SIZE
+              value: "100"
+            - name: ARTIFACT_SERVER_STAGING_CLEANUP_CONCURRENCY
+              value: "4"
+            - name: ARTIFACT_SERVER_STAGING_CLEANUP_SCHEDULE
+              value: "external"
+            - name: ARTIFACT_SERVER_STAGING_CLEANUP_SETTLE_DELAY_MS
+              value: "300000"
+            - name: ARTIFACT_SERVER_S3_ENDPOINT
+              value: "http://$(BUCKET_HOST):$(BUCKET_PORT)"
+            - name: ARTIFACT_SERVER_OIDC_CLIENT_ID
+              value: "artifact-server-rehearsal"
+            - name: ARTIFACT_SERVER_OIDC_ISSUER
+              value: "https://auth.eu-central-1.myidp.cloud/realms/my-idp"
+          ports:
+            - name: http
+              containerPort: 8787
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 3
+            timeoutSeconds: 1
+            failureThreshold: 2
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: runtime-secrets
+              mountPath: /run/secrets/artifact-server
+              readOnly: true
+            - name: temporary
+              mountPath: /tmp
+      volumes:
+        - name: runtime-secrets
+          secret:
+            secretName: "artifact-server-runtime"
+            defaultMode: 288
+            items:
+              - key: "api-token"
+                path: api-token
+              - key: "database-url"
+                path: database-url
+              - key: "embed-binding-secret"
+                path: embed-binding-secret
+        - name: temporary
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+
+---
+# Source: artifact-server/templates/cleanup-cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: artifact-server-cleanup-staging
+  labels:
+    helm.sh/chart: artifact-server-0.1.18
+    app.kubernetes.io/name: artifact-server
+    app.kubernetes.io/instance: artifact-server
+    app.kubernetes.io/version: "0.1.18"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: cleanup
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: artifact-server
+            app.kubernetes.io/instance: artifact-server
+            app.kubernetes.io/component: cleanup
+        spec:
+          restartPolicy: Never
+          serviceAccountName: artifact-server
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          imagePullSecrets:
+            - name: registry-pull
+          containers:
+            - name: cleanup-staging
+              image: "repos.eu-central-1.myidp.cloud/artifact-server/artifact-server@sha256:12c478cd02bbdd95b4b4707b6cfc99d6860c9a852117572953a10eecc3ce46e1"
+              imagePullPolicy: IfNotPresent
+              args:
+                - maintenance
+                - cleanup-staging
+                - --once
+                - --mode
+                - external-storage
+                - --limit
+                - "100"
+              env:
+                - name: ARTIFACT_SERVER_API_TOKEN_FILE
+                  value: /run/secrets/artifact-server/api-token
+                - name: ARTIFACT_SERVER_EMBED_BINDING_SECRET_FILE
+                  value: /run/secrets/artifact-server/embed-binding-secret
+                - name: ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL
+                  value: "rehearsal-admin@example.invalid"
+                - name: ARTIFACT_SERVER_CONTENT_DOMAIN
+                  value: "artifact-server-content-rehearsal.invalid"
+                - name: ARTIFACT_SERVER_DATABASE_URL_FILE
+                  value: /run/secrets/artifact-server/database-url
+                - name: ARTIFACT_SERVER_INSTALLATION_ID
+                  value: "orvex-artifacts-rehearsal"
+                - name: ARTIFACT_SERVER_ORIGIN
+                  value: "https://artifact-server-rehearsal.invalid"
+                - name: ARTIFACT_SERVER_ORG_TENANCY
+                  value: "off"
+                - name: ARTIFACT_SERVER_OBJECT_STORAGE_PROVIDER
+                  value: "s3"
+                - name: ARTIFACT_SERVER_POSTGRES_MAX_CONNECTIONS
+                  value: "5"
+                - name: ARTIFACT_SERVER_READINESS_WITHDRAWAL_MS
+                  value: "1000"
+                - name: ARTIFACT_SERVER_REQUEST_LOG_SAMPLE_RATE
+                  value: "0.01"
+                - name: ARTIFACT_SERVER_S3_BUCKET
+                  value: "$(BUCKET_NAME)"
+                - name: ARTIFACT_SERVER_S3_FORCE_PATH_STYLE
+                  value: "true"
+                - name: ARTIFACT_SERVER_S3_REGION
+                  value: "us-east-1"
+                - name: ARTIFACT_SERVER_SHUTDOWN_DEADLINE_MS
+                  value: "10000"
+                - name: ARTIFACT_SERVER_STAGING_CLEANUP_BATCH_SIZE
+                  value: "100"
+                - name: ARTIFACT_SERVER_STAGING_CLEANUP_CONCURRENCY
+                  value: "4"
+                - name: ARTIFACT_SERVER_STAGING_CLEANUP_SCHEDULE
+                  value: "external"
+                - name: ARTIFACT_SERVER_STAGING_CLEANUP_SETTLE_DELAY_MS
+                  value: "300000"
+                - name: ARTIFACT_SERVER_S3_ENDPOINT
+                  value: "http://$(BUCKET_HOST):$(BUCKET_PORT)"
+                - name: ARTIFACT_SERVER_OIDC_CLIENT_ID
+                  value: "artifact-server-rehearsal"
+                - name: ARTIFACT_SERVER_OIDC_ISSUER
+                  value: "https://auth.eu-central-1.myidp.cloud/realms/my-idp"
+              resources:
+                limits:
+                  memory: 1Gi
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                  - ALL
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: runtime-secrets
+                  mountPath: /run/secrets/artifact-server
+                  readOnly: true
+                - name: temporary
+                  mountPath: /tmp
+          volumes:
+            - name: runtime-secrets
+              secret:
+                secretName: "artifact-server-runtime"
+                defaultMode: 288
+                items:
+                  - key: "api-token"
+                    path: api-token
+                  - key: "database-url"
+                    path: database-url
+                  - key: "embed-binding-secret"
+                    path: embed-binding-secret
+            - name: temporary
+              emptyDir:
+                medium: Memory
+                sizeLimit: 64Mi
+---
+# Source: artifact-server/templates/migration-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: artifact-server-migrate
+  labels:
+    helm.sh/chart: artifact-server-0.1.18
+    app.kubernetes.io/name: artifact-server
+    app.kubernetes.io/instance: artifact-server
+    app.kubernetes.io/version: "0.1.18"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: migration
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  activeDeadlineSeconds: 300
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: artifact-server
+        app.kubernetes.io/instance: artifact-server
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: registry-pull
+      containers:
+        - name: migrate
+          image: "repos.eu-central-1.myidp.cloud/artifact-server/artifact-server@sha256:12c478cd02bbdd95b4b4707b6cfc99d6860c9a852117572953a10eecc3ce46e1"
+          imagePullPolicy: IfNotPresent
+          args:
+            - migrate
+            - apply
+          env:
+            - name: ARTIFACT_SERVER_DATABASE_URL_FILE
+              value: /run/secrets/artifact-server/database-url
+            - name: ARTIFACT_SERVER_INSTALLATION_ID
+              value: "orvex-artifacts-rehearsal"
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: database-secret
+              mountPath: /run/secrets/artifact-server
+              readOnly: true
+            - name: temporary
+              mountPath: /tmp
+      volumes:
+        - name: database-secret
+          secret:
+            secretName: "artifact-server-runtime"
+            defaultMode: 288
+            items:
+              - key: "database-url"
+                path: database-url
+        - name: temporary
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi

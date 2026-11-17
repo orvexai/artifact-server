@@ -70,7 +70,14 @@
       ],
       "properties": {
         "installationId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"},
-        "bootstrapAdministratorEmail": {"type": "string", "format": "email"},
+        "bootstrapAdministratorEmail": {
+          "description": "A valid email when configured as a value; an empty string is allowed when the deployment injects ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL from a secret.",
+          "type": "string",
+          "anyOf": [
+            {"const": ""},
+            {"format": "email"}
+          ]
+        },
         "applicationOrigin": {"type": "string", "pattern": "^https://[^/\\s]+$"},
         "contentDomain": {"type": "string", "pattern": "^[A-Za-z0-9.-]+$"},
         "postgresConnectionBudget": {"type": "integer", "minimum": 1, "maximum": 100000},

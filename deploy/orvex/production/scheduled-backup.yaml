@@ -1,0 +1,18 @@
+# Daily base backup at 12:00 UTC, outside QMK's 23:30-07:00 UTC copy window.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: artifact-server-db-daily
+  labels:
+    app.kubernetes.io/name: artifact-server
+    app.kubernetes.io/component: database
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  schedule: "0 0 12 * * *"
+  backupOwnerReference: self
+  cluster:
+    name: artifact-server-db
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io

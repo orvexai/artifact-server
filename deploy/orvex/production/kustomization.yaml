@@ -1,0 +1,245 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: artifact-server
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: artifact-server
+    includeSelectors: false
+resources:
+  - env-values.yaml
+  - object-storage.yaml
+  - database.yaml
+  - runtime-secret.yaml
+  - chart.yaml
+  - scheduled-backup.yaml
+  - routes.yaml
+patches:
+  - target:
+      kind: Deployment
+      name: artifact-server
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: artifact-server
+      spec:
+        template:
+          spec:
+            containers:
+              - name: artifact-server
+                env:
+                  - name: ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL
+                    $patch: replace
+                    valueFrom:
+                      secretKeyRef:
+                        name: artifact-server-runtime
+                        key: bootstrap-admin-email
+  - target:
+      kind: Deployment
+      name: artifact-server
+    patch: |-
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1sync-wave
+        value: "6"
+      - op: add
+        path: /metadata/annotations/secret.reloader.stakater.com~1reload
+        value: artifact-server-runtime
+      - op: add
+        path: /spec/template/spec/containers/0/env/0
+        value:
+          name: BUCKET_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: artifact-server-storage
+              key: BUCKET_HOST
+      - op: add
+        path: /spec/template/spec/containers/0/env/1
+        value:
+          name: BUCKET_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: artifact-server-storage
+              key: BUCKET_PORT
+      - op: add
+        path: /spec/template/spec/containers/0/env/2
+        value:
+          name: BUCKET_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: artifact-server-storage
+              key: BUCKET_NAME
+  - target:
+      kind: CronJob
+      name: artifact-server-cleanup-staging
+    patch: |-
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1sync-wave
+        value: "6"
+      - op: add
+        path: /spec/jobTemplate/spec/template/spec/containers/0/env/0
+        value:
+          name: BUCKET_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: artifact-server-storage
+              key: BUCKET_HOST
+      - op: add
+        path: /spec/jobTemplate/spec/template/spec/containers/0/env/1
+        value:
+          name: BUCKET_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: artifact-server-storage
+              key: BUCKET_PORT
+      - op: add
+        path: /spec/jobTemplate/spec/template/spec/containers/0/env/2
+        value:
+          name: BUCKET_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: artifact-server-storage
+              key: BUCKET_NAME
+  - target:
+      kind: CronJob
+      name: artifact-server-sync-directory
+    patch: |-
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1sync-wave
+        value: "6"
+  - target:
+      kind: CronJob
+      name: artifact-server-cleanup-staging
+    patch: |-
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: artifact-server-cleanup-staging
+      spec:
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                containers:
+                  - name: cleanup-staging
+                    env:
+                      - name: ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL
+                        $patch: replace
+                        valueFrom:
+                          secretKeyRef:
+                            name: artifact-server-runtime
+                            key: bootstrap-admin-email
+  - target:
+      kind: CronJob
+      name: artifact-server-sync-directory
+    patch: |-
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: artifact-server-sync-directory
+      spec:
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                containers:
+                  - name: sync-directory
+                    env:
+                      - name: ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL
+                        $patch: replace
+                        valueFrom:
+                          secretKeyRef:
+                            name: artifact-server-runtime
+                            key: bootstrap-admin-email
+  - target:
+      kind: Job
+      name: artifact-server-migrate
+    patch: |-
+      - op: remove
+        path: /metadata/annotations/helm.sh~1hook
+      - op: remove
+        path: /metadata/annotations/helm.sh~1hook-weight
+      - op: remove
+        path: /metadata/annotations/helm.sh~1hook-delete-policy
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1hook
+        value: Sync
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1sync-wave
+        value: "5"
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1hook-delete-policy
+        value: BeforeHookCreation
+replacements:
+  - source:
+      kind: ConfigMap
+      name: env-values
+      fieldPath: data.secretPath
+    targets:
+      - select:
+          kind: ExternalSecret
+        fieldPaths:
+          - spec.data.*.remoteRef.key
+        options:
+          delimiter: /
+          index: 0
+  - source:
+      kind: ConfigMap
+      name: env-values
+      fieldPath: data.ARTIFACT_SERVER_ORIGIN
+    targets:
+      - select:
+          kind: Deployment
+          name: artifact-server
+        fieldPaths:
+          - spec.template.spec.containers.[name=artifact-server].env.[name=ARTIFACT_SERVER_ORIGIN].value
+      - select:
+          kind: CronJob
+          name: artifact-server-cleanup-staging
+        fieldPaths:
+          - spec.jobTemplate.spec.template.spec.containers.[name=cleanup-staging].env.[name=ARTIFACT_SERVER_ORIGIN].value
+  - source:
+      kind: ConfigMap
+      name: env-values
+      fieldPath: data.ARTIFACT_SERVER_CONTENT_DOMAIN
+    targets:
+      - select:
+          kind: Deployment
+          name: artifact-server
+        fieldPaths:
+          - spec.template.spec.containers.[name=artifact-server].env.[name=ARTIFACT_SERVER_CONTENT_DOMAIN].value
+      - select:
+          kind: CronJob
+          name: artifact-server-cleanup-staging
+        fieldPaths:
+          - spec.jobTemplate.spec.template.spec.containers.[name=cleanup-staging].env.[name=ARTIFACT_SERVER_CONTENT_DOMAIN].value
+
+  - source:
+      kind: ConfigMap
+      name: env-values
+      fieldPath: data.ARTIFACT_SERVER_OIDC_ISSUER
+    targets:
+      - select:
+          kind: Deployment
+          name: artifact-server
+        fieldPaths:
+          - spec.template.spec.containers.[name=artifact-server].env.[name=ARTIFACT_SERVER_OIDC_ISSUER].value
+      - select:
+          kind: CronJob
+          name: artifact-server-sync-directory
+        fieldPaths:
+          - spec.jobTemplate.spec.template.spec.containers.[name=sync-directory].env.[name=ARTIFACT_SERVER_OIDC_ISSUER].value
+  - source:
+      kind: ConfigMap
+      name: env-values
+      fieldPath: data.ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL
+    targets:
+      - select:
+          kind: Deployment
+          name: artifact-server
+        fieldPaths:
+          - spec.template.spec.containers.[name=artifact-server].env.[name=ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL].value
+      - select:
+          kind: CronJob
+          name: artifact-server-sync-directory
+        fieldPaths:
+          - spec.jobTemplate.spec.template.spec.containers.[name=sync-directory].env.[name=ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL].value
