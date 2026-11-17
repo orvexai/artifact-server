@@ -1,8 +1,10 @@
-![Artifact Server](./docs/assets/banner.webp)
+![Houston Artifacts](./docs/assets/banner.webp)
 
-# Artifact Server
+# Houston Artifacts
 
 **The open-source, self-hostable alternative to Claude Code artifacts.**
+
+Houston Artifacts is the web interface's visible name. The CLI, MCP server, skill, packages, and API retain the Artifact Server name.
 
 Artifact Server gives people and agents one place to publish, review, comment on, version, and share the artifacts they create while building products. Its built-in MCP server gives agents direct access to the same work.
 
