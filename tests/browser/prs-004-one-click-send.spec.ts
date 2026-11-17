@@ -183,7 +183,6 @@ test.describe("PRS-004 one-click send and undo", () => {
         indexedDatabaseNames: [],
         localStorageKeys: [
           expect.stringMatching(/^dispatch-default:/u),
-          "artifact-review-theme",
         ],
         sessionStorageKeys: ["artifact-review-return-url"],
       });

@@ -553,6 +553,10 @@ describe.sequential("organization tenancy security boundary", () => {
           ? new Response("<!doctype html><html><head></head><body>review frame</body></html>")
           : assetPath === "/assets/embed-signed-in.js"
           ? new Response("window.close();")
+          : assetPath === "/theme-bootstrap.js"
+          ? new Response("window.__themeBootstrapServed = true;", {
+            headers: {"Content-Type": "text/javascript; charset=utf-8"},
+          })
           : null,
       },
     };
@@ -913,6 +917,20 @@ describe.sequential("organization tenancy security boundary", () => {
       return {body: routedBody, status: routedResponse.status};
     };
     try {
+      const rootThemeBootstrap = await standalone.app.fetch(
+        new Request(applicationOrigin + "/theme-bootstrap.js"),
+      );
+      expect(rootThemeBootstrap.status).toBe(200);
+      expect(rootThemeBootstrap.headers.get("content-type")).toMatch(/javascript/u);
+      const orgThemeBootstrap = await fetchWithHost(
+        baseUrl + "/o/orvex/theme-bootstrap.js",
+        {headers: {Host: "artifacts.example.com"}},
+        router.hostname,
+        router.port,
+      );
+      expect(orgThemeBootstrap.status).toBe(200);
+      expect(orgThemeBootstrap.headers.get("content-type")).toMatch(/javascript/u);
+
       const session = await compareRoute("/api/v1/session", "GET");
       expect(session.status).toBe(200);
       expect(session.body).not.toHaveProperty("principal.staff");

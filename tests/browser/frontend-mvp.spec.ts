@@ -607,6 +607,8 @@ test.describe("Artifact Server frontend MVP", () => {
       expect(accessibility.violations).toEqual([]);
 
       await fixture.page.getByRole("button", {name: /^Interact mode:/u}).click();
+      await fixture.page.getByRole("button", {name: "Use dark theme"}).click();
+      await expect(fixture.page.locator("html")).toHaveAttribute("data-review-theme", "moon");
       await preview.locator("#review-theme-target").click();
       const themedCommentPopover = reviewFrame.locator('[data-comment-popover="true"]');
       await expect(themedCommentPopover).toBeVisible();
@@ -1476,7 +1478,7 @@ test.describe("Artifact Server frontend MVP", () => {
       await expect(fixture.page.getByText(secretValue ?? "missing-secret")).toHaveCount(0);
       expect(await browserStorage(fixture.page)).toEqual({
         indexedDatabaseNames: [],
-        localStorageKeys: ["artifact-review-theme"],
+        localStorageKeys: [],
         sessionStorageKeys: ["artifact-review-return-url"],
       });
 
