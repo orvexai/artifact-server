@@ -1,6 +1,6 @@
 /**
  * Manual, non-CI Houston Artifacts screenshot matrix.
- * Run from the repository root with: pnpm exec tsx project/capture-rebrand.ts
+ * Run from the repository root with: pnpm build && pnpm exec tsx project/capture-rebrand.ts
  */
 /* oxlint-disable no-await-in-loop -- Captures are intentionally sequential to preserve output order. */
 import {createHash} from "node:crypto";

@@ -55,7 +55,7 @@ export function PageHeader({
     <header className="flex flex-col gap-5 border-b pb-6 sm:flex-row sm:items-end sm:justify-between">
       <div className="min-w-0">
         {eyebrow === undefined ? null : (
-          <p className="mb-2 font-mono text-xs font-semibold tracking-widest text-primary uppercase">
+          <p className="mb-2 font-mono text-xs font-semibold tracking-widest text-accent-text-strong uppercase">
             {eyebrow}
           </p>
         )}
@@ -140,7 +140,7 @@ export function StatusBadge({
   return (
     <Badge
       className={cn(
-        tone === "primary" && "text-primary",
+        tone === "primary" && "text-accent-text-strong",
         tone === "danger" && "text-destructive",
       )}
       variant={tone === "danger" ? "destructive" : "secondary"}
