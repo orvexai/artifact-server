@@ -19,6 +19,22 @@ No values or hashes belong in this list. The move-day read token is limited to t
 Stage-1 GO: bootstrap admin address present in the secret store and valid (checked by name, never printed).
 Stage-1 GO: a wildcard HTTPRoute for the content domain is admitted (R12 new rule live) and the wildcard certificate is on Manchester (QMK C1-11).
 
+### Stage 1 DNS flip
+
+- **Owner: QMK's TL3.** After Artifact Server data is carried and checked, and before the Stage-1 GO is declared, TL3 records the previous Cloudflare values for both `artifacts.orvex.ai` and `*.houstonartifacts.com`.
+- Before changing DNS, TL3 runs a direct Manchester-origin test with `curl --resolve` and the Origin CA root. Use the app-host HTTPS request and URL-reconstruction check below; do not print credentials or tokenized content URLs.
+- TL3 changes the Cloudflare records for `artifacts.orvex.ai` and `*.houstonartifacts.com`; both must be **PROXIED**. The edge change applies in seconds to a few minutes; there is no client TTL wait. If rollback is needed, TL3 restores the two recorded previous values.
+- After the flip, Bring-up performs read-only checks: resolve both names; make an HTTPS request to `artifacts.orvex.ai`; make an HTTPS request to one existing content host under `*.houstonartifacts.com`; confirm the certificate and HTTP responses. Record only results/statuses, never a tokenized content hostname or URL.
+- For the forwarded-header check, use an existing authenticated read-only session to GET `/api/v1/artifacts/<readable-artifact-id>` directly at the Manchester origin with `curl --resolve` before the flip and through normal DNS after it. Inspect only JSON `links.artifact` and `links.management`; both must show the expected `https://artifacts.orvex.ai` origin. Do not print the response body, cookies, or authorization values. The app silently falls back to the request origin if forwarded proto/host do not match the configured origin (no status or log); compare the printed origin to the configured origin exactly, before and after the flip.
+
+The URL-reconstruction check uses a throwaway test project and test artifact, not production content:
+
+1. An existing Artifact Server owner creates a restricted test project and a single test artifact with non-sensitive content. Use a dedicated temporary Keycloak group and one throwaway OIDC test identity; assign that group the Viewer role and share only the restricted test project with it as Viewer. Confirm the test identity can see only that test project; if any other project is visible, stop and remove the test setup before proceeding.
+2. Sign in as that test identity and run the read-only `GET /api/v1/artifacts/<test-artifact-id>` check above. Verify that both URL fields show exactly `https://artifacts.orvex.ai` as their origin. Record only the origin comparison result.
+3. Delete the test artifact and restricted project; remove the temporary project share and group-role assignment; then delete the throwaway Keycloak identity and temporary group. Confirm the artifact, project, share, role assignment, identity, and group are absent. Do not print identity values, cookies, tokens, or tokenized URLs.
+
+The test identity needs an existing installation owner to grant its Viewer group role; the app does not require that owner to be Daniel specifically. The move-day operator uses the authorized current owner, without printing the carried bootstrap address.
+
 ### GO check: re-resolve today's Keycloak
 
 Hostname: `auth.eu-central-1.myidp.cloud`. On Wednesday 25 November and again on Thursday 26
