@@ -3530,14 +3530,9 @@ select:focus-visible {
 }
 
 .as-settings {
-  --as-settings-accent: color-mix(in oklab, var(--as-iris) 72%, var(--as-text));
   background: var(--as-canvas);
   color: var(--as-text);
   min-height: 100dvh;
-}
-
-.as-settings .text-primary {
-  color: var(--as-settings-accent);
 }
 
 html:has(.as-settings),
