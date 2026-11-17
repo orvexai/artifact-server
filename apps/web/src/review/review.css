@@ -18,20 +18,10 @@
   --as-on-action: var(--ox-color-on-accent);
   --as-love: var(--destructive);
   --as-gold: var(--chart-2);
-  color-scheme: light dark;
   font-family: var(--ox-font-body);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-}
-
-:root[data-review-theme="dawn"] {
-  color-scheme: light;
-}
-
-.dark {
-  --as-iris: color-mix(in oklab, var(--sidebar-primary) 70%, var(--foreground));
-  --as-iris-soft: color-mix(in oklab, var(--sidebar-primary) 14%, transparent);
 }
 
 * {
@@ -74,8 +64,8 @@ button:focus-visible,
 a:focus-visible,
 input:focus-visible,
 select:focus-visible {
-  outline: 1px solid var(--as-iris);
-  outline-offset: 2px;
+  outline: var(--ox-layout-focus-width) solid var(--ox-color-focus);
+  outline-offset: var(--ox-layout-focus-offset);
 }
 
 .as-visually-hidden {
@@ -162,7 +152,7 @@ select:focus-visible {
 }
 
 .as-home-overlay__backdrop {
-  background: rgb(0 0 0 / 14%);
+  background: color-mix(in srgb, var(--ox-color-bg) 72%, transparent);
   inset: 0;
   position: fixed;
   transition: opacity 120ms ease;
@@ -523,16 +513,14 @@ select:focus-visible {
 }
 
 .as-project-trigger:focus-visible {
-  outline: 2px solid var(--as-iris);
-  outline-offset: -2px;
+  outline: var(--ox-layout-focus-width) solid var(--ox-color-focus);
+  outline-offset: var(--ox-layout-focus-offset);
 }
 
 .as-project-popover {
   background: var(--as-surface);
   border: 1px solid var(--as-border);
-  box-shadow:
-    0 1.75rem 5rem rgb(0 0 0 / 52%),
-    0 0.35rem 1.2rem rgb(0 0 0 / 24%);
+  box-shadow: var(--ox-shadow-elevation-4);
   gap: 0.5rem;
   max-height: min(28rem, var(--available-height));
   overflow: auto;
@@ -585,8 +573,8 @@ select:focus-visible {
 }
 
 .as-project-action:focus-visible {
-  outline: 2px solid var(--as-iris);
-  outline-offset: -2px;
+  outline: var(--ox-layout-focus-width) solid var(--ox-color-focus);
+  outline-offset: var(--ox-layout-focus-offset);
 }
 
 .as-project-action:active {
@@ -598,12 +586,6 @@ select:focus-visible {
   color: var(--as-iris);
   margin-top: 0.2rem;
   padding-top: 0.55rem;
-}
-
-:root[data-review-theme="dawn"] .as-project-popover {
-  box-shadow:
-    0 1.75rem 5rem rgb(0 0 0 / 20%),
-    0 0.35rem 1.2rem rgb(0 0 0 / 10%);
 }
 
 .as-project-list {
@@ -634,8 +616,8 @@ select:focus-visible {
 }
 
 .as-project-option:focus-visible {
-  outline: 2px solid var(--as-iris);
-  outline-offset: -2px;
+  outline: var(--ox-layout-focus-width) solid var(--ox-color-focus);
+  outline-offset: var(--ox-layout-focus-offset);
 }
 
 .as-project-option__identity {
@@ -748,8 +730,8 @@ select:focus-visible {
 .as-catalog-query-controls select:focus-visible,
 .as-catalog-filter-trigger:focus-visible {
   border-color: var(--as-iris);
-  outline: 1px solid var(--as-iris);
-  outline-offset: 1px;
+  outline: var(--ox-layout-focus-width) solid var(--ox-color-focus);
+  outline-offset: var(--ox-layout-focus-offset);
 }
 
 .as-catalog-filter-positioner {
@@ -760,9 +742,7 @@ select:focus-visible {
 .as-catalog-filter-popover {
   background: var(--as-surface);
   border: 1px solid var(--as-border);
-  box-shadow:
-    0 1rem 3rem rgb(0 0 0 / 42%),
-    0 0.2rem 0.8rem rgb(0 0 0 / 22%);
+  box-shadow: var(--ox-shadow-elevation-3);
   color: var(--as-text);
   max-height: min(28rem, var(--available-height));
   outline: none;
@@ -797,8 +777,8 @@ select:focus-visible {
 }
 
 .as-catalog-filter-popover__clear:focus-visible {
-  outline: 2px solid var(--as-iris);
-  outline-offset: 1px;
+  outline: var(--ox-layout-focus-width) solid var(--ox-color-focus);
+  outline-offset: var(--ox-layout-focus-offset);
 }
 
 .as-catalog-filter-popover fieldset {
@@ -851,8 +831,8 @@ select:focus-visible {
 }
 
 .as-catalog-filter-option:has(input:focus-visible) {
-  outline: 2px solid var(--as-iris);
-  outline-offset: -2px;
+  outline: var(--ox-layout-focus-width) solid var(--ox-color-focus);
+  outline-offset: var(--ox-layout-focus-offset);
 }
 
 .as-catalog-filter-option > span {
@@ -1174,8 +1154,8 @@ select:focus-visible {
 }
 
 .as-keyboard-shortcuts__trigger:focus-visible {
-  outline: 2px solid var(--as-iris);
-  outline-offset: 1px;
+  outline: var(--ox-layout-focus-width) solid var(--ox-color-focus);
+  outline-offset: var(--ox-layout-focus-offset);
 }
 
 .as-keyboard-shortcuts__trigger svg {
@@ -1191,9 +1171,7 @@ select:focus-visible {
 .as-keyboard-shortcuts {
   background: var(--as-surface);
   border: 1px solid var(--as-border);
-  box-shadow:
-    0 1rem 3rem rgb(0 0 0 / 42%),
-    0 0.2rem 0.8rem rgb(0 0 0 / 22%);
+  box-shadow: var(--ox-shadow-elevation-3);
   color: var(--as-text);
   max-height: min(28rem, var(--available-height));
   outline: none;
@@ -1374,7 +1352,7 @@ select:focus-visible {
 .as-focus-controls__restore {
   background: color-mix(in oklab, var(--as-surface) 88%, transparent);
   border-color: color-mix(in oklab, var(--as-border) 80%, transparent);
-  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 18%);
+  box-shadow: var(--ox-shadow-elevation-2);
   color: var(--as-text);
   backdrop-filter: blur(10px);
 }
@@ -1471,7 +1449,7 @@ select:focus-visible {
   background: color-mix(in oklab, var(--as-surface) 96%, transparent);
   border-left: 1px solid var(--as-border);
   bottom: 0;
-  box-shadow: -1rem 0 2.5rem rgb(0 0 0 / 20%);
+  box-shadow: var(--ox-shadow-elevation-3);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   opacity: 0;
@@ -1579,7 +1557,7 @@ select:focus-visible {
 }
 
 .as-share-backdrop {
-  background: rgb(0 0 0 / 12%);
+  background: color-mix(in srgb, var(--ox-color-bg) 70%, transparent);
   inset: 0;
   position: fixed;
   transition: opacity 140ms ease;
@@ -1594,9 +1572,7 @@ select:focus-visible {
 .as-share-popover {
   background: var(--as-surface);
   border: 1px solid var(--as-border);
-  box-shadow:
-    0 1.75rem 5rem rgb(0 0 0 / 52%),
-    0 0.35rem 1.2rem rgb(0 0 0 / 24%);
+  box-shadow: var(--ox-shadow-elevation-4);
   color: var(--as-text);
   max-height: min(45rem, calc(100dvh - 1.5rem));
   outline: none;
@@ -1854,11 +1830,11 @@ select:focus-visible {
   display: none;
 }
 
-:root[data-review-theme="dawn"] .as-agent-logo img[data-agent-theme="dark"] {
+:root[data-theme="light"] .as-agent-logo img[data-agent-theme="dark"] {
   display: none;
 }
 
-:root[data-review-theme="dawn"] .as-agent-logo img[data-agent-theme="light"] {
+:root[data-theme="light"] .as-agent-logo img[data-agent-theme="light"] {
   display: block;
 }
 
@@ -1878,26 +1854,8 @@ select:focus-visible {
   white-space: nowrap;
 }
 
-:root[data-review-theme="dawn"] .as-share-backdrop {
-  background: rgb(0 0 0 / 7%);
-}
-
-:root[data-review-theme="dawn"] .as-share-popover {
-  box-shadow:
-    0 1.75rem 5rem rgb(0 0 0 / 20%),
-    0 0.35rem 1.2rem rgb(0 0 0 / 10%);
-}
-
-:root[data-review-theme="dawn"] .as-catalog-filter-popover {
-  box-shadow:
-    0 1rem 3rem rgb(0 0 0 / 16%),
-    0 0.2rem 0.8rem rgb(0 0 0 / 8%);
-}
-
-:root[data-review-theme="dawn"] .as-keyboard-shortcuts {
-  box-shadow:
-    0 1rem 3rem rgb(0 0 0 / 16%),
-    0 0.2rem 0.8rem rgb(0 0 0 / 8%);
+:root[data-theme="light"] .as-share-backdrop {
+  background: color-mix(in srgb, var(--ox-color-bg) 60%, transparent);
 }
 
 .as-share-agent-setup {
@@ -2039,8 +1997,8 @@ select:focus-visible {
 }
 
 .as-share-access-option:has(input:focus-visible) {
-  outline: 1px solid var(--as-iris);
-  outline-offset: 2px;
+  outline: var(--ox-layout-focus-width) solid var(--ox-color-focus);
+  outline-offset: var(--ox-layout-focus-offset);
 }
 
 .as-share-access-option input {
@@ -2374,8 +2332,8 @@ select:focus-visible {
 }
 
 .as-inspector-section__action:focus-visible {
-  outline: 2px solid var(--as-iris);
-  outline-offset: 2px;
+  outline: var(--ox-layout-focus-width) solid var(--ox-color-focus);
+  outline-offset: var(--ox-layout-focus-offset);
 }
 
 .as-inspector-section__body {
@@ -3007,7 +2965,7 @@ select:focus-visible {
 }
 
 .as-confirm-dialog__backdrop {
-  background: color-mix(in oklab, black 24%, transparent);
+  background: color-mix(in oklab, var(--ox-color-bg) 24%, transparent);
   inset: 0;
   position: fixed;
   z-index: 80;
@@ -3016,7 +2974,7 @@ select:focus-visible {
 .as-confirm-dialog {
   background: var(--as-surface);
   border: 1px solid var(--as-border-strong);
-  box-shadow: 0 1.4rem 4rem color-mix(in oklab, black 30%, transparent);
+  box-shadow: var(--ox-shadow-elevation-4);
   color: var(--as-text);
   left: 50%;
   max-width: 27rem;
@@ -3134,16 +3092,12 @@ select:focus-visible {
  * number); the palette has no green, so additions get their own token.
  */
 .as-diff {
-  --as-diff-added: oklch(0.74 0.15 152);
+  --as-diff-added: var(--ox-color-accent-text);
   --as-diff-removed: var(--as-love);
   display: grid;
   gap: 0.45rem;
   margin-top: 0.3rem;
   min-width: 0;
-}
-
-:root[data-review-theme="dawn"] .as-diff {
-  --as-diff-added: oklch(0.52 0.14 152);
 }
 
 .as-diff__stats {
@@ -3554,7 +3508,7 @@ select:focus-visible {
   }
 
   .as-button--primary:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--as-action) 88%, white);
+    background: color-mix(in oklab, var(--as-action) 88%, var(--ox-color-surface-1));
   }
 
   .as-button--secondary:hover:not(:disabled) {
@@ -3922,7 +3876,7 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
   }
 
   .as-inspector {
-    box-shadow: -18px 0 40px rgb(0 0 0 / 18%);
+    box-shadow: var(--ox-shadow-elevation-2);
     max-width: 100vw;
   }
 }
@@ -3994,7 +3948,7 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
 
   .as-panel-assembly[data-side="left"] {
     bottom: 0;
-    box-shadow: 18px 0 40px rgb(0 0 0 / 18%);
+    box-shadow: var(--ox-shadow-elevation-2);
     left: 0;
     max-width: 100vw;
     position: absolute;

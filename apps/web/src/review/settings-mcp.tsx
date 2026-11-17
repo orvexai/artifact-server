@@ -56,7 +56,7 @@ export function McpScreen({administrator}: {readonly administrator: boolean}) {
 
       <div className="grid gap-4 xl:grid-cols-2">
         <ConnectionCard
-        description="Run this on the computer where Houston Artifacts and your AI client are installed. It detects Codex, Claude Code, Cursor, or VS Code, updates the client configuration, and verifies the connection."
+          description="Run this on the computer where Houston Artifacts and your AI client are installed. It detects Codex, Claude Code, Cursor, or VS Code, updates the client configuration, and verifies the connection."
           eyebrow="Local installation"
           title="Connect automatically"
         >
@@ -118,7 +118,7 @@ export function McpScreen({administrator}: {readonly administrator: boolean}) {
       <section className="grid gap-5 border p-5 sm:p-6" aria-labelledby="mcp-agent-skill">
         <header className="grid gap-1">
           <h2 className="font-heading text-lg font-semibold text-balance" id="mcp-agent-skill">
-            Give agents the Artifact Server skill
+            Give agents the integration skill
           </h2>
           <p className="max-w-3xl text-sm leading-6 text-muted-foreground text-pretty">
             The optional skill teaches an agent to use MCP for server data and the CLI for files

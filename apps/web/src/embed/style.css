@@ -1,3 +1,6 @@
+@import "../brand/houston/variables.css";
+@import "../theme-tokens.css";
+
 html,
 body,
 #embed-root {
@@ -25,7 +28,8 @@ body,
   place-content: center;
   gap: 0.75rem;
   padding: 1rem;
-  color: #202124;
+  background: var(--ox-color-bg);
+  color: var(--ox-color-text);
   font: 14px system-ui, sans-serif;
 }
 
@@ -34,8 +38,8 @@ body,
   border: 0;
   border-radius: 0.35rem;
   padding: 0.6rem 0.9rem;
-  background: #275dad;
-  color: white;
+  background: var(--ox-color-accent);
+  color: var(--ox-color-on-accent);
   font: inherit;
   cursor: pointer;
 }

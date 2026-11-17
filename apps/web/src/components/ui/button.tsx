@@ -52,6 +52,10 @@ function Button({
       data-slot="button"
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
+      style={{
+        ...props.style,
+        ...(variant === "default" ? {color: "var(--ox-color-on-accent)"} : {}),
+      }}
     />
   );
 }

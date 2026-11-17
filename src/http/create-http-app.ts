@@ -565,7 +565,7 @@ function isPlatformLoginReturnTo(value: string): boolean {
   }
 }
 
-function renderIdentityAdmissionDeniedPage(fontBase = "/assets/fonts/houston/"): string {
+export function renderIdentityAdmissionDeniedPage(fontBase = "/assets/fonts/houston/"): string {
   const styles = houstonServerPageStyles(fontBase) +
     ".card{width:min(100% - 40px,440px);padding:32px;border:1px solid var(--page-border);border-radius:12px;background:var(--page-surface);box-shadow:0 12px 36px #0f172a12}.card h1{margin:0 0 12px;font-size:26px;line-height:1.2}.card p{color:var(--page-secondary)}.actions{display:flex;gap:20px;align-items:center;margin-top:24px}.actions a,.actions button{font:inherit}.actions a{color:var(--page-accent-text)}.actions button{border:0;padding:0;background:none;color:var(--page-secondary);text-decoration:underline;cursor:pointer}";
   return "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>Houston Artifacts — Sign-in unavailable</title><style>" +
