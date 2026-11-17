@@ -10,7 +10,7 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/80",
+        default: "bg-primary text-[var(--ox-color-on-accent)] hover:bg-primary/80",
         outline:
           "border-border bg-transparent hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-input/30",
         secondary:
@@ -52,10 +52,6 @@ function Button({
       data-slot="button"
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
-      style={{
-        ...props.style,
-        ...(variant === "default" ? {color: "var(--ox-color-on-accent)"} : {}),
-      }}
     />
   );
 }

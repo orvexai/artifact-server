@@ -2,11 +2,12 @@
  * Manual, non-CI Houston Artifacts screenshot matrix.
  * Run from the repository root with: pnpm exec tsx project/capture-rebrand.ts
  */
+/* oxlint-disable no-await-in-loop -- Captures are intentionally sequential to preserve output order. */
 import {createHash} from "node:crypto";
 import {mkdir, writeFile} from "node:fs/promises";
 import path from "node:path";
 
-import AxeBuilder from "@axe-core/playwright";
+import {AxeBuilder} from "@axe-core/playwright";
 import {chromium, type Page} from "@playwright/test";
 
 import {
@@ -190,7 +191,9 @@ async function capture(page: Page, pixelCheckPage: Page, filename: string): Prom
   if (contrast.violations.length > 0) {
     const details = await Promise.all(contrast.violations.map(async (violation) => {
       const nodes = await Promise.all(violation.nodes.map(async (node) => {
-        const computed = await page.locator(node.target[0] ?? "body").evaluate((element) => {
+        const target = node.target[0];
+        const selector = Array.isArray(target) ? target.at(-1) : target;
+        const computed = await page.locator(selector ?? "body").evaluate((element) => {
           const style = getComputedStyle(element);
           const root = getComputedStyle(document.documentElement);
           return {
