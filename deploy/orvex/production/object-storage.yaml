@@ -1,0 +1,15 @@
+# Production object store. Keep skip through stage 1; only remove Thu 26 Nov before 23:00Z,
+# after stage 1 and with the QMK Captain's word that day; list the one-line PR and notify QMK.
+apiVersion: objectbucket.io/v1alpha1
+kind: ObjectBucketClaim
+metadata:
+  name: artifact-server-storage
+  labels:
+    app.kubernetes.io/name: artifact-server
+    app.kubernetes.io/component: storage
+    quornex.io/backup: skip
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  storageClassName: ceph-bucket
+  generateBucketName: artifact-server-storage

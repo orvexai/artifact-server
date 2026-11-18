@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: env-values
+  labels:
+    app.kubernetes.io/name: artifact-server
+data:
+  secretPath: artifact-server
+  ARTIFACT_SERVER_ORIGIN: https://artifacts.orvex.ai
+  ARTIFACT_SERVER_CONTENT_DOMAIN: houstonartifacts.com
+  ARTIFACT_SERVER_OIDC_ISSUER: https://auth.eu-central-1.myidp.cloud/realms/my-idp
+  ARTIFACT_SERVER_OIDC_DIRECTORY_KEYCLOAK_URL: https://auth.eu-central-1.myidp.cloud

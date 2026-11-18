@@ -1,0 +1,25 @@
+# MA-26 database: {instances: 3, durability: required}; MA-25 can lift this into app.yaml.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: artifact-server-db
+  labels:
+    app.kubernetes.io/name: artifact-server
+    app.kubernetes.io/component: database
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+# barman-cloud plug-in and daily base backup once the admin's ObjectStore orvex-backup
+# is live (orvex-apps PR G / MP-06) and app.yaml declares backups: {postgres: true}.
+spec:
+  instances: 3
+  bootstrap:
+    initdb:
+      database: artifactserver
+      owner: artifactserver
+  storage:
+    size: 10Gi
+  postgresql:
+    synchronous:
+      method: any
+      number: 1
+      dataDurability: required
