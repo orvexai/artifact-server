@@ -19,6 +19,7 @@ No values or hashes belong in this list. The move-day read token is limited to t
 Stage-1 GO: bootstrap admin address present in the secret store and valid (checked by name, never printed).
 Stage-1 GO: a wildcard HTTPRoute for the content domain is admitted (R12 new rule live) and the wildcard certificate is on Manchester (QMK C1-11).
 app-host forwarded-header check: not done by decision (low impact); optional authenticated steps below.
+Stage-1 GO (C1-14): before Stage 1, verify by name that MP-06 is live on Manchester; ObjectStore `orvex-backup` and Secret `backup-b2` are present; production `app.yaml` declares `backups: {postgres: true}` (orvex-apps #17 / MA-34); and the environment's own no-delete B2 key from MP-59 has been copied into OpenBao by MP-56. If any of these four prerequisites is false on Wednesday 25 November evening, Stage 1 does not start Thursday 26 November. The Captain takes the date change to QMK; nothing is waived.
 
 ### Stage 1 DNS flip
 
@@ -95,10 +96,18 @@ delete all staged upload file rows before their staging parent rows; and delete 
 `artifact_platform_sessions`. Print table names and row counts only. Do not copy production tokens or
 any secret values to a file or command argument.
 
-### Production hand-sync backup
+### Production hand-sync backup (C1-14; required before each stage is declared done)
 
-After the production database data is loaded on Manchester and before stage 1 is declared done,
-apply this one-time `Backup` manifest:
+The production configuration has no usable by-hand base backup until all four Stage-1 prerequisites below are live. Do not apply a `Backup` before then. The Stage-1 check is by resource name only; never print or record credentials or secret values:
+
+1. MP-06 is live on Manchester. MP-06 PR #33 is merged to dev on Thursday 19 November; it is live only through pin 3, Thursday afternoon at the earliest, with QMK's and the Captain's word.
+2. ObjectStore `orvex-backup` and Secret `backup-b2` are present. The admin ExternalSecret `orvex-backup-b2` is their sole writer.
+3. Production `app.yaml` declares `backups: {postgres: true}`; this is orvex-apps #17 / MA-34, which waits for MP-06.
+4. The environment's own no-delete B2 key is available: MP-59 is due Wednesday 25 November 18:00Z, and MP-56 copies it into OpenBao only after MP-59.
+
+If any prerequisite is false on Wednesday 25 November evening, Stage 1 does not start Thursday 26 November. The Captain takes the date change to QMK. No prerequisite is waived.
+
+After the production database data is loaded on Manchester and all four prerequisites are confirmed, apply this Stage-1 `Backup` manifest:
 
 ```yaml
 apiVersion: postgresql.cnpg.io/v1
@@ -114,21 +123,39 @@ spec:
     name: barman-cloud.cloudnative-pg.io
 ```
 
-Confirm both evidence lines before the Team Leader declares the stage done:
+Confirm both evidence lines before the Team Leader declares Stage 1 done:
 
 1. `kubectl -n artifact-server get backup artifact-server-stage-1-base -o jsonpath='{.status.phase}'`
    reports `completed`, and the current primary's instance log has the plugin upload-complete line.
 2. QMK's TL3 or the Captain performs a list-only read of the exact backup folder in Backblaze and
    records object names and sizes. An empty or missing folder means STOP.
 
-The by-hand base backup above still applies before stage 1 is declared done. The barman-cloud plug-in
-and routine daily base-backup schedule remain deferred until the admin's ObjectStore `orvex-backup`
-is live (orvex-apps PR G / MP-06) and app.yaml declares `backups: {postgres: true}`. Once enabled,
-the daily schedule is 12:00 UTC, outside QMK's 23:30-07:00 UTC copy window. QMK's TL3 must receive
-the database name, UTC start and expected size, with the Captain copied, before the first scheduled
-base backup.
+The production Cluster's barman-cloud plug-in and routine daily base-backup schedule remain deferred until the admin's ObjectStore `orvex-backup` is live (MP-06) and production `app.yaml` declares `backups: {postgres: true}` (MA-34). Once enabled, the daily schedule is 12:00 UTC, outside QMK's 23:30-07:00 UTC copy window. QMK's TL3 must receive the database name, UTC start and expected size, with the Captain copied, before the first scheduled base backup.
 
 ## Stage 2: Friday 27 November 2026
+
+Before Stage 2 is declared done, take a fresh by-hand base backup because the data has changed since Stage 1. This follows the Captain's 16 November C1-14 rule, as read by the Apps TL. Recheck that ObjectStore `orvex-backup` and Secret `backup-b2` are still present by resource name; do not print or record credentials or secret values. Use the same method as Stage 1, changing only the Backup metadata name to `artifact-server-stage-2-base`:
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  name: artifact-server-stage-2-base
+  namespace: artifact-server
+spec:
+  method: plugin
+  cluster:
+    name: artifact-server-db
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+```
+
+Before the Team Leader declares Stage 2 done, confirm both evidence lines:
+
+1. `kubectl -n artifact-server get backup artifact-server-stage-2-base -o jsonpath='{.status.phase}'`
+   reports `completed`, and the current primary's instance log has the plugin upload-complete line.
+2. QMK's TL3 or the Captain performs a list-only read of that backup folder in Backblaze and records
+   object names and sizes. An empty or missing folder means STOP.
 
 In the stage 2 change itself: remove external door (stage 2 change). Remove both production-only external address entries. Owner: TL; tracking bead `quornex-74w`. Confirm the new Manchester Keycloak issuer and directory URL
 render, then remove the rehearsal immediately as above.
