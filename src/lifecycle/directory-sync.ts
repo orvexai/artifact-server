@@ -25,9 +25,23 @@ export function runDirectorySyncPass(
   runtime: ApplicationRuntime,
   directory: GroupDirectory,
 ): Promise<DirectorySyncReport> {
-  return runtime.runPromise(syncDirectoryMembers(directory).pipe(
+  const maximumDeactivations = configuredMaxDeactivations();
+  if (maximumDeactivations instanceof Error) return Promise.reject(maximumDeactivations);
+  return runtime.runPromise(syncDirectoryMembers(directory, maximumDeactivations).pipe(
     Effect.mapError((error) => new Error(`${error._tag}: ${error.message}`)),
   ));
+}
+
+function configuredMaxDeactivations(): number | Error {
+  const configured = process.env["ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS"];
+  if (configured !== undefined && !/^[0-9]+$/u.test(configured)) {
+    return new Error("ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS must contain only decimal digits.");
+  }
+  const maximumDeactivations = configured === undefined ? 5 : Number(configured);
+  if (!Number.isSafeInteger(maximumDeactivations) || maximumDeactivations < 0) {
+    return new Error("ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS must be a non-negative integer.");
+  }
+  return maximumDeactivations;
 }
 
 /** Sync one Keycloak organization's members with the configured safety cap. */
@@ -37,14 +51,8 @@ export function runOrganizationDirectorySyncPass(
   organization: DirectoryOrganization,
   staff?: TenantStaffDefinition,
 ): Promise<OrganizationDirectorySyncResult> {
-  const configured = process.env["ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS"];
-  if (configured !== undefined && !/^[0-9]+$/u.test(configured)) {
-    return Promise.reject(new Error("ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS must contain only decimal digits."));
-  }
-  const maximumDeactivations = configured === undefined ? 5 : Number(configured);
-  if (!Number.isSafeInteger(maximumDeactivations) || maximumDeactivations < 0) {
-    return Promise.reject(new Error("ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS must be a non-negative integer."));
-  }
+  const maximumDeactivations = configuredMaxDeactivations();
+  if (maximumDeactivations instanceof Error) return Promise.reject(maximumDeactivations);
   return runtime.runPromise(syncOrganizationDirectoryMembers(
     directory,
     organization,
@@ -61,14 +69,8 @@ export function runDirectoryGroupSyncPass(
   provider: string,
   recomputeRoles = true,
 ): Promise<DirectoryGroupSyncReport> {
-  const configured = process.env["ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS"];
-  if (configured !== undefined && !/^[0-9]+$/u.test(configured)) {
-    return Promise.reject(new Error("ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS must contain only decimal digits."));
-  }
-  const maxDeactivations = configured === undefined ? 5 : Number(configured);
-  if (!Number.isSafeInteger(maxDeactivations) || maxDeactivations < 0) {
-    return Promise.reject(new Error("ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS must be a non-negative integer."));
-  }
+  const maxDeactivations = configuredMaxDeactivations();
+  if (maxDeactivations instanceof Error) return Promise.reject(maxDeactivations);
   return runtime.runPromise(syncDirectoryGroups(
     directory, syncedAt, provider, maxDeactivations, recomputeRoles,
   ).pipe(

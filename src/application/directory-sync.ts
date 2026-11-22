@@ -95,6 +95,7 @@ export type OrganizationDirectorySyncResult = DirectorySyncReport | {
  */
 export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
   directory: GroupDirectory,
+  maximumDeactivations?: number,
 ) {
   const assignments = yield* InstallationAccessService.use((access) =>
     access.listGroupRoles()
@@ -161,7 +162,7 @@ export const syncDirectoryMembers = Effect.fn("syncDirectoryMembers")(function*(
     });
   }
   const reconciliation = yield* InstallationAccessService.use((access) =>
-    access.reconcileDirectoryMembers([...desired.values()])
+    access.reconcileDirectoryMembers([...desired.values()], maximumDeactivations)
   );
   // Field order is the order operators read the one-line summary in.
   const report: DirectorySyncReport = {

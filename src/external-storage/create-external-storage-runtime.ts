@@ -120,6 +120,8 @@ export interface ExternalStorageRuntimeConfig {
   readonly gitHistoryProvider?: GitHistoryProvider;
   /** Issuer groups that admit people and set their role, when configured. */
   readonly groupRolePolicy?: GroupRolePolicy | null;
+  /** Maintenance runtimes only: apply Orvex tenant-group protection as the org-tenancy router does for Orvex. */
+  readonly orvexTenantGroupProtection?: boolean;
   /**
    * Platform-wide Orvex staff groups (ARTIFACT_SERVER_ORG_STAFF_GROUPS):
    * exact group paths masked as staff in every non-Orvex organization.
@@ -208,6 +210,9 @@ export async function createExternalStorageRuntime(
     };
     if (config.bootstrapApiTokenEnabled !== false) {
       Object.assign(orgConfig, {bootstrapApiToken: config.apiToken});
+    }
+    if (config.orvexTenantGroupProtection === true) {
+      Object.assign(orgConfig, {orvexTenantGroupProtection: true});
     }
     const runtime = await createOrgRuntime(config.installationId, orgConfig, config, database);
     return {

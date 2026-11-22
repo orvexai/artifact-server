@@ -1011,9 +1011,14 @@ function makeInstallationAccessService(
       member.status === memberStatuses.active && !desired.has(member.email) &&
       !keptAdministrators.has(member.email)
     );
-    if (maximumDeactivations !== undefined && removals.length > maximumDeactivations) {
+    const activeCount = members.filter((member) =>
+      member.status === memberStatuses.active
+    ).length;
+    const limit = maximumDeactivations === undefined ? undefined
+      : Math.max(maximumDeactivations, Math.ceil(activeCount * 0.2));
+    if (limit !== undefined && removals.length > limit) {
       return yield* Effect.fail(new IdentityConflict({
-        message: `Directory sync would deactivate ${removals.length} members, above the configured maximum of ${maximumDeactivations}; nothing was changed.`,
+        message: `Directory sync would deactivate ${removals.length} members, above the safety threshold of ${limit}; nothing was changed.`,
       }));
     }
     let admitted = 0;

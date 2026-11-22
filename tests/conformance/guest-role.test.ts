@@ -24,6 +24,8 @@ import {
 import {resolveProjectAccess, type ProjectAccessRecord} from "../../src/core/project-access.js";
 import {SqliteIdentityRepository} from "../../src/storage/sqlite-identity-repository.js";
 import {createOrvexAdmissionRole} from "../../src/external-storage/organization-memberships.js";
+import {createLocalRuntime} from "../../src/local/create-local-runtime.js";
+import {guestGroupRulePrincipalId} from "../../src/core/group-role-policy.js";
 import {createTestInstallation, issueLocalBrowserLogin, loginHandshakeCookie, removeTestInstallation, startTestServer, storeTestGroupRoles, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
 import {publishNew} from "../support/publishing.js";
 
@@ -50,6 +52,103 @@ function snapshotGroupsForGuestSync(guestMembership: boolean) {
 
 function groupRoleAssignment(groupId: string, name: string, path: string, role: "guest" | "viewer" | "member" | "owner") {
   return {assignedAt: "now", groupId, name, nameUnique: true, path, role};
+}
+
+const maintenanceSyncGroups = [
+  {id: "tenant-guests", name: "acme", path: "/Guests/acme"},
+  {id: "viewers", name: "Viewers", path: "/Viewers"},
+  {id: "owners", name: "Owners", path: "/Owners"},
+  {id: "tenant-staff", name: "acme-staff", path: "/TenantWorkspaces/acme/acme-staff"},
+] as const;
+
+function maintenanceSyncDirectory() {
+  const tenantGuests = Array.from({length: 8}, (_, index) => ({
+    email: `tenant-${index}@example.test`, emailVerified: true, enabled: true,
+    firstName: "Tenant", id: `tenant-${index}`, lastName: "Guest",
+    username: `tenant-${index}`,
+  }));
+  const owner = {
+    email: "owner@example.test", emailVerified: true, enabled: true,
+    firstName: "Orvex", id: "owner", lastName: "Owner", username: "owner",
+  };
+  const staff = {
+    email: "staff@example.test", emailVerified: true, enabled: true,
+    firstName: "Orvex", id: "staff", lastName: "Staff", username: "staff",
+  };
+  const users = new Map<string, readonly typeof owner[]>([
+    ["tenant-guests", tenantGuests],
+    ["viewers", []],
+    ["owners", [owner]],
+    ["tenant-staff", [staff]],
+  ]);
+  return {
+    listAllGroups: () => Effect.succeed(maintenanceSyncGroups),
+    listGroupMembers: (group: {readonly id: string}) =>
+      Effect.succeed(users.get(group.id) ?? []),
+  };
+}
+
+async function createMaintenanceSyncFixture(withCredentials = false) {
+  const fixture = await createTestInstallation();
+  const installationId = "local";
+  const runtime = await createLocalRuntime({
+    apiToken: fixture.apiToken,
+    browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
+    contentDomain: "localhost",
+    dataDirectory: fixture.dataDirectory,
+    groupRolePolicy: {
+      seed: [
+        {role: "owner", selector: "/Owners"},
+        {role: "member", selector: "/TenantWorkspaces/acme/acme-staff", staff: true},
+      ],
+      guestGroupPrefixes: ["/Guests/"],
+    },
+    orvexTenantGroupProtection: true,
+    organizationStaffGroups: ["/TenantWorkspaces/{slug}/{slug}-staff"],
+  });
+  const databasePath = nodePath.join(fixture.dataDirectory, "artifact-server.db");
+  const database = new DatabaseSync(databasePath);
+  const repository = new SqliteIdentityRepository(databasePath);
+  const now = new Date().toISOString();
+  for (const group of maintenanceSyncGroups) {
+    database.prepare(`INSERT INTO directory_groups (
+      installation_id, id, name, path, first_path, synced_at
+    ) VALUES (?, ?, ?, ?, ?, ?)`).run(
+      installationId, group.id, group.name, group.path, group.path, now,
+    );
+  }
+  await repository.setGroupRole(
+    installationId, "tenant-guests", "guest", now, guestGroupRulePrincipalId,
+  );
+  await repository.setGroupRole(installationId, "owners", "owner", now, "owner");
+  await repository.setGroupRole(installationId, "tenant-staff", "member", now, "seed");
+  const insertMember = database.prepare(`INSERT INTO installation_members (
+    id, installation_id, email, display_name, role, status, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`);
+  for (let index = 0; index < 8; index += 1) {
+    const memberId = `tenant-member-${index}`;
+    insertMember.run(
+      memberId, installationId, `tenant-${index}@example.test`, "Tenant Guest", "guest", now, now,
+    );
+    if (withCredentials) {
+      database.prepare(`INSERT INTO application_sessions (
+        installation_id, id, member_id, token_digest, csrf_digest, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+        installationId, `tenant-session-${index}`, memberId, `token-${index}`, `csrf-${index}`, now,
+        "2099-01-01T00:00:00.000Z",
+      );
+      database.prepare(`INSERT INTO managed_api_keys (
+        installation_id, id, name, prefix, secret_digest, principal_id, principal_kind,
+        capabilities_json, authorized_by_principal_id, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'human', '[]', ?, ?, ?)`).run(
+        installationId, `tenant-key-${index}`, "Tenant key", `prefix-${index}`, `digest-${index}`,
+        memberId, "owner", now, "2099-01-01T00:00:00.000Z",
+      );
+    }
+  }
+  insertMember.run("orvex-owner", installationId, "owner@example.test", "Orvex Owner", "owner", now, now);
+  insertMember.run("orvex-staff", installationId, "staff@example.test", "Orvex Staff", "member", now, now);
+  return {database, fixture, repository, runtime};
 }
 
 describe("guest installation role", () => {
@@ -119,6 +218,76 @@ describe("guest installation role", () => {
     };
     expect(resolveProjectAccess(sharedStaff, record("restricted", ["editor"], false)))
       .toEqual({isCreator: false, mode: "restricted", role: "editor"});
+  });
+
+  test("AS-1QB-GUARD: member sync refuses deactivations above max(floor, 20%)", async () => {
+    const fixture = await createMaintenanceSyncFixture();
+    const previousMaximum = process.env["ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS"];
+    delete process.env["ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS"];
+    try {
+      await expect(fixture.runtime.syncDirectory(maintenanceSyncDirectory())).rejects.toThrow(
+        "above the safety threshold of 5; nothing was changed.",
+      );
+      expect(fixture.database.prepare(`SELECT COUNT(*) AS count FROM installation_members
+        WHERE installation_id = 'local' AND email LIKE 'tenant-%@example.test' AND status = 'active'`)
+        .get()).toEqual({count: 8});
+    } finally {
+      if (previousMaximum === undefined) delete process.env["ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS"];
+      else process.env["ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS"] = previousMaximum;
+      fixture.repository.close();
+      fixture.database.close();
+      await fixture.runtime.close();
+      await removeTestInstallation(fixture.fixture);
+    }
+  });
+
+  test("AS-1QB-RECOMPUTE: tenant-only Orvex members are deactivated and credentials revoked", async () => {
+    const fixture = await createMaintenanceSyncFixture(true);
+    try {
+      await fixture.runtime.syncDirectoryGroups(
+        maintenanceSyncDirectory(), new Date().toISOString(), "tenant-scope-test",
+      );
+      const report = await fixture.runtime.syncDirectory(maintenanceSyncDirectory());
+      expect(report).toMatchObject({deactivated: 0, reactivated: 0});
+      expect(fixture.database.prepare(`SELECT COUNT(*) AS count FROM installation_members
+        WHERE installation_id = 'local' AND email LIKE 'tenant-%@example.test' AND status = 'inactive'`)
+        .get()).toEqual({count: 8});
+      expect(fixture.database.prepare(`SELECT COUNT(*) AS count FROM application_sessions
+        WHERE installation_id = 'local' AND member_id LIKE 'tenant-member-%' AND revoked_at IS NOT NULL`)
+        .get()).toEqual({count: 8});
+      expect(fixture.database.prepare(`SELECT COUNT(*) AS count FROM managed_api_keys
+        WHERE installation_id = 'local' AND principal_id LIKE 'tenant-member-%' AND revoked_at IS NOT NULL`)
+        .get()).toEqual({count: 8});
+      expect(fixture.database.prepare(`SELECT status, role FROM installation_members
+        WHERE installation_id = 'local' AND id = 'orvex-staff'`).get())
+        .toEqual({status: "active", role: "member"});
+    } finally {
+      fixture.repository.close();
+      fixture.database.close();
+      await fixture.runtime.close();
+      await removeTestInstallation(fixture.fixture);
+    }
+  });
+
+  test("AS-1QB-NO-REACTIVATE: an inactive tenant-only member stays inactive", async () => {
+    const fixture = await createMaintenanceSyncFixture();
+    try {
+      fixture.database.prepare(`UPDATE installation_members SET status = 'inactive'
+        WHERE installation_id = 'local' AND id = 'tenant-member-0'`).run();
+      await fixture.runtime.syncDirectoryGroups(
+        maintenanceSyncDirectory(), new Date().toISOString(), "tenant-scope-test",
+      );
+      const report = await fixture.runtime.syncDirectory(maintenanceSyncDirectory());
+      expect(report.reactivated).toBe(0);
+      expect(fixture.database.prepare(`SELECT status FROM installation_members
+        WHERE installation_id = 'local' AND id = 'tenant-member-0'`).get())
+        .toEqual({status: "inactive"});
+    } finally {
+      fixture.repository.close();
+      fixture.database.close();
+      await fixture.runtime.close();
+      await removeTestInstallation(fixture.fixture);
+    }
   });
 
   test("AS-ORVEX-F1-POLICY: tenant group roots are exact and configured staff selectors remain admitted", () => {
