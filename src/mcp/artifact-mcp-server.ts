@@ -1620,7 +1620,7 @@ export function createArtifactMcpServer(
     {
       title: "Commit an uploaded version",
       description:
-        "After every upload-plan URL has received its exact file bytes, commit the upload as a new artifact or an optimistic new version. Returns a durable review URL for the exact version; give that URL to the user first. Retrying the same idempotency key and input returns the original result.",
+        "After every upload-plan URL has received its exact file bytes, commit the upload as a new artifact or an optimistic new version. Returns a durable review URL for the exact version; give that URL to the user first. Retrying the same idempotency key and input returns the original result. By default the new version contains exactly the uploaded files. Set carryForward to true to also keep every file of expectedCurrentVersionId that this upload does not include; the entry file and routing then stay as in that version. With carryForward, list paths in removePaths to drop them.",
       inputSchema: z.object({
         idempotencyKey: idempotencyKeySchema,
         projectId: optionalProjectIdSchema,
@@ -1635,12 +1635,26 @@ export function createArtifactMcpServer(
           }).strict(),
           z.object({
             artifactId: artifactIdSchema,
+            carryForward: z.boolean().default(false),
             expectedCurrentVersionId: expectedVersionSchema,
             kind: z.literal("new_version"),
+            removePaths: z.array(z.string().min(1).max(1_024)).max(maximumDeclaredFiles).default([]),
           }).strict(),
         ]),
         uploadId: z.string().min(1).max(200),
-      }).strict(),
+      }).strict().superRefine(({target}, context) => {
+        if (
+          target.kind === "new_version" &&
+          target.removePaths !== undefined && target.removePaths.length > 0 &&
+          !target.carryForward
+        ) {
+          context.addIssue({
+            code: "custom",
+            message: "removePaths requires carryForward to be true.",
+            path: ["target", "removePaths"],
+          });
+        }
+      }),
       outputSchema: publishedVersionSchema,
       annotations: idempotentWriteAnnotations,
     },

@@ -9,6 +9,7 @@ import {createServer, type Server} from "node:http";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
+import {Command} from "commander";
 import * as NodeFileSystem from "@effect/platform-node-shared/NodeFileSystem";
 import {Effect, Redacted} from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
@@ -16,6 +17,7 @@ import {afterAll, beforeAll, describe, expect, test} from "vitest";
 import {z} from "zod";
 
 import {fetchLoopbackContent} from "../support/fetch-loopback-content.js";
+import {configurePublishCommand} from "../../src/cli/publish-command.js";
 
 import {
   type FilePublicationCommand,
@@ -115,6 +117,7 @@ describe("file publication client", () => {
         inputPath: dataPath,
         target: {
           artifactId: site.result.artifact.id,
+          carryForward: true,
           expectedCurrentVersionId: site.result.version.id,
           kind: "new_version",
         },
@@ -154,6 +157,23 @@ describe("file publication client", () => {
     expect(version.result.version).toMatchObject({number: 2});
     const openedVersion = await fetchLoopbackContent(version.result.links.version);
     expect(Buffer.from(await openedVersion.arrayBuffer())).toEqual(secondReport);
+  });
+
+  test("CLI carry-forward flags require an eligible new-version target before requests", async () => {
+    const withoutCarry = new Command();
+    configurePublishCommand(withoutCarry, {defaultProfileDirectory: fixtureDirectory});
+    await expect(withoutCarry.parseAsync([
+      "node", "artifactserver", "publish", path.join(fixtureDirectory, "not-read"),
+      "--artifact", "art_existing", "--expected-version", "ver_existing",
+      "--remove", "app.js",
+    ])).rejects.toThrow("--remove requires --carry-forward.");
+
+    const withoutArtifact = new Command();
+    configurePublishCommand(withoutArtifact, {defaultProfileDirectory: fixtureDirectory});
+    await expect(withoutArtifact.parseAsync([
+      "node", "artifactserver", "publish", path.join(fixtureDirectory, "not-read"),
+      "--carry-forward",
+    ])).rejects.toThrow("--carry-forward and --remove apply only when publishing a new version.");
   });
 
   test("classifies unsafe filesystem inputs before it creates an upload", async () => {

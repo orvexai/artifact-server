@@ -233,11 +233,25 @@ const commitUploadSchema = z.object({
     }).strict(),
     z.object({
       artifactId: z.string().min(1).max(200),
+      carryForward: z.boolean().default(false),
       expectedCurrentVersionId: z.string().min(1).max(200),
       kind: z.literal("new_version"),
+      removePaths: z.array(z.string().min(1).max(1_024)).max(maximumDeclaredFiles).default([]),
     }).strict(),
   ]),
-}).strict();
+}).strict().superRefine(({target}, context) => {
+  if (
+    target.kind === "new_version" &&
+    target.removePaths !== undefined && target.removePaths.length > 0 &&
+    !target.carryForward
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "removePaths_requires_carryForward",
+      path: ["target", "removePaths"],
+    });
+  }
+});
 const contentTokenSchema = z
   .string()
   .min(16)
@@ -3596,6 +3610,12 @@ export function createHttpApp(
       );
     }
     if (error instanceof z.ZodError) {
+      if (error.issues.some((issue) => issue.message === "removePaths_requires_carryForward")) {
+        return context.json({error: {
+          code: errorCodes.invalidInput,
+          message: "removePaths requires carryForward to be true.",
+        }}, 400);
+      }
       const responseDataIssue = error.issues.find((issue) =>
         issue.path[0] === "data" && issue.message.startsWith("artifact-response-data:")
       );

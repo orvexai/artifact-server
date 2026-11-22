@@ -30,7 +30,11 @@ Obtain `artifact.currentVersionId` with `artifact_get`, then run:
 artifactserver publish "<path>" --profile "<profile>" --server "<origin>" --project "<project-id>" --artifact "<artifact-id>" --expected-version "<current-version-id>"
 ```
 
+By default, a new version contains exactly the files in the upload, with its uploaded entry file and routing mode. To keep files from the expected current version that are absent from the upload, opt in with `--carry-forward`. Repeat `--remove <path>` with `--carry-forward` to remove carried files. Each removed path must exist in the expected version, cannot be the entry file, and cannot also be uploaded. To remove files without changing any other content, re-declare at least one unchanged file in the upload.
+
 The CLI owns local file inspection, symlink policy, media types, SHA-256 hashing, upload planning, transfer retries, and commit verification. Do not reproduce those steps in a skill script.
+
+For MCP `artifact_commit_upload`, the default is also exactly the uploaded files. Set `target.carryForward` to `true` to keep files from `expectedCurrentVersionId`, and pass `target.removePaths` to remove carried files.
 
 ## MCP reads
 
