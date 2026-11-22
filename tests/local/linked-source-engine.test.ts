@@ -187,17 +187,25 @@ describe("linked source engine", () => {
         fingerprint: null,
         freshness: "missing",
       });
-      const locked = path.join(root, "locked", "notes.md");
-      await mkdir(path.dirname(locked));
-      await writeFile(locked, "locked\n");
-      const lockedFingerprint = await fingerprintOf(locked);
-      await chmod(path.dirname(locked), 0o000);
-      try {
-        const observed = await refreshFreshness(locked, lockedFingerprint);
-        expect(observed.freshness).toBe("unreadable");
-      } finally {
-        await chmod(path.dirname(locked), 0o700);
+      const isRoot = process.getuid?.() === 0;
+      let freshness: string;
+      if (!isRoot) {
+        const locked = path.join(root, "locked", "notes.md");
+        await mkdir(path.dirname(locked));
+        await writeFile(locked, "locked\n");
+        const lockedFingerprint = await fingerprintOf(locked);
+        await chmod(path.dirname(locked), 0o000);
+        try {
+          const observed = await refreshFreshness(locked, lockedFingerprint);
+          freshness = observed.freshness;
+        } finally {
+          await chmod(path.dirname(locked), 0o700);
+        }
+      } else {
+        // Root can read mode-000 directories, so this unreadable-state assertion cannot apply.
+        freshness = "root-skip";
       }
+      expect(freshness).toBe(isRoot ? "root-skip" : "unreadable");
     });
 
     test("a regular file replaced by a symlink is unreadable, never followed", async () => {

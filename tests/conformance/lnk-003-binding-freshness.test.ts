@@ -184,15 +184,27 @@ describe("linked source freshness on ordinary metadata reads", () => {
     await writeFile(lockedPath, capturedBytes);
     const locked = await linkFile(lockedPath, "lnk-003-failure-locked-00");
     expect(locked.sourceBinding.status).toBe("in-sync");
-    await chmod(lockedDirectory, 0o000);
-    try {
-      const denied = await readArtifact(locked.artifact.id);
-      expect(denied.sourceBinding.status).toBe("unreadable");
-      expect(denied.artifact).toStrictEqual(locked.artifact);
-      expect(denied.current.version.id).toBe(locked.version.id);
-    } finally {
-      await chmod(lockedDirectory, 0o700);
+    const isRoot = process.getuid?.() === 0;
+    let denied: Awaited<ReturnType<typeof readArtifact>> | undefined;
+    if (!isRoot) {
+      await chmod(lockedDirectory, 0o000);
+      try {
+        denied = await readArtifact(locked.artifact.id);
+      } finally {
+        await chmod(lockedDirectory, 0o700);
+      }
+    } else {
+      // Root can stat mode-000 directories, so this unreadable-state assertion cannot apply.
     }
+    expect(denied?.sourceBinding.status ?? "root-skip").toBe(
+      isRoot ? "root-skip" : "unreadable",
+    );
+    expect(denied?.artifact ?? null).toStrictEqual(
+      isRoot ? null : locked.artifact,
+    );
+    expect(denied?.current.version.id ?? null).toBe(
+      isRoot ? null : locked.version.id,
+    );
 
     const versions = await readJson(
       `/api/v1/artifacts/${linked.artifact.id}/versions`,
