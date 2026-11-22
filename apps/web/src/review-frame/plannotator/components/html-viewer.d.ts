@@ -8,13 +8,20 @@
  * `apps/web/tsconfig.json` maps `@plannotator/ui/*` here so the compiler sees
  * this declared contract instead; Vite still bundles the real source.
  *
- * Mirrors @plannotator/ui@0.31.0:
- *   components/html-viewer/HtmlViewer.tsx:137-181 (HtmlViewerProps)
- *   components/Viewer.tsx:141-145 (ViewerHandle)
- *   types.ts:1-5, 60-125 (AnnotationType, Annotation, anchors)
+ * Mirrors @plannotator/ui@0.63.0:
+ *   components/html-viewer/HtmlViewer.tsx:222-503 (HtmlViewerProps)
+ *   components/html-viewer/HtmlViewer.tsx:157 (HTML_VIEWER_SANDBOX)
+ *   components/Viewer.tsx:513-516 (ViewerHandle subset)
+ *   types.ts:20-24, 79-153 (AnnotationType, Annotation, anchors)
  * Only the props this application drives are declared; unused Vim, diff,
  * attachment, and Ask-AI inputs are deliberately omitted so they cannot be
- * passed by accident.
+ * passed by accident. Other deliberately undeclared props include src,
+ * liveSandbox, liveSession, currentPageUrl, onPageChange, onOpenLink,
+ * initialFragment, frameUrl, bridgeScriptUrl, hostNavigates, onAskAI,
+ * mentionSource, selectionActions, onSide, onHostDraft, onStep, onPageEscape,
+ * vim inputs, global attachment inputs, touchSelection, frameScale,
+ * onContentWidth, onPageScrollUp, onPageTap, maxAdditionalTargets, and
+ * scrollClear. Declaring any omitted prop requires a security review.
  */
 import type { ReactNode, RefAttributes } from "react";
 
@@ -73,6 +80,8 @@ export interface HtmlViewerProps {
   fullViewport?: boolean | undefined;
   hideControls?: boolean | undefined;
   readOnly?: boolean | undefined;
+  sandbox?: string | undefined;
+  allowCommentImages?: boolean | undefined;
   onUnanchoredChange?: ((ids: string[]) => void) | undefined;
   title?: string | undefined;
 }

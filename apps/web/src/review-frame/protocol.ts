@@ -171,12 +171,31 @@ export function reviewAnchorFrom(
   htmlAnchor: HtmlElementAnchor | undefined,
   htmlAdditionalTargets: HtmlAnnotationTarget[] | undefined,
 ): ReviewAnchor {
+  const projectAnchor = (
+    value: HtmlElementAnchor | undefined,
+  ): HtmlElementAnchor | undefined => value === undefined
+    ? undefined
+    : {
+        selector: value.selector,
+        tagName: value.tagName,
+        ...(value.text === undefined ? {} : {text: value.text}),
+        ...(value.point === undefined ? {} : {point: value.point}),
+      };
   const anchor: ReviewAnchor = {
-    htmlAnchor: htmlAnchor ?? null,
+    htmlAnchor: projectAnchor(htmlAnchor) ?? null,
     originalText,
   };
   if (htmlAdditionalTargets !== undefined && htmlAdditionalTargets.length > 0) {
-    return {...anchor, htmlAdditionalTargets};
+    return {
+      ...anchor,
+      htmlAdditionalTargets: htmlAdditionalTargets.map((target) => ({
+        text: target.text,
+        ...(target.label === undefined ? {} : {label: target.label}),
+        ...(target.anchor === undefined
+          ? {}
+          : {anchor: projectAnchor(target.anchor)}),
+      })),
+    };
   }
   return anchor;
 }

@@ -286,6 +286,8 @@ export function ReviewFrame(): React.ReactNode {
       rawHtml={session.html}
       readOnly={session.readOnly}
       ref={viewerRef}
+      sandbox="allow-scripts"
+      allowCommentImages={false}
       selectedAnnotationId={selectedThreadId}
       title={`Artifact review: ${session.entryPath}`}
     />

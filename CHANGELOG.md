@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.28
+
+- Upgrade the Review frame's annotation viewer (@plannotator/ui) from 0.31.0 to 0.63.0, keeping its sandbox at scripts-only (no dialogs, popups or same-origin).
+- Links to other files or sites inside an HTML artifact under Review stay inert; in-page # links scroll. To comment on a link in Annotate mode, Cmd/Ctrl-click it.
+- No change to MCP tools, auth, tenancy or stored comment anchors.
+
 ## 0.1.27
 
 - Refresh MCP, Hono, Vite, and related dependencies.

@@ -7,8 +7,8 @@ import { createRoot } from "react-dom/client";
 import { ReviewFrame } from "./review-frame.tsx";
 import "./review-frame.css";
 
-// The viewer's default seams persist settings in cookies, name authors from
-// that store, and lazily fetch a Plannotator skill catalog. Artifact Server
+// The viewer's default seams can persist settings in cookies, name authors
+// from that store, and lazily fetch a Plannotator skill catalog. Artifact Server
 // owns the author (the server stamps it on the thread), stores nothing in the
 // browser, and forbids network access from this document, so all three are
 // replaced before the first render.

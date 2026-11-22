@@ -1,5 +1,5 @@
 /**
- * Boundary declaration for `@plannotator/ui/utils/storage` (0.30.0,
+ * Boundary declaration for `@plannotator/ui/utils/storage` (0.63.0,
  * utils/storage.ts:12-57). The default backend reads and writes
  * `document.cookie`; the review frame installs an in-memory backend so the
  * viewer keeps the application's zero-web-storage posture.

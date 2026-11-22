@@ -23,8 +23,8 @@ body {
 
 /*
  * Image attachments are not part of an artifact comment: the thread body is
- * the only field the API stores. HtmlViewer hard-codes the composer's
- * attachment affordance, so it is suppressed here.
+ * the only field the API stores. allowCommentImages={false} is the primary
+ * control; this selector remains as belt-and-braces suppression.
  */
 [data-comment-popover] button[aria-label="Attachments"] {
   display: none;
