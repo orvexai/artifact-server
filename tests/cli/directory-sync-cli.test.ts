@@ -102,7 +102,6 @@ describe("artifactserver maintenance sync-directory", () => {
         deleted: 0,
         membershipsReplaced: 2,
         groupsFailed: 0,
-        roleChanged: 0,
       },
     }), JSON.stringify({
       groups: 2,
