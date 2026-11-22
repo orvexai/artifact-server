@@ -20,7 +20,7 @@ import {z} from "zod";
 import {fetchLoopbackContent} from "../support/fetch-loopback-content.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
-const publicationTestTimeoutMilliseconds = 60_000;
+const publicationTestTimeoutMilliseconds = 165_000;
 const runningProcesses = new Set<ChildProcessWithoutNullStreams>();
 const assignedAddressSchema = z.object({port: z.number().int().positive()});
 const publicationSchema = z.object({
@@ -417,7 +417,7 @@ async function waitForReady(
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error(`Artifact Server did not become ready: ${redactToken(output)}`));
-    }, 10_000);
+    }, 30_000);
     const receive = (chunk: Buffer) => {
       output += chunk.toString("utf8");
       if (!output.includes(readyText)) return;

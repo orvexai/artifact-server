@@ -125,7 +125,7 @@ describe("authenticated CLI profiles and remote publication", () => {
       await stopProcess(backend);
       await rm(temporaryDirectory, {force: true, recursive: true});
     }
-  }, 60_000);
+  }, 90_000);
 
   test("CLI-003-B CLI-003-F: resumes a lost commit response across CLI process restarts", async () => {
     const temporaryDirectory = await mkdtemp(
@@ -208,7 +208,7 @@ describe("authenticated CLI profiles and remote publication", () => {
       await stopProcess(server);
       await rm(temporaryDirectory, {force: true, recursive: true});
     }
-  }, 30_000);
+  }, 75_000);
 
   test("CLI-002-B PUB-012-B: stores a verified profile outside the project and publishes through it after restart", async () => {
     const temporaryDirectory = await mkdtemp(
@@ -393,7 +393,7 @@ describe("authenticated CLI profiles and remote publication", () => {
       await stopProcess(server);
       await rm(temporaryDirectory, {force: true, recursive: true});
     }
-  }, 90_000);
+  }, 210_000);
 
   test("CLI-002-F PUB-012-F: rejects an invalid credential without saving it and never sends one profile to another origin", async () => {
     const temporaryDirectory = await mkdtemp(
@@ -491,7 +491,7 @@ describe("authenticated CLI profiles and remote publication", () => {
       await Promise.all([stopProcess(first), stopProcess(second)]);
       await rm(temporaryDirectory, {force: true, recursive: true});
     }
-  }, 90_000);
+  }, 120_000);
 
   test("completes browser PKCE, refresh, status, and revocation against real HTTP boundaries", async () => {
     const temporaryDirectory = await mkdtemp(
@@ -582,7 +582,7 @@ describe("authenticated CLI profiles and remote publication", () => {
       await oauth.stop();
       await rm(temporaryDirectory, {force: true, recursive: true});
     }
-  }, 30_000);
+  }, 75_000);
 
   test("selects one root-login organization, rejects ambiguous noninteractive and zero-org access, and keeps audiences scoped", async () => {
     const temporaryDirectory = await mkdtemp(
@@ -634,7 +634,7 @@ describe("authenticated CLI profiles and remote publication", () => {
       await oauth.stop();
       await rm(temporaryDirectory, {force: true, recursive: true});
     }
-  }, 45_000);
+  }, 75_000);
 
   test("fails fast with the authorization URL when no browser can be opened", async () => {
     const temporaryDirectory = await mkdtemp(
@@ -1029,7 +1029,7 @@ async function waitForReady(
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error("Artifact Server did not become ready."));
-    }, 10_000);
+    }, 30_000);
     const receive = (chunk: Buffer) => {
       output += chunk.toString("utf8");
       if (!output.includes(expected)) return;

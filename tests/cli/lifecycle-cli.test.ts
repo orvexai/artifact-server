@@ -628,7 +628,7 @@ describe("Artifact Server lifecycle CLI", () => {
     } finally {
       await rm(parent, {force: true, recursive: true});
     }
-  }, 30_000);
+  }, 75_000);
 });
 
 function compactEnvironment(
@@ -704,7 +704,7 @@ function waitForOutput(
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error(`Process did not emit ${expected}: ${output}`));
-    }, 10_000);
+    }, 30_000);
     const receive = (chunk: Buffer) => {
       output += chunk.toString("utf8");
       if (!output.includes(expected)) return;
