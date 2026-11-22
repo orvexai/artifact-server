@@ -171,30 +171,28 @@ export function reviewAnchorFrom(
   htmlAnchor: HtmlElementAnchor | undefined,
   htmlAdditionalTargets: HtmlAnnotationTarget[] | undefined,
 ): ReviewAnchor {
-  const projectAnchor = (
-    value: HtmlElementAnchor | undefined,
-  ): HtmlElementAnchor | undefined => value === undefined
-    ? undefined
-    : {
-        selector: value.selector,
-        tagName: value.tagName,
-        ...(value.text === undefined ? {} : {text: value.text}),
-        ...(value.point === undefined ? {} : {point: value.point}),
-      };
+  const projectAnchor = (value: HtmlElementAnchor): HtmlElementAnchor => {
+    const projected: HtmlElementAnchor = {
+      selector: value.selector,
+      tagName: value.tagName,
+    };
+    if (value.text !== undefined) projected.text = value.text;
+    if (value.point !== undefined) projected.point = value.point;
+    return projected;
+  };
   const anchor: ReviewAnchor = {
-    htmlAnchor: projectAnchor(htmlAnchor) ?? null,
+    htmlAnchor: htmlAnchor === undefined ? null : projectAnchor(htmlAnchor),
     originalText,
   };
   if (htmlAdditionalTargets !== undefined && htmlAdditionalTargets.length > 0) {
     return {
       ...anchor,
-      htmlAdditionalTargets: htmlAdditionalTargets.map((target) => ({
-        text: target.text,
-        ...(target.label === undefined ? {} : {label: target.label}),
-        ...(target.anchor === undefined
-          ? {}
-          : {anchor: projectAnchor(target.anchor)}),
-      })),
+      htmlAdditionalTargets: htmlAdditionalTargets.map((target) => {
+        const projected: HtmlAnnotationTarget = {text: target.text};
+        if (target.label !== undefined) projected.label = target.label;
+        if (target.anchor !== undefined) projected.anchor = projectAnchor(target.anchor);
+        return projected;
+      }),
     };
   }
   return anchor;

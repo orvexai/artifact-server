@@ -2,22 +2,29 @@ import {readFile} from "node:fs/promises";
 import path from "node:path";
 
 import {describe, expect, it} from "vitest";
+import {z} from "zod";
 
-import {reviewAnchorFrom, reviewAnchorSchema} from "../../apps/web/src/review-frame/protocol.ts";
+import {reviewAnchorFrom} from "../../apps/web/src/review-frame/protocol.ts";
 
 const root = process.cwd();
 const read = (relativePath: string) =>
   readFile(path.join(root, relativePath), "utf8");
+const webPackageManifestSchema = z.object({
+  dependencies: z.record(z.string(), z.string()),
+});
+const installedViewerManifestSchema = z.object({version: z.string()});
 
 describe("Review frame @plannotator/ui 0.63.0 boundary", () => {
   it("T1 installs the pinned registry package", async () => {
     const [appPackage, installedPackage] = await Promise.all([
-      read("apps/web/package.json").then(JSON.parse) as Promise<{dependencies: Record<string, string>}>,
-      read("apps/web/node_modules/@plannotator/ui/package.json").then(JSON.parse) as Promise<{version: string}>,
+      read("apps/web/package.json").then((source) =>
+        webPackageManifestSchema.parse(JSON.parse(source))),
+      read("apps/web/node_modules/@plannotator/ui/package.json").then((source) =>
+        installedViewerManifestSchema.parse(JSON.parse(source))),
     ]);
 
     expect(appPackage.dependencies["@plannotator/ui"]).toBe("0.63.0");
-    expect(installedPackage.version).toBe("0.63.0");
+    expect(installedPackage["version"]).toBe("0.63.0");
   });
 
   it("T2 pins the sandbox and keeps unreviewed viewer capabilities absent", async () => {
@@ -85,12 +92,14 @@ describe("Review frame @plannotator/ui 0.63.0 boundary", () => {
   });
 
   it("T5 projects only the version-one stored anchor fields", () => {
-    expect(reviewAnchorFrom("t", {
+    const anchorWithUntrustedField = {
       selector: "a", tagName: "A", point: {x: 0, y: 0}, extra: 1,
-    } as never, [{
+    };
+    const targetWithUntrustedFields = {
       text: "x", label: "L", context: {tag: "a"},
-      anchor: {selector: "b", tagName: "B", extra: 2} as never,
-    } as never])).toEqual({
+      anchor: {selector: "b", tagName: "B", extra: 2},
+    };
+    expect(reviewAnchorFrom("t", anchorWithUntrustedField, [targetWithUntrustedFields])).toEqual({
       htmlAnchor: {selector: "a", tagName: "A", point: {x: 0, y: 0}},
       htmlAdditionalTargets: [{
         text: "x", label: "L", anchor: {selector: "b", tagName: "B"},
