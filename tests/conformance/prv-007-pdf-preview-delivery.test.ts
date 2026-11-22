@@ -104,6 +104,7 @@ describe("PRV-007 PDF preview delivery", () => {
       "font-src * data:",
       "media-src * data: blob:",
       "connect-src http://*.localhost:* https://*.localhost",
+      "frame-src 'self'",
       "frame-ancestors 'self'",
     ].join("; "));
 

@@ -26,7 +26,10 @@ describe("web group role API", () => {
     const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
     Object.defineProperty(globalThis, "document", {
       configurable: true,
-      value: {cookie: "artifact_csrf=test-csrf"},
+      value: {
+        cookie: "artifact_csrf=test-csrf",
+        querySelector: () => null,
+      },
     });
     globalThis.fetch = ((input, init) => {
       const url = input instanceof Request ? input.url : String(input);
