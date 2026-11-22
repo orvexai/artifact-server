@@ -75,7 +75,9 @@ export type ProjectAccess =
  * browser session, an MCP client, or an API key issued for that member, is
  * judged as the member in `principal.id`, by its current stored role and
  * status rather than by what the credential carries. The member who created
- * a project manages it.
+ * a project manages it while active; a service principal that created it is
+ * its creator, and manages it only with the manageProjects or
+ * provisionProjects capability.
  */
 export function resolveProjectAccess(
   principal: Principal,
