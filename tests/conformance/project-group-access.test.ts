@@ -149,6 +149,7 @@ describe("restricted projects shared with directory groups", () => {
           {id: "g-manage", members: [member("manager")], name: "Managers", path: "/Managers"},
         ],
         provider,
+        recomputeRoles: false,
         syncedAt: "2026-10-24T00:00:00.000Z",
       });
       await repository.setProjectAccessMode(installationId, secretProject, "restricted");

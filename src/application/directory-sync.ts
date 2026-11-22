@@ -311,14 +311,14 @@ export interface DirectoryGroupSyncReport {
   readonly deleted: number;
   readonly membershipsReplaced: number;
   readonly roleChanged?: number;
-  /** Groups whose members could not be read; they keep their stored members. */
+  /** Always 0: a group whose members cannot be read fails the whole pass. Kept for report compatibility. */
   readonly groupsFailed: number;
 }
 
 /**
  * Copy every directory group and its direct members, keyed by directory id.
- * The listing must be complete or nothing changes; a group whose members
- * cannot be read keeps its stored membership and the pass continues.
+ * The group listing and every group's member listing must succeed, or the
+ * pass fails and nothing changes.
  */
 export const syncDirectoryGroups = Effect.fn("syncDirectoryGroups")(function*(
   directory: GroupDirectory,
