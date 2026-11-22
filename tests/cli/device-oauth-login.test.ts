@@ -12,13 +12,14 @@ import {loginWithDeviceOAuth, type DeviceLoginIo} from "../../src/cli/cli-oauth-
 
 const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code";
 
-type TokenAnswer = "authorization_pending" | "slow_down" | "access_denied" | "expired_token" | "invalid_grant" | "tokens";
+type TokenAnswer = "authorization_pending" | "slow_down" | "access_denied" | "expired_token" | "invalid_grant" | "server_error" | "drop" | "tokens";
 
 interface FakeIssuerOptions {
   readonly answers?: ReadonlyArray<TokenAnswer>;
   readonly deviceEndpoint?: string | false;
   readonly expiresIn?: number;
   readonly interval?: number;
+  readonly issuerUrl?: string;
   readonly issuerMismatch?: boolean;
   readonly metadataFirstStatus?: number;
   readonly rfc8414?: boolean;
@@ -65,6 +66,118 @@ interface FakeIssuer {
 }
 
 describe("CLI-004 device authorization", () => {
+  it.each([
+    "http://issuer.example/realms/artifact",
+    "http://user:pw@127.0.0.1:1/realms/artifact",
+    "https://issuer.example/realms/artifact?x=1",
+  ])("rejects unsafe issuer %s before discovery", async (issuerUrl) => {
+    const fake = await startFakeIssuer({issuerUrl});
+    const fetch = vi.spyOn(globalThis, "fetch");
+    try {
+      await expect(Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(fakeClock(), []))))
+        .rejects.toMatchObject({reason: "invalid_metadata"});
+      expect(fake.metadataPaths).toEqual([]);
+      expect(fake.deviceRequests).toEqual([]);
+      expect(fetch.mock.calls.some(([url]) => {
+        const value = url instanceof Request ? url.url : url.toString();
+        return value.includes("/.well-known/oauth-authorization-server") || value.includes("openid-configuration");
+      })).toBe(false);
+    } finally {
+      fetch.mockRestore();
+      await fake.close();
+    }
+  });
+
+  it("clamps pending sleeps to the device deadline", async () => {
+    const fake = await startFakeIssuer({answers: ["authorization_pending"], expiresIn: 30, interval: 7});
+    const clock = fakeClock();
+    fake.setNowSource(clock.now);
+    try {
+      await expect(Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(clock, []))))
+        .rejects.toMatchObject({reason: "oauth_failed", message: expect.stringContaining("expired")});
+      expect(clock.sleeps).toEqual([7_000, 7_000, 7_000, 7_000, 2_000]);
+      expect(fake.tokenRequests).toHaveLength(4);
+      expect(fake.tokenRequests.every((request) => request.time < 30_000)).toBe(true);
+      expect(clock.now()).toBe(30_000);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("caps a huge issuer interval at the remaining lifetime", async () => {
+    const fake = await startFakeIssuer({expiresIn: 300, interval: 3_600});
+    const clock = fakeClock();
+    try {
+      await expect(Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(clock, []))))
+        .rejects.toMatchObject({reason: "oauth_failed", message: expect.stringContaining("expired")});
+      expect(clock.sleeps).toEqual([300_000]);
+      expect(fake.tokenRequests).toHaveLength(0);
+      expect(clock.now()).toBe(300_000);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("caps the device lifetime at 15 minutes", async () => {
+    const fake = await startFakeIssuer({answers: ["authorization_pending"], expiresIn: 3_600, interval: 60});
+    const clock = fakeClock();
+    fake.setNowSource(clock.now);
+    try {
+      await expect(Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(clock, []))))
+        .rejects.toMatchObject({reason: "oauth_failed", message: expect.stringContaining("expired")});
+      expect(clock.sleeps).toEqual(Array.from({length: 15}, () => 60_000));
+      expect(fake.tokenRequests).toHaveLength(14);
+      expect(fake.tokenRequests.every((request) => request.time < 900_000)).toBe(true);
+      expect(clock.now()).toBe(900_000);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("clamps slow_down polling to the device deadline", async () => {
+    const fake = await startFakeIssuer({answers: ["slow_down"], expiresIn: 30, interval: 5});
+    const clock = fakeClock();
+    try {
+      await expect(Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(clock, []))))
+        .rejects.toMatchObject({reason: "oauth_failed", message: expect.stringContaining("expired")});
+      expect(clock.sleeps).toEqual([5_000, 10_000, 15_000]);
+      expect(fake.tokenRequests).toHaveLength(2);
+      expect(clock.now()).toBe(30_000);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("backs off after transient errors and accepts tokens", async () => {
+    const fake = await startFakeIssuer({answers: ["server_error", "drop", "tokens"]});
+    const clock = fakeClock();
+    try {
+      const result = await Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(clock, [])));
+      expect(clock.sleeps).toEqual([5_000, 10_000, 20_000]);
+      expect(fake.tokenRequests).toHaveLength(3);
+      expect(result.credential.kind).toBe("oauth");
+      const verifiers = fake.tokenRequests.map((request) => request.form.get("code_verifier"));
+      expect(new Set(verifiers).size).toBe(1);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("backs off on persistent server errors until expiry", async () => {
+    const fake = await startFakeIssuer({answers: ["server_error"], expiresIn: 60, interval: 5});
+    const clock = fakeClock();
+    fake.setNowSource(clock.now);
+    try {
+      await expect(Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(clock, []))))
+        .rejects.toMatchObject({reason: "oauth_failed", message: expect.stringContaining("expired")});
+      expect(clock.sleeps).toEqual([5_000, 10_000, 20_000, 25_000]);
+      expect(fake.tokenRequests).toHaveLength(3);
+      expect(clock.now()).toBe(60_000);
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("CLI-004-B completes pending and slow_down with S256, keeping secrets out of output and the credential", async () => {
     const fake = await startFakeIssuer({answers: ["authorization_pending", "slow_down", "tokens"]});
     const clock = fakeClock();
@@ -112,7 +225,7 @@ describe("CLI-004 device authorization", () => {
     }
   });
 
-  it("CLI-004-B reuses one verifier for all four pending polls", async () => {
+  it("reuses one verifier for all four pending polls", async () => {
     const fake = await startFakeIssuer({answers: ["authorization_pending", "authorization_pending", "authorization_pending", "tokens"]});
     try {
       await Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(fakeClock(), [])));
@@ -125,7 +238,7 @@ describe("CLI-004 device authorization", () => {
     }
   });
 
-  it("CLI-004-B creates a fresh PKCE pair for each authorization", async () => {
+  it("creates a fresh PKCE pair for each authorization", async () => {
     const fake = await startFakeIssuer({answers: ["tokens", "tokens"]});
     try {
       await Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(fakeClock(), [])));
@@ -151,7 +264,7 @@ describe("CLI-004 device authorization", () => {
     }
   });
 
-  it("CLI-004-F reports expired_token and stops polling", async () => {
+  it("reports expired_token and stops polling", async () => {
     const fake = await startFakeIssuer({answers: ["expired_token"]});
     try {
       await expect(Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(fakeClock(), []))))
@@ -162,7 +275,7 @@ describe("CLI-004 device authorization", () => {
     }
   });
 
-  it("CLI-004-F stops never-approved polling at the deadline", async () => {
+  it("stops never-approved polling at the deadline", async () => {
     const fake = await startFakeIssuer({answers: ["authorization_pending"], expiresIn: 30, interval: 5});
     const clock = fakeClock();
     fake.setNowSource(clock.now);
@@ -177,7 +290,7 @@ describe("CLI-004 device authorization", () => {
     }
   });
 
-  it("CLI-004-F reports an issuer without device authorization as unavailable", async () => {
+  it("reports an issuer without device authorization as unavailable", async () => {
     const fake = await startFakeIssuer({deviceEndpoint: false});
     const prompt: string[] = [];
     try {
@@ -190,7 +303,7 @@ describe("CLI-004 device authorization", () => {
     }
   });
 
-  it("CLI-004-F reports a client that has not enabled device authorization", async () => {
+  it("reports a client that has not enabled device authorization", async () => {
     const fake = await startFakeIssuer({deviceEndpoint: "unauthorized"});
     try {
       await expect(Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(fakeClock(), []))))
@@ -202,7 +315,7 @@ describe("CLI-004 device authorization", () => {
     }
   });
 
-  it("CLI-004-B accepts RFC 8414 metadata at the first discovery URL", async () => {
+  it("accepts RFC 8414 metadata at the first discovery URL", async () => {
     const fake = await startFakeIssuer({rfc8414: true});
     try {
       await Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(fakeClock(), [])));
@@ -213,7 +326,7 @@ describe("CLI-004 device authorization", () => {
     }
   });
 
-  it("CLI-004-F rejects metadata whose issuer differs from the verified issuer", async () => {
+  it("rejects metadata whose issuer differs from the verified issuer", async () => {
     const fake = await startFakeIssuer({issuerMismatch: true});
     try {
       await expect(Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(fakeClock(), []))))
@@ -224,7 +337,7 @@ describe("CLI-004 device authorization", () => {
     }
   });
 
-  it("CLI-004-F fails on metadata URL 1 status 500 without trying later URLs", async () => {
+  it("fails on metadata URL 1 status 500 without trying later URLs", async () => {
     const fake = await startFakeIssuer({metadataFirstStatus: 500});
     try {
       await expect(Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(fakeClock(), []))))
@@ -236,7 +349,7 @@ describe("CLI-004 device authorization", () => {
     }
   });
 
-  it("CLI-004-F rejects unsafe endpoints and terminal-control user codes without prompting", async () => {
+  it("rejects unsafe endpoints and terminal-control user codes without prompting", async () => {
     const unsafeEndpoint = await startFakeIssuer({deviceEndpoint: "http://evil.example/device"});
     const badUserCode = await startFakeIssuer({userCode: "BAD\u001b[31mCODE"});
     const prompt: string[] = [];
@@ -252,7 +365,7 @@ describe("CLI-004 device authorization", () => {
     }
   });
 
-  it("CLI-004-F rejects a PKCE verifier mismatch without retrying or disclosing the verifier", async () => {
+  it("rejects a PKCE verifier mismatch without retrying or disclosing the verifier", async () => {
     const fake = await startFakeIssuer({answers: ["invalid_grant"]});
     try {
       const error = await Effect.runPromise(loginWithDeviceOAuth(fake.origin, "", ioFor(fakeClock(), [])))
@@ -302,7 +415,7 @@ async function startFakeIssuer(options: FakeIssuerOptions = {}): Promise<FakeIss
     }
     if (request.method === "GET" && path === "/.well-known/oauth-protected-resource/api") {
       sendJson(response, 200, {
-        authorization_servers: [`${origin}/realms/artifact`],
+        authorization_servers: [options.issuerUrl ?? `${origin}/realms/artifact`],
         resource: `${origin}/api`,
         scopes_supported: ["artifactserver"],
       });
@@ -333,7 +446,7 @@ async function startFakeIssuer(options: FakeIssuerOptions = {}): Promise<FakeIss
         return;
       }
       const isRfc8414 = path === "/.well-known/oauth-authorization-server/realms/artifact";
-      const issuer = `${origin}/realms/${options.issuerMismatch ? "other" : "artifact"}`;
+      const issuer = options.issuerUrl ?? `${origin}/realms/${options.issuerMismatch ? "other" : "artifact"}`;
       const metadata: FakeIssuerMetadata = {
         authorization_endpoint: `${issuer}/authorize`,
         grant_types_supported: [deviceGrant],
@@ -385,7 +498,7 @@ async function startFakeIssuer(options: FakeIssuerOptions = {}): Promise<FakeIss
         sendJson(response, 400, {error: "invalid_grant", error_description: "PKCE verification failed"});
         return;
       }
-      const answer = answers.shift() ?? "authorization_pending";
+      const answer = answers.shift() ?? options.answers?.at(-1) ?? "authorization_pending";
       if (answer === "tokens") {
         sendJson(response, 200, {
           access_token: "access-secret-value",
@@ -393,6 +506,14 @@ async function startFakeIssuer(options: FakeIssuerOptions = {}): Promise<FakeIss
           refresh_token: "refresh-secret-value",
           token_type: options.tokenType ?? "Bearer",
         });
+        return;
+      }
+      if (answer === "server_error") {
+        sendJson(response, 503, {error: "temporarily_unavailable"});
+        return;
+      }
+      if (answer === "drop") {
+        request.socket.destroy();
         return;
       }
       sendJson(response, 400, {error: answer});
