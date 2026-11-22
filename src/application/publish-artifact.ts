@@ -359,12 +359,6 @@ function makePublishArtifactService(
     );
     if (replayed !== null) return replayed;
 
-    if (current.version.id !== command.expectedCurrentVersionId) {
-      return yield* Effect.fail(new PublishConflict({
-        message: "The artifact changed after the expected current version was read.",
-      }));
-    }
-
     const sourceCheckTime = DateTime.formatIso(yield* dependencies.clock.now);
     yield* dependencies.repository.assertPublicationSourceReady(
       command.source,
