@@ -12,6 +12,11 @@ const read = (relativePath: string) =>
 const webPackageManifestSchema = z.object({
   dependencies: z.record(z.string(), z.string()),
 });
+const rootPackageManifestSchema = z.object({
+  pnpm: z.object({
+    patchedDependencies: z.record(z.string(), z.string()).optional(),
+  }).optional(),
+});
 const installedViewerManifestSchema = z.object({version: z.string()});
 
 describe("Review frame @plannotator/ui 0.63.0 boundary", () => {
@@ -106,5 +111,22 @@ describe("Review frame @plannotator/ui 0.63.0 boundary", () => {
       }],
       originalText: "t",
     });
+  });
+
+  it("T6 patches only the Interact link guard and History sandbox shim", async () => {
+    const rootPackage = rootPackageManifestSchema.parse(JSON.parse(await read("package.json")));
+    const bridge = await read("apps/web/node_modules/@plannotator/ui/components/html-viewer/bridge-script.ts");
+    const sandboxShim = await read("apps/web/node_modules/@plannotator/ui/components/html-viewer/sandboxShim.ts");
+
+    expect(rootPackage.pnpm?.patchedDependencies?.["@plannotator/ui@0.63.0"]).toBe(
+      "patches/@plannotator__ui@0.63.0.patch",
+    );
+    expect(bridge).toContain("if (!annotateModeActive) return; // Interact");
+    expect(sandboxShim).not.toContain("var h = window.history");
+    expect(sandboxShim).not.toContain("h[name] = shim");
+    expect(sandboxShim).not.toContain("plannotatorSandboxShim = true");
+    expect(sandboxShim).not.toMatch(/history\.(pushState|replaceState)\s*=/u);
+    expect(sandboxShim).toContain("memoryStorage");
+    expect(sandboxShim).toContain("History block removed by artifact-server patch");
   });
 });

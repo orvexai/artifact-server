@@ -1,0 +1,54 @@
+diff --git a/components/html-viewer/bridge-script.ts b/components/html-viewer/bridge-script.ts
+index 7c5eebc76f0348607f3e817646b912b084f76456..6aa775f350482a6ba3816b1b91b25b675ea7a452 100644
+--- a/components/html-viewer/bridge-script.ts
++++ b/components/html-viewer/bridge-script.ts
+@@ -4723,5 +4723,6 @@ ${SANDBOX_SHIM_SCRIPT}
+   if (!LIVE) {
+     document.addEventListener('click', function(e) {
++      if (!annotateModeActive) return; // Interact: links behave as in a tab (artifact-server-3jo DELTA 2)
+       if (e.defaultPrevented || e.button !== 0) return;
+       if (isViewerOverlayNode(e.target)) return; // markers own their clicks
+       var raw = navigableLinkHref(e.target);
+diff --git a/components/html-viewer/sandboxShim.ts b/components/html-viewer/sandboxShim.ts
+index 77408abb04aa84193e3abcfd1b2930128d70bed0..cda9cf2f3d4ddcc09fb75a54afa3f8d2b3b8cc8c 100644
+--- a/components/html-viewer/sandboxShim.ts
++++ b/components/html-viewer/sandboxShim.ts
+@@ -18,6 +18,7 @@
+  *   origin. Each becomes an in-memory Storage for this load of the page:
+  *   nothing is written anywhere, so the frame still keeps nothing between
+  *   loads (the sandbox is unchanged; this only stops the throw).
++ * History block removed by artifact-server patch: the host's base-href script owns same-document History URLs.
+  *
+  * Never in live mode: a proxied app runs on its own real origin. The shim is
+  * idempotent: the inline path runs it first in `<head>` (so a page's own head
+@@ -28,30 +29,6 @@
+  * closing script tag.
+  */
+ export const SANDBOX_SHIM_SCRIPT = `(function() {
+-  var h = window.history;
+-  if (h && !(h.replaceState && h.replaceState.plannotatorSandboxShim)) {
+-    ['pushState', 'replaceState'].forEach(function(name) {
+-      var original = h[name];
+-      if (typeof original !== 'function') return;
+-      var shim = function(state, unused, url) {
+-        if (url === undefined || url === null) return original.apply(this, arguments);
+-        var raw = String(url);
+-        var own = location.href.split('#')[0];
+-        if (raw === '' || raw.charAt(0) === '#') return original.call(this, state, unused, own + raw);
+-        try {
+-          return original.call(this, state, unused, url);
+-        } catch (error) {
+-          if (!error || error.name !== 'SecurityError') throw error;
+-          var hash = '';
+-          try { hash = new URL(raw, document.baseURI).hash; } catch (ignored) {}
+-          return original.call(this, state, unused, own + hash);
+-        }
+-      };
+-      shim.plannotatorSandboxShim = true;
+-      h[name] = shim;
+-    });
+-  }
+-
+   function memoryStorage() {
+     var items = new Map();
+     var api = {
