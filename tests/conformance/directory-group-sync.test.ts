@@ -142,7 +142,9 @@ describe("Keycloak directory group sync", () => {
       ),
     };
     keycloak.failGroupMembers("Platform Team");
-    await expect(syncGroups("2026-10-24T01:00:00.000Z")).rejects.toThrow();
+    await expect(syncGroups("2026-10-24T01:00:00.000Z")).rejects.toThrow(
+      "The Keycloak members of /Platform Team returned HTTP 500.",
+    );
     expect({
       groups: rowsOf("SELECT id, name, path, synced_at FROM directory_groups ORDER BY path"),
       members: groupMembers(),

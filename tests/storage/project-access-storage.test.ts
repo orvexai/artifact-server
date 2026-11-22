@@ -110,7 +110,7 @@ describe("project access storage (SQLite)", () => {
     expect(await repository.removeProjectGroupGrant(installationId, defaultProject, "g-b")).toBe(true);
     expect(await repository.removeProjectGroupGrant(installationId, defaultProject, "g-b")).toBe(false);
 
-    await groups([group("g-b", [])]);
+    await groups([group("g-b", [["user-ada", "ada"]])]);
     expect(await repository.listProjectGroupGrants(installationId, defaultProject)).toEqual([]);
   });
 
@@ -180,7 +180,7 @@ describe("project access storage (SQLite)", () => {
     )).toEqual({user_version: 27});
     expect(await repository.findProjectAccess(installationId, defaultProject, "nobody"))
       .toMatchObject({accessMode: "installation"});
-    await groups([group("g-a", [])]);
+    await groups([group("g-a", [["user-ada", "ada"]])]);
     await grant("g-a", "viewer");
     expect(await repository.listProjectGroupGrants(installationId, defaultProject)).toHaveLength(1);
   });
@@ -238,7 +238,7 @@ describe("project access storage (SQLite)", () => {
   });
 
   test("starting roles are stored once, and later changes and removals stay", async () => {
-    await groups([group("g-a", []), group("g-b", [])]);
+    await groups([group("g-a", [["user-ada", "ada"]]), group("g-b", [])]);
     expect(await repository.isGroupRoleSeedApplied(installationId)).toBe(false);
     expect(await repository.seedGroupRoles(
       installationId,
@@ -258,14 +258,14 @@ describe("project access storage (SQLite)", () => {
     await expect(repository.setGroupRole(installationId, "missing", "member", "2026-10-26T03:00:00.000Z", "mem_ada"))
       .rejects.toMatchObject({_tag: "IdentityNotFound"});
     // A group the directory deletes takes its role with it.
-    await groups([group("g-b", [])]);
+    await groups([group("g-b", [["user-ada", "ada"]])]);
     expect(await repository.listGroupRoles(installationId)).toEqual([]);
   });
 
   test("a stored role reports whether its group's name is shared by another group", async () => {
     await repository.applyDirectoryGroups(installationId, {
       groups: [
-        {id: "g-temporal", members: [], name: "default:admin", path: "/temporal/default:admin"},
+        {id: "g-temporal", members: [{email: "ada@example.test", subject: "user-ada"}], name: "default:admin", path: "/temporal/default:admin"},
         {id: "g-other", members: [], name: "default:admin", path: "/other/default:admin"},
         {id: "g-dev", members: [], name: "Developers", path: "/Developers"},
       ],
