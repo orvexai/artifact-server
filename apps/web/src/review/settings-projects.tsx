@@ -133,7 +133,7 @@ export function SettingsProjects({
         </div>
       )}
 
-      <div id="settings-project-table">
+      <div className="as-projects-inventory" id="settings-project-table">
         {visibleProjects.length === 0 ? (
           <StatePanel
             description={archivedCount > 0
@@ -142,20 +142,20 @@ export function SettingsProjects({
             title={archivedCount > 0 ? "No active projects" : "No projects"}
           />
         ) : (
-          <div className="overflow-x-auto border">
-            <table className="w-full min-w-2xl text-left text-sm">
-              <thead className="border-b bg-muted/50 text-xs tracking-widest text-muted-foreground uppercase">
-                <tr>
-                  <th className="px-4 py-3 font-semibold">Project</th>
-                  <th className="px-4 py-3 font-semibold">State</th>
-                  <th className="px-4 py-3 font-semibold">Created</th>
-                  <th className="px-4 py-3 text-right font-semibold">Actions</th>
+          <div>
+            <table aria-label="Projects" className="as-projects-table w-full text-left text-sm" role="table">
+              <thead className="border-b bg-muted/50 text-xs tracking-widest text-muted-foreground uppercase" role="rowgroup">
+                <tr role="row">
+                  <th className="px-4 py-3 font-semibold" role="columnheader">Project</th>
+                  <th className="px-4 py-3 font-semibold" role="columnheader">State</th>
+                  <th className="px-4 py-3 font-semibold" role="columnheader">Created</th>
+                  <th className="px-4 py-3 text-right font-semibold" role="columnheader">Actions</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody role="rowgroup">
                 {visibleProjects.map((project) => (
-                  <tr className="border-b last:border-b-0" key={project.id}>
-                    <td className="px-4 py-4">
+                  <tr className="as-projects-table__row" key={project.id} role="row">
+                    <td className="as-projects-table__project px-4 py-4" role="cell">
                       <a className="font-heading font-semibold hover:underline" href={projectSettingsHref(project.id)}>
                         {project.name}
                       </a>
@@ -163,16 +163,17 @@ export function SettingsProjects({
                         {project.id}
                       </code>
                     </td>
-                    <td className="px-4 py-4">
+                    <td className="as-projects-table__state px-4 py-4" role="cell">
                       <StatusBadge tone={project.archivedAt === null ? "primary" : "neutral"}>
                         {project.archivedAt === null ? "Active" : "Archived"}
                       </StatusBadge>
                     </td>
-                    <td className="px-4 py-4 whitespace-nowrap text-muted-foreground">
+                    <td className="as-projects-table__created px-4 py-4 whitespace-nowrap text-muted-foreground" role="cell">
+                      <span className="as-projects-table__created-label">Created</span>
                       {formatTimestamp(project.createdAt)}
                     </td>
-                    <td className="px-4 py-4">
-                      <div className="flex justify-end gap-2">
+                    <td className="as-projects-table__actions-cell px-4 py-4" role="cell">
+                      <div className="as-projects-table__actions flex justify-end gap-2">
                         <ButtonLink
                           href={organizationPath(`/review?project=${encodeURIComponent(project.id)}`)}
                           size="sm"

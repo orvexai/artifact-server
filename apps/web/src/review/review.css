@@ -2142,6 +2142,29 @@ select:focus-visible {
   }
 }
 
+@container preview-panel (max-width: 26rem) {
+  .as-preview-header {
+    flex-wrap: wrap;
+    row-gap: 0.35rem;
+  }
+
+  .as-preview-header__identity {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .as-preview-header__identity h1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .as-preview-header__actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
+}
+
 @container preview-panel (max-width: 40rem) {
   .as-preview-header__actions {
     gap: 0.35rem;
@@ -3681,6 +3704,99 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
   border: 1px solid var(--as-border);
 }
 
+.as-projects-inventory {
+  border: 1px solid var(--as-border);
+  container-name: projects;
+  container-type: inline-size;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.as-projects-table {
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.as-projects-table__row {
+  border-bottom: 1px solid var(--as-border);
+}
+
+.as-projects-table__row:last-child {
+  border-bottom: 0;
+}
+
+.as-projects-table__created-label {
+  display: none;
+}
+
+.as-projects-table__actions {
+  white-space: nowrap;
+}
+
+@container projects (max-width: 40rem) {
+  .as-projects-table,
+  .as-projects-table tbody {
+    display: block;
+  }
+
+  .as-projects-table thead {
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    height: 1px;
+    overflow: hidden;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
+  }
+
+  .as-projects-table__row {
+    display: grid;
+    gap: 0.35rem 0.65rem;
+    grid-template-areas:
+      "project state"
+      "created created"
+      "actions actions";
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 0.75rem;
+  }
+
+  .as-projects-table__row td {
+    min-width: 0;
+    padding: 0;
+  }
+
+  .as-projects-table__project {
+    grid-area: project;
+  }
+
+  .as-projects-table__state {
+    grid-area: state;
+  }
+
+  .as-projects-table__created {
+    grid-area: created;
+  }
+
+  .as-projects-table__created-label {
+    color: var(--as-subtle);
+    display: inline;
+    margin-inline-end: 0.35rem;
+  }
+
+  .as-projects-table__actions-cell {
+    grid-area: actions;
+  }
+
+  .as-projects-table__actions {
+    justify-content: stretch;
+    white-space: normal;
+  }
+
+  .as-projects-table__actions > * {
+    flex: 1 1 0;
+  }
+}
+
 .as-public-links-table {
   border-collapse: collapse;
   table-layout: fixed;
@@ -3898,6 +4014,15 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
   .as-search input {
     font-size: 1rem;
   }
+
+  .as-preview-header__actions .as-button {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
+
+  .as-projects-table__actions > * {
+    min-height: 2.75rem;
+  }
 }
 
 @media (max-width: 720px) {
@@ -3950,8 +4075,29 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
     z-index: 11;
   }
 
+  .as-panel-assembly[data-side="left"],
+  .as-panel-assembly[data-side="right"] {
+    box-shadow: none;
+    inset: 0;
+    max-width: 100%;
+    width: 100%;
+  }
+
+  .as-catalog-clip,
+  .as-catalog,
+  .as-inspector-clip,
+  .as-inspector {
+    width: 100% !important;
+  }
+
   .as-workspace {
     height: 100%;
+    padding: 0;
+  }
+
+  .as-preview-panel {
+    border-inline: 0;
+    border-radius: 0;
   }
 
   .as-preview-footer__metadata,
@@ -4051,6 +4197,80 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
   *::after {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 720px) {
+  :root {
+    --as-focus-comments-width: 100vw;
+    --as-focus-toolbar-height: calc(2.75rem + 1rem + env(safe-area-inset-bottom));
+  }
+
+  .as-focus-controls-dock {
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: auto;
+    transform: none !important;
+  }
+
+  .as-focus-controls-dock[data-comments-open="true"] {
+    right: 0;
+    transform: none !important;
+  }
+
+  .as-focus-controls {
+    background: var(--as-surface);
+    border-top: 1px solid var(--as-border);
+    justify-content: space-evenly;
+    padding: 0.5rem 0.5rem max(0.5rem, env(safe-area-inset-bottom));
+    width: 100%;
+  }
+
+  .as-focus-controls__button,
+  .as-focus-controls__collapse {
+    box-shadow: none;
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+    padding-inline: 0.5rem;
+  }
+
+  .as-focus-controls__label,
+  .as-focus-controls .as-button__label {
+    clip-path: inset(50%);
+    height: 1px;
+    overflow: hidden;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
+  }
+
+  .as-focus-comments {
+    border-left: 0;
+    bottom: var(--as-focus-toolbar-height);
+    top: 0;
+    width: 100%;
+  }
+
+  .as-focus-controls-dock[data-collapsed="true"] {
+    height: var(--as-focus-toolbar-height);
+    left: 0;
+    right: auto;
+    top: auto;
+    width: auto;
+  }
+
+  .as-focus-controls-dock[data-collapsed="true"] .as-focus-controls {
+    transform: translateY(100%);
+  }
+
+  .as-focus-controls__restore,
+  .as-focus-controls-dock[data-collapsed="true"] .as-focus-controls__restore {
+    bottom: max(0.5rem, env(safe-area-inset-bottom));
+    height: 2.75rem;
+    right: 0;
+    top: auto;
+    width: 2.75rem;
   }
 }
 
