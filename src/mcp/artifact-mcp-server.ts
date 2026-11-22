@@ -126,7 +126,7 @@ import {
   type ToolResultNudgeFacts,
 } from "./tool-result-nudges.js";
 
-const serverVersion = "0.1.29";
+const serverVersion = "0.1.30";
 const maximumListedArtifacts = 100;
 const maximumTextDiffBytes = 256 * 1_024;
 const accessSettingSchema = z.enum([

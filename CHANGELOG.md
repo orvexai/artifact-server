@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.30
+
+- `auth login --device` signs the CLI in from a host without a browser using OAuth device authorization (RFC 8628) protected by S256 PKCE. It prints only a verification address and a short code, never tokens; browser sign-in stays the default and `--headless` is unchanged.
+- Review and Settings > Projects now work on phone-width (390 px) screens: the artifact opens first, the catalog and inspector open as full-screen sheets, full-screen controls become a bottom toolbar, and project rows become cards. Settings Members and Groups follow in a later release.
+
 ## 0.1.29
 
 - **Behaviour change:** publishing a new version now stores exactly the files in the upload. Files from the previous version are no longer carried forward automatically. To keep them, opt in with `--carry-forward` (CLI) or `carryForward: true` (MCP `artifact_commit_upload` target and the HTTP API), and remove carried files with `--remove <path>` or `removePaths`. Callers that publish partial uploads must now pass this option.
