@@ -202,8 +202,10 @@ export type FilePublicationTarget =
   }
   | {
     readonly artifactId: string;
+    readonly carryForward?: boolean;
     readonly expectedCurrentVersionId: string;
     readonly kind: "new_version";
+    readonly removePaths?: readonly string[];
   };
 
 /** One user-facing file or directory publication request. */
@@ -276,8 +278,10 @@ type CommitPublicationTarget =
   }
   | {
     readonly artifactId: string;
+    readonly carryForward?: boolean;
     readonly expectedCurrentVersionId: string;
     readonly kind: "new_version";
+    readonly removePaths?: readonly string[];
   };
 
 interface CommitUploadRequestBody {
@@ -401,7 +405,24 @@ function effectiveCommitTarget(
       name: target.name ?? defaultName,
       tags: target.tags,
     }
-    : target;
+    : effectiveVersionTarget(target);
+}
+
+function effectiveVersionTarget(
+  target: Extract<FilePublicationTarget, {kind: "new_version"}>,
+): CommitPublicationTarget {
+  const base = {
+      artifactId: target.artifactId,
+      expectedCurrentVersionId: target.expectedCurrentVersionId,
+      kind: target.kind,
+  } as const;
+  const hasRemovePaths = target.removePaths !== undefined && target.removePaths.length > 0;
+  if (target.carryForward === true && hasRemovePaths) {
+    return {...base, carryForward: true, removePaths: target.removePaths};
+  }
+  if (target.carryForward === true) return {...base, carryForward: true};
+  if (hasRemovePaths) return {...base, removePaths: target.removePaths};
+  return base;
 }
 
 /** Infer a deterministic browser media type from one file name. */

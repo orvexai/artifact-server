@@ -9,9 +9,10 @@ import {
   type BlobStorageFailure,
   type IdempotencyConflict,
   InvalidArtifactName,
+  InvalidManifestPath,
   type InvalidArtifactTags,
   type InvalidIdempotencyKey,
-  type PublishConflict,
+  PublishConflict,
   type ProjectArchived,
   type StagingStorageFailure,
   type UploadClosed,
@@ -71,6 +72,9 @@ export interface PublishPreparedVersionCommand {
   readonly artifactId: string;
   readonly expectedCurrentVersionId: string;
   readonly files: readonly PublicationFileSource[];
+  readonly fileSet:
+    | {readonly mode: "complete"}
+    | {readonly mode: "carry_forward"; readonly removePaths: readonly string[]};
   readonly idempotencyKey: string;
   readonly manifest: CanonicalManifest;
   readonly principal: Principal;
@@ -297,18 +301,50 @@ function makePublishArtifactService(
       command.principal,
     );
     const idempotencyKey = yield* parseIdempotencyKey(command.idempotencyKey);
-    const baseVersion = yield* dependencies.repository.findVersionRecord(
-      command.projectId,
-      command.artifactId,
-      command.expectedCurrentVersionId,
-    );
-    const manifest = baseVersion === null
-      ? command.manifest
-      : yield* parseManifest({
+    let manifest = command.manifest;
+    if (command.fileSet.mode === "carry_forward") {
+      const baseVersion = yield* dependencies.repository.findVersionRecord(
+        command.projectId,
+        command.artifactId,
+        command.expectedCurrentVersionId,
+      );
+      if (baseVersion === null) {
+        return yield* Effect.fail(new PublishConflict({
+          message: "The expected current version does not exist.",
+        }));
+      }
+      const basePaths = new Set(baseVersion.manifest.entries.map(({path}) => path));
+      const uploadedPaths = new Set(command.manifest.entries.map(({path}) => path));
+      const removePaths = new Set<string>();
+      for (const path of command.fileSet.removePaths) {
+        const normalized = yield* parseManifest({
+          entryPath: path,
+          files: [{mediaType: "application/octet-stream", path, sha256: "0".repeat(64), size: 0}],
+          routingMode: "static",
+        }).pipe(Effect.map((parsed) => parsed.entryPath));
+        if (!basePaths.has(normalized)) {
+          return yield* Effect.fail(new InvalidManifestPath({
+            message: `${JSON.stringify(normalized)} is not in the expected current version.`,
+          }));
+        }
+        if (uploadedPaths.has(normalized)) {
+          return yield* Effect.fail(new InvalidManifestPath({
+            message: `${JSON.stringify(normalized)} is both uploaded and removed.`,
+          }));
+        }
+        if (normalized === baseVersion.manifest.entryPath) {
+          return yield* Effect.fail(new InvalidManifestPath({
+            message: "The entry file cannot be removed.",
+          }));
+        }
+        removePaths.add(normalized);
+      }
+      manifest = yield* parseManifest({
         entryPath: baseVersion.manifest.entryPath,
-        files: mergeManifestFiles(baseVersion.manifest, command.manifest),
+        files: mergeManifestFiles(baseVersion.manifest, command.manifest, removePaths),
         routingMode: baseVersion.manifest.routingMode,
       });
+    }
     const inputDigest = artifactVersionInputDigest({
       artifactId: command.artifactId,
       expectedCurrentVersionId: command.expectedCurrentVersionId,
@@ -323,6 +359,12 @@ function makePublishArtifactService(
     );
     if (replayed !== null) return replayed;
 
+    if (current.version.id !== command.expectedCurrentVersionId) {
+      return yield* Effect.fail(new PublishConflict({
+        message: "The artifact changed after the expected current version was read.",
+      }));
+    }
+
     const sourceCheckTime = DateTime.formatIso(yield* dependencies.clock.now);
     yield* dependencies.repository.assertPublicationSourceReady(
       command.source,
@@ -333,7 +375,7 @@ function makePublishArtifactService(
 
     const createdAt = DateTime.formatIso(yield* dependencies.clock.now);
 
-    return yield* dependencies.repository.commitVersion({
+    const versionCommand = {
       artifactId: command.artifactId,
       contentToken: dependencies.ids.contentToken(),
       createdAt,
@@ -341,13 +383,19 @@ function makePublishArtifactService(
       idempotencyKey,
       inputDigest,
       manifest,
-      sourceManifestDigest: command.manifest.digest,
       principalId: command.principal.id,
       projectId: command.projectId,
       authorizedByPrincipalId: command.principal.authorizedByPrincipalId,
       source: command.source,
       versionId: dependencies.ids.versionId(),
-    });
+    } satisfies Omit<CommitArtifactVersion, "sourceManifestDigest">;
+    if (command.fileSet.mode === "carry_forward") {
+      return yield* dependencies.repository.commitVersion({
+        ...versionCommand,
+        sourceManifestDigest: command.manifest.digest,
+      });
+    }
+    return yield* dependencies.repository.commitVersion(versionCommand);
   });
 
   return PublishArtifactService.of({
@@ -399,6 +447,7 @@ function artifactVersionInputDigest(input: ArtifactVersionDigestInput): string {
 function mergeManifestFiles(
   base: CanonicalManifest,
   changed: CanonicalManifest,
+  removePaths: ReadonlySet<string> = new Set(),
 ): readonly {
   readonly mediaType: string;
   readonly path: string;
@@ -409,7 +458,7 @@ function mergeManifestFiles(
     base.entries.map((entry) => [entry.path, entry] as const),
   );
   for (const entry of changed.entries) filesByPath.set(entry.path, entry);
-  return [...filesByPath.values()].map(({mediaType, path, sha256, size}) => ({
+  return [...filesByPath.values()].filter(({path}) => !removePaths.has(path)).map(({mediaType, path, sha256, size}) => ({
     mediaType,
     path,
     sha256,

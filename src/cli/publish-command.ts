@@ -21,10 +21,12 @@ import {resumePublicationOperation} from "./publication-operation-store.js";
 
 interface PublishOptions {
   readonly artifact?: string;
+  readonly carryForward: boolean;
   readonly data: string;
   readonly entry?: string;
   readonly expectedVersion?: string;
   readonly name?: string;
+  readonly remove: readonly string[];
   readonly public: boolean;
   readonly project?: string;
   readonly profile?: string;
@@ -80,6 +82,10 @@ export function configurePublishCommand(
         .default([]),
     )
     .addOption(new Option("--artifact <id>", "artifact ID when publishing a new version"))
+    .addOption(new Option("--carry-forward", "keep files from the expected version not included in this upload").default(false))
+    .addOption(new Option("--remove <path>", "remove a path from the carried-forward version")
+      .argParser(collectPath)
+      .default([]))
     .addOption(new Option("--project <id>", "project ID; optional when one active project exists"))
     .addOption(
       new Option(
@@ -88,8 +94,8 @@ export function configurePublishCommand(
       ),
     )
     .action(async (inputPath: string, options: PublishOptions) => {
-      let connection = await resolveCliServerConnection(options, "publish");
       const intent = publicationCommand(inputPath, options);
+      let connection = await resolveCliServerConnection(options, "publish");
       const prepared = await preparePublication(intent);
       const operation = await resumePublicationOperation(
         path.resolve(options.profileData),
@@ -127,6 +133,12 @@ function publicationCommand(
 ): FilePublicationIntent {
   const hasArtifact = options.artifact !== undefined;
   const hasExpectedVersion = options.expectedVersion !== undefined;
+  if ((options.carryForward || options.remove.length > 0) && !(hasArtifact && hasExpectedVersion)) {
+    throw new Error("--carry-forward and --remove apply only when publishing a new version.");
+  }
+  if (options.remove.length > 0 && !options.carryForward) {
+    throw new Error("--remove requires --carry-forward.");
+  }
   if (hasArtifact !== hasExpectedVersion) {
     throw new Error(
       "Publishing a new version requires both --artifact and --expected-version.",
@@ -147,13 +159,17 @@ function publicationCommand(
         "--name, --public, and --tag apply only when creating a new artifact.",
       );
     }
+    const target: Extract<FilePublicationIntent["target"], {kind: "new_version"}> = {
+      artifactId: options.artifact,
+      expectedCurrentVersionId: options.expectedVersion,
+      kind: "new_version",
+    };
+    let versionTarget = target;
+    if (options.carryForward) versionTarget = {...versionTarget, carryForward: true};
+    if (options.remove.length > 0) versionTarget = {...versionTarget, removePaths: options.remove};
     return withEntryPath({
       ...common,
-      target: {
-        artifactId: options.artifact,
-        expectedCurrentVersionId: options.expectedVersion,
-        kind: "new_version",
-      },
+      target: versionTarget,
     }, options.entry);
   }
 
@@ -213,6 +229,10 @@ async function preparePublication(
 }
 
 function collectTag(value: string, previous: readonly string[]): readonly string[] {
+  return [...previous, value];
+}
+
+function collectPath(value: string, previous: readonly string[]): readonly string[] {
   return [...previous, value];
 }
 

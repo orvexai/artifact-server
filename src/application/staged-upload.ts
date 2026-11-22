@@ -75,8 +75,10 @@ export type CommitStagedUploadTarget =
   }
   | {
     readonly artifactId: string;
+    readonly carryForward?: boolean;
     readonly expectedCurrentVersionId: string;
     readonly kind: "new_version";
+    readonly removePaths?: readonly string[];
   };
 
 /** Input for committing a complete staged upload. */
@@ -460,6 +462,9 @@ function makeStagedUploadService(
           return yield* expirePublicationAtDeadline(signal,
             publish.publishPreparedVersion({
             artifactId: command.target.artifactId,
+            fileSet: command.target.carryForward === true
+              ? {mode: "carry_forward", removePaths: command.target.removePaths ?? []}
+              : {mode: "complete"},
             expectedCurrentVersionId: command.target.expectedCurrentVersionId,
             files,
             idempotencyKey: command.idempotencyKey,

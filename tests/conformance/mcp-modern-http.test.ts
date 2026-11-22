@@ -573,6 +573,7 @@ describe("modern MCP HTTP", () => {
           idempotencyKey: "mcp-file-publication-proof-002",
           target: {
             artifactId: committed.artifact.id,
+            carryForward: true,
             expectedCurrentVersionId: committed.version.id,
             kind: "new_version",
           },
