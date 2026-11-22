@@ -119,7 +119,13 @@ fails, the organization remains resumed with members at their restored
 statuses; investigate the reported error and rerun `artifact-server org sync`.
 Resume does not restore browser sessions or API keys revoked by suspension;
 affected members must sign in again and any required API keys must be reissued.
-To cut off one member of a tenant organization, run artifact-server member deactivate <org> <email> --yes. It deactivates the member, revokes their browser sessions and personal API keys, and keeps them out of sign-in and directory sync until an organization owner reactivates them. Running servers stop accepting the revoked credentials within 30 seconds. The command refuses the Orvex installation (remove the person from its admitting groups instead) and the last active administrator.
+To cut off one member of a tenant organization, run
+`artifact-server member deactivate <org> <email> --yes`. It deactivates the
+member, revokes their browser sessions and personal API keys, and keeps them
+out of sign-in and directory sync until an organization owner reactivates them.
+Running servers stop accepting the revoked credentials within 30 seconds. The
+command refuses the Orvex installation (remove the person from its admitting
+groups instead) and the last active administrator.
 Artifact Server administrator deactivations are sticky; only a
 Keycloak-driven deactivation is automatically reversed when the member returns.
 
