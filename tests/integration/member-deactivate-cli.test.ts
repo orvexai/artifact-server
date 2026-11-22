@@ -58,7 +58,6 @@ describe.sequential("P43 operator CLI member deactivate", () => {
       url: Redacted.make(databaseUrl),
     }, "apply");
     const registry = new OrganizationRegistry(database);
-    await registry.ensureOrvex(installationId);
     const tenant = await registry.create(tenantSlug, "P43 Tenant");
     tenantInstallationId = tenant.id;
     const now = new Date().toISOString();
