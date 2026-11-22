@@ -103,6 +103,7 @@ export class CliAuthenticationError extends Schema.TaggedError<CliAuthentication
       "browser_authorization_unavailable",
       "credential_invalid",
       "credential_revoked",
+      "device_authorization_unavailable",
       "invalid_callback",
       "invalid_metadata",
       "oauth_failed",

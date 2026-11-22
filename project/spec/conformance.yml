@@ -800,6 +800,20 @@ requirements:
         run: project/evidence/local-foundation.json
         recorded_at: "2026-08-25T18:29:58.000Z"
 
+  - id: CLI-004
+    kind: security
+    behavior: On a host without a browser, artifactserver auth login --device signs in with OAuth 2.0 device authorization from the issuer's metadata, protected by S256 PKCE, shows only the verification address and user code, polls within the issuer's interval and expiry, and saves and verifies the same renewable OAuth profile as browser login, which stays the default.
+    owner: cli
+    source: {file: phase-10-cli-auth-and-remote-publishing.md, anchor: login-modes}
+    acceptance:
+      behavior: {id: CLI-004-B, description: "Sign in with --device through pending and slow_down answers with an S256 code challenge and its verifier, then renew, check status and log out the saved profile like a browser login."}
+      failure: {id: CLI-004-F, description: "Denied, expired, and never-approved codes fail without saving a profile; an issuer without device authorization, or one that has not enabled it for the CLI client, is reported as unavailable; a PKCE verifier mismatch fails without retrying; the device code, code verifier and tokens never appear in output."}
+    deployments: *all
+    status: implementing
+    proof_gap: Proven against a fake issuer only; no live Keycloak device-grant run is recorded.
+    depends_on: [CLI-001, AUTH-021]
+    evidence: []
+
   - id: AUD-001
     kind: security
     behavior: Every publish, restore, access change, connection change, and deletion records the responsible effective principal and human authorizer when present.

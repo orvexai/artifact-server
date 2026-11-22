@@ -1,12 +1,13 @@
 import {type ChildProcess, spawn} from "node:child_process";
 import {createInterface} from "node:readline/promises";
-import {randomBytes} from "node:crypto";
+import {createHash, randomBytes} from "node:crypto";
 import {createServer, type Server} from "node:http";
 import path from "node:path";
 import {setTimeout as delay} from "node:timers/promises";
 
 import {
   auth,
+  buildDiscoveryUrls,
   discoverOAuthServerInfo,
   type OAuthClientInformationContext,
   type OAuthClientMetadata,
@@ -47,6 +48,28 @@ const callbackQuerySchema = z.object({
   iss: z.url().optional(),
   state: z.string().min(16).max(4_096),
 });
+const deviceMetadataSchema = z.object({
+  device_authorization_endpoint: z.url(),
+  grant_types_supported: z.array(z.string()).optional(),
+  token_endpoint: z.url(),
+}).passthrough();
+const deviceAuthorizationSchema = z.object({
+  device_code: z.string().min(1).max(4_096),
+  expires_in: z.number().int().positive(),
+  interval: z.number().int().positive().optional(),
+  user_code: z.string().min(1).max(64).regex(/^[\x21-\x7E]+(?: [\x21-\x7E]+)*$/u),
+  verification_uri: z.url(),
+  verification_uri_complete: z.url().optional(),
+}).passthrough();
+const oauthErrorSchema = z.object({error: z.string()}).passthrough();
+const oauthTokensSchema = z.object({
+  access_token: z.string().min(1),
+  expires_in: z.number().int().positive().optional(),
+  issuer: z.url().optional(),
+  refresh_token: z.string().min(1).optional(),
+  scope: z.string().optional(),
+  token_type: z.string().min(1),
+}).passthrough();
 const assignedAddressSchema = z.object({
   address: z.string(),
   port: z.number().int().positive(),
@@ -61,6 +84,19 @@ export interface CliOAuthLoginResult {
   readonly apiBasePath: string;
   readonly credential: Extract<StoredCliCredential, {readonly kind: "oauth"}>;
 }
+
+/** Injectable time and prompt operations for an OAuth device authorization. */
+export interface DeviceLoginIo {
+  readonly now: () => number;
+  readonly sleep: (milliseconds: number) => Promise<void>;
+  readonly write: (text: string) => void;
+}
+
+const defaultDeviceLoginIo: DeviceLoginIo = {
+  now: Date.now,
+  sleep: (milliseconds) => delay(milliseconds),
+  write: (text) => { process.stderr.write(text); },
+};
 
 /** Complete protected-resource discovery and S256 PKCE in the system browser. */
 export const loginWithBrowserOAuth = Effect.fn("CliOAuth.login")(
@@ -83,6 +119,262 @@ export const loginWithHeadlessOAuth = Effect.fn("CliOAuth.loginHeadless")(
     return yield* loginWithOAuth(origin, true, environment, basePath);
   },
 );
+
+/** Sign in without a local browser using the issuer's RFC 8628 device grant. */
+export const loginWithDeviceOAuth = Effect.fn("CliOAuth.loginDevice")(
+  function*(
+    origin: string,
+    basePath = "",
+    io: DeviceLoginIo = defaultDeviceLoginIo,
+  ): Effect.fn.Return<CliOAuthLoginResult, CliAuthenticationError> {
+    const discovery = yield* Effect.tryPromise({
+      try: () => discoverCliApi(origin, basePath),
+      catch: () => new CliAuthenticationError({
+        message: "The Artifact Server CLI authorization metadata is invalid or unavailable.",
+        reason: "invalid_metadata",
+      }),
+    });
+    const issuer = yield* verifyProtectedResourceMetadata(discovery.resource, discovery.metadataUrl);
+    const result = yield* Effect.tryPromise({
+      try: async () => {
+        try {
+          const metadata = await fetchDeviceIssuerMetadata(issuer);
+          const deviceEndpoint = checkedOAuthEndpoint(metadata.device_authorization_endpoint);
+          const tokenEndpoint = checkedOAuthEndpoint(metadata.token_endpoint);
+          const pkce = createDevicePkce();
+          const deviceResponse = await postOAuthForm(deviceEndpoint, {
+            client_id: cliOAuthClientId,
+            scope: `${cliScope} offline_access`,
+            resource: discovery.resource.toString(),
+            code_challenge: pkce.challenge,
+            code_challenge_method: "S256",
+          });
+          if (deviceResponse.status !== 200) {
+            const error = oauthErrorSchema.safeParse(deviceResponse.body);
+            if (
+              deviceResponse.status === 400
+              && error.success
+              && ["unauthorized_client", "invalid_client"].includes(error.data.error)
+            ) {
+              throw new CliAuthenticationError({
+                message: "The identity provider has not enabled device sign-in for the artifact-server client. Ask an administrator to enable it, or use --headless.",
+                reason: "device_authorization_unavailable",
+              });
+            }
+            throw oauthDeviceFailed();
+          }
+          const authorization = deviceAuthorizationSchema.safeParse(deviceResponse.body);
+          if (!authorization.success) throw oauthDeviceFailed();
+          const verificationUri = checkedOAuthEndpoint(authorization.data.verification_uri);
+          const verificationComplete = authorization.data.verification_uri_complete === undefined
+            ? undefined
+            : checkedOAuthEndpoint(authorization.data.verification_uri_complete);
+          const lifetimeSeconds = Math.min(authorization.data.expires_in, 900);
+          const intervalSeconds = Math.max(authorization.data.interval ?? 5, 1);
+          const deadline = io.now() + lifetimeSeconds * 1_000;
+          io.write(
+            `\nSign in to Artifact Server from any device with a browser:\n\n  1. Open ${terminalLink(verificationUri)}\n  2. Enter the code ${authorization.data.user_code}\n\n`
+            + (verificationComplete === undefined
+              ? ""
+              : `Or open ${terminalLink(verificationComplete)} to skip typing the code.\n\n`)
+            + `Waiting for approval (expires in ${Math.ceil(lifetimeSeconds / 60)} minutes)...\n`,
+          );
+          const tokens = await pollForDeviceTokens({
+            deviceCode: authorization.data.device_code,
+            deadline,
+            intervalSeconds,
+            io,
+            pkceVerifier: pkce.verifier,
+            resource: discovery.resource.toString(),
+            tokenEndpoint,
+          });
+          const loopbackRedirectUrl = `http://127.0.0.1:${cliOAuthCallbackPort}/oauth/callback`;
+          return oauthCredential({
+            clientInformation: {
+              client_id: cliOAuthClientId,
+              issuer,
+              redirect_uris: [loopbackRedirectUrl],
+              token_endpoint_auth_method: "none",
+            },
+            redirectUrl: loopbackRedirectUrl,
+            tokens,
+            tokensSavedAt: new Date(io.now()).toISOString(),
+          });
+        } catch (cause) {
+          if (cause instanceof CliAuthenticationError) throw cause;
+          throw oauthDeviceFailed();
+        }
+      },
+      catch: (cause) => cause instanceof CliAuthenticationError
+        ? cause
+        : oauthDeviceFailed(),
+    });
+    return {apiBasePath: discovery.apiBasePath, credential: result};
+  },
+);
+
+interface OAuthHttpResponse {
+  readonly status: number;
+  readonly body: unknown;
+}
+
+const createDevicePkce = () => {
+  const verifier = randomBytes(32).toString("base64url");
+  return {verifier, challenge: createHash("sha256").update(verifier, "ascii").digest("base64url")};
+};
+
+function checkedOAuthEndpoint(value: string): URL {
+  const url = new URL(value);
+  const isLoopback = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+  if (
+    (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopback))
+    || url.username !== ""
+    || url.password !== ""
+  ) {
+    throw new CliAuthenticationError({
+      message: "The Artifact Server CLI authorization metadata is invalid or unavailable.",
+      reason: "invalid_metadata",
+    });
+  }
+  return url;
+}
+
+function deviceAuthorizationUnavailable(): CliAuthenticationError {
+  return new CliAuthenticationError({
+    message: "This server's identity provider does not offer device sign-in. Run artifactserver auth login <server> --headless instead.",
+    reason: "device_authorization_unavailable",
+  });
+}
+
+async function fetchDeviceIssuerMetadata(issuer: string): Promise<z.infer<typeof deviceMetadataSchema>> {
+  const invalidMetadata = (): CliAuthenticationError => new CliAuthenticationError({
+    message: "The Artifact Server CLI authorization metadata is invalid or unavailable.",
+    reason: "invalid_metadata",
+  });
+  try {
+    const discoveryUrls = buildDiscoveryUrls(issuer);
+    const fetchAt = async (index: number): Promise<z.infer<typeof deviceMetadataSchema>> => {
+      const discoveryUrl = discoveryUrls[index];
+      if (discoveryUrl === undefined) throw invalidMetadata();
+      const {url} = discoveryUrl;
+      const response = await fetch(url, {
+        headers: {Accept: "application/json"},
+        method: "GET",
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+      });
+      if ((response.status >= 400 && response.status < 500) || response.status === 502) {
+        await response.text().catch(() => undefined);
+        return fetchAt(index + 1);
+      }
+      if (!response.ok) throw invalidMetadata();
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        throw invalidMetadata();
+      }
+      const issuerCheck = z.object({issuer: z.string()}).passthrough().safeParse(body);
+      if (!issuerCheck.success || issuerCheck.data.issuer !== issuer) throw invalidMetadata();
+      if (!Object.hasOwn(issuerCheck.data, "device_authorization_endpoint")) {
+        throw deviceAuthorizationUnavailable();
+      }
+      const parsedMetadata = deviceMetadataSchema.safeParse(body);
+      if (!parsedMetadata.success) throw invalidMetadata();
+      if (
+        parsedMetadata.data.grant_types_supported !== undefined
+        && !parsedMetadata.data.grant_types_supported.includes("urn:ietf:params:oauth:grant-type:device_code")
+      ) {
+        throw deviceAuthorizationUnavailable();
+      }
+      return parsedMetadata.data;
+    };
+    return await fetchAt(0);
+  } catch (cause) {
+    if (cause instanceof CliAuthenticationError) throw cause;
+    throw invalidMetadata();
+  }
+}
+
+async function pollForDeviceTokens(input: {
+  readonly deadline: number;
+  readonly deviceCode: string;
+  readonly intervalSeconds: number;
+  readonly io: DeviceLoginIo;
+  readonly pkceVerifier: string;
+  readonly resource: string;
+  readonly tokenEndpoint: URL;
+}): Promise<StoredOAuthTokens> {
+  const poll = async (interval: number): Promise<StoredOAuthTokens> => {
+    await input.io.sleep(interval * 1_000);
+    if (input.io.now() >= input.deadline) {
+      throw new CliAuthenticationError({
+        message: "The sign-in code expired before it was approved. Run artifactserver auth login --device again.",
+        reason: "oauth_failed",
+      });
+    }
+    let tokenResponse: OAuthHttpResponse;
+    try {
+      tokenResponse = await postOAuthForm(input.tokenEndpoint, {
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        device_code: input.deviceCode,
+        client_id: cliOAuthClientId,
+        resource: input.resource,
+        code_verifier: input.pkceVerifier,
+      });
+    } catch {
+      return poll(interval);
+    }
+    if (tokenResponse.status >= 500) return poll(interval);
+    if (tokenResponse.status === 200) {
+      const parsedTokens = oauthTokensSchema.safeParse(tokenResponse.body);
+      if (!parsedTokens.success || parsedTokens.data.token_type.toLowerCase() !== "bearer") {
+        throw oauthDeviceFailed();
+      }
+      return parsedTokens.data;
+    }
+    const tokenError = oauthErrorSchema.safeParse(tokenResponse.body);
+    const errorCode = tokenError.success ? tokenError.data.error : "";
+    if (tokenResponse.status === 400 && errorCode === "authorization_pending") return poll(interval);
+    if (tokenResponse.status === 400 && errorCode === "slow_down") return poll(interval + 5);
+    if (tokenResponse.status === 400 && errorCode === "access_denied") {
+      throw new CliAuthenticationError({
+        message: "Sign-in was denied in the browser. Run artifactserver auth login again.",
+        reason: "oauth_failed",
+      });
+    }
+    if (tokenResponse.status === 400 && errorCode === "expired_token") {
+      throw new CliAuthenticationError({
+        message: "The sign-in code expired before it was approved. Run artifactserver auth login --device again.",
+        reason: "oauth_failed",
+      });
+    }
+    throw oauthDeviceFailed();
+  };
+  return poll(input.intervalSeconds);
+}
+
+function oauthDeviceFailed(): CliAuthenticationError {
+  return new CliAuthenticationError({
+    message: "Device sign-in did not complete. Check the server's OAuth configuration and run auth login --device again.",
+    reason: "oauth_failed",
+  });
+}
+
+async function postOAuthForm(endpoint: URL, values: Record<string, string>): Promise<OAuthHttpResponse> {
+  const response = await fetch(endpoint, {
+    body: new URLSearchParams(values),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    method: "POST",
+    redirect: "error",
+    signal: AbortSignal.timeout(10_000),
+  });
+  const body: unknown = await response.json().catch(() => undefined);
+  return {status: response.status, body};
+}
 
 function loginWithOAuth(
   origin: string,

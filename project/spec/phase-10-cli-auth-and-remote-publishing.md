@@ -74,6 +74,17 @@ The API resource and MCP resource are separate audiences. A CLI token issued
 for `<origin>/api` is never accepted merely because a token for
 `<origin>/mcp` would be valid, and the CLI never copies an MCP client's grant.
 
+### Device authorization on a headless host
+
+Use `artifactserver auth login <origin> --device` when the CLI host has no
+browser. The CLI discovers device authorization from the issuer metadata and
+prints a verification address and user code, then polls at the issuer's
+interval and saves the same renewable OAuth profile used by browser login.
+The CLI always protects the device request with S256 PKCE, so issuers that
+require PKCE for the `artifact-server` client (as Keycloak can) accept it. The
+operator must enable the device authorization grant for the `artifact-server`
+client at the identity provider.
+
 ### Self-hosted remote server without browser authorization
 
 `artifactserver auth login <origin> --api-key-stdin` reads one

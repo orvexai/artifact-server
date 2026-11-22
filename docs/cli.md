@@ -28,6 +28,7 @@ Sign in once, save a named profile, and use it when publishing:
 ```sh
 artifactserver auth login https://artifacts.example.com --name team
 artifactserver auth login https://artifacts.example.com --name team --headless
+artifactserver auth login https://artifacts.example.com --name team --device
 artifactserver publish ./dist --profile team
 ```
 
@@ -59,6 +60,8 @@ the CLI's authenticated connection; callers do not need to handle an access toke
 On a headless host, `auth login --headless` prints the authorization URL. Open it on a machine with a browser, then paste the authorization code (or the full redirect URL) back into the CLI prompt. The CLI uses OAuth authorization code with S256 PKCE and stores the resulting login in the user's local profile; it does not require an API key.
 The OAuth client must allow the loopback callback
 `http://127.0.0.1:45678/oauth/callback`.
+
+On a host with no browser at all, `auth login --device` prints an address and a short code. Open the address on any phone or computer, enter the code and approve; the CLI waits and saves the same renewable login. The identity provider must support OAuth device authorization and allow it for the `artifact-server` client (in Keycloak, enable OAuth 2.0 Device Authorization Grant on that client). Device sign-in always uses PKCE (S256), so a client that requires PKCE works unchanged. Browser sign-in remains the default.
 
 Credentials use the operating-system keyring when it is reachable. If no keyring
 is available, the CLI falls back to

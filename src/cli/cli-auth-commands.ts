@@ -20,6 +20,7 @@ import {
 } from "./cli-profile-credential.js";
 import {
   loginWithBrowserOAuth,
+  loginWithDeviceOAuth,
   loginWithHeadlessOAuth,
   refreshCliOAuthCredential,
   revokeCliOAuthCredential,
@@ -50,6 +51,7 @@ const maximumStdinCredentialBytes = 4_096;
 
 interface LoginOptions {
   readonly apiKeyStdin: boolean;
+  readonly device: boolean;
   readonly headless: boolean;
   readonly name?: string;
   readonly org?: string;
@@ -80,6 +82,7 @@ export function configureCliAuthCommands(
     .addOption(new Option("--name <profile>", "saved profile name"))
     .addOption(new Option("--org <slug>", "select one organization for a root sign-in"))
     .addOption(new Option("--headless", "sign in from another computer: open the printed link there, then paste back the 127.0.0.1 address the browser ends on").default(false))
+    .addOption(new Option("--device", "sign in on a host without a browser: open the printed address on any device and enter the printed code").conflicts(["headless", "apiKeyStdin"]).default(false))
     .addOption(
       new Option(
         "--api-key-stdin",
@@ -237,9 +240,11 @@ const loginProfile = Effect.fn("CliAuth.login")(
     if (options.apiKeyStdin) {
       credential = apiKeyCredential(yield* readApiKeyFromStandardInput());
     } else {
-      const initial = options.headless
-        ? yield* loginWithHeadlessOAuth(origin, process.env, apiBasePath)
-        : yield* loginWithBrowserOAuth(origin, process.env, apiBasePath);
+      const initial = options.device
+        ? yield* loginWithDeviceOAuth(origin, apiBasePath)
+        : options.headless
+          ? yield* loginWithHeadlessOAuth(origin, process.env, apiBasePath)
+          : yield* loginWithBrowserOAuth(origin, process.env, apiBasePath);
       credential = initial.credential;
       apiBasePath = initial.apiBasePath;
       if (requestedBasePath === "") {
@@ -260,9 +265,11 @@ const loginProfile = Effect.fn("CliAuth.login")(
         apiBasePath = `/o/${selected.slug}`;
         if (selected.slug !== "orvex") {
           origin = `${new URL(origin).origin}${apiBasePath}`;
-          const scoped = options.headless
-            ? yield* loginWithHeadlessOAuth(origin, process.env, apiBasePath)
-            : yield* loginWithBrowserOAuth(origin, process.env, apiBasePath);
+          const scoped = options.device
+            ? yield* loginWithDeviceOAuth(origin, apiBasePath)
+            : options.headless
+              ? yield* loginWithHeadlessOAuth(origin, process.env, apiBasePath)
+              : yield* loginWithBrowserOAuth(origin, process.env, apiBasePath);
           credential = scoped.credential;
           apiBasePath = scoped.apiBasePath;
         }
