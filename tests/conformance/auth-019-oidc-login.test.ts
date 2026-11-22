@@ -167,7 +167,7 @@ describe("generic OIDC browser login", () => {
     provider.claims.subject = "stub-oidc-subject-stranger";
     const unadmitted = await completeStubLogin(server.baseUrl);
     expect(unadmitted.status).toBe(403);
-    expect(unadmitted.headers.getSetCookie()).toEqual([]);
+    expectRefusalCookies(unadmitted);
     expect(failureSchema.parse(await unadmitted.json()).error.code)
       .toBe("IDENTITY_ADMISSION_DENIED");
 
@@ -176,7 +176,7 @@ describe("generic OIDC browser login", () => {
     provider.claims.emailVerified = false;
     const unverified = await completeStubLogin(server.baseUrl);
     expect(unverified.status).toBe(403);
-    expect(unverified.headers.getSetCookie()).toEqual([]);
+    expectRefusalCookies(unverified);
     expect(failureSchema.parse(await unverified.json()).error.message)
       .toBe("The login provider did not verify the email address.");
 
@@ -184,7 +184,7 @@ describe("generic OIDC browser login", () => {
     provider.claims.email = null;
     const withoutEmail = await completeStubLogin(server.baseUrl);
     expect(withoutEmail.status).toBe(502);
-    expect(withoutEmail.headers.getSetCookie()).toEqual([]);
+    expectRefusalCookies(withoutEmail);
     expect(failureSchema.parse(await withoutEmail.json()).error).toEqual({
       code: "IDENTITY_PROVIDER_FAILURE",
       message:
@@ -196,6 +196,14 @@ describe("generic OIDC browser login", () => {
     expect(rowCount(installation, "application_sessions")).toBe(0);
   });
 });
+
+function expectRefusalCookies(response: Response): void {
+  const cookies = response.headers.getSetCookie();
+  expect(cookies.filter((cookie) =>
+    cookie.startsWith("artifact_session=") || cookie.startsWith("artifact_csrf=")
+  )).toEqual([]);
+  expect(cookies).toEqual(["artifact_login=; Max-Age=0; Path=/"]);
+}
 
 async function startOidcServer(
   installation: TestInstallation,

@@ -130,7 +130,7 @@ describe("OIDC id_token validation", () => {
       redirect: "manual",
     });
     expect(replayed.status).toBe(401);
-    expect(replayed.headers.getSetCookie()).toEqual([]);
+    expectRefusalCookies(replayed);
 
     provider.claims.issuer = "https://issuer.example.test";
     await expectProviderRefusalFor(server.baseUrl);
@@ -162,7 +162,7 @@ describe("OIDC id_token validation", () => {
       redirect: "manual",
     });
     expect(unknown.status).toBe(401);
-    expect(unknown.headers.getSetCookie()).toEqual([]);
+    expectRefusalCookies(unknown);
     provider.defects.stateOverride = null;
 
     const unbound = await startStubOidcLogin(server.baseUrl);
@@ -170,13 +170,13 @@ describe("OIDC id_token validation", () => {
       redirect: "manual",
     });
     expect(withoutHandshake.status).toBe(401);
-    expect(withoutHandshake.headers.getSetCookie()).toEqual([]);
+    expectRefusalCookies(withoutHandshake);
     const foreignHandshake = await fetch(unbound.callbackUrl, {
       headers: {Cookie: "artifact_login=a-handshake-from-another-browser"},
       redirect: "manual",
     });
     expect(foreignHandshake.status).toBe(401);
-    expect(foreignHandshake.headers.getSetCookie()).toEqual([]);
+    expectRefusalCookies(foreignHandshake);
 
     const expiring = await startStubOidcLogin(server.baseUrl);
     clock.advance(attemptLifetimeMilliseconds + 1_000);
@@ -185,7 +185,7 @@ describe("OIDC id_token validation", () => {
       redirect: "manual",
     });
     expect(expired.status).toBe(401);
-    expect(expired.headers.getSetCookie()).toEqual([]);
+    expectRefusalCookies(expired);
 
     expect(rowCount(installation, "installation_members")).toBe(0);
     expect(rowCount(installation, "external_identities")).toBe(0);
@@ -284,13 +284,21 @@ async function expectProviderRefusal(
   code: string,
 ): Promise<void> {
   expect(response.status).toBe(502);
-  expect(response.headers.getSetCookie()).toEqual([]);
+  expectRefusalCookies(response);
   const body = await response.text();
   expect(body).not.toContain(code);
   expect(failureSchema.parse(JSON.parse(body)).error).toEqual({
     code: "IDENTITY_PROVIDER_FAILURE",
     message: providerFailureMessage,
   });
+}
+
+function expectRefusalCookies(response: Response): void {
+  const cookies = response.headers.getSetCookie();
+  expect(cookies.filter((cookie) =>
+    cookie.startsWith("artifact_session=") || cookie.startsWith("artifact_csrf=")
+  )).toEqual([]);
+  expect(cookies).toEqual(["artifact_login=; Max-Age=0; Path=/"]);
 }
 
 async function completeStubLogin(baseUrl: string): Promise<Response> {

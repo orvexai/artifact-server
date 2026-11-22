@@ -105,6 +105,7 @@ describe("generic OIDC browser login with issuer group roles", () => {
     provider.claims.groups = ["sales", "Artifact-Users"];
     const refused = await completeLogin();
     expect(refused.status).toBe(403);
+    expectRefusalCookies(refused);
     expect(failureSchema.parse(await refused.json()).error.message)
       .toBe("This person is not in a group admitted to the Artifact Server.");
   });
@@ -117,7 +118,9 @@ describe("generic OIDC browser login with issuer group roles", () => {
     provider.claims.email = "tenant@example.test";
     provider.claims.subject = "subject-tenant";
     provider.claims.groups = ["/Guests/acme"];
-    expect((await completeLogin()).status).toBe(403);
+    const unmirroredPath = await completeLogin();
+    expect(unmirroredPath.status).toBe(403);
+    expectRefusalCookies(unmirroredPath);
 
     const databasePath = path.join(installation.dataDirectory, "artifact-server.db");
     const database = new DatabaseSync(databasePath);
@@ -164,6 +167,7 @@ describe("generic OIDC browser login with issuer group roles", () => {
     provider.claims.groups = ["artifact-admins"];
     const refused = await completeLogin();
     expect(refused.status).toBe(403);
+    expectRefusalCookies(refused);
     expect(failureSchema.parse(await refused.json()).error).toEqual({
       code: "IDENTITY_ADMISSION_DENIED",
       message: "No group has been given a role in the Artifact Server yet.",
@@ -262,7 +266,7 @@ describe("generic OIDC browser login with issuer group roles", () => {
     provider.claims.groups = ["sales"];
     const refused = await completeLogin();
     expect(refused.status).toBe(403);
-    expect(refused.headers.getSetCookie()).toEqual([]);
+    expectRefusalCookies(refused);
     expect(failureSchema.parse(await refused.json()).error).toEqual({
       code: "IDENTITY_ADMISSION_DENIED",
       message: "This person is not in a group admitted to the Artifact Server.",
@@ -277,7 +281,9 @@ describe("generic OIDC browser login with issuer group roles", () => {
 
     // Without the claim at all, the bootstrap email admits no one either.
     provider.claims.groups = null;
-    expect((await completeLogin()).status).toBe(403);
+    const noClaim = await completeLogin();
+    expect(noClaim.status).toBe(403);
+    expectRefusalCookies(noClaim);
   });
 
   test("a groups claim that is not a list of strings fails as a provider failure", async () => {
@@ -285,7 +291,7 @@ describe("generic OIDC browser login with issuer group roles", () => {
     provider.claims.groups = "artifact-admins";
     const refused = await completeLogin();
     expect(refused.status).toBe(502);
-    expect(refused.headers.getSetCookie()).toEqual([]);
+    expectRefusalCookies(refused);
     expect(failureSchema.parse(await refused.json()).error.code)
       .toBe("IDENTITY_PROVIDER_FAILURE");
     expect(members(installation)).toEqual([]);
@@ -297,6 +303,14 @@ describe("generic OIDC browser login with issuer group roles", () => {
       headers: {Cookie: authorization.handshakeCookie},
       redirect: "manual",
     });
+  }
+
+  function expectRefusalCookies(response: Response): void {
+    const cookies = response.headers.getSetCookie();
+    expect(cookies.filter((cookie) =>
+      cookie.startsWith("artifact_session=") || cookie.startsWith("artifact_csrf=")
+    )).toEqual([]);
+    expect(cookies).toEqual(["artifact_login=; Max-Age=0; Path=/"]);
   }
 
   async function storeDirectoryMembership(email: string, subject: string, group: string) {
