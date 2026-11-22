@@ -1,5 +1,6 @@
 import {
   type MouseEvent as ReactMouseEvent,
+  type Ref as ReactRef,
   type ReactNode,
   useCallback,
   useDeferredValue,
@@ -38,6 +39,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {Dialog} from "@base-ui/react/dialog";
 import {Popover} from "@base-ui/react/popover";
 import {motion} from "motion/react";
+import {readCompactViewport, useCompactViewport} from "./compact-viewport.ts";
 
 import {setDraftPrincipal, writeDraft} from "@/components/comments/comment-drafts";
 import {useCommentPoll} from "@/components/comments/comment-poll";
@@ -610,7 +612,8 @@ function ArtifactReview({
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<Error | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("details");
-  const [catalogOpen, setCatalogOpen] = useState(true);
+  const compactViewport = useCompactViewport();
+  const [catalogOpen, setCatalogOpen] = useState(readInitialCatalogOpen);
   const [inspectorOpen, setInspectorOpen] = useState(readInitialInspectorOpen);
   const [opening, setOpening] = useState(false);
   const [focusMode, setFocusMode] = useState(initialLocation.view === "focus");
@@ -622,8 +625,43 @@ function ArtifactReview({
   const [homeOpen, setHomeOpen] = useState(false);
   const focusCommentsButtonRef = useRef<HTMLButtonElement>(null);
   const focusControlsRestoreRef = useRef<HTMLButtonElement>(null);
+  const catalogSearchRef = useRef<HTMLInputElement>(null);
+  const catalogOpenTriggerRef = useRef<HTMLButtonElement>(null);
+  const inspectorOpenTriggerRef = useRef<HTMLButtonElement>(null);
+  const inspectorCloseRef = useRef<HTMLButtonElement>(null);
+  const previousCompactSheetsRef = useRef({catalogOpen, inspectorOpen});
   const previewPanelRef = useRef<HTMLElement>(null);
   const commentsInspectorRef = useRef<ReviewCommentsInspectorHandle>(null);
+  const openCatalog = useCallback((): void => {
+    setCatalogOpen(true);
+    if (compactViewport) setInspectorOpen(false);
+  }, [compactViewport]);
+  const openInspector = useCallback((): void => {
+    setInspectorOpen(true);
+    if (compactViewport) setCatalogOpen(false);
+  }, [compactViewport]);
+  useEffect(() => {
+    if (compactViewport && catalogOpen && inspectorOpen) setCatalogOpen(false);
+  }, [catalogOpen, compactViewport, inspectorOpen]);
+  useEffect(() => {
+    const previous = previousCompactSheetsRef.current;
+    previousCompactSheetsRef.current = {catalogOpen, inspectorOpen};
+    if (!compactViewport) return;
+
+    let focusTarget: HTMLButtonElement | HTMLInputElement | null = null;
+    if (!previous.inspectorOpen && inspectorOpen) {
+      focusTarget = inspectorCloseRef.current;
+    } else if (!previous.catalogOpen && catalogOpen) {
+      focusTarget = catalogSearchRef.current;
+    } else if (previous.inspectorOpen && !inspectorOpen) {
+      focusTarget = inspectorOpenTriggerRef.current;
+    } else if (previous.catalogOpen && !catalogOpen) {
+      focusTarget = catalogOpenTriggerRef.current;
+    }
+    if (focusTarget !== null) {
+      window.requestAnimationFrame(() => focusTarget?.focus({preventScroll: true}));
+    }
+  }, [catalogOpen, compactViewport, inspectorOpen]);
   const catalogRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const catalogRequestGenerationRef = useRef(0);
   const catalogWidthApplyRef = useRef<(width: number) => void>(() => undefined);
@@ -1238,6 +1276,12 @@ function ArtifactReview({
         } else if (focusMode) {
           event.preventDefault();
           exitFocusMode();
+        } else if (compactViewport && inspectorOpen) {
+          event.preventDefault();
+          setInspectorOpen(false);
+        } else if (compactViewport && catalogOpen && selectedArtifactId !== null) {
+          event.preventDefault();
+          setCatalogOpen(false);
         }
         return;
       }
@@ -1252,13 +1296,15 @@ function ArtifactReview({
       if (key === "]") {
         event.preventDefault();
         if (focusMode) setFocusCommentsOpen((current) => !current);
-        else setInspectorOpen((current) => !current);
+        else if (inspectorOpen) setInspectorOpen(false);
+        else openInspector();
         return;
       }
 
       if (key === "[" && !focusMode) {
         event.preventDefault();
-        setCatalogOpen((current) => !current);
+        if (catalogOpen) setCatalogOpen(false);
+        else openCatalog();
         return;
       }
 
@@ -1280,13 +1326,19 @@ function ArtifactReview({
     return () => window.removeEventListener("keydown", handleReviewShortcut);
   }, [
     catalogItems,
+    catalogOpen,
+    compactViewport,
     enterFocusMode,
     exitFocusMode,
     focusCommentsOpen,
     focusMode,
     homeOpen,
+    inspectorOpen,
     htmlAnnotateModeActive,
+    openCatalog,
+    openInspector,
     selectArtifact,
+    selectedArtifactId,
     selectedIndex,
     selectedVersionId,
   ]);
@@ -1514,6 +1566,7 @@ function ArtifactReview({
               <input
                 onChange={(event) => setQuery(event.currentTarget.value)}
                 placeholder="Search artifacts…"
+                ref={catalogSearchRef}
                 type="search"
                 value={query}
               />
@@ -1580,7 +1633,10 @@ function ArtifactReview({
                 className="as-artifact-card"
                 data-selected={artifact.id === selectedArtifactId}
                 key={artifact.id}
-                onClick={() => selectArtifact(artifact.id, artifact.currentVersionId)}
+                onClick={() => {
+                  selectArtifact(artifact.id, artifact.currentVersionId);
+                  if (compactViewport) setCatalogOpen(false);
+                }}
                 type="button"
               >
                 <span className="as-artifact-card__title-row">
@@ -1648,7 +1704,7 @@ function ArtifactReview({
         </footer>
             </motion.aside>
           </motion.div>
-          {catalogOpen ? (
+          {catalogOpen && !compactViewport ? (
             <ReviewPanelEdge
               label="Artifact catalog width"
               onCollapse={() => setCatalogOpen(false)}
@@ -1696,7 +1752,9 @@ function ArtifactReview({
                       type="button"
                     >
                       <HugeiconsIcon aria-hidden="true" icon={Edit02Icon} strokeWidth={1.8} />
-                      {htmlAnnotateModeActive ? "Annotate mode" : "Interact mode"}
+                      <span className="as-focus-controls__label">
+                        {htmlAnnotateModeActive ? "Annotate mode" : "Interact mode"}
+                      </span>
                     </button>
                   ) : null}
                   <button
@@ -1711,7 +1769,7 @@ function ArtifactReview({
                     type="button"
                   >
                     <HugeiconsIcon aria-hidden="true" icon={Comment01Icon} strokeWidth={1.8} />
-                    Comments
+                    <span className="as-focus-controls__label">Comments</span>
                     <span className="as-focus-controls__count">{openCommentCount}</span>
                   </button>
                   <ReviewShareControl
@@ -1734,7 +1792,7 @@ function ArtifactReview({
                     type="button"
                   >
                     <HugeiconsIcon aria-hidden="true" icon={ArrowShrinkIcon} strokeWidth={1.8} />
-                    Exit full screen
+                    <span className="as-focus-controls__label">Exit full screen</span>
                   </button>
                   <button
                     aria-label="Hide viewer controls"
@@ -1802,7 +1860,8 @@ function ArtifactReview({
                 <IconButton
                   keyShortcuts="["
                   label="Open artifact catalog"
-                  onClick={() => setCatalogOpen(true)}
+                  onClick={openCatalog}
+                  buttonRef={catalogOpenTriggerRef}
                   title="Open artifact catalog ([)"
                 >
                   <HugeiconsIcon icon={LayoutLeftIcon} strokeWidth={1.8} />
@@ -1862,7 +1921,8 @@ function ArtifactReview({
                 <IconButton
                   keyShortcuts="]"
                   label="Open inspector"
-                  onClick={() => setInspectorOpen(true)}
+                  onClick={openInspector}
+                  buttonRef={inspectorOpenTriggerRef}
                   title="Open inspector (])"
                 >
                   <HugeiconsIcon icon={PanelRightIcon} strokeWidth={1.8} />
@@ -1900,7 +1960,7 @@ function ArtifactReview({
                     if (focusMode) {
                       setFocusCommentsOpen(true);
                     } else {
-                      setInspectorOpen(true);
+                      openInspector();
                     }
                   }
                 }}
@@ -1919,7 +1979,7 @@ function ArtifactReview({
                   if (saved) {
                     setInspectorTab("comments");
                     if (!focusMode) {
-                      setInspectorOpen(true);
+                      openInspector();
                     }
                   }
                   return saved;
@@ -1992,7 +2052,7 @@ function ArtifactReview({
 
         {!focusMode && inspectorMotion.mounted ? (
           <div className="as-panel-assembly" data-side="right">
-            {inspectorOpen ? (
+          {inspectorOpen && !compactViewport ? (
               <ReviewPanelEdge
                 label="Artifact inspector width"
                 onCollapse={() => setInspectorOpen(false)}
@@ -2025,6 +2085,7 @@ function ArtifactReview({
               keyShortcuts="]"
               label="Close inspector"
               onClick={() => setInspectorOpen(false)}
+              buttonRef={inspectorCloseRef}
               title="Close inspector (])"
             >
               <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.8} />
@@ -2697,6 +2758,7 @@ function InspectorTabButton({
 
 function IconButton({
   active,
+  buttonRef,
   children,
   disabled = false,
   keyShortcuts,
@@ -2705,6 +2767,7 @@ function IconButton({
   title,
 }: {
   readonly active?: boolean;
+  readonly buttonRef?: ReactRef<HTMLButtonElement>;
   readonly children: React.ReactNode;
   readonly disabled?: boolean;
   readonly keyShortcuts?: string;
@@ -2721,6 +2784,7 @@ function IconButton({
       data-active={active}
       disabled={disabled}
       onClick={onClick}
+      ref={buttonRef}
       title={title ?? label}
       type="button"
     >
@@ -2971,6 +3035,10 @@ function readInitialTheme(): ReviewTheme {
 
 function readInitialInspectorOpen(): boolean {
   return window.matchMedia("(min-width: 1181px)").matches;
+}
+
+function readInitialCatalogOpen(): boolean {
+  return !readCompactViewport() || readReviewLocation().artifactId === null;
 }
 
 function readReviewLocation(): ReviewLocation {
