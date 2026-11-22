@@ -270,6 +270,7 @@ describe("project access storage (SQLite)", () => {
         {id: "g-dev", members: [], name: "Developers", path: "/Developers"},
       ],
       provider: keycloak,
+      recomputeRoles: false,
       syncedAt: "2026-10-26T00:00:00.000Z",
     });
     await repository.setGroupRole(installationId, "g-temporal", "owner", "2026-10-26T00:00:00.000Z", "mem_ada");
@@ -340,6 +341,7 @@ describe("project access storage (SQLite)", () => {
     await repository.applyDirectoryGroups(installationId, {
       groups: observed,
       provider: keycloak,
+      recomputeRoles: false,
       syncedAt: "2026-10-24T00:00:00.000Z",
     });
   }

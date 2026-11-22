@@ -95,6 +95,16 @@ describe("artifactserver maintenance sync-directory", () => {
     }), JSON.stringify({
       groupRoleSeed: {seeded: true, unresolved: []},
     }), JSON.stringify({
+      roleRecompute: {
+        groups: 2,
+        created: 0,
+        renamed: 0,
+        deleted: 0,
+        membershipsReplaced: 2,
+        groupsFailed: 0,
+        roleChanged: 0,
+      },
+    }), JSON.stringify({
       groups: 2,
       directoryUsers: 3,
       admitted: 2,
@@ -110,14 +120,16 @@ describe("artifactserver maintenance sync-directory", () => {
     ]);
     expect(synced.stdout + synced.stderr).not.toContain(keycloak.clientSecret);
 
-    // A group whose members cannot be read keeps them and fails the run.
+    // An unreadable group's member listing fails before the command changes state.
+    const membersBeforeFailure = members();
     keycloak.groups.set("Engineering", [keycloakUser("eve")]);
     keycloak.failGroupMembers("Engineering");
     const kept = await syncDirectory(directoryEnvironment());
     expect(kept.exitCode).not.toBe(0);
     expect(kept.stderr).toContain(
-      "1 directory group(s) kept their previous members because Keycloak could not be read.",
+      "The Keycloak members of /Engineering returned HTTP 500.",
     );
+    expect(members()).toEqual(membersBeforeFailure);
     keycloak.failGroupMembers(null);
     keycloak.groups.delete("Engineering");
 

@@ -127,29 +127,29 @@ describe("Keycloak directory group sync", () => {
     expect(byName.get("user-bo")).toBe("/Red");
   });
 
-  test("an unreadable group keeps its stored members; the rest still sync", async () => {
+  test("an unreadable group fails the whole pass and changes nothing", async () => {
     keycloak.groups.set("Platform Team", [keycloakUser("pat")]);
     keycloak.groups.set("Engineering", [keycloakUser("eve")]);
     await syncGroups();
 
     keycloak.groups.set("Platform Team", [keycloakUser("pat"), keycloakUser("quinn")]);
     keycloak.groups.set("Engineering", [keycloakUser("eve"), keycloakUser("ezra")]);
+    const before = {
+      groups: rowsOf("SELECT id, name, path, synced_at FROM directory_groups ORDER BY path"),
+      members: groupMembers(),
+      memberRolesAndStatuses: rowsOf(
+        "SELECT id, role, status FROM installation_members ORDER BY id",
+      ),
+    };
     keycloak.failGroupMembers("Platform Team");
-    await expect(syncGroups("2026-10-24T01:00:00.000Z")).resolves.toEqual(report({
-      groups: 4,
-      membershipsReplaced: 3,
-      groupsFailed: 1,
-    }));
-    const subjects = (groupPath: string) => groupMembers()
-      .filter((row) => row.path === groupPath)
-      .map((row) => row.subject);
-    expect(subjects("/Platform Team")).toEqual(["user-pat"]);
-    expect(subjects("/Engineering")).toEqual(["user-eve", "user-ezra"]);
-    // The kept group still says when its members were last actually read.
-    const syncedAt = new Map(rowsOf("SELECT path, synced_at FROM directory_groups")
-      .map((row) => [String(row["path"]), String(row["synced_at"])]));
-    expect(syncedAt.get("/Platform Team")).toBe("2026-10-24T00:00:00.000Z");
-    expect(syncedAt.get("/Engineering")).toBe("2026-10-24T01:00:00.000Z");
+    await expect(syncGroups("2026-10-24T01:00:00.000Z")).rejects.toThrow();
+    expect({
+      groups: rowsOf("SELECT id, name, path, synced_at FROM directory_groups ORDER BY path"),
+      members: groupMembers(),
+      memberRolesAndStatuses: rowsOf(
+        "SELECT id, role, status FROM installation_members ORDER BY id",
+      ),
+    }).toEqual(before);
   });
 
   test("more than one page of groups and members is read completely", async () => {
