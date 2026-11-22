@@ -3,7 +3,7 @@ import { z } from "zod";
 import type {
   HtmlAnnotationTarget,
   HtmlElementAnchor,
-} from "@plannotator/ui/components/html-viewer";
+} from "./plannotator/components/html-viewer.js";
 
 /** Protocol version carried by every host <-> review-frame message. */
 export const reviewProtocolVersion = 1;
