@@ -53,6 +53,7 @@ import {
   type LocalServerConfig,
 } from "../local/start-local-server.js";
 import {PostgresDatabase} from "../storage/postgres-database.js";
+import {PostgresIdentityRepository} from "../storage/postgres-identity-repository.js";
 import {
   OrganizationRegistry,
   findDisappearedOrganizations,
@@ -416,9 +417,9 @@ function configureOrganizations(program: Command): void {
 }
 
 function configureMembers(program: Command): void {
-  program.command("member")
+  const member = program.command("member")
     .description("Operator-only organization member maintenance.")
-    .command("clear-staff")
+  member.command("clear-staff")
     .description("Clear a member's sticky staff marker and record the operator action.")
     .argument("<org>", "organization slug")
     .argument("<email>", "exact member email")
@@ -449,6 +450,53 @@ function configureMembers(program: Command): void {
           }));
         }));
         console.log(JSON.stringify({action: "clear_staff", ...result}));
+      } finally {
+        await database.close();
+      }
+    });
+
+  member.command("deactivate")
+    .description("Deactivate one organization member, revoke their browser sessions and personal API keys, and keep them out until an owner reactivates them. Running servers stop accepting their credentials within 30 seconds.")
+    .argument("<org>", "organization slug")
+    .argument("<email>", "exact member email (case-insensitive)")
+    .requiredOption("--yes", "confirm deactivating this member and revoking their credentials")
+    .action(async (org: string, email: string) => {
+      if (org === "orvex") {
+        throw new Error("Orvex members are governed by issuer groups. Remove the person from the admitting groups and run maintenance sync-directory.");
+      }
+      const configuration = await runCliEffect(parseExternalMigrationConfiguration(process.env));
+      const database = await PostgresDatabase.inspect({
+        applicationName: `artifact-server-member-deactivate:${configuration.installationId}`,
+        maxConnections: 1,
+        url: configuration.databaseUrl,
+      });
+      try {
+        const targetMember = await database.run(Effect.gen(function*() {
+          const sql = yield* SqlClient;
+          return yield* sql.withTransaction(Effect.gen(function*() {
+            const organizations = yield* sql`SELECT id FROM artifact_installations WHERE slug = ${org}`;
+            if (organizations.length !== 1) throw new Error("Organization does not exist.");
+            const installationId = String(organizations[0]?.["id"]);
+            const members = yield* sql`SELECT id, email, status FROM installation_members WHERE installation_id = ${installationId} AND lower(email) = lower(${email})`;
+            if (members.length !== 1) throw new Error("Member does not exist or email is ambiguous.");
+            return {
+              email: String(members[0]?.["email"]),
+              id: String(members[0]?.["id"]),
+              installationId,
+              previousStatus: String(members[0]?.["status"]),
+            };
+          }));
+        }));
+        const updated = await new PostgresIdentityRepository(database, targetMember.installationId)
+          .deactivateMember(targetMember.installationId, targetMember.id, new Date().toISOString(), true);
+        console.log(JSON.stringify({
+          action: "deactivate",
+          installationId: targetMember.installationId,
+          memberEmail: targetMember.email,
+          previousStatus: targetMember.previousStatus,
+          status: updated.status,
+          credentialsRevoked: true,
+        }));
       } finally {
         await database.close();
       }
