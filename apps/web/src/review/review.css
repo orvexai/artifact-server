@@ -3714,7 +3714,6 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
 
 .as-projects-table {
   border-collapse: collapse;
-  table-layout: fixed;
 }
 
 .as-projects-table__row {
@@ -3727,10 +3726,6 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
 
 .as-projects-table__created-label {
   display: none;
-}
-
-.as-projects-table__actions {
-  white-space: nowrap;
 }
 
 @container projects (max-width: 40rem) {
