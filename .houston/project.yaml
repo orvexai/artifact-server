@@ -1,0 +1,11 @@
+project: artifact-server
+repository: git@github.com:orvexai/artifact-server.git
+epics: local
+documents: docmost
+docmost_space: AS
+integration_branch: main
+promotion_branch: main
+bead_prefix: artifact-server
+coordination_bead: artifact-server-d2b
+tracker:
+  kind: beads
