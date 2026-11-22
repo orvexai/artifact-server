@@ -11,8 +11,22 @@ names and sizes only. Never print secret values or credentials.
 |---|---|---|
 | `oidc-directory-client-secret`, `apps/artifact-server/oidc` | C1-4 carry via QMK TL3 | Must match today's production Keycloak directory-sync client registration. |
 | `bootstrap-admin-email`, `apps/artifact-server/oidc` | C1-4 carry via QMK TL3 | The app requires a valid address at startup; must equal today's because the first admin policy and the local-owner path use it. |
+| `access-key-id`, `secret-access-key`, `apps/artifact-server/hetzner-copy-ro` | C1-4 carry via QMK TL3 (Wed 25) | Stage 1 storage copy reads the Hetzner bucket `artifact-server-storage`; read-only; revoked after Stage 1. |
 
 No values or hashes belong in this list. The move-day read token is limited to these carried properties.
+
+### Stage 1 Hetzner storage copy credential
+
+After the C1-4 carry places the credential in Manchester OpenBao at `apps/artifact-server/hetzner-copy-ro`, QMK applies two temporary objects in namespace `artifact-server` under its named 8-hour go. These are Manchester writes and must not be added to `deploy/orvex`:
+
+1. Apply an `ExternalSecret` using `SecretStore` `orvex-secrets`, with `creationPolicy: Owner`, mapping `artifact-server/hetzner-copy-ro` to Secret `hetzner-copy-ro`. The Secret name is outside the `orvex-*` fence (R10).
+2. The storage-copy Job reads only that Secret through `secretKeyRef`, mapping `access-key-id` and `secret-access-key` to `RCLONE_S3_ACCESS_KEY_ID` and `RCLONE_S3_SECRET_ACCESS_KEY`. Its access is read-only to the Hetzner bucket `artifact-server-storage`; egress to the Hetzner S3 endpoint is covered by `orvex-allow-internet` (D107).
+
+Delete the Job and `ExternalSecret` immediately after the copy, delete Secret `hetzner-copy-ro`, and show all three are gone.
+
+### Stage 1 copy credential cleanup
+
+After the Stage 1 copy check is accepted, QMK runs `radosgw-admin user rm --uid=artifact-server-copy-ro --purge-keys` to revoke every copy of the key. Quornex deletes Manchester OpenBao path `apps/artifact-server/hetzner-copy-ro` with `bao kv metadata delete`, and deletes the temporary `ExternalSecret` and Secret; show those objects and the path are gone. The OpenBao metadata deletion requires a dedicated token with `delete` on `apps/metadata`; neither the carry token nor the hosted-namespace token has that capability.
 
 ### Stage 1 GO check
 
@@ -98,7 +112,7 @@ any secret values to a file or command argument.
 
 ### Production hand-sync backup (C1-14; required before each stage is declared done)
 
-The production configuration has no usable by-hand base backup until all four Stage-1 prerequisites below are live. Do not apply a `Backup` before then. The Stage-1 check is by resource name only; never print or record credentials or secret values:
+The production configuration has no usable by-hand base backup until all four Stage-1 prerequisites below are live and the backup component is enabled. Do not apply a `Backup` before then. The Stage-1 check is by resource name only; never print or record credentials or secret values:
 
 1. MP-06 is live on Manchester. MP-06 PR #33 is merged to dev on Thursday 19 November; it is live only through pin 3, Thursday afternoon at the earliest, with QMK's and the Captain's word.
 2. ObjectStore `orvex-backup` and Secret `backup-b2` are present. The admin ExternalSecret `orvex-backup-b2` is their sole writer.
@@ -107,7 +121,13 @@ The production configuration has no usable by-hand base backup until all four St
 
 If any prerequisite is false on Wednesday 25 November evening, Stage 1 does not start Thursday 26 November. The Captain takes the date change to QMK. No prerequisite is waived.
 
-After the production database data is loaded on Manchester and all four prerequisites are confirmed, apply this Stage-1 `Backup` manifest:
+After the production database data is loaded on Manchester and all four prerequisites are confirmed, enable the production backup component by adding this entry under `components:` in `deploy/orvex/production/kustomization.yaml`:
+
+```yaml
+- ../components/backup
+```
+
+This component patches the Cluster with the barman-cloud WAL-archiver plug-in and adds its scheduled backup. Wait until that component is part of the production render and the Cluster configuration includes the plug-in, then apply this one-time Stage-1 `Backup` manifest:
 
 ```yaml
 apiVersion: postgresql.cnpg.io/v1
@@ -134,7 +154,7 @@ The production Cluster's barman-cloud plug-in and routine daily base-backup sche
 
 ## Stage 2: Friday 27 November 2026
 
-Before Stage 2 is declared done, take a fresh by-hand base backup because the data has changed since Stage 1. This follows the Captain's 16 November C1-14 rule, as read by the Apps TL. Recheck that ObjectStore `orvex-backup` and Secret `backup-b2` are still present by resource name; do not print or record credentials or secret values. Use the same method as Stage 1, changing only the Backup metadata name to `artifact-server-stage-2-base`:
+Before Stage 2 is declared done, take a fresh by-hand base backup because the data has changed since Stage 1. This follows the Captain's 16 November C1-14 rule, as read by the Apps TL. Confirm the production backup component is still enabled and recheck that ObjectStore `orvex-backup` and Secret `backup-b2` are still present by resource name; do not print or record credentials or secret values. Use the same method as Stage 1, changing only the Backup metadata name to `artifact-server-stage-2-base`:
 
 ```yaml
 apiVersion: postgresql.cnpg.io/v1
