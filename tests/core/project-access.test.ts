@@ -72,13 +72,40 @@ describe("project access rules", () => {
     expect(resolveProjectAccess(who, record)).toEqual({mode: "restricted", role});
   });
 
-  test("an open project remembers only an active human creator", () => {
+  test("an open project remembers its creator: an active member or the creating service principal", () => {
     expect(resolveProjectAccess(principal(), opened({role: "member", status: "active"})))
       .toEqual({isCreator: true, mode: "installation"});
     expect(resolveProjectAccess(principal(), opened({role: "member", status: "inactive"})))
       .toEqual({isCreator: false, mode: "installation"});
     expect(resolveProjectAccess(principal({kind: "service", id: "service:ci"}), opened(null)))
-      .toEqual({isCreator: false, mode: "installation"});
+      .toEqual({isCreator: true, mode: "installation"});
+    expect(resolveProjectAccess(principal({kind: "service", id: "service:ci"}), {
+      ...opened(null),
+      isCreator: false,
+    })).toEqual({isCreator: false, mode: "installation"});
+  });
+
+  test("restricted OIDC service creators manage only their created projects", () => {
+    const oidcService = principal({
+      kind: "service",
+      id: "oidc-service:provider:subject",
+      serviceAccountSource: "oidc",
+      directoryGroupIds: [],
+    });
+
+    expect(resolveProjectAccess(oidcService, restricted([], null, true)))
+      .toEqual({isCreator: true, mode: "restricted", role: "manager"});
+    expect(resolveProjectAccess(oidcService, restricted(["viewer"], null, false)))
+      .toEqual({isCreator: false, mode: "restricted", role: "viewer"});
+  });
+
+  test("an OIDC service principal without directory groups sees no restricted project", () => {
+    expect(resolveProjectAccess(principal({
+      kind: "service",
+      id: "oidc-service:provider:subject",
+      serviceAccountSource: "oidc",
+      directoryGroupIds: undefined,
+    }), restricted([], null, true))).toEqual({mode: "restricted", role: null});
   });
 
   test("roles are ordered viewer < editor < manager < administrator", () => {
