@@ -263,15 +263,19 @@ describe("linking a file publishes an ordinary first version", () => {
     const special = await linkFile(socketPath, "lnk-002-failure-socket-00");
     await expectRefusal(special, "INVALID_LINK_PATH");
 
-    await chmod(lockedDirectory, 0o000);
-    try {
-      const unreadable = await linkFile(
-        lockedPath,
-        "lnk-002-failure-unreadable",
-      );
-      await expectRefusal(unreadable, "INVALID_LINK_PATH");
-    } finally {
-      await chmod(lockedDirectory, 0o700);
+    if (process.getuid?.() !== 0) {
+      await chmod(lockedDirectory, 0o000);
+      try {
+        const unreadable = await linkFile(
+          lockedPath,
+          "lnk-002-failure-unreadable",
+        );
+        await expectRefusal(unreadable, "INVALID_LINK_PATH");
+      } finally {
+        await chmod(lockedDirectory, 0o700);
+      }
+    } else {
+      // Root can read mode-000 files, so this denial assertion is not meaningful.
     }
 
     const afterRefusals = await readJson(
