@@ -26,7 +26,12 @@ Delete the Job and `ExternalSecret` immediately after the copy, delete Secret `h
 
 ### Stage 1 copy credential cleanup
 
-After the Stage 1 copy check is accepted, QMK runs `radosgw-admin user rm --uid=artifact-server-copy-ro --purge-keys` to revoke every copy of the key. Quornex deletes Manchester OpenBao path `apps/artifact-server/hetzner-copy-ro` with `bao kv metadata delete`, and deletes the temporary `ExternalSecret` and Secret; show those objects and the path are gone. The OpenBao metadata deletion requires a dedicated token with `delete` on `apps/metadata`; neither the carry token nor the hosted-namespace token has that capability.
+After the Stage 1 copy check is accepted, run these revocation steps in order (R1-R4); record each line with `date -u` on the move record. Revocation is the Way Back's last step too: if Stage 1 is rolled back, R1-R4 still run.
+
+1. **R1 — Hetzner MyIDP seat.** QMK's named go authorizes the Hetzner-side operator to run `radosgw-admin user rm --uid=artifact-server-copy-ro --purge-keys`, revoking every copy of the key. Show `user info` failing.
+2. **R2 — QMK.** Restore the H1(c) saved bucket policy, or run DeleteBucketPolicy if it was "none" (H3 pod pattern, owner key in-cluster). Show the Sid list without `QmkStage1CopyReadOnly`.
+3. **R3 — Hetzner MyIDP seat, then Quornex.** On Hetzner, run `bao kv metadata delete -mount=platform artifact-server/hetzner-copy-ro`. On Manchester, Quornex runs `bao kv metadata delete -mount=apps artifact-server/hetzner-copy-ro` and deletes the temporary `ExternalSecret` and Secret; show those objects and both paths are gone. Each OpenBao metadata deletion requires a dedicated token with `delete` on `apps/metadata`; neither the carry token nor the hosted-namespace token has that capability.
+4. **R4 — QMK.** Delete policy `qmk-rgw-ro-mint` and remove the H6 line from any kept carry policy.
 
 ### Stage 1 GO check
 
@@ -121,13 +126,13 @@ The production configuration has no usable by-hand base backup until all four St
 
 If any prerequisite is false on Wednesday 25 November evening, Stage 1 does not start Thursday 26 November. The Captain takes the date change to QMK. No prerequisite is waived.
 
-After the production database data is loaded on Manchester and all four prerequisites are confirmed, enable the production backup component by adding this entry under `components:` in `deploy/orvex/production/kustomization.yaml`:
+The backup component is a prerequisite that is not yet on this branch. Add it to PR #86 in a separate commit after orvex-apps MA-34 #17 (now merged), and enable it in `deploy/orvex/production/kustomization.yaml` before the Stage-1 Backup. After the production database data is loaded on Manchester and all four prerequisites are confirmed, add this entry under `components:`:
 
 ```yaml
 - ../components/backup
 ```
 
-This component patches the Cluster with the barman-cloud WAL-archiver plug-in and adds its scheduled backup. Wait until that component is part of the production render and the Cluster configuration includes the plug-in, then apply this one-time Stage-1 `Backup` manifest:
+The component patches the Cluster with the barman-cloud WAL-archiver plug-in and adds its scheduled backup. Do not apply the Stage-1 `Backup` until the component is present in the production render and the Cluster shows the plug-in; then apply this one-time manifest:
 
 ```yaml
 apiVersion: postgresql.cnpg.io/v1
@@ -154,7 +159,7 @@ The production Cluster's barman-cloud plug-in and routine daily base-backup sche
 
 ## Stage 2: Friday 27 November 2026
 
-Before Stage 2 is declared done, take a fresh by-hand base backup because the data has changed since Stage 1. This follows the Captain's 16 November C1-14 rule, as read by the Apps TL. Confirm the production backup component is still enabled and recheck that ObjectStore `orvex-backup` and Secret `backup-b2` are still present by resource name; do not print or record credentials or secret values. Use the same method as Stage 1, changing only the Backup metadata name to `artifact-server-stage-2-base`:
+Before Stage 2 is declared done, take a fresh by-hand base backup because the data has changed since Stage 1. This follows the Captain's 16 November C1-14 rule, as read by the Apps TL. The backup component remains a prerequisite to be added to PR #86 in a separate commit after merged orvex-apps MA-34 #17; confirm it is enabled in production and that the Cluster shows the plug-in. Recheck that ObjectStore `orvex-backup` and Secret `backup-b2` are still present by resource name; do not print or record credentials or secret values. Use the same method as Stage 1, changing only the Backup metadata name to `artifact-server-stage-2-base`:
 
 ```yaml
 apiVersion: postgresql.cnpg.io/v1
