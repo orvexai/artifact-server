@@ -380,13 +380,19 @@ the Keycloak directory:
 artifactserver maintenance sync-directory --once --mode external-storage
 ```
 
-Directory group sync refuses a snapshot that would deactivate more than the
+Directory group and member sync refuse a snapshot that would deactivate more than the
 larger of five members or 20% of currently active members. Set
 `ARTIFACT_SERVER_DIRECTORY_SYNC_MAX_DEACTIVATIONS` to change the absolute
 floor; it must contain only decimal digits. The percentage guard always remains
 in effect. This deactivation cap applies per sync pass, not per day. Group
 membership is applied only after every listed Keycloak group and its member
 list have been fetched successfully.
+
+With `ARTIFACT_SERVER_ORG_TENANCY=on`, `sync-directory` excludes
+`/Guests/<slug>` and `/TenantWorkspaces/<slug>` groups from Orvex roles, except
+groups matched by `ARTIFACT_SERVER_ORG_STAFF_GROUPS`, exactly as Orvex sign-in
+does. The first pass after upgrade deactivates Orvex members whose only role
+came from those tenant groups and revokes their sessions and personal API keys.
 
 One pass reads every configured group completely, then makes the installation's
 human members match it:

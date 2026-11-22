@@ -61,6 +61,7 @@ import {
   type OrganizationAdmissionPolicy,
 } from "../external-storage/organization-registry.js";
 import {
+  maintenanceTenantGroupScope,
   organizationStaffGroupsVariable,
   parseOrganizationStaffGroups,
   requireOrganizationStaffGroups,
@@ -188,6 +189,13 @@ function configureMaintenance(program: Command): void {
     .addOption(portOption())
     .action(async (options: SyncDirectoryOptions) => {
       const configuration = await lifecycleConfiguration(options);
+      const organizationTenancy = parseOrganizationTenancy(
+        process.env["ARTIFACT_SERVER_ORG_TENANCY"],
+      );
+      if (organizationTenancy && configuration.deploymentMode !== "external-storage") {
+        throw new Error("Keycloak organization sync requires external-storage mode.");
+      }
+      const tenantScope = maintenanceTenantGroupScope(process.env, organizationTenancy);
       assertAtMostOneBrowserLoginProvider(process.env);
       const oidc = await loadOidcConfiguration({
         ...process.env,
@@ -221,6 +229,7 @@ function configureMaintenance(program: Command): void {
         : await createExternalStorageRuntime({
           ...externalMaintenanceConfig(configuration),
           groupRolePolicy: groupRoles,
+          ...tenantScope,
         });
       try {
         // Roles belong to stored groups, so copy the groups first, then give
@@ -259,7 +268,7 @@ function configureMaintenance(program: Command): void {
             unchanged: Math.max(0, memberSync.unchanged - roleChangedDuringRecompute),
             roleChanged: memberSync.roleChanged + roleChangedDuringRecompute,
           }));
-        if (parseOrganizationTenancy(process.env["ARTIFACT_SERVER_ORG_TENANCY"])) {
+        if (organizationTenancy) {
           if (configuration.deploymentMode !== "external-storage") {
             throw new Error("Keycloak organization sync requires external-storage mode.");
           }

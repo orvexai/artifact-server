@@ -1109,19 +1109,27 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         ARTIFACT_SERVER_S3_REGION: region,
         ARTIFACT_SERVER_S3_SECRET_ACCESS_KEY: environment.secretKey,
       };
-      const sync = async () => {
+      const sync = async (environment = syncEnvironment) => {
         const result = await runExternalCli([
           "maintenance",
           "sync-directory",
           "--once",
           "--mode",
           "external-storage",
-        ], syncEnvironment);
+        ], environment);
         if (result.exitCode !== 0) {
           return {failure: result.output};
         }
-        return {report: z.record(z.string(), z.number())
-          .parse(JSON.parse(result.output.split("\n").at(-1) ?? ""))};
+        const report = result.output.split("\n").reverse().flatMap((line) => {
+          try {
+            const parsed = z.record(z.string(), z.number()).safeParse(JSON.parse(line));
+            return parsed.success ? [parsed.data] : [];
+          } catch {
+            return [];
+          }
+        })[0];
+        if (report === undefined) return {failure: result.output};
+        return {report};
       };
       const synced = new PostgresIdentityRepository(database, syncInstallation);
       const members = async () =>
@@ -1177,6 +1185,63 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       expect(await members()).toContainEqual({
         email: "dave@example.test", role: "guest", status: "active",
       });
+
+      // Reproduce the CronJob's tenant-only guest scope: one active member
+      // with a live session and one previously inactive member in /Guests/acme.
+      keycloak.groups.set("acme", [
+        keycloakUser("dave"),
+        keycloakUser("g1"),
+        keycloakUser("g2"),
+      ]);
+      expect(await sync()).toMatchObject({report: {admitted: 2}});
+      const tenantMembers = await synced.listMembers(syncInstallation);
+      const g1 = tenantMembers.find(({email}) => email === "g1@example.test");
+      const g2 = tenantMembers.find(({email}) => email === "g2@example.test");
+      expect(g1).toBeDefined();
+      expect(g2).toBeDefined();
+      const tenantSyncAt = new Date().toISOString();
+      await synced.createApplicationSession({
+        createdAt: tenantSyncAt,
+        csrfDigest: "tenant-g1-csrf",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        id: "tenant-g1-session",
+        installationId: syncInstallation,
+        memberId: g1?.id ?? "",
+        tokenDigest: "tenant-g1-token",
+      });
+      await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        yield* sql`UPDATE installation_members SET status = 'inactive'
+          WHERE installation_id = ${syncInstallation} AND id = ${g2?.id ?? ""}`;
+      }));
+      const tenantsEnabled = {
+        ...syncEnvironment,
+        ARTIFACT_SERVER_ORG_STAFF_GROUPS: "/TenantWorkspaces/{slug}/{slug}-staff",
+        ARTIFACT_SERVER_ORG_TENANCY: "on",
+      };
+      const tenantSync = await sync(tenantsEnabled);
+      expect(tenantSync).toMatchObject({report: {reactivated: 0}});
+      expect(await members()).toContainEqual({
+        email: "g1@example.test", role: "guest", status: "inactive",
+      });
+      expect(await members()).toContainEqual({
+        email: "g2@example.test", role: "guest", status: "inactive",
+      });
+      const revokedSession = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql.unsafe<object>(
+          `SELECT revoked_at FROM application_sessions
+           WHERE installation_id = $1 AND id = $2`,
+          [syncInstallation, "tenant-g1-session"],
+        );
+      }));
+      expect(revokedSession).toHaveLength(1);
+      expect(z.object({revoked_at: z.string().nullable()})
+        .parse(revokedSession[0]).revoked_at).toBeTruthy();
+      expect(await members()).toEqual(expect.arrayContaining([
+        {email: "ada@example.test", role: "member", status: "active"},
+        {email: "bob@example.test", role: "administrator", status: "active"},
+      ]));
     } finally {
       await keycloak.stop();
       await database.close();

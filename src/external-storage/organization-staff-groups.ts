@@ -4,6 +4,23 @@ export const organizationStaffGroupsVariable = "ARTIFACT_SERVER_ORG_STAFF_GROUPS
 /** Placeholder expanded to each organization's slug. */
 export const organizationSlugPlaceholder = "{slug}";
 
+/** Tenant-group settings required by the Orvex directory-sync maintenance runtime. */
+export function maintenanceTenantGroupScope(
+  env: Readonly<Record<string, string | undefined>>,
+  organizationTenancy: boolean,
+): {
+  readonly orvexTenantGroupProtection?: true;
+  readonly organizationStaffGroups?: readonly string[];
+} {
+  if (!organizationTenancy) return {};
+  return {
+    orvexTenantGroupProtection: true,
+    organizationStaffGroups: requireOrganizationStaffGroups(
+      parseOrganizationStaffGroups(env[organizationStaffGroupsVariable]),
+    ),
+  };
+}
+
 /**
  * One exact group path: every segment is non-empty, may contain internal
  * spaces (as in `/Platform Team`), and has no leading or trailing whitespace,
