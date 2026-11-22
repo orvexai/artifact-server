@@ -62,9 +62,11 @@ const inboxAnswerSchema = z.object({
     }).strict()),
   }).strict().nullable(),
   inbox: z.array(z.object({
+    agentDisplayName: z.string(),
     createdAt: z.string(),
     id: z.string(),
     note: z.string().nullable(),
+    senderDisplayName: z.string(),
     threadCount: z.number().int().positive(),
   }).strict()).nullable(),
   operation: z.enum(["claim", "delivered", "failed", "list"]),
@@ -164,7 +166,7 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
     });
     expect(registered.agent).toEqual({
       capabilities: {beacon: false, evidence: "mailbox"},
-      displayName: "MCP client mailbox-client-a for Administrator",
+      displayName: "brp-002-mailbox-test for Administrator",
       id: registered.agent.id,
       kind: "mcp-mailbox",
     });
@@ -194,15 +196,19 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
     expect(listed.agent.id).toBe(registered.agent.id);
     expect(listed.inbox).toEqual([
       {
+        agentDisplayName: "brp-002-mailbox-test for Administrator",
         createdAt: olderDispatch.createdAt,
         id: olderDispatch.id,
         note: olderDispatch.note,
+        senderDisplayName: "Local",
         threadCount: 2,
       },
       {
+        agentDisplayName: "brp-002-mailbox-test for Administrator",
         createdAt: youngerDispatch.createdAt,
         id: youngerDispatch.id,
         note: null,
+        senderDisplayName: "Local",
         threadCount: 1,
       },
     ]);
@@ -371,7 +377,7 @@ describe("mailbox-tier dispatch inbox over MCP", () => {
     });
     expect(foreign.agent.id).not.toBe(first.agent.id);
     expect(foreign.agent.displayName)
-      .toBe("MCP client mailbox-client-b for Administrator");
+      .toBe("brp-002-mailbox-test for Administrator");
     expect(foreign.inbox).toEqual([]);
 
     // An empty-inbox claim answers cleanly rather than erroring.

@@ -311,7 +311,7 @@ describe("private content sessions", () => {
     expect(missing.status).toBe(404);
     const forged = new URL(lease.baseUrl);
     forged.hostname = `review-${"x".repeat(40)}.localhost`;
-    expect((await fetchVersion(server, forged.toString())).status).toBe(401);
+    expect((await fetchVersion(server, forged.toString())).status).toBe(404);
     const write = await fetchVersion(server, lease.baseUrl, "POST");
     expect(write.status).toBe(405);
     expect(write.headers.get("allow")).toBe("GET, HEAD");
