@@ -5,13 +5,15 @@ export const organizationStaffGroupsVariable = "ARTIFACT_SERVER_ORG_STAFF_GROUPS
 export const organizationSlugPlaceholder = "{slug}";
 
 /** Tenant-group settings required by the Orvex directory-sync maintenance runtime. */
+type MaintenanceTenantGroupScope = {
+  readonly orvexTenantGroupProtection?: true;
+  readonly organizationStaffGroups?: readonly string[];
+};
+
 export function maintenanceTenantGroupScope(
   env: Readonly<Record<string, string | undefined>>,
   organizationTenancy: boolean,
-): {
-  readonly orvexTenantGroupProtection?: true;
-  readonly organizationStaffGroups?: readonly string[];
-} {
+): MaintenanceTenantGroupScope {
   if (!organizationTenancy) return {};
   return {
     orvexTenantGroupProtection: true,

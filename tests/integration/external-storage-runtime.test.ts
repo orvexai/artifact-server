@@ -1109,18 +1109,18 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         ARTIFACT_SERVER_S3_REGION: region,
         ARTIFACT_SERVER_S3_SECRET_ACCESS_KEY: environment.secretKey,
       };
-      const sync = async (environment = syncEnvironment) => {
+      const sync = async (runtimeEnvironment = syncEnvironment) => {
         const result = await runExternalCli([
           "maintenance",
           "sync-directory",
           "--once",
           "--mode",
           "external-storage",
-        ], environment);
+        ], runtimeEnvironment);
         if (result.exitCode !== 0) {
           return {failure: result.output};
         }
-        const report = result.output.split("\n").reverse().flatMap((line) => {
+        const report = result.output.split("\n").toReversed().flatMap((line) => {
           try {
             const parsed = z.record(z.string(), z.number()).safeParse(JSON.parse(line));
             return parsed.success ? [parsed.data] : [];
