@@ -1221,6 +1221,12 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       };
       const tenantSync = await sync(tenantsEnabled);
       expect(tenantSync).toMatchObject({report: {reactivated: 0}});
+      const orvexRow = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT slug, status, route_id FROM artifact_installations WHERE id = ${syncInstallation}`;
+      }));
+      expect(orvexRow).toHaveLength(1);
+      expect(orvexRow[0]).toMatchObject({slug: "orvex", status: "active", route_id: expect.stringMatching(/^[a-z0-9]{8}$/u)});
       expect(await members()).toContainEqual({
         email: "g1@example.test", role: "guest", status: "inactive",
       });
@@ -1238,10 +1244,14 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       expect(revokedSession).toHaveLength(1);
       expect(z.object({revoked_at: z.string().nullable()})
         .parse(revokedSession[0]).revoked_at).toBeTruthy();
-      expect(await members()).toEqual(expect.arrayContaining([
-        {email: "ada@example.test", role: "member", status: "active"},
+      // ada has been inactive since artifact-users was deleted above; the tenant pass must not change her or bob.
+      expect(await members()).toEqual([
+        {email: "ada@example.test", role: "member", status: "inactive"},
         {email: "bob@example.test", role: "administrator", status: "active"},
-      ]));
+        {email: "dave@example.test", role: "guest", status: "inactive"},
+        {email: "g1@example.test", role: "guest", status: "inactive"},
+        {email: "g2@example.test", role: "guest", status: "inactive"},
+      ]);
     } finally {
       await keycloak.stop();
       await database.close();

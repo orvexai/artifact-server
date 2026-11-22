@@ -216,6 +216,7 @@ export class OrganizationRegistry {
       ) VALUES (
         ${installationId}, ${new Date().toISOString()}, 'orvex', 'Orvex', 'active', ${routeId}
       ) ON CONFLICT (id) DO UPDATE SET slug = 'orvex', display_name = 'Orvex',
+        status = COALESCE(artifact_installations.status, EXCLUDED.status),
         route_id = COALESCE(artifact_installations.route_id, EXCLUDED.route_id)
       WHERE artifact_installations.slug IS NULL OR artifact_installations.slug = 'orvex'
         RETURNING id, slug, display_name AS "displayName", route_id AS "routeId",
