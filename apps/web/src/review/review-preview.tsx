@@ -870,17 +870,13 @@ async function runArtifactBridgeOperation(
     case "delete":
       await api.deleteArtifactStateValue(projectId, artifactId, request.key);
       return {deleted: true};
-    case "respond": {
-      const preview = JSON.stringify({choice: request.choice ?? null, data: request.data ?? null});
-      if (!window.confirm(`This page wants to submit a response as you to question “${request.questionId}”${preview.length > 0 ? `:\n\n${preview.slice(0, 500)}` : ""}`)) {
-        throw new Error("The viewer declined the response.");
-      }
-      return api.createArtifactResponse(projectId, artifactId, versionId, request.questionId, request.choice ?? null, request.data ?? null);
-    }
-    default: {
+    case "comment_create": {
       // A page script is untrusted; it posts as the viewer only with their consent.
       const preview = request.body.length > 500 ? `${request.body.slice(0, 500)}…` : request.body;
-      if (!window.confirm(`This page wants to post a comment as you:\n\n${preview}`)) {
+      const lengthNote = request.body.length > 500
+        ? `\n\n(${request.body.length} characters in total; only the first 500 are shown.)`
+        : "";
+      if (!window.confirm(`This page wants to post a comment as you:\n\n${preview}${lengthNote}`)) {
         throw new Error("The viewer declined the comment.");
       }
       const created = await api.createComment(
@@ -891,6 +887,18 @@ async function runArtifactBridgeOperation(
         `page-${request.id}`,
       );
       return {threadId: created.thread.id};
+    }
+    case "respond": {
+      const preview = JSON.stringify({choice: request.choice ?? null, data: request.data ?? null});
+      if (!window.confirm(`This page wants to submit a response as you to question “${request.questionId}”${preview.length > 0 ? `:\n\n${preview.slice(0, 500)}` : ""}`)) {
+        throw new Error("The viewer declined the response.");
+      }
+      return api.createArtifactResponse(projectId, artifactId, versionId, request.questionId, request.choice ?? null, request.data ?? null);
+    }
+    default: {
+      const unsupported: never = request;
+      void unsupported;
+      throw new Error("Unsupported artifact bridge operation.");
     }
   }
 }

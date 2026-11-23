@@ -5027,3 +5027,17 @@ requirements:
         result: pass
         run: project/evidence/browser.json
         recorded_at: "2026-10-13T20:31:17.084Z"
+
+  - id: PGB-001
+    kind: behavior
+    behavior: A page open in exact Review can post a comment thread as the viewer only after the viewer confirms; the thread lands on the version being reviewed and agents read it with comment_list.
+    owner: artifact-comments
+    source: {file: artifact-comments-spec.md, anchor: page-bridge-comment-post}
+    acceptance:
+      behavior: {id: PGB-001-B, description: "A page calls artifactServer.comments.create with a body and path; the viewer accepts the prompt; the page receives the thread id and the thread exists on the reviewed version with that body and path, readable through the comment API."}
+      failure: {id: PGB-001-F, description: "A declined prompt rejects the page call and creates no thread; an unknown bridge operation is dropped with no prompt and no thread; a create beyond 30 bridge requests in 60 seconds is refused with no prompt and no thread."}
+    deployments: [local]
+    status: implementing
+    proof_gap: Browser evidence for PGB-001-B and PGB-001-F is not yet recorded in project/evidence/browser.json.
+    depends_on: [CMT-001]
+    evidence: []

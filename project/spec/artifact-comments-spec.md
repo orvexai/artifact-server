@@ -368,6 +368,15 @@ an existing dispatch package to remove a deleted thread.
 
 `apps/web/src/api/client.ts` gains the eight comment calls plus the file read, with zod schemas mirroring section 7.
 
+### Page bridge comment post
+
+A page in authenticated exact Review may call `window.artifactServer.comments.create(body, {path})`; the viewer confirms each post, and the thread is stored on the exact reviewed version for agents to read with `comment_list` or `comment_get`.
+Embeds and public or guest views refuse this page bridge.
+The body is 1–8,192 characters; an optional path must name a file in that version.
+Review shares a limit of 30 bridge requests per rolling 60 seconds per open preview and a 15-second page timeout with state operations.
+For bodies over 500 characters, consent shows the first 500, an ellipsis, and the total character count; the idempotency key is `page-<request id>`.
+See [Page bridge](../../docs/page-bridge.md) for the complete call reference.
+
 ## 9a. Review viewer architecture
 
 The in-page experience reuses Plannotator's own HTML annotation machinery (`@plannotator/ui@0.30.0`, `components/html-viewer`: `HtmlViewer`, `bridge-script`, `srcdoc`, `useHtmlAnnotation` — a props-driven host surface since 0.29.0). Its security model transplants unchanged: the artifact document is rendered from a **`srcdoc` iframe with `sandbox="allow-scripts"` and no `allow-same-origin`** — an opaque origin holding no credential and no reachable API — with the annotation bridge script and CSS spliced into `<head>` and every bridge message source-checked and shape-validated on both sides. The page DOM is never mutated; hover and pins are fixed-position overlay layers.
