@@ -19,7 +19,7 @@ overrides:
 
 patchedDependencies:
   '@plannotator/ui@0.64.0':
-    hash: f03477e39639e599cd7cde3df69835541e367afabed7b5150403c35a23c0b58a
+    hash: c011aca1334c4fb34a9e7c3ff282876854be43b4193c2e5ea0445bf3d95c2cb1
     path: patches/@plannotator__ui@0.64.0.patch
   undici@7.29.0:
     hash: c72a7ae9c9c076955d9fb259f0686ea52d72763b2e9bf853da3e07be3200176e
@@ -210,7 +210,7 @@ importers:
         version: 1.1.10(react@19.3.1)
       '@plannotator/ui':
         specifier: 0.64.0
-        version: 0.64.0(patch_hash=f03477e39639e599cd7cde3df69835541e367afabed7b5150403c35a23c0b58a)(@codemirror/lang-css@6.3.1)(@codemirror/lang-html@6.4.12)(@lezer/markdown@1.7.2)(@shikijs/themes@4.4.3)(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)(typescript@6.0.3)
+        version: 0.64.0(patch_hash=c011aca1334c4fb34a9e7c3ff282876854be43b4193c2e5ea0445bf3d95c2cb1)(@codemirror/lang-css@6.3.1)(@codemirror/lang-html@6.4.12)(@lezer/markdown@1.7.2)(@shikijs/themes@4.4.3)(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)(typescript@6.0.3)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -11048,7 +11048,7 @@ snapshots:
       '@codemirror/lang-yaml': 6.1.3
       '@codemirror/legacy-modes': 6.5.5
 
-  '@plannotator/ui@0.64.0(patch_hash=f03477e39639e599cd7cde3df69835541e367afabed7b5150403c35a23c0b58a)(@codemirror/lang-css@6.3.1)(@codemirror/lang-html@6.4.12)(@lezer/markdown@1.7.2)(@shikijs/themes@4.4.3)(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)(typescript@6.0.3)':
+  '@plannotator/ui@0.64.0(patch_hash=c011aca1334c4fb34a9e7c3ff282876854be43b4193c2e5ea0445bf3d95c2cb1)(@codemirror/lang-css@6.3.1)(@codemirror/lang-html@6.4.12)(@lezer/markdown@1.7.2)(@shikijs/themes@4.4.3)(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)(typescript@6.0.3)':
     dependencies:
       '@base-ui/react': 1.9.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@codemirror/autocomplete': 6.20.3

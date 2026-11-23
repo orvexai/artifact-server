@@ -1,16 +1,32 @@
 diff --git a/components/html-viewer/bridge-script.ts b/components/html-viewer/bridge-script.ts
-index a4424d4750ff2ff2888b1fdde38ed55bb656d2b8..571bf483ae87f17de1b7b5483bc7bda0e459d78d 100644
+index a4424d4750ff2ff2888b1fdde38ed55bb656d2b8..33fc2301dfda96b1b56aba482c647fd806eddd3a 100644
 --- a/components/html-viewer/bridge-script.ts
 +++ b/components/html-viewer/bridge-script.ts
-@@ -4905,0 +4906 @@ ${SANDBOX_SHIM_SCRIPT}
+@@ -4904,4 +4904,5 @@ ${SANDBOX_SHIM_SCRIPT}
+   if (!LIVE) {
+     document.addEventListener('click', function(e) {
 +      if (!annotateModeActive) return; // Interact: links behave as in a tab (artifact-server-3jo DELTA 2)
+       if (e.defaultPrevented || e.button !== 0) return;
+       if (isViewerOverlayNode(e.target)) return; // markers own their clicks
+@@ -4917,4 +4918,5 @@ ${SANDBOX_SHIM_SCRIPT}
+         return;
+       }
++      return; // artifact-server: followable links belong to the browser (UPS-A1 r2)
+       if (raw.charAt(0) === '#') {
+         e.preventDefault();
 diff --git a/components/html-viewer/sandboxShim.ts b/components/html-viewer/sandboxShim.ts
-index 65e47ac0cb94e972e44c3accddbe262c902f1f74..990bc9f52a2b4fece3d3e498e79309d7e7754da6 100644
+index 65e47ac0cb94e972e44c3accddbe262c902f1f74..611dac86d32847ae93ad201ef8e40c52d0379a7a 100644
 --- a/components/html-viewer/sandboxShim.ts
 +++ b/components/html-viewer/sandboxShim.ts
-@@ -23,0 +24 @@
+@@ -21,4 +21,5 @@
+  *   origin. Each becomes an in-memory Storage for this load of the page:
+  *   nothing is written anywhere, so the frame still keeps nothing between
 + * History block removed by artifact-server patch: the host's base-href script owns same-document History URLs.
-@@ -34,33 +34,0 @@ export const SANDBOX_SHIM_SCRIPT = `(function() {
+  *   loads (the sandbox is unchanged; this only stops the throw).
+  *
+@@ -32,37 +33,4 @@
+  */
+ export const SANDBOX_SHIM_SCRIPT = `(function() {
 -  var h = window.history;
 -  if (h && !(h.replaceState && h.replaceState.plannotatorSandboxShim)) {
 -    ['pushState', 'replaceState'].forEach(function(name) {
@@ -44,3 +60,5 @@ index 65e47ac0cb94e972e44c3accddbe262c902f1f74..990bc9f52a2b4fece3d3e498e79309d7
 -    });
 -  }
 -
+   function memoryStorage() {
+     var items = new Map();
