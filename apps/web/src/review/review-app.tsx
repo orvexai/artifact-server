@@ -630,39 +630,51 @@ function ArtifactReview({
   const inspectorOpenTriggerRef = useRef<HTMLButtonElement>(null);
   const inspectorCloseRef = useRef<HTMLButtonElement>(null);
   const previousCompactSheetsRef = useRef({catalogOpen, inspectorOpen});
-  const compactSuppressedInspectorRef = useRef(false);
-  const automaticSheetChangeRef = useRef(false);
+  type ReviewSheet = "catalog" | "inspector";
+  const lastActiveSheetRef = useRef<ReviewSheet>("catalog");
+  const compactSuppressedSheetRef = useRef<ReviewSheet | null>(null);
   const previewPanelRef = useRef<HTMLElement>(null);
   const commentsInspectorRef = useRef<ReviewCommentsInspectorHandle>(null);
   const openCatalog = useCallback((): void => {
+    lastActiveSheetRef.current = "catalog";
     setCatalogOpen(true);
     if (compactViewport) setInspectorOpen(false);
   }, [compactViewport]);
   const openInspector = useCallback((): void => {
-    compactSuppressedInspectorRef.current = false;
+    lastActiveSheetRef.current = "inspector";
     setInspectorOpen(true);
     if (compactViewport) setCatalogOpen(false);
   }, [compactViewport]);
   useEffect(() => {
-    if (compactViewport && catalogOpen && inspectorOpen) {
-      compactSuppressedInspectorRef.current = true;
-      automaticSheetChangeRef.current = true;
-      setInspectorOpen(false);
+    const suppressed = compactSuppressedSheetRef.current;
+    if (!compactViewport) {
+      if (suppressed === null) return;
+      compactSuppressedSheetRef.current = null;
+      if (suppressed === "catalog") setCatalogOpen(true);
+      else setInspectorOpen(true);
+      return;
     }
+    if (catalogOpen && inspectorOpen) {
+      const yielded: ReviewSheet = lastActiveSheetRef.current === "inspector"
+        ? "catalog"
+        : "inspector";
+      compactSuppressedSheetRef.current = yielded;
+      if (yielded === "catalog") setCatalogOpen(false);
+      else setInspectorOpen(false);
+      return;
+    }
+    if (suppressed === null) return;
+    const keptOpen = suppressed === "catalog" ? inspectorOpen : catalogOpen;
+    if (!keptOpen) compactSuppressedSheetRef.current = null;
   }, [catalogOpen, compactViewport, inspectorOpen]);
-  useEffect(() => {
-    if (compactViewport || !compactSuppressedInspectorRef.current) return;
-    compactSuppressedInspectorRef.current = false;
-    setInspectorOpen(true);
-  }, [compactViewport]);
   useEffect(() => {
     const previous = previousCompactSheetsRef.current;
     previousCompactSheetsRef.current = {catalogOpen, inspectorOpen};
-    if (automaticSheetChangeRef.current) {
-      automaticSheetChangeRef.current = false;
-      return;
-    }
     if (!compactViewport) return;
+    const suppressed = compactSuppressedSheetRef.current;
+    if (suppressed !== null && (suppressed === "inspector"
+      ? previous.inspectorOpen && !inspectorOpen
+      : previous.catalogOpen && !catalogOpen)) return;
 
     let focusTarget: HTMLButtonElement | HTMLInputElement | null = null;
     if (!previous.inspectorOpen && inspectorOpen) {
@@ -689,7 +701,10 @@ function ArtifactReview({
     minWidth: catalogMinimumWidth,
     onClick: () => setCatalogOpen(false),
     onSnapClose: () => setCatalogOpen(false),
-    onSnapOpen: () => setCatalogOpen(true),
+    onSnapOpen: () => {
+      lastActiveSheetRef.current = "catalog";
+      setCatalogOpen(true);
+    },
     side: "left",
     storageKey: "artifact-review-catalog-width",
   });
@@ -700,7 +715,10 @@ function ArtifactReview({
     minWidth: inspectorMinimumWidth,
     onClick: () => setInspectorOpen(false),
     onSnapClose: () => setInspectorOpen(false),
-    onSnapOpen: () => setInspectorOpen(true),
+    onSnapOpen: () => {
+      lastActiveSheetRef.current = "inspector";
+      setInspectorOpen(true);
+    },
     side: "right",
     storageKey: "artifact-review-inspector-width",
   });
@@ -1516,7 +1534,12 @@ function ArtifactReview({
       </Dialog.Root>
 
       {!focusMode && catalogMotion.mounted ? (
-        <div className="as-panel-assembly" data-side="left">
+        <div
+          className="as-panel-assembly"
+          data-side="left"
+          onFocusCapture={() => { lastActiveSheetRef.current = "catalog"; }}
+          onPointerDownCapture={() => { lastActiveSheetRef.current = "catalog"; }}
+        >
           <motion.div
             className="as-panel-clip as-catalog-clip"
             data-side="left"
@@ -2067,7 +2090,12 @@ function ArtifactReview({
         </section>
 
         {!focusMode && inspectorMotion.mounted ? (
-          <div className="as-panel-assembly" data-side="right">
+          <div
+            className="as-panel-assembly"
+            data-side="right"
+            onFocusCapture={() => { lastActiveSheetRef.current = "inspector"; }}
+            onPointerDownCapture={() => { lastActiveSheetRef.current = "inspector"; }}
+          >
           {inspectorOpen && !compactViewport ? (
               <ReviewPanelEdge
                 label="Artifact inspector width"
