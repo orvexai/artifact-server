@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.31
+
+- Pages open in Review can post a comment thread through `window.artifactServer.comments.create` only after the viewer confirms; the prompt now states the full length when it shows only the first 500 characters, unknown bridge operations are refused, and the page bridge is documented in `docs/page-bridge.md`.
+- Settings > Members and Groups now work on phone-width (390 px) screens: rows become cards and nothing scrolls sideways; the Members, Groups and Public links tables also carry explicit table roles for screen readers.
+- Test-suite fix: MCP relay tests no longer leave orphaned relay processes. No product change.
+- A Review preview left open keeps loading files past 15 minutes: its preview lease extends while the viewer still has access, up to 8 hours after it was issued. Leases issued to API keys and other non-human callers still expire after 15 minutes.
+- MCP comments written with an API key or external bearer token that pass `agentName` now show as agentName (via the key or account name); OAuth clients are unchanged.
+- In focus mode, a PDF preview starts below the floating focus controls, so the browser PDF toolbar stays usable.
+- `artifactserver doctor` reads sign-in status from the running relay and reports the shell credential store separately.
+
 ## 0.1.30
 
 - `auth login --device` signs the CLI in from a host without a browser using OAuth device authorization (RFC 8628) protected by S256 PKCE. It prints only a verification address and a short code, never tokens; browser sign-in stays the default and `--headless` is unchanged.
