@@ -14,6 +14,10 @@
     "deploy/cloudflare/**",
     "dist/**",
     "node_modules/**",
+    // Verbatim Houston DS v0.4.0 copy; see apps/web/src/brand/houston/PROVENANCE.md. Bytes are guarded by BRD-001 in tests/client/brand-v040.test.ts.
+    "apps/web/src/brand/houston/motion/houston-loader.js",
+    "project/spec/conformance.yml",
+    "project/spec/houston-brand-spec.md",
     "tools/oxlint/**"
   ],
   "jsPlugins": [

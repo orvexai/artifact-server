@@ -1,7 +1,7 @@
 {
   "id": "./",
   "name": "Houston Artifacts",
-  "short_name": "Houston Artifacts",
+  "short_name": "Artifacts",
   "description": "Houston Artifacts",
   "start_url": "./review",
   "scope": "./",

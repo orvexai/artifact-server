@@ -1,17 +1,15 @@
-/** Houston's radar-scope mark, using the micro cut below 24px. */
+/** Houston Brand and Design System v0.4.0 Mark D. */
 export function ArtifactMark({className}: {readonly className?: string}) {
   return (
     <svg
       aria-hidden="true"
       className={className}
       fill="none"
-      viewBox="0 0 48 48"
+      viewBox="-13 -13 74 74"
     >
-      <rect height="41.2" rx="9.6" stroke="currentColor" strokeWidth="6.8" width="41.2" x="3.4" y="3.4" />
-      <circle cx="24" cy="24" r="13" stroke="currentColor" strokeWidth="1.8" />
-      <circle cx="24" cy="24" r="7" stroke="currentColor" strokeWidth="1.8" />
-      <path d="M24 24 33.192 14.808" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
-      <circle cx="14.808" cy="33.192" r="3" fill="#0891b2" />
+      <rect height="43.5" rx="10.75" stroke="var(--ox-color-text)" strokeWidth="4.5" width="43.5" x="2.25" y="2.25" />
+      <circle cx="24" cy="24" r="12.75" stroke="var(--ox-color-text)" strokeWidth="4.5" />
+      <circle cx="15" cy="33" r="6" fill="var(--ox-color-accent)" />
     </svg>
   );
 }

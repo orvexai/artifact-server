@@ -1,4 +1,7 @@
-Houston design-system v0.2.0 assets vendored from `orvexai/houston-v1` commit `4b86b6ce33e653e27d272d4613e7478e04b3b931`.
+Houston Brand and Design System v0.4.0, vendored from `orvexai/houston` commit `524b0137e3a3fae6ea0e991202bcf90323412a74` (`design-system/`).
 
-- `variables.css` is the generated token output from `design-system/tokens/css/variables.css`; do not edit it by hand.
-- Font files and OFL license texts are copied from `design-system/fonts/` at the same commit.
+- `variables.css` and the four font files remain byte-identical to that commit.
+- `contrast.json`, `motion/houston-loader.js`, and the public favicon and app-icon files are copied byte for byte from that commit.
+- `loader.css` ports the loader and loading-surface rules from `design-system/web/components.css`.
+- `Mark D` geometry follows `design-system/brand/source/geometry.json` and UX's section 8 specification.
+- The existing OFL license texts remain alongside the fonts.
