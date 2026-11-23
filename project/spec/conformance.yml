@@ -5081,7 +5081,7 @@ requirements:
       failure: {id: PLK-001-F, description: "Opening, refreshing, exchanging, reading comments, or requesting preview content makes zero identity-provider requests and returns zero login redirects, including after visitor-session expiry."}
     deployments: *all
     status: implementing
-    proof_gap: Public-link end-to-end network evidence is pending PLK-3.
+    proof_gap: PLK-1 server routes are unauthenticated, but PLK-001-B and PLK-001-F require PLK-3 browser network evidence across page load, refresh, exchange, comments, preview, and expired-session renewal; keep implementing until that proof lands.
     evidence: []
 
   - id: PLK-002
@@ -5094,7 +5094,7 @@ requirements:
       failure: {id: PLK-002-F, description: "Unknown, revoked, expired-session, and disabled-link states contain no Sign in control."}
     deployments: *all
     status: implementing
-    proof_gap: UI implementation and browser evidence are pending PLK-3.
+    proof_gap: PLK-002-B and PLK-002-F require PLK-3 UI/browser evidence for public, unknown, revoked, and expired-session states; keep implementing until that proof lands.
     evidence: []
 
   - id: PLK-003
@@ -5107,7 +5107,7 @@ requirements:
       failure: {id: PLK-003-F, description: "Reload does not strand the visitor, and the legacy #invite fragment remains accepted."}
     deployments: *all
     status: implementing
-    proof_gap: Browser evidence is pending PLK-3.
+    proof_gap: PLK-003-B and PLK-003-F require PLK-3 browser evidence that the SPA preserves and reuses #link after reload and accepts legacy #invite fragments; keep implementing until that proof lands.
     evidence: []
 
   - id: PLK-004
@@ -5120,7 +5120,7 @@ requirements:
       failure: {id: PLK-004-F, description: "The signed-in member's lack of project access does not redirect or turn the valid link into a not-found response."}
     deployments: *all
     status: implementing
-    proof_gap: Browser evidence is pending PLK-3.
+    proof_gap: PLK-004-B and PLK-004-F require PLK-3 browser evidence that a valid fragment overrides an unrelated signed-in identity; keep implementing until that proof lands.
     evidence: []
 
   - id: PLK-005
@@ -5172,7 +5172,7 @@ requirements:
       failure: {id: PLK-008-F, description: "The link exposes no version list, comparisons, other artifact, project, group, or member data."}
     deployments: *external_storage
     status: implementing
-    proof_gap: Visitor path isolation evidence is pending.
+    proof_gap: PLK-008-F now checks another-artifact, version-list, comparison, project, group, and member routes on local SQLite; hosted external-storage evidence remains pending.
     evidence: []
 
   - id: PLK-009
@@ -5211,7 +5211,7 @@ requirements:
       failure: {id: PLK-011-F, description: "Every exhausted budget returns 429 with Retry-After."}
     deployments: *external_storage
     status: implementing
-    proof_gap: Lease and Retry-After behavior evidence is pending.
+    proof_gap: PLK-011-B is not proved: the existing tests exercise selected counters, but not successful consumption of every configured exchange, grant, comment, bootstrap, and lease budget for both permissions. PLK-011-F covers selected 429 paths; full budget matrix remains a proof gap.
     evidence: []
 
   - id: PLK-012
@@ -5224,7 +5224,7 @@ requirements:
       failure: {id: PLK-012-F, description: "Opening a second link does not revoke or replace the first grant."}
     deployments: *external_storage
     status: implementing
-    proof_gap: Shared-cookie repository behavior is pending.
+    proof_gap: PLK-012-B and PLK-012-F prove SQLite shared-cookie grants across two links; Postgres parity remains pending hosted External Storage Runtime evidence.
     evidence: []
 
   - id: PLK-013
@@ -5250,7 +5250,7 @@ requirements:
       failure: {id: PLK-014-F, description: "Archive does not enable writes or exchanges for deleted artifacts or suspended organizations."}
     deployments: *external_storage
     status: implementing
-    proof_gap: Archive-aware grant authentication evidence is pending.
+    proof_gap: PLK-014-F remains unproved for deleted artifacts and suspended organizations; PLK-014-B covers archive pause and unarchive resume only.
     evidence: []
 
   - id: PLK-015
@@ -5302,7 +5302,7 @@ requirements:
       failure: {id: PLK-018-F, description: "A link from one organization never resolves at root or in another organization."}
     deployments: *external_storage
     status: implementing
-    proof_gap: Multi-organization isolation evidence is pending.
+    proof_gap: PLK-018-B and PLK-018-F need a multi-organization integration matrix proving prefixed route resolution, organization cookie suffixes, and rejection at root and another organization; this lane has no such fixture evidence.
     evidence: []
 
   - id: PLK-019
@@ -5315,7 +5315,7 @@ requirements:
       failure: {id: PLK-019-F, description: "No interface bypasses permission, tenant, or policy checks."}
     deployments: *external_storage
     status: implementing
-    proof_gap: MCP/CLI parity is assigned to PLK-2.
+    proof_gap: PLK-019-B and PLK-019-F require MCP/CLI coverage assigned to PLK-2 plus the complete SQLite/Postgres parity matrix; PLK-1 HTTP tests cannot prove the cross-interface acceptance and Docker-backed Postgres suite is hosted.
     evidence: []
 
   - id: PLK-020
@@ -5328,7 +5328,7 @@ requirements:
       failure: {id: PLK-020-F, description: "At two viewport sizes and in both themes the shell has no overflow and accessibility checks pass."}
     deployments: *all
     status: implementing
-    proof_gap: Implementation and multi-organization browser evidence are assigned to PLK-3.
+    proof_gap: PLK-020-B and PLK-020-F are PLK-3 browser UI and responsive accessibility evidence; this server lane cannot prove them.
     evidence: []
 
   - id: PLK-021
@@ -5341,7 +5341,7 @@ requirements:
       failure: {id: PLK-021-F, description: "Secret-bearing visitor responses are no-store."}
     deployments: *external_storage
     status: implementing
-    proof_gap: Route response header verification is pending.
+    proof_gap: Local HTTP tests prove public API noindex/no-referrer and visitor exchange no-store; HTML page headers and hosted deployment evidence remain pending.
     evidence: []
 
   - id: PLK-022
@@ -5354,5 +5354,5 @@ requirements:
       failure: {id: PLK-022-F, description: "Keyboard, focus, contrast, and responsive layout issues are caught by the browser gate."}
     deployments: *all
     status: implementing
-    proof_gap: Browser accessibility evidence is assigned to PLK-3.
+    proof_gap: PLK-022-B and PLK-022-F are PLK-3 browser accessibility evidence across themes and viewport sizes; this server lane cannot prove them.
     evidence: []

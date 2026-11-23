@@ -1,4 +1,5 @@
 import {Context, DateTime, Effect, Layer, Redacted} from "effect";
+import {timingSafeEqual} from "node:crypto";
 
 import {AuthorizationService} from "./authorization.js";
 import {InstallationAccessService} from "./installation-access.js";
@@ -14,6 +15,18 @@ import {sealPublicLinkSecret, unsealPublicLinkSecret} from "./public-link-seal.j
 
 const guestIdleLifetimeMilliseconds = 2 * 60 * 60 * 1_000;
 const guestSessionLifetimeMilliseconds = 7 * 24 * 60 * 60 * 1_000;
+
+function constantTimeDigestEqual(actual: string, expected: string): boolean {
+  const actualBytes = Buffer.from(actual);
+  const expectedBytes = Buffer.from(expected);
+  const comparisonLength = Math.max(actualBytes.byteLength, expectedBytes.byteLength, 1);
+  const paddedActual = Buffer.alloc(comparisonLength);
+  const paddedExpected = Buffer.alloc(comparisonLength);
+  actualBytes.copy(paddedActual);
+  expectedBytes.copy(paddedExpected);
+  const equalBytes = timingSafeEqual(paddedActual, paddedExpected);
+  return equalBytes && actualBytes.byteLength === expectedBytes.byteLength;
+}
 
 /** Identity carried by requests after the guest cookie has been verified. */
 export interface GuestReviewer {
@@ -228,9 +241,9 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
           );
         const reusable = existing !== null && command.existingCsrfToken !== undefined &&
           command.existingSessionToken !== undefined &&
-          existing.csrfDigest === dependencies.secrets.digest(
+          constantTimeDigestEqual(existing.csrfDigest, dependencies.secrets.digest(
             Redacted.make(command.existingCsrfToken, {label: "guest-csrf"}),
-          ) ? {existing, csrfToken: command.existingCsrfToken, sessionToken: command.existingSessionToken} : null;
+          )) ? {existing, csrfToken: command.existingCsrfToken, sessionToken: command.existingSessionToken} : null;
         if (reusable !== null && reusable.existing.artifactId === invitation.artifactId && reusable.existing.invitationId === invitation.id) {
           return {csrfToken: reusable.csrfToken, expiresAt: reusable.existing.absoluteExpiresAt,
             reviewer: {artifactId: reusable.existing.artifactId, displayName: reusable.existing.displayName ?? "Visitor", guestId: reusable.existing.guestId,

@@ -4263,7 +4263,8 @@ async function requireGuestReviewer(
     if (
       context.req.header("origin") !== trustedOrigin ||
       context.req.header("sec-fetch-site") !== "same-origin" ||
-      !header.success || !cookie.success || header.data !== cookie.data ||
+      !header.success || !cookie.success ||
+      !identitySecretsEqual(digestIdentitySecret(header.data), digestIdentitySecret(cookie.data)) ||
       !identitySecretsEqual(digestIdentitySecret(header.data), session.csrfDigest)
     ) {
       throw new AuthorizationDenied({message: "A valid guest browser CSRF token is required."});

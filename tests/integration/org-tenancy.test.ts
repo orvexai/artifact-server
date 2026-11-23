@@ -2761,6 +2761,13 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(await suspendedResponse.text()).toBe(await unknownResponse.text());
     expect(suspendedMcp.status).toBe(404);
     expect(suspendedReview.status).toBe(404);
+    const legacyArtifactPath = "/artifacts/art_00000000-0000-4000-8000-000000000000";
+    const legacyArtifactRedirect = await fetch(`${baseUrl}${legacyArtifactPath}`, {
+      headers: host,
+      redirect: "manual",
+    });
+    expect(legacyArtifactRedirect.status).toBe(308);
+    expect(legacyArtifactRedirect.headers.get("location")).toBe(`/o/orvex${legacyArtifactPath}`);
     await Promise.all(["/api/v1/session", "/mcp", "/review"].map(async (legacyPath) => {
       const redirect = await fetch(`${baseUrl}${legacyPath}`, {
         headers: host,

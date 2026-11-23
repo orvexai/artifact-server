@@ -357,6 +357,22 @@ describe("invited guest review", () => {
     expect((await guestRequest(sharedVisitor, "GET", `/api/v1/public/artifacts/${otherArtifactId}/guest/current`)).status).toBe(201);
   });
 
+  test("PLK-012-F: opening a second link leaves the first visitor grant usable", async () => {
+    const firstLink = await enableInvitation();
+    const secondLink = await enableInvitation(otherArtifactId, projectId);
+    const firstVisitor = await exchange(artifactId, firstLink.secret);
+    const secondExchange = await exchangeResponse(otherArtifactId, secondLink.secret, "Guest Reviewer", {Cookie: firstVisitor.cookie});
+    expect(secondExchange.status).toBe(201);
+    const setCookies = secondExchange.headers.getSetCookie();
+    const session = setCookies.find((item) => item.startsWith("artifact_guest_session="))?.split(";", 1)[0];
+    const csrf = setCookies.find((item) => item.startsWith("artifact_guest_csrf="))?.split(";", 1)[0];
+    expect(session).toBe(firstVisitor.cookie.split("; ")[0]);
+    expect(csrf).toBe(firstVisitor.cookie.split("; ")[1]);
+    const sharedVisitor = {cookie: `${session ?? ""}; ${csrf ?? ""}`, csrf: csrf?.split("=", 2)[1] ?? ""};
+    expect((await guestRequest(sharedVisitor, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(201);
+    expect((await guestRequest(sharedVisitor, "GET", `/api/v1/public/artifacts/${otherArtifactId}/guest/current`)).status).toBe(201);
+  });
+
   test("PLK-007-F: wrong, revoked, and other-artifact secrets return the same 404; reset revokes old grants", async () => {
     const first = await enableInvitation();
     const priorVisitor = await exchange(artifactId, first.secret);
@@ -405,6 +421,22 @@ describe("invited guest review", () => {
     expect(unauthorized.map((response) => response.status)).toEqual([404, 404, 404, 404]);
   });
 
+  test("PLK-008-F: a public link cannot read another artifact or member-only data", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const responses = await Promise.all([
+      guestRequest(guest, "GET", `/api/v1/public/artifacts/${otherArtifactId}/guest/current`),
+      guestRequest(guest, "GET", `/api/v1/artifacts/${artifactId}/versions?projectId=${projectId}`),
+      guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/versions`),
+      guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/comparisons`),
+      guestRequest(guest, "GET", `/api/v1/projects/${projectId}`),
+      guestRequest(guest, "GET", `/api/v1/projects/${projectId}/groups`),
+      guestRequest(guest, "GET", "/api/v1/members"),
+    ]);
+    expect(responses.map(({status}) => status)).toEqual([404, 401, 401, 401, 401, 401, 401]);
+    await Promise.all(responses.map((response) => response.arrayBuffer()));
+  });
+
   test("PLK-015-F: guests cannot resolve comments or use authenticated API routes", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
@@ -424,6 +456,23 @@ describe("invited guest review", () => {
     const guest = await exchange(artifactId, invitation.secret);
     const response = await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Blocked", versionId: currentVersionId}), false, "guest-no-csrf-key-0001");
     expect(response.status).toBe(403);
+
+    const mismatched = await fetch(`${server.baseUrl}/api/v1/public/artifacts/${artifactId}/guest/comments`, {
+      body: JSON.stringify({body: "Blocked", versionId: currentVersionId}),
+      headers: {Cookie: guest.cookie, Origin: server.baseUrl, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json", "X-CSRF-Token": "A".repeat(guest.csrf.length), "Idempotency-Key": "guest-csrf-mismatch-0001"},
+      method: "POST",
+    });
+    expect(mismatched.status).toBe(403);
+
+    const reused = await exchangeResponse(artifactId, invitation.secret, "Guest Reviewer", {Cookie: guest.cookie});
+    expect(reused.status).toBe(201);
+    const reusedCookies = reused.headers.getSetCookie();
+    expect(reusedCookies.find((item) => item.startsWith("artifact_guest_session="))?.split(";", 1)[0]).toBe(guest.cookie.split("; ")[0]);
+
+    const staleCookie = guest.cookie.replace(/artifact_guest_csrf=[^;]+/u, `artifact_guest_csrf=${"A".repeat(guest.csrf.length)}`);
+    const replaced = await exchangeResponse(artifactId, invitation.secret, "Guest Reviewer", {Cookie: staleCookie});
+    expect(replaced.status).toBe(201);
+    expect(replaced.headers.getSetCookie().find((item) => item.startsWith("artifact_guest_session="))?.split(";", 1)[0]).not.toBe(guest.cookie.split("; ")[0]);
   });
 
   test("PLK-013-B: a guest views the private artifact's current version through the content origin", async () => {
@@ -546,6 +595,17 @@ describe("invited guest review", () => {
     const current = await guestRequest(guest, "GET", path);
     expect(current.status).toBe(201);
     expect(await current.json()).toMatchObject({displayName: "Renamed Visitor"});
+  });
+
+  test("PLK-021-F: visitor session exchange responses are not cacheable", async () => {
+    const created = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "view"}));
+    expect(created.status).toBe(201);
+    const url = z.object({url: z.url()}).parse(await created.json()).url;
+    const secret = new URLSearchParams(new URL(url).hash.slice(1)).get("link");
+    expect(secret).toBeTruthy();
+    const response = await exchangeResponse(artifactId, secret ?? "");
+    expect(response.status).toBe(201);
+    expect(response.headers.get("cache-control")).toMatch(/no-store/iu);
   });
 
   test("exchange requires a same-origin JSON request", async () => {
