@@ -3828,6 +3828,7 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
     height: 1px;
     overflow: hidden;
     position: absolute;
+    white-space: nowrap;
     width: 1px;
   }
 
@@ -3912,6 +3913,7 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
     height: 1px;
     overflow: hidden;
     position: absolute;
+    white-space: nowrap;
     width: 1px;
   }
 
