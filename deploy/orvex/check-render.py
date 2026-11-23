@@ -115,10 +115,13 @@ def check(env: str, documents: list[dict[str, Any]]) -> None:
         if spec.get("postgresql", {}).get("synchronous", {}).get("dataDurability") != "required":
             raise SystemExit("production: CNPG durability must be required")
         backups = [d for d in documents if d and d.get("kind") == "ScheduledBackup"]
-        if backups:
-            raise SystemExit("production: ScheduledBackup waits for the admin ObjectStore and app.yaml backups declaration")
-        if spec.get("plugins"):
-            raise SystemExit("production: barman-cloud plug-in waits for the admin ObjectStore and app.yaml backups declaration")
+        if len(backups) != 1 or backups[0].get("metadata", {}).get("name") != "artifact-server-db-daily":
+            raise SystemExit("production: expected the artifact-server daily backup component")
+        if backups[0].get("spec", {}).get("method") != "plugin" or backups[0].get("spec", {}).get("pluginConfiguration", {}).get("name") != "barman-cloud.cloudnative-pg.io":
+            raise SystemExit("production: daily backup must use the barman-cloud plug-in")
+        plugins = spec.get("plugins", [])
+        if len(plugins) != 1 or plugins[0].get("name") != "barman-cloud.cloudnative-pg.io" or not plugins[0].get("isWALArchiver"):
+            raise SystemExit("production: Cluster must enable the barman-cloud WAL archiver")
         deployments = [d for d in documents if d and d.get("kind") == "Deployment" and d.get("metadata", {}).get("name") == "artifact-server"]
         if len(deployments) != 1:
             raise SystemExit("production: expected one artifact-server Deployment")
@@ -136,7 +139,7 @@ def check(env: str, documents: list[dict[str, Any]]) -> None:
             raise SystemExit("rehearsal: every outbound worker CronJob must be suspended")
         if any(d and d.get("kind") == "ExternalSecret" and any(x.get("secretKey") == "oidc-directory-client-secret" for x in (d.get("spec", {}).get("data") or [])) for d in documents):
             raise SystemExit("rehearsal: directory client secret is forbidden")
-    print(f"{env}: PASS ({len(documents)} resources; digest pins, allow-list, CNPG, routes, deferred backups and pod-label guard)")
+    print(f"{env}: PASS ({len(documents)} resources; digest pins, allow-list, CNPG, routes, backup policy and pod-label guard)")
 
 
 if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
