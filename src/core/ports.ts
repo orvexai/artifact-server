@@ -778,6 +778,11 @@ export interface ContentSessionRepository {
     tokenDigest: string,
     requestTime: string,
   ): Promise<ContentSessionRecord | null>;
+  extendPreviewLease(
+    tokenDigest: string,
+    requestTime: string,
+    expiresAt: string,
+  ): Promise<boolean>;
 }
 
 /** Durable invitation and guest-session operations for invited review. */

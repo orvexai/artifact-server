@@ -220,7 +220,16 @@ Image, video, and PDF previews are read-only in this slice. Existing whole-file 
 
 ## 10. Conformance requirements
 
-All seven requirements have local normal and hostile evidence and are `behavior_verified`. They remain short of `verified` until the same contract has passing evidence for every deployment named in the ledger.
+The existing seven requirements have local normal and hostile evidence and are `behavior_verified`. They remain short of `verified` until the same contract has passing evidence for every deployment named in the ledger.
+
+### Preview lease renewal {#preview-lease-renewal}
+
+An authorized read of an exact-version preview lease may slide its expiry when less than 5 minutes remain.
+The read first resolves the lease, content, and identity; then it re-checks that the active human lease principal still has access to the exact artifact version.
+Only a successful access re-check permits an extension to the earlier of 15 minutes from now or 8 hours after issue.
+Non-human, missing, deactivated, unauthorized, and unknown principals never slide; a failed re-check or write never fails the current read.
+An expired lease is never revived, and leases always expire at the 8-hour hard cap; CMT-018 fail-closed behavior remains unchanged.
+There is no client refresh or remount change in v0.1.31; visibility-based re-issue is deferred to artifact-server-twg.
 
 | ID | Contract |
 | --- | --- |
@@ -231,6 +240,7 @@ All seven requirements have local normal and hostile evidence and are `behavior_
 | `PRV-005` | Unsupported types, codecs, corrupt media, and delivery failures settle into an honest typed fallback without sniffing, conversion, or an infinite loading state. |
 | `PRV-006` | Markdown entries render as a sanitized, theme-following reader document through the HTML annotation frame, with path-anchored comments and a bounded-size fallback. |
 | `PRV-007` | PDF entries render in the browser's PDF viewer, framed from the exact version's preview-lease content host and never from the application origin, with a frame policy limited to content hosts and a typed fallback. |
+| `PRV-008` | An exact-version Review preview lease stays usable while the viewer keeps reading, slides only after access is re-checked, and expires no later than 8 hours after issue. |
 
 ## 11. Implementation order
 

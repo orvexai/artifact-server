@@ -795,6 +795,11 @@ export function createApplicationLayer(
           try: () => adapters.repository.findPreviewLease(tokenDigest, requestTime),
           catch: (cause) => repositoryFailure("findPreviewLease", cause),
         }),
+      extendPreviewLease: (tokenDigest, requestTime, expiresAt) =>
+        Effect.tryPromise({
+          try: () => adapters.repository.extendPreviewLease(tokenDigest, requestTime, expiresAt),
+          catch: (cause) => repositoryFailure("extendPreviewLease", cause),
+        }),
       findCurrentVersion: (projectId, artifactId) =>
         Effect.tryPromise({
           try: () => adapters.repository.findCurrentVersion(projectId, artifactId),
@@ -1122,6 +1127,17 @@ export function createApplicationLayer(
     });
   }
   const identityLayer = InstallationAccessService.layer(installationAccessDependencies);
+  Object.assign(contentDependencies, {
+    resolveLeasePrincipal: (principalId: string) =>
+      InstallationAccessService.use((installationAccess) =>
+        installationAccess.findActiveHumanPrincipal(principalId).pipe(
+          Effect.flatMap((principal) => principal === null
+            ? Effect.succeed(null)
+            : installationAccess.withTenantStaffContext(principal)),
+          Effect.catch(() => Effect.succeed(null)),
+        ),
+      ).pipe(Effect.provide(identityLayer)),
+  });
   const authenticationLayer = Layer.effect(
     AuthenticationService,
     InstallationAccessService.use((installationAccess) => {

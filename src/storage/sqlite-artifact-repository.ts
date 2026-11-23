@@ -2763,6 +2763,17 @@ export class SqliteArtifactRepository implements
     });
   }
 
+  extendPreviewLease(
+    tokenDigest: string,
+    requestTime: string,
+    expiresAt: string,
+  ): Promise<boolean> {
+    return Promise.resolve().then(() => this.#database.prepare(
+      `UPDATE content_sessions SET expires_at = ?3
+      WHERE token_digest = ?1 AND expires_at > ?2 AND expires_at < ?3`,
+    ).run(tokenDigest, requestTime, expiresAt).changes === 1);
+  }
+
   createStagedUpload(command: CreateStagedUpload): Promise<StagedUpload> {
     return Promise.resolve().then(() =>
       this.#transaction(() => {

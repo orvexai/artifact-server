@@ -42,6 +42,8 @@ import {
 
 const bootstrapLifetimeMilliseconds = 2 * 60 * 1_000;
 const contentSessionLifetimeMilliseconds = 15 * 60 * 1_000;
+const previewLeaseSlideThresholdMilliseconds = 5 * 60 * 1_000;
+const previewLeaseMaximumLifetimeMilliseconds = 8 * 60 * 60 * 1_000;
 /** Distinguishes short-lived Review leases from immutable content tokens. */
 export const previewLeaseTokenPrefix = "review-";
 
@@ -88,6 +90,11 @@ export interface ContentAccessRepository {
     tokenDigest: string,
     requestTime: string,
   ) => Effect.Effect<ContentSessionRecord | null, ArtifactRepositoryFailure>;
+  readonly extendPreviewLease: (
+    tokenDigest: string,
+    requestTime: string,
+    expiresAt: string,
+  ) => Effect.Effect<boolean, ArtifactRepositoryFailure>;
   readonly findCurrentVersion: (
     projectId: string | null,
     artifactId: string,
@@ -112,6 +119,7 @@ export interface ContentAccessDependencies {
   readonly clock: ApplicationClock;
   readonly organizationDirectoryVisibility?: boolean | undefined;
   readonly repository: ContentAccessRepository;
+  readonly resolveLeasePrincipal?: (principalId: string) => Effect.Effect<Principal | null>;
   readonly secrets: ContentSecretProvider;
 }
 
@@ -451,6 +459,45 @@ function makeContentAccessService(
       || content.artifactId !== lease.artifactId
       || content.versionId !== lease.versionId
     ) return yield* sessionRequired();
+    const requestTime = Date.parse(now);
+    const remaining = Date.parse(lease.expiresAt) - requestTime;
+    if (remaining < previewLeaseSlideThresholdMilliseconds) {
+      const cappedExpiry = Math.min(
+        requestTime + contentSessionLifetimeMilliseconds,
+        Date.parse(lease.createdAt) + previewLeaseMaximumLifetimeMilliseconds,
+      );
+      const expiresAt = new Date(cappedExpiry).toISOString();
+      let slideStatus: "skipped_access" | "skipped_cap" | "failed" | "extended" = "skipped_access";
+      if (cappedExpiry <= Date.parse(lease.expiresAt)) {
+        slideStatus = "skipped_cap";
+      } else if (dependencies.resolveLeasePrincipal !== undefined) {
+        const principal = yield* dependencies.resolveLeasePrincipal(lease.principalId).pipe(
+          Effect.catchCause(() => Effect.succeed(null)),
+        );
+        if (principal?.kind === "human") {
+          const accessStillValid = yield* resolveAuthorizedTarget({
+            artifactId: lease.artifactId,
+            principal,
+            projectId: lease.projectId,
+            target: {kind: "version", versionId: lease.versionId},
+          }).pipe(
+            Effect.as(true),
+            Effect.catchCause(() => Effect.succeed(false)),
+          );
+          if (accessStillValid) {
+            const extended = yield* dependencies.repository.extendPreviewLease(
+              lease.tokenDigest,
+              now,
+              expiresAt,
+            ).pipe(
+              Effect.catchCause(() => Effect.succeed(false)),
+            );
+            slideStatus = extended ? "extended" : "failed";
+          }
+        }
+      }
+      yield* Effect.annotateCurrentSpan({"preview.lease.slide": slideStatus});
+    }
     yield* Effect.annotateCurrentSpan({"artifact.project.id": content.projectId});
     return content;
   });

@@ -5041,3 +5041,17 @@ requirements:
     proof_gap: Browser evidence for PGB-001-B and PGB-001-F is not yet recorded in project/evidence/browser.json.
     depends_on: [CMT-001]
     evidence: []
+
+  - id: PRV-008
+    kind: security
+    behavior: An exact-version Review preview lease stays usable while the viewer keeps reading, by sliding to 15 more minutes when under 5 minutes remain, only after the lease principal's access to that version is re-checked, and never beyond 8 hours after issue.
+    owner: web-application
+    source: {file: media-preview-spec.md, anchor: preview-lease-renewal}
+    acceptance:
+      behavior: {id: PRV-008-B, description: "A lease read with under 5 minutes left by a principal who still has access moves expiresAt to now plus 15 minutes; a read with more than 5 minutes left leaves it unchanged; repeated reads never move it past createdAt plus 8 hours."}
+      failure: {id: PRV-008-F, description: "A lease whose principal was deactivated, lost project access, or is not a human member is served until its stored expiry but never extended; an expired lease is never revived; past the 8 hour cap the lease expires and reads fail closed as CMT-018-F."}
+    deployments: *all
+    status: implementing
+    proof_gap: Service evidence for PRV-008-B and PRV-008-F is not yet recorded; the Cloudflare D1 adapter is covered by typecheck only while artifact-server-e3b stands.
+    depends_on: [CMT-018, PRV-007]
+    evidence: []

@@ -2987,6 +2987,13 @@ export function createD1ArtifactRepository(
         .first<z.input<typeof contentRecordSchema>>();
       return row === null ? null : contentRecordSchema.parse(row);
     },
+    extendPreviewLease: async (tokenDigest, requestTime, expiresAt) => {
+      const result = await database.prepare(`
+        UPDATE content_sessions SET expires_at = ?3
+        WHERE token_digest = ?1 AND expires_at > ?2 AND expires_at < ?3
+      `).bind(tokenDigest, requestTime, expiresAt).run();
+      return result.meta.changes === 1;
+    },
     createThread: async (
       command: CreateCommentThread,
     ): Promise<CommentThreadCreation> => {

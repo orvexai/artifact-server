@@ -2558,6 +2558,23 @@ export class PostgresArtifactRepository implements
     }));
   }
 
+  async extendPreviewLease(
+    tokenDigest: string,
+    requestTime: string,
+    expiresAt: string,
+  ): Promise<boolean> {
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const result = yield* sql.unsafe(
+        `UPDATE content_sessions SET expires_at = $3
+        WHERE token_digest = $1 AND expires_at > $2 AND expires_at < $3
+        RETURNING token_digest`,
+        [tokenDigest, requestTime, expiresAt],
+      );
+      return result.length === 1;
+    }));
+  }
+
   async createStagedUpload(command: CreateStagedUpload): Promise<StagedUpload> {
     const installationId = this.#installationId;
     return this.#database.run(Effect.gen({self: this}, function*() {
