@@ -1798,6 +1798,147 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
     )).status).toBe(404);
   });
 
+  test("external-storage foundation: Postgres preview lease extension stays inside its installation", async () => {
+    expect.hasAssertions();
+    const suffix = randomUUID();
+    const identityA = {
+      apiToken: managedTestKey(`preview-lease-installation-a-${suffix}`),
+      installationId: `preview-lease-a-${suffix}`,
+    };
+    const identityB = {
+      apiToken: managedTestKey(`preview-lease-installation-b-${suffix}`),
+      installationId: `preview-lease-b-${suffix}`,
+    };
+    const seed = async (
+      identity: typeof identityA,
+      name: string,
+    ) => {
+      const server = await startInProcessExternalStorageServer(
+        environment,
+        identity,
+      );
+      try {
+        const published = await publishNew(server.baseUrl, identity.apiToken, {
+          content: `<p>${name}</p>`,
+          idempotencyKey: `preview-lease-seed-${name}-${suffix}`,
+          name,
+        });
+        expect(published.response.status).toBe(201);
+        return published.body;
+      } finally {
+        await server.stop();
+      }
+    };
+    const artifactA = await seed(identityA, "Preview lease installation A");
+    const artifactB = await seed(identityB, "Preview lease installation B");
+    const database = await PostgresDatabase.open({
+      maxConnections: 2,
+      url: Redacted.make(environment.databaseUrl),
+    }, "validate");
+    try {
+      const repositoryA = await PostgresArtifactRepository.open(
+        database,
+        identityA.installationId,
+      );
+      const repositoryB = await PostgresArtifactRepository.open(
+        database,
+        identityB.installationId,
+      );
+      const seededLeaseIdentity = async (
+        scopedInstallationId: string,
+        versionId: string,
+      ) => {
+        const rows = await database.run(Effect.gen(function*() {
+          const sql = yield* SqlClient;
+          return yield* sql.unsafe<{
+            readonly contentToken: string;
+            readonly principalId: string;
+          }>(
+            `SELECT content_token AS "contentToken",
+              publisher_principal_id AS "principalId"
+             FROM versions
+             WHERE installation_id = $1 AND id = $2`,
+            [scopedInstallationId, versionId],
+          );
+        }));
+        const row = rows[0];
+        if (row === undefined) {
+          throw new Error(`Missing seeded Postgres version ${versionId}.`);
+        }
+        return row;
+      };
+      const createdAt = "2026-08-18T09:00:00.000Z";
+      const expiresAt = "2026-08-18T09:15:00.000Z";
+      const tokenDigest = createHash("sha256")
+        .update(`preview-lease-cross-installation-${suffix}`)
+        .digest("hex");
+      const seededA = await seededLeaseIdentity(
+        identityA.installationId,
+        artifactA.version.id,
+      );
+      await repositoryA.createPreviewLease({
+        artifactId: artifactA.artifact.id,
+        contentToken: seededA.contentToken,
+        createdAt,
+        expiresAt,
+        principalId: seededA.principalId,
+        projectId: artifactA.artifact.projectId,
+        tokenDigest,
+        versionId: artifactA.version.id,
+      });
+      const seededB = await seededLeaseIdentity(
+        identityB.installationId,
+        artifactB.version.id,
+      );
+      await repositoryB.createPreviewLease({
+        artifactId: artifactB.artifact.id,
+        contentToken: seededB.contentToken,
+        createdAt,
+        expiresAt,
+        principalId: seededB.principalId,
+        projectId: artifactB.artifact.projectId,
+        tokenDigest,
+        versionId: artifactB.version.id,
+      });
+
+      expect(await repositoryA.extendPreviewLease(
+        tokenDigest,
+        "2026-08-18T09:11:00.000Z",
+        "2026-08-18T09:26:00.000Z",
+      )).toBe(true);
+      expect((await repositoryB.findPreviewLease(
+        tokenDigest,
+        "2026-08-18T09:11:00.000Z",
+      ))?.expiresAt).toBe(expiresAt);
+      expect((await repositoryA.findPreviewLease(
+        tokenDigest,
+        "2026-08-18T09:11:00.000Z",
+      ))?.expiresAt).toBe("2026-08-18T09:26:00.000Z");
+
+      expect(await repositoryB.extendPreviewLease(
+        tokenDigest,
+        "2026-08-18T09:16:00.000Z",
+        "2026-08-18T09:31:00.000Z",
+      )).toBe(false);
+      expect((await repositoryB.findPreviewLease(
+        tokenDigest,
+        "2026-08-18T09:11:00.000Z",
+      ))?.expiresAt).toBe(expiresAt);
+
+      expect(await repositoryA.extendPreviewLease(
+        tokenDigest,
+        "2026-08-18T09:11:00.000Z",
+        "2026-08-18T09:20:00.000Z",
+      )).toBe(false);
+      expect((await repositoryA.findPreviewLease(
+        tokenDigest,
+        "2026-08-18T09:11:00.000Z",
+      ))?.expiresAt).toBe("2026-08-18T09:26:00.000Z");
+    } finally {
+      await database.close();
+    }
+  });
+
   test("external-storage foundation: integrity scans committed Postgres records and S3 bytes without repair", async () => {
     const identity = {
       apiToken: managedTestKey("integrity-runtime"),
