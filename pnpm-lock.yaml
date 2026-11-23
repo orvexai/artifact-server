@@ -18,9 +18,9 @@ overrides:
   gaxios>uuid: 11.1.1
 
 patchedDependencies:
-  '@plannotator/ui@0.63.0':
-    hash: 49605a14b56cb4356fc33b63c939baf4530331842c019c5ab40588467e75a317
-    path: patches/@plannotator__ui@0.63.0.patch
+  '@plannotator/ui@0.64.0':
+    hash: f03477e39639e599cd7cde3df69835541e367afabed7b5150403c35a23c0b58a
+    path: patches/@plannotator__ui@0.64.0.patch
   undici@7.29.0:
     hash: c72a7ae9c9c076955d9fb259f0686ea52d72763b2e9bf853da3e07be3200176e
     path: patches/undici@7.29.0.patch
@@ -209,8 +209,8 @@ importers:
         specifier: 1.1.10
         version: 1.1.10(react@19.3.1)
       '@plannotator/ui':
-        specifier: 0.63.0
-        version: 0.63.0(patch_hash=49605a14b56cb4356fc33b63c939baf4530331842c019c5ab40588467e75a317)(@codemirror/lang-css@6.3.1)(@codemirror/lang-html@6.4.12)(@lezer/markdown@1.7.2)(@shikijs/themes@4.4.3)(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)(typescript@6.0.3)
+        specifier: 0.64.0
+        version: 0.64.0(patch_hash=f03477e39639e599cd7cde3df69835541e367afabed7b5150403c35a23c0b58a)(@codemirror/lang-css@6.3.1)(@codemirror/lang-html@6.4.12)(@lezer/markdown@1.7.2)(@shikijs/themes@4.4.3)(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)(typescript@6.0.3)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -2857,8 +2857,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@pierre/diffs@1.5.2':
-    resolution: {integrity: sha512-QVxIWQEnNoko22k63maERzozd29+FtaUNpRrZiw603WMe5R1mFSED+jMtPkcVP3SDYS1DWg5K7sa7sJbr3xkNQ==}
+  '@pierre/diffs@1.7.0-beta.3':
+    resolution: {integrity: sha512-eAoAoL9aoO7vR9VV5NCLIuIAEr4yu5LsBnhTbyoy8wDFjT0y7bDrlhX8doO7FUb/MCd0Ldcd15Ga/yTOq2mjBA==}
     peerDependencies:
       react: ^18.3.1 || ^19.0.0
       react-dom: ^18.3.1 || ^19.0.0
@@ -2868,12 +2868,18 @@ packages:
       react-dom:
         optional: true
 
+  '@pierre/highlights@0.5.0':
+    resolution: {integrity: sha512-G8gscrHrik3YjKd+tPTcmivJ/W0zRrtg4adVxnfX7+415+0Qplo6qUWuEX5R0UkA1fMhmE2sOSuLBMNGDtLhIw==}
+
+  '@pierre/patches@0.0.1':
+    resolution: {integrity: sha512-NycJQVQNuqmBdr7u1LsUcmkiIz1fRm9xhWZyRbm21oJYd0MVVCa45t9Lsuj5IKrTMBonxOuh4LMv+R3BpL4bmQ==}
+
   '@pierre/theme@2.0.0':
     resolution: {integrity: sha512-yNDd9GYLQl1mEUJR8AneJ5e4ohLIHQd/wZLWr4fagt78vS2RwwZNW530vVgHqXFAyFVcFlRmGUD5ramXH46OXw==}
     engines: {vscode: ^1.0.0}
 
-  '@pierre/theming@1.0.1':
-    resolution: {integrity: sha512-WCI5Qd7iprDpISL9fBYOLe8RV53+b7mFNA3bPzl60/2CKCSrsKN8zEcep6Y3BAzvARlmca50zGjDodqPGiTUKA==}
+  '@pierre/theming@1.0.2':
+    resolution: {integrity: sha512-RmXLLqtx31UGcR8kZyO5hGAQ1EXz6loT1Cu0BFAGsbnBboIxp2BlomkLfWyvdT4WZXnBGyu25onL1gKpFQuSUw==}
     peerDependencies:
       '@pierre/theme': ^1.1.0 || ^2.0.0
       '@shikijs/themes': ^3.0.0 || ^4.0.0
@@ -2963,8 +2969,8 @@ packages:
       typescript:
         optional: true
 
-  '@plannotator/core@0.25.22':
-    resolution: {integrity: sha512-xygY4ggGA55p+1rt75uk5c+46+7rltxEbCeW/VwGY1dZSIBO/bZJX3AV9WDeTyGee6x7wUaxQ3UINATKat+1uQ==}
+  '@plannotator/core@0.25.32':
+    resolution: {integrity: sha512-hMJ0+x5AjmuoReelolA2nkmQc7BJE/s8GqGb0raNgZTkG7FO5Nbod9hjyIKu9kvB27Ax8guq8WyhPMwkakkW6Q==}
 
   '@plannotator/markdown-editor@0.5.0':
     resolution: {integrity: sha512-H6UO9h9ls7Q1FQCgDDOiltDYxi8GosM9BXuXkb4oBcBCAyap39RebeF/B3tAqvqZEmo9zsbOaqTy813AWiLSqQ==}
@@ -2992,8 +2998,8 @@ packages:
       '@codemirror/legacy-modes':
         optional: true
 
-  '@plannotator/ui@0.63.0':
-    resolution: {integrity: sha512-2Chp+ZGDwLpGgbRcX6y4lN/0SadBXl0TSZvFGqnzWUjt2Vs2dwoqAGNwR3mq6MeuLmdu58zX3Q5L/dHz7yoIPQ==}
+  '@plannotator/ui@0.64.0':
+    resolution: {integrity: sha512-ntDOLOD7Js2XUqnii9M6DuOzgmIWruOHozSxQe6Tpk5xwQNTgiyp3yAd5JVP4yvNvLF1qbW/znH7K8XZ6Ti3XQ==}
     peerDependencies:
       react: ^19.2.3
       react-dom: ^19.2.3
@@ -4539,6 +4545,10 @@ packages:
 
   crelt@1.0.7:
     resolution: {integrity: sha512-aK6BbWfhf4U/wCcLHKPJl/xa6VkVstRaPywWtMKGwuOLc/wZTyQYuoxgvZnNsBvv7Kg3YTBQYYBCggcviQczuA==}
+
+  croner@11.0.0:
+    resolution: {integrity: sha512-T17ADjdttrVToyzLpLq9Xb9xzcMwpQ/M3Qs9szhh0MVNTbv6NWQ9OFYa2qlzPYXFMn+uoDlnW1IpIv6cAvFtyA==}
+    engines: {node: '>=18.0'}
 
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
@@ -10958,11 +10968,12 @@ snapshots:
   '@pagefind/windows-x64@1.5.2':
     optional: true
 
-  '@pierre/diffs@1.5.2(@shikijs/themes@4.4.3)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@pierre/diffs@1.7.0-beta.3(@shikijs/themes@4.4.3)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
+      '@pierre/highlights': 0.5.0
+      '@pierre/patches': 0.0.1
       '@pierre/theme': 2.0.0
-      '@pierre/theming': 1.0.1(@pierre/theme@2.0.0)(@shikijs/themes@4.4.3)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(shiki@4.4.3)
-      '@shikijs/transformers': 4.4.3
+      '@pierre/theming': 1.0.2(@pierre/theme@2.0.0)(@shikijs/themes@4.4.3)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(shiki@4.4.3)
       diff: 9.0.0
       hast-util-to-html: 9.0.5
       lru_map: 0.4.1
@@ -10973,9 +10984,13 @@ snapshots:
     transitivePeerDependencies:
       - '@shikijs/themes'
 
+  '@pierre/highlights@0.5.0': {}
+
+  '@pierre/patches@0.0.1': {}
+
   '@pierre/theme@2.0.0': {}
 
-  '@pierre/theming@1.0.1(@pierre/theme@2.0.0)(@shikijs/themes@4.4.3)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(shiki@4.4.3)':
+  '@pierre/theming@1.0.2(@pierre/theme@2.0.0)(@shikijs/themes@4.4.3)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(shiki@4.4.3)':
     optionalDependencies:
       '@pierre/theme': 2.0.0
       '@shikijs/themes': 4.4.3
@@ -11015,7 +11030,9 @@ snapshots:
       '@codemirror/legacy-modes': 6.5.5
       typescript: 6.0.3
 
-  '@plannotator/core@0.25.22': {}
+  '@plannotator/core@0.25.32':
+    dependencies:
+      croner: 11.0.0
 
   '@plannotator/markdown-editor@0.5.0(@codemirror/lang-javascript@6.2.5)(@codemirror/lang-json@6.0.2)(@codemirror/lang-python@6.2.1)(@codemirror/lang-yaml@6.1.3)(@codemirror/language@6.13.1)(@codemirror/legacy-modes@6.5.5)(@codemirror/state@6.7.6)(@plannotator/atomic-editor@0.9.0(@codemirror/autocomplete@6.20.3)(@codemirror/commands@6.11.1)(@codemirror/lang-css@6.3.1)(@codemirror/lang-html@6.4.12)(@codemirror/lang-javascript@6.2.5)(@codemirror/lang-json@6.0.2)(@codemirror/lang-markdown@6.5.2)(@codemirror/lang-python@6.2.1)(@codemirror/lang-yaml@6.1.3)(@codemirror/language@6.13.1)(@codemirror/legacy-modes@6.5.5)(@codemirror/merge@6.12.2)(@codemirror/search@6.7.2)(@codemirror/state@6.7.6)(@codemirror/view@6.43.15)(@lezer/common@1.5.6)(@lezer/highlight@1.2.5)(@lezer/markdown@1.7.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@6.0.3))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
@@ -11031,7 +11048,7 @@ snapshots:
       '@codemirror/lang-yaml': 6.1.3
       '@codemirror/legacy-modes': 6.5.5
 
-  '@plannotator/ui@0.63.0(patch_hash=49605a14b56cb4356fc33b63c939baf4530331842c019c5ab40588467e75a317)(@codemirror/lang-css@6.3.1)(@codemirror/lang-html@6.4.12)(@lezer/markdown@1.7.2)(@shikijs/themes@4.4.3)(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)(typescript@6.0.3)':
+  '@plannotator/ui@0.64.0(patch_hash=f03477e39639e599cd7cde3df69835541e367afabed7b5150403c35a23c0b58a)(@codemirror/lang-css@6.3.1)(@codemirror/lang-html@6.4.12)(@lezer/markdown@1.7.2)(@shikijs/themes@4.4.3)(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)(typescript@6.0.3)':
     dependencies:
       '@base-ui/react': 1.9.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@codemirror/autocomplete': 6.20.3
@@ -11051,9 +11068,9 @@ snapshots:
       '@fontsource-variable/inter': 5.3.0
       '@lezer/common': 1.5.6
       '@lezer/highlight': 1.2.5
-      '@pierre/diffs': 1.5.2(@shikijs/themes@4.4.3)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@pierre/diffs': 1.7.0-beta.3(@shikijs/themes@4.4.3)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@plannotator/atomic-editor': 0.9.0(@codemirror/autocomplete@6.20.3)(@codemirror/commands@6.11.1)(@codemirror/lang-css@6.3.1)(@codemirror/lang-html@6.4.12)(@codemirror/lang-javascript@6.2.5)(@codemirror/lang-json@6.0.2)(@codemirror/lang-markdown@6.5.2)(@codemirror/lang-python@6.2.1)(@codemirror/lang-yaml@6.1.3)(@codemirror/language@6.13.1)(@codemirror/legacy-modes@6.5.5)(@codemirror/merge@6.12.2)(@codemirror/search@6.7.2)(@codemirror/state@6.7.6)(@codemirror/view@6.43.15)(@lezer/common@1.5.6)(@lezer/highlight@1.2.5)(@lezer/markdown@1.7.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@6.0.3)
-      '@plannotator/core': 0.25.22
+      '@plannotator/core': 0.25.32
       '@plannotator/markdown-editor': 0.5.0(@codemirror/lang-javascript@6.2.5)(@codemirror/lang-json@6.0.2)(@codemirror/lang-python@6.2.1)(@codemirror/lang-yaml@6.1.3)(@codemirror/language@6.13.1)(@codemirror/legacy-modes@6.5.5)(@codemirror/state@6.7.6)(@plannotator/atomic-editor@0.9.0(@codemirror/autocomplete@6.20.3)(@codemirror/commands@6.11.1)(@codemirror/lang-css@6.3.1)(@codemirror/lang-html@6.4.12)(@codemirror/lang-javascript@6.2.5)(@codemirror/lang-json@6.0.2)(@codemirror/lang-markdown@6.5.2)(@codemirror/lang-python@6.2.1)(@codemirror/lang-yaml@6.1.3)(@codemirror/language@6.13.1)(@codemirror/legacy-modes@6.5.5)(@codemirror/merge@6.12.2)(@codemirror/search@6.7.2)(@codemirror/state@6.7.6)(@codemirror/view@6.43.15)(@lezer/common@1.5.6)(@lezer/highlight@1.2.5)(@lezer/markdown@1.7.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@6.0.3))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@plannotator/web-highlighter': 0.8.2
       '@tanstack/react-table': 8.21.3(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -12657,6 +12674,8 @@ snapshots:
   create-require@1.1.1: {}
 
   crelt@1.0.7: {}
+
+  croner@11.0.0: {}
 
   cross-spawn@7.0.6:
     dependencies:

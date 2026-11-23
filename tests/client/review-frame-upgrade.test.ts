@@ -19,7 +19,7 @@ const rootPackageManifestSchema = z.object({
 });
 const installedViewerManifestSchema = z.object({version: z.string()});
 
-describe("Review frame @plannotator/ui 0.63.0 boundary", () => {
+describe("Review frame @plannotator/ui 0.64.0 boundary", () => {
   it("T1 installs the pinned registry package", async () => {
     const [appPackage, installedPackage] = await Promise.all([
       read("apps/web/package.json").then((source) =>
@@ -28,8 +28,8 @@ describe("Review frame @plannotator/ui 0.63.0 boundary", () => {
         installedViewerManifestSchema.parse(JSON.parse(source))),
     ]);
 
-    expect(appPackage.dependencies["@plannotator/ui"]).toBe("0.63.0");
-    expect(installedPackage["version"]).toBe("0.63.0");
+    expect(appPackage.dependencies["@plannotator/ui"]).toBe("0.64.0");
+    expect(installedPackage["version"]).toBe("0.64.0");
   });
 
   it("T2 pins the sandbox and keeps unreviewed viewer capabilities absent", async () => {
@@ -118,14 +118,15 @@ describe("Review frame @plannotator/ui 0.63.0 boundary", () => {
     const bridge = await read("apps/web/node_modules/@plannotator/ui/components/html-viewer/bridge-script.ts");
     const sandboxShim = await read("apps/web/node_modules/@plannotator/ui/components/html-viewer/sandboxShim.ts");
 
-    expect(rootPackage.pnpm?.patchedDependencies?.["@plannotator/ui@0.63.0"]).toBe(
-      "patches/@plannotator__ui@0.63.0.patch",
+    expect(rootPackage.pnpm?.patchedDependencies?.["@plannotator/ui@0.64.0"]).toBe(
+      "patches/@plannotator__ui@0.64.0.patch",
     );
     expect(bridge).toContain("if (!annotateModeActive) return; // Interact");
     expect(sandboxShim).not.toContain("var h = window.history");
     expect(sandboxShim).not.toContain("h[name] = shim");
     expect(sandboxShim).not.toContain("plannotatorSandboxShim = true");
     expect(sandboxShim).not.toMatch(/history\.(pushState|replaceState)\s*=/u);
+    expect(sandboxShim).not.toMatch(/(?:h\[[^\]]+\]|history\.pushState)\s*=\s*shim/u);
     expect(sandboxShim).toContain("memoryStorage");
     expect(sandboxShim).toContain("History block removed by artifact-server patch");
   });
