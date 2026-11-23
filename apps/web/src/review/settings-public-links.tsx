@@ -380,32 +380,32 @@ export function PublicLinksScreen() {
             </section>
 
             <div className="as-public-links-inventory">
-              <table aria-label="Public links inventory" className="as-public-links-table">
+              <table aria-label="Public links inventory" className="as-public-links-table" role="table">
                 <colgroup>
                   <col className="as-public-links-table__select-column" />
                   <col className="as-public-links-table__artifact-column" />
                   <col className="as-public-links-table__link-column" />
                   <col className="as-public-links-table__actions-column" />
                 </colgroup>
-                <thead className="border-b bg-muted/50 text-xs tracking-widest text-muted-foreground uppercase">
-                  <tr>
-                    <th className="as-public-links-table__select-cell font-semibold">
+                <thead className="border-b bg-muted/50 text-xs tracking-widest text-muted-foreground uppercase" role="rowgroup">
+                  <tr role="row">
+                    <th className="as-public-links-table__select-cell font-semibold" role="columnheader">
                       <Checkbox
                         aria-label="Select all visible public links"
                         checked={allVisibleSelected}
                         onCheckedChange={(checked) => selectItems(visibleItems, checked)}
                       />
                     </th>
-                    <th className="font-semibold">Artifact</th>
-                    <th className="font-semibold">Public link</th>
-                    <th className="text-right font-semibold">Actions</th>
+                    <th className="font-semibold" role="columnheader">Artifact</th>
+                    <th className="font-semibold" role="columnheader">Public link</th>
+                    <th className="text-right font-semibold" role="columnheader">Actions</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody role="rowgroup">
                   {visibleItems.length === 0
                     ? (
-                      <tr className="as-public-links-table__empty-row">
-                        <td className="text-center text-muted-foreground" colSpan={4}>
+                      <tr className="as-public-links-table__empty-row" role="row">
+                        <td className="text-center text-muted-foreground" colSpan={4} role="cell">
                           {currentPage?.nextCursor === null
                             ? "Every public link on this page is now private. Return to a previous page to inspect the remaining loaded links."
                             : "Every public link on this loaded page is now private. Continue to the next page to inspect older public links."}
@@ -415,15 +415,15 @@ export function PublicLinksScreen() {
                     : visibleItems.map((item) => {
                     const selected = selectedKeys.has(selectionKey(item));
                     return (
-                      <tr className="as-public-links-table__row" key={selectionKey(item)}>
-                        <td className="as-public-links-table__select-cell">
+                      <tr className="as-public-links-table__row" key={selectionKey(item)} role="row">
+                        <td className="as-public-links-table__select-cell" role="cell">
                           <Checkbox
                             aria-label={`Select ${item.artifact.name}`}
                             checked={selected}
                             onCheckedChange={(checked) => selectItems([item], checked)}
                           />
                         </td>
-                        <td className="as-public-links-table__artifact-cell">
+                        <td className="as-public-links-table__artifact-cell" role="cell">
                           <div className="as-public-links-table__artifact-heading">
                             <a
                               className="as-public-links-table__artifact-link"
@@ -440,7 +440,7 @@ export function PublicLinksScreen() {
                           </div>
                           <p className="as-public-links-table__meta">{item.project.name}</p>
                         </td>
-                        <td className="as-public-links-table__link-cell">
+                        <td className="as-public-links-table__link-cell" role="cell">
                           <a
                             className="as-public-links-table__url"
                             href={organizationPath(item.links.public)}
@@ -456,7 +456,7 @@ export function PublicLinksScreen() {
                             <span>Saved {formatTimestamp(item.currentVersion.createdAt)}</span>
                           </p>
                         </td>
-                        <td className="as-public-links-table__actions-cell">
+                        <td className="as-public-links-table__actions-cell" role="cell">
                           <div className="as-public-links-table__actions">
                             <ButtonLink
                               href={organizationPath(item.links.public)}

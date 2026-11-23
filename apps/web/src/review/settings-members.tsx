@@ -160,65 +160,92 @@ export function MembersScreen({canAdmit, canManage, showEmails, showRoles}: {
           />
         )
         : (
-          <div className="overflow-x-auto border">
-            <table className="w-full min-w-3xl text-left text-sm">
-              <thead className="border-b bg-muted/50 text-xs tracking-widest text-muted-foreground uppercase">
-                <tr>
-                  <th className="px-4 py-3 font-semibold">Member</th>
-                  {showRoles ? <th className="px-4 py-3 font-semibold">Role</th> : null}
-                  <th className="px-4 py-3 font-semibold">Status</th>
-                  <th className="px-4 py-3 font-semibold">Admitted</th>
-                  {canManage ? <th className="px-4 py-3 text-right font-semibold">Actions</th> : null}
+          <div className="as-members-inventory" id="settings-members-table">
+            <table
+              aria-label="Members"
+              className="as-members-table w-full text-left text-sm"
+              role="table"
+            >
+              <thead
+                className="border-b bg-muted/50 text-xs tracking-widest text-muted-foreground uppercase"
+                role="rowgroup"
+              >
+                <tr role="row">
+                  <th className="px-4 py-3 font-semibold" role="columnheader">Member</th>
+                  {showRoles
+                    ? <th className="px-4 py-3 font-semibold" role="columnheader">Role</th>
+                    : null}
+                  <th className="px-4 py-3 font-semibold" role="columnheader">Status</th>
+                  <th className="px-4 py-3 font-semibold" role="columnheader">Admitted</th>
+                  {canManage
+                    ? <th className="px-4 py-3 text-right font-semibold" role="columnheader">Actions</th>
+                    : null}
                 </tr>
               </thead>
-              <tbody>
+              <tbody role="rowgroup">
                 {members.map((member) => (
-                  <tr className="border-b last:border-b-0" key={member.id}>
-                    <td className="px-4 py-4">
+                  <tr className="as-members-table__row" key={member.id} role="row">
+                    <td className="as-members-table__member px-4 py-4" role="cell">
                       <p className="font-heading font-semibold">{member.displayName}</p>
-                  {showEmails && member.email !== undefined ? <p className="mt-1 text-xs text-muted-foreground">{member.email}</p> : null}
+                      {showEmails && member.email !== undefined
+                        ? <p className="mt-1 text-xs text-muted-foreground">{member.email}</p>
+                        : null}
                     </td>
-                    {showRoles ? <td className="px-4 py-4">{member.role === undefined ? "" : membershipRoleLabels[member.role]}</td> : null}
-                    <td className="px-4 py-4">
+                    {showRoles
+                      ? (
+                        <td className="as-members-table__role px-4 py-4" role="cell">
+                          {member.role === undefined ? "" : membershipRoleLabels[member.role]}
+                        </td>
+                      )
+                      : null}
+                    <td className="as-members-table__status px-4 py-4" role="cell">
                       <StatusBadge tone={member.status === "active" ? "primary" : "neutral"}>
                         {member.status}
                       </StatusBadge>
                     </td>
-                    <td className="px-4 py-4 whitespace-nowrap text-muted-foreground">
+                    <td
+                      className="as-members-table__admitted px-4 py-4 whitespace-nowrap text-muted-foreground"
+                      role="cell"
+                    >
+                      <span className="as-members-table__label">Admitted</span>
                       {member.createdAt === undefined ? "" : formatTimestamp(member.createdAt)}
                     </td>
-                    {canManage ? <td className="px-4 py-4 text-right">
-                      {member.status === "inactive"
-                        ? null
-                        : (
-                          <Dialog>
-                            <DialogTrigger
-                              render={<Button size="xs" type="button" variant="ghost" />}
-                            >
-                              Deactivate
-                            </DialogTrigger>
-                            <DialogContent>
-                              <DialogHeader>
-                                <DialogTitle>Deactivate member</DialogTitle>
-                                <DialogDescription>
-                                  {member.displayName} will lose new browser sessions and API access.
-                                  Existing artifact records and attribution remain unchanged.
-                                </DialogDescription>
-                              </DialogHeader>
-                              <DialogFooter>
-                                <Button
-                                  disabled={pending}
-                                  onClick={() => void deactivate(member.id)}
-                                  type="button"
-                                  variant="destructive"
+                    {canManage
+                      ? (
+                        <td className="as-members-table__actions-cell px-4 py-4 text-right" role="cell">
+                          {member.status === "inactive"
+                            ? null
+                            : (
+                              <Dialog>
+                                <DialogTrigger
+                                  render={<Button size="xs" type="button" variant="ghost" />}
                                 >
-                                  {pending ? "Deactivating…" : "Deactivate member"}
-                                </Button>
-                              </DialogFooter>
-                            </DialogContent>
-                          </Dialog>
-                        )}
-                    </td> : null}
+                                  Deactivate
+                                </DialogTrigger>
+                                <DialogContent>
+                                  <DialogHeader>
+                                    <DialogTitle>Deactivate member</DialogTitle>
+                                    <DialogDescription>
+                                      {member.displayName} will lose new browser sessions and API access.
+                                      Existing artifact records and attribution remain unchanged.
+                                    </DialogDescription>
+                                  </DialogHeader>
+                                  <DialogFooter>
+                                    <Button
+                                      disabled={pending}
+                                      onClick={() => void deactivate(member.id)}
+                                      type="button"
+                                      variant="destructive"
+                                    >
+                                      {pending ? "Deactivating…" : "Deactivate member"}
+                                    </Button>
+                                  </DialogFooter>
+                                </DialogContent>
+                              </Dialog>
+                            )}
+                        </td>
+                      )
+                      : null}
                   </tr>
                 ))}
               </tbody>

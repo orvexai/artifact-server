@@ -65,28 +65,38 @@ export function GroupsScreen({canEdit}: {readonly canEdit: boolean}) {
           />
         )
         : (
-          <div className="overflow-x-auto border">
-            <table className="w-full min-w-3xl text-left text-sm">
-              <thead className="border-b bg-muted/50 text-xs tracking-widest text-muted-foreground uppercase">
-                <tr>
-                  <th className="px-4 py-3 font-semibold">Group</th>
-                  <th className="px-4 py-3 font-semibold">Members</th>
-                  <th className="px-4 py-3 font-semibold">Role</th>
-                  <th className="px-4 py-3 font-semibold">Last synced</th>
+          <div className="as-groups-inventory" id="settings-groups-table">
+            <table
+              aria-label="Groups"
+              className="as-groups-table w-full text-left text-sm"
+              role="table"
+            >
+              <thead
+                className="border-b bg-muted/50 text-xs tracking-widest text-muted-foreground uppercase"
+                role="rowgroup"
+              >
+                <tr role="row">
+                  <th className="px-4 py-3 font-semibold" role="columnheader">Group</th>
+                  <th className="px-4 py-3 font-semibold" role="columnheader">Members</th>
+                  <th className="px-4 py-3 font-semibold" role="columnheader">Role</th>
+                  <th className="px-4 py-3 font-semibold" role="columnheader">Last synced</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody role="rowgroup">
                 {groups.map((group) => (
-                  <tr className="border-b last:border-b-0" key={group.id}>
-                    <td className="px-4 py-4">
+                  <tr className="as-groups-table__row" key={group.id} role="row">
+                    <td className="as-groups-table__group px-4 py-4" role="cell">
                       <p className="font-heading font-semibold">{group.name}</p>
                       <p className="mt-1 text-xs text-muted-foreground">{group.path}</p>
                       {group.role === "guest" && group.hasHigherRoleOverlap
                         ? <p className="mt-2 text-xs text-amber-700">Some members also belong to a group with a higher installation role. Admin and Owner roles take precedence over Guest.</p>
                         : null}
                     </td>
-                    <td className="px-4 py-4">{group.memberCount}</td>
-                    <td className="px-4 py-4">
+                    <td className="as-groups-table__members px-4 py-4" role="cell">
+                      <span className="as-groups-table__label">Members</span>
+                      {group.memberCount}
+                    </td>
+                    <td className="as-groups-table__role px-4 py-4" role="cell">
                       {canEdit
                         ? <select className="min-w-32 rounded border border-input bg-background px-2 py-1 text-foreground" aria-label={`Role for ${group.name}`} disabled={pending === group.id} onChange={(event) => void setRole(group, event.target.value)} value={group.role === "member" ? "operator" : group.role === "administrator" ? "admin" : group.role ?? "none"}>
                             <option className="bg-background text-foreground" value="none">None</option>
@@ -94,7 +104,11 @@ export function GroupsScreen({canEdit}: {readonly canEdit: boolean}) {
                           </select>
                         : group.role === null || group.role === undefined ? "None" : `${membershipRoleLabels[group.role]}${group.source === "rule" ? " (rule)" : ""}`}
                     </td>
-                    <td className="px-4 py-4 whitespace-nowrap text-muted-foreground">
+                    <td
+                      className="as-groups-table__synced px-4 py-4 whitespace-nowrap text-muted-foreground"
+                      role="cell"
+                    >
+                      <span className="as-groups-table__label">Last synced</span>
                       {formatTimestamp(group.syncedAt)}
                     </td>
                   </tr>
