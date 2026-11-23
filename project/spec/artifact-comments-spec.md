@@ -190,6 +190,10 @@ Owner's rule (August 17, 2026): you can edit only what you wrote; an administrat
 
 Author identity for a service principal is the key's `principalId` (`service:key_…`). Rotation replaces the credential without changing that principal, so comments and action records remain attributed to the same author.
 
+### MCP agent display attribution
+
+OAuth clients retain the verified client label as `name (agent) for user`; API-key and external bearer callers use `name (via principal display name)`. For managed API keys, the principal display name is the key name. These labels are display only: the authenticated principal remains the permission and audit actor, with a null MCP actor for non-OAuth credentials. Agent labels are NFKC-normalized, format characters, angle brackets, and backticks are stripped, whitespace is collapsed, and the result is capped at 80 Unicode code points; an empty sanitized label falls back to the principal name. Control characters remain rejected by the existing input validation.
+
 ## 6. Application service
 
 `src/application/artifact-comments.ts`, `ArtifactCommentService`, built with `Context.Service` and `Layer.effect` like `ArtifactManagementService`; depends on `AuthorizationService`, `ProjectManagementService`, an `ArtifactCommentRepository` (Effect-wrapped view of the port, same wrapping pattern as `ArtifactManagementRepository`), and `ApplicationClock`. Operations:

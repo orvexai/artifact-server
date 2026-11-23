@@ -271,11 +271,21 @@ const artifactStateEntrySchema = z.object({
   value: z.unknown(),
 }).strict();
 const commentPathSchema = z.string().min(1).max(1_024);
+
+function sanitizeAgentLabel(value: string): string | null {
+  const sanitizedLabel = value.normalize("NFKC")
+    .replace(/\p{Cf}/gu, "")
+    .replace(/[<>`]/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const label = Array.from(sanitizedLabel).slice(0, 80).join("").trim();
+  return label.length === 0 ? null : label;
+}
 // Display-only name an agent gives itself on the comments it writes.
 const agentNameSchema = z.string().trim().min(1).max(80)
   .regex(/^[^\p{Cc}]+$/u, "An agent name may not contain control characters.")
   .optional()
-  .describe("Optional name for the agent writing this, e.g. \"PM agent 9571be74\". Shown as \"<name> (agent) for <signed-in user>\".");
+  .describe("Optional name for the agent writing this. Shown as \"name (agent) for user\" for OAuth clients, and \"name (via principal display name)\" for API-key and external bearer callers; for managed API keys, the principal display name is the key name. The label is capped at 80 Unicode code points. Display only; never grants access.");
 const commentStateSchema = z.enum([
   commentThreadStates.open,
   commentThreadStates.resolved,
@@ -504,6 +514,16 @@ export function createArtifactMcpServer(
     identity.principal.capabilities.includes(principalCapabilities.provisionProjects);
   const isTenantOrganization = dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex";
 
+  function principalDisplayName(): string {
+    return isTenantOrganization
+      ? tenantIdentityPresentation(identity.principal, {
+        displayName: identity.principal.displayName,
+        email: identity.principal.email ?? null,
+        principalId: identity.principal.id,
+      }).displayName
+      : identity.principal.displayName;
+  }
+
   /**
    * Keep the verified OAuth client as the durable actor and use the MCP
    * client's self-reported name only as a display label. It is not used for
@@ -511,29 +531,30 @@ export function createArtifactMcpServer(
    * to their verified client ID.
    */
   function clientDisplayName(agentName?: string): string {
-    const principalDisplayName = isTenantOrganization
-      ? tenantIdentityPresentation(identity.principal, {
-        displayName: identity.principal.displayName,
-        email: identity.principal.email ?? null,
-        principalId: identity.principal.id,
-      }).displayName
-      : identity.principal.displayName;
-    if (identity.agentClientId === null) return principalDisplayName;
+    const principalName = principalDisplayName();
+    if (identity.agentClientId === null) return principalName;
     // A name the agent gives itself is display-only and always marked as an
     // agent acting for the principal, so it can never pass as their own words.
     if (agentName !== undefined) {
-      return `${agentName} (agent) for ${principalDisplayName}`;
+      return `${agentName} (agent) for ${principalName}`;
     }
     const clientName = identity.agentDisplayName?.trim();
     const actorName = clientName === undefined || clientName.length === 0
       ? `MCP client ${identity.agentClientId}`
       : clientName;
-    return `${actorName} for ${principalDisplayName}`;
+    return `${actorName} for ${principalName}`;
   }
 
   function commentPrincipal(agentName?: string): Principal {
-    if (identity.agentClientId === null) return identity.principal;
-    return {...identity.principal, displayName: clientDisplayName(agentName)};
+    if (identity.agentClientId !== null) {
+      return {...identity.principal, displayName: clientDisplayName(agentName)};
+    }
+    const label = agentName === undefined ? null : sanitizeAgentLabel(agentName);
+    if (label === null) return identity.principal;
+    return {
+      ...identity.principal,
+      displayName: `${label} (via ${principalDisplayName()})`,
+    };
   }
 
   /**
