@@ -5055,3 +5055,17 @@ requirements:
     proof_gap: Service evidence for PRV-008-B and PRV-008-F is not yet recorded; the Cloudflare D1 adapter is covered by typecheck only while artifact-server-e3b stands.
     depends_on: [CMT-018, PRV-007]
     evidence: []
+
+  - id: CMT-023
+    kind: security
+    behavior: An MCP comment write by an API-key or external bearer caller that supplies agentName is shown as that agent via the authenticated principal, while the principal stays the only permission and audit actor and OAuth clients keep verified client attribution.
+    owner: artifact-comments
+    source: {file: artifact-comments-spec.md, anchor: mcp-agent-display-attribution}
+    acceptance:
+      behavior: {id: CMT-023-B, description: "comment_create, comment_reply and comment_resolve with agentName over a managed API key and over an external bearer store author or resolvedBy displayName as agentName (via principal display name), with the principal id unchanged and a null actor."}
+      failure: {id: CMT-023-F, description: "A label made only of format characters falls back to the principal name; bidi controls and markup characters are stripped; a control character is rejected; agentName never lets a caller without comment write capability write; no stored name equals the bare agentName."}
+    deployments: *all
+    status: implementing
+    proof_gap: Service evidence for CMT-023-B and CMT-023-F is not yet recorded.
+    depends_on: [CMT-012]
+    evidence: []
