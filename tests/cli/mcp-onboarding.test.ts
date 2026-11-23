@@ -175,7 +175,9 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     const workspace = await temporaryWorkspace("artifact-server-mcp-relay-");
     const dataDirectory = path.join(workspace, "data");
     const addressFile = path.join(dataDirectory, "mcp-http-relay.json");
-    const relayProcess = spawn(tsxExecutable, [
+    const relayProcess = spawn(process.execPath, [
+      "--import",
+      "tsx",
       cliEntrypoint,
       "mcp",
       "relay",
@@ -194,6 +196,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
         port: z.number().int().min(1).max(65_535),
         schemaVersion: z.literal(1),
       }).parse(JSON.parse(await readFile(addressFile, "utf8")));
+      managedServicePids.add(address.pid);
       client = new Client(
         {name: "artifact-server-http-relay-test", version: "0.0.0"},
       );
@@ -218,8 +221,15 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
         );
         if (localService.success) managedServicePids.add(localService.data.pid);
       }
-      if (relayProcess.pid !== undefined) managedServicePids.delete(relayProcess.pid);
       await killProcess(relayProcess);
+      const addressContents = await readFile(addressFile, "utf8").catch(() => null);
+      if (addressContents !== null) {
+        const address = z.object({pid: z.number().int().positive()})
+          .parse(JSON.parse(addressContents));
+        await expectProcessExited(address.pid);
+        managedServicePids.delete(address.pid);
+        if (relayProcess.pid !== undefined) managedServicePids.delete(relayProcess.pid);
+      }
     }
   }, 45_000);
 
@@ -272,15 +282,18 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     await once(remote, "close");
 
     const addressFile = path.join(dataDirectory, "mcp-http-relay.json");
-    const relayProcess = spawn(tsxExecutable, [
-      cliEntrypoint, "mcp", "relay", "--data", dataDirectory,
+    const relayProcess = spawn(process.execPath, [
+      "--import", "tsx", cliEntrypoint, "mcp", "relay", "--data", dataDirectory,
       "--address-file", addressFile,
     ], {cwd: repositoryRoot, env: environment, stdio: "ignore"});
     if (relayProcess.pid !== undefined) managedServicePids.add(relayProcess.pid);
     try {
       await waitForFile(addressFile);
-      const address = z.object({port: z.number().int().positive()})
-        .parse(JSON.parse(await readFile(addressFile, "utf8")));
+      const address = z.object({
+        pid: z.number().int().positive(),
+        port: z.number().int().positive(),
+      }).parse(JSON.parse(await readFile(addressFile, "utf8")));
+      managedServicePids.add(address.pid);
       const response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
         body: JSON.stringify({id: 1, jsonrpc: "2.0", method: "initialize", params: {}}),
         headers: {
@@ -298,8 +311,15 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
       await expect(readFile(path.join(dataDirectory, "local-service.json"), "utf8"))
         .rejects.toMatchObject({code: "ENOENT"});
     } finally {
-      managedServicePids.delete(relayProcess.pid ?? -1);
       await killProcess(relayProcess);
+      const addressContents = await readFile(addressFile, "utf8").catch(() => null);
+      if (addressContents !== null) {
+        const address = z.object({pid: z.number().int().positive()})
+          .parse(JSON.parse(addressContents));
+        await expectProcessExited(address.pid);
+        managedServicePids.delete(address.pid);
+        if (relayProcess.pid !== undefined) managedServicePids.delete(relayProcess.pid);
+      }
     }
   }, 45_000);
 
@@ -945,11 +965,51 @@ async function waitForFileUntil(filePath: string, deadline: number): Promise<voi
   return waitForFileUntil(filePath, deadline);
 }
 
-function killProcess(child: ReturnType<typeof spawn>): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", () => resolve());
-    child.kill("SIGKILL");
+async function killProcess(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
+  if (await waitForChildExit(child, 5_000)) return;
+  child.kill("SIGKILL");
+  if (!(await waitForChildExit(child, 5_000))) {
+    throw new Error(`Child process ${child.pid ?? "unknown"} did not exit after SIGKILL.`);
+  }
+}
+
+function waitForChildExit(
+  child: ReturnType<typeof spawn>,
+  timeoutMilliseconds: number,
+): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.off("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = (): void => finish(true);
+    const timeout = setTimeout(() => finish(false), timeoutMilliseconds);
+    child.once("exit", onExit);
+    if (child.exitCode !== null || child.signalCode !== null) finish(true);
   });
+}
+
+async function expectProcessExited(
+  pid: number,
+  deadline = Date.now() + 5_000,
+): Promise<void> {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    const parsed = systemErrorSchema.safeParse(error);
+    if (parsed.success && parsed.data.code === "ESRCH") return;
+    throw error;
+  }
+  if (Date.now() >= deadline) {
+    throw new Error(`Relay process ${pid} remained alive for 5 seconds after shutdown.`);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  return expectProcessExited(pid, deadline);
 }
