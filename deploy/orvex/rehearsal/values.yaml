@@ -1,0 +1,37 @@
+replicaCount: 1
+image:
+  repository: repos.eu-central-1.myidp.cloud/artifact-server/artifact-server
+  digest: sha256:12c478cd02bbdd95b4b4707b6cfc99d6860c9a852117572953a10eecc3ce46e1
+  tag: "orvex-v0.1.16"
+  pullPolicy: IfNotPresent
+imagePullSecrets:
+  - name: registry-pull
+configuration:
+  installationId: orvex-artifacts-rehearsal
+  bootstrapAdministratorEmail: rehearsal-admin@example.invalid
+  applicationOrigin: https://artifact-server-rehearsal.invalid
+  contentDomain: artifact-server-content-rehearsal.invalid
+  postgresConnectionBudget: 12
+  postgresPoolSize: 5
+  s3:
+    bucket: "$(BUCKET_NAME)"
+    region: us-east-1
+    endpoint: "http://$(BUCKET_HOST):$(BUCKET_PORT)"
+    forcePathStyle: true
+secret:
+  name: artifact-server-runtime
+  keys:
+    apiToken: api-token
+    databaseUrl: database-url
+    embedBindingSecret: embed-binding-secret
+# Public OIDC metadata is read-only from Manchester so readiness can validate the provider. This client is not
+# provisioned/enabled in Keycloak; no sign-in is possible. No client secret or directory sync.
+identity:
+  oidcClientId: artifact-server-rehearsal
+  oidcIssuer: https://auth.eu-west-2.orvex.dev/realms/orvex
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi

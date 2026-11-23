@@ -1,0 +1,14 @@
+# Rehearsal bucket is isolated and never archived. The namespace is also labelled skip by admin.
+apiVersion: objectbucket.io/v1alpha1
+kind: ObjectBucketClaim
+metadata:
+  name: artifact-server-rehearsal-storage
+  labels:
+    app.kubernetes.io/name: artifact-server
+    app.kubernetes.io/component: storage
+    quornex.io/backup: skip
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  storageClassName: ceph-bucket
+  generateBucketName: artifact-server-rehearsal-storage

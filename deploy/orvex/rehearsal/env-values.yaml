@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: env-values
+  labels:
+    app.kubernetes.io/name: artifact-server
+data:
+  secretPath: artifact-server-rehearsal
+  ARTIFACT_SERVER_ORIGIN: https://artifact-server-rehearsal.invalid
+  ARTIFACT_SERVER_CONTENT_DOMAIN: artifact-server-content-rehearsal.invalid
+  ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL: rehearsal-admin@example.invalid

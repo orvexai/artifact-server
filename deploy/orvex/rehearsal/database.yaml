@@ -1,0 +1,18 @@
+# One empty rehearsal database. No recovery, imageName, ObjectStore or ScheduledBackup.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: artifact-server-db
+  labels:
+    app.kubernetes.io/name: artifact-server
+    app.kubernetes.io/component: database
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  instances: 1
+  bootstrap:
+    initdb:
+      database: artifactserver
+      owner: artifactserver
+  storage:
+    size: 10Gi
