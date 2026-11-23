@@ -133,6 +133,12 @@ export class GuestRateLimitExceeded extends Schema.TaggedError<GuestRateLimitExc
   messageField,
 ) {}
 
+/** A public link keeps serving views while comment writes are paused by archive. */
+export class PublicLinkPaused extends Schema.TaggedError<PublicLinkPaused>()(
+  "PublicLinkPaused",
+  messageField,
+) {}
+
 /** A comment body, anchor, or file path does not meet the comment contract. */
 export class InvalidComment extends Schema.TaggedError<InvalidComment>()(
   "InvalidComment",
@@ -403,14 +409,18 @@ export class ArtifactRepositoryFailure extends Schema.TaggedError<ArtifactReposi
       "createArtifactResponse",
       "createContentBootstrap",
       "createGuestInvitation",
+      "resetGuestInvitation",
       "findGuestInvitation",
       "findGuestInvitationByDigest",
       "revokeGuestInvitation",
       "createGuestSession",
+      "findGuestSessionByTokenDigest",
       "findGuestSession",
       "listGuestSessions",
       "revokeGuestSession",
       "getGuestInvitationUsage",
+      "setGuestInvitationPermission",
+      "getPublicLinksEnabled",
       "deleteExpiredGuestSessions",
       "createPreviewLease",
       "createStagedUpload",
@@ -447,6 +457,7 @@ export class ArtifactRepositoryFailure extends Schema.TaggedError<ArtifactReposi
       "listProjectAuditEvents",
       "recordProjectProvisionerAuditEvent",
       "listPublicLinks",
+      "setPublicLinksEnabled",
       "listExpiredStagedUploads",
       "listRegisteredAgents",
       "markAgentDispatchDelivered",

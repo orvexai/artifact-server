@@ -243,14 +243,16 @@ const contentBootstrapRowSchema = z.object({
 const contentSessionRowSchema = contentBootstrapRowSchema;
 const guestInvitationRowSchema = z.object({
   artifactId: z.string(), createdAt: z.string(), createdByPrincipalId: z.string(),
+  generation: z.number(), permission: z.enum(["view", "comment"]), sealedSecret: z.string().nullable(),
+  sealKeyFingerprint: z.string().nullable(), updatedAt: z.string().nullable(), updatedByPrincipalId: z.string().nullable(),
   id: z.string(), projectId: z.string(), revokedAt: z.string().nullable(),
   tokenDigest: z.string(),
 });
 const guestSessionRowSchema = z.object({
   absoluteExpiresAt: z.string(), artifactId: z.string(), createdAt: z.string(), csrfDigest: z.string(),
-  displayName: z.string(), expiresAt: z.string(), guestId: z.string(),
+  displayName: z.string().nullable(), expiresAt: z.string(), guestId: z.string(),
   invitationCreatorPrincipalId: z.string(), invitationId: z.string(), lastUsedAt: z.string(),
-  projectId: z.string(), tokenDigest: z.string(),
+  permission: z.enum(["view", "comment"]), projectId: z.string(), tokenDigest: z.string(),
 });
 const guestSessionSummaryRowSchema = z.object({createdAt: z.string(), displayName: z.string(), guestId: z.string(), lastUsedAt: z.string()});
 const guestInvitationUsageRowSchema = z.object({
@@ -2047,6 +2049,20 @@ export class SqliteArtifactRepository implements
     });
   }
 
+  getPublicLinksEnabled(): Promise<boolean> {
+    return Promise.resolve().then(() => {
+      const row = this.#database.prepare("SELECT public_links_enabled AS enabled FROM artifact_installation_settings WHERE singleton = 1").get();
+      return z.object({enabled: z.number().transform((value) => value === 1)}).parse(row).enabled;
+    });
+  }
+
+  setPublicLinksEnabled(enabled: boolean): Promise<void> {
+    return Promise.resolve().then(() => {
+      this.#database.prepare("UPDATE artifact_installation_settings SET public_links_enabled = ? WHERE singleton = 1").run(enabled ? 1 : 0);
+      return undefined;
+    });
+  }
+
   /** List one bounded installation-wide page of active public-link artifacts. */
   listPublicLinks(command: ListPublicLinks): Promise<PublicLinkInventoryPage> {
     return Promise.resolve().then(() => {
@@ -2323,18 +2339,48 @@ export class SqliteArtifactRepository implements
     });
   }
 
-  createGuestInvitation(invitation: GuestReviewInvitation): Promise<void> {
+  createGuestInvitation(invitation: GuestReviewInvitation): Promise<boolean> {
     return Promise.resolve().then(() => {
-      this.#database.prepare(`INSERT INTO guest_review_invitations (
+      const result = this.#database.prepare(`INSERT OR IGNORE INTO guest_review_invitations (
         id, project_id, artifact_id, token_digest, created_by_principal_id,
-        created_at, revoked_at
-      ) VALUES (?, ?, ?, ?, ?, ?, NULL)`).run(
+        created_at, revoked_at, permission, sealed_secret, seal_key_fingerprint,
+        generation, updated_at, updated_by_principal_id
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`).run(
         invitation.id, invitation.projectId, invitation.artifactId,
         invitation.tokenDigest, invitation.createdByPrincipalId,
-        invitation.createdAt,
+        invitation.createdAt, invitation.permission, invitation.sealedSecret,
+        invitation.sealKeyFingerprint, invitation.generation, invitation.updatedAt,
+        invitation.updatedByPrincipalId,
       );
-      return undefined;
+      return Number(result.changes) > 0;
     });
+  }
+
+  resetGuestInvitation(invitation: GuestReviewInvitation): Promise<boolean> {
+    return Promise.resolve().then(() => this.#transaction(() => {
+      const changed = this.#database.prepare(`UPDATE artifacts SET access_setting = 'account_required'
+        WHERE project_id = ? AND id = ? AND deleted_at IS NULL`).run(invitation.projectId, invitation.artifactId).changes;
+      if (changed === 0) return false;
+      this.#database.prepare(`UPDATE guest_review_invitations SET revoked_at = ?
+        WHERE project_id = ? AND artifact_id = ? AND revoked_at IS NULL`).run(invitation.createdAt, invitation.projectId, invitation.artifactId);
+      this.#database.prepare(`INSERT INTO guest_review_invitations (
+        id, project_id, artifact_id, token_digest, created_by_principal_id,
+        created_at, revoked_at, permission, sealed_secret, seal_key_fingerprint,
+        generation, updated_at, updated_by_principal_id
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`).run(
+        invitation.id, invitation.projectId, invitation.artifactId, invitation.tokenDigest,
+        invitation.createdByPrincipalId, invitation.createdAt, invitation.permission,
+        invitation.sealedSecret, invitation.sealKeyFingerprint, invitation.generation,
+        invitation.updatedAt, invitation.updatedByPrincipalId,
+      );
+      return true;
+    }));
+  }
+
+  setGuestInvitationPermission(invitationId: string, permission: "view" | "comment", updatedAt: string, updatedByPrincipalId: string): Promise<boolean> {
+    return Promise.resolve().then(() => this.#database.prepare(`UPDATE guest_review_invitations SET
+      permission = ?, updated_at = ?, updated_by_principal_id = ? WHERE id = ? AND revoked_at IS NULL`)
+      .run(permission, updatedAt, updatedByPrincipalId, invitationId).changes > 0);
   }
 
   findGuestInvitation(projectId: string, artifactId: string): Promise<GuestReviewInvitation | null> {
@@ -2342,7 +2388,9 @@ export class SqliteArtifactRepository implements
       const row = this.#database.prepare(`SELECT id, project_id AS projectId,
         artifact_id AS artifactId, token_digest AS tokenDigest,
         created_by_principal_id AS createdByPrincipalId, created_at AS createdAt,
-        revoked_at AS revokedAt FROM guest_review_invitations
+        revoked_at AS revokedAt, permission, sealed_secret AS sealedSecret,
+        seal_key_fingerprint AS sealKeyFingerprint, generation,
+        updated_at AS updatedAt, updated_by_principal_id AS updatedByPrincipalId FROM guest_review_invitations
         WHERE project_id = ? AND artifact_id = ?
         ORDER BY created_at DESC, id DESC LIMIT 1`).get(projectId, artifactId);
       return guestInvitationRowSchema.nullable().parse(row ?? null);
@@ -2354,9 +2402,12 @@ export class SqliteArtifactRepository implements
       const row = this.#database.prepare(`SELECT i.id, i.project_id AS projectId,
         i.artifact_id AS artifactId, i.token_digest AS tokenDigest,
         i.created_by_principal_id AS createdByPrincipalId, i.created_at AS createdAt,
-        i.revoked_at AS revokedAt FROM guest_review_invitations i
+        i.revoked_at AS revokedAt, i.permission, i.sealed_secret AS sealedSecret,
+        i.seal_key_fingerprint AS sealKeyFingerprint, i.generation,
+        i.updated_at AS updatedAt, i.updated_by_principal_id AS updatedByPrincipalId FROM guest_review_invitations i
         JOIN artifacts a ON a.id = i.artifact_id AND a.project_id = i.project_id
         JOIN projects p ON p.id = i.project_id
+        JOIN artifact_installation_settings settings ON settings.singleton = 1 AND settings.public_links_enabled = 1
         WHERE i.token_digest = ? AND i.revoked_at IS NULL AND a.deleted_at IS NULL
           AND p.archived_at IS NULL`)
         .get(tokenDigest);
@@ -2390,8 +2441,9 @@ export class SqliteArtifactRepository implements
         i.exchange_count AS exchangeCount FROM guest_review_invitations i
         JOIN projects p ON p.id = i.project_id
         JOIN artifacts a ON a.id = i.artifact_id AND a.project_id = i.project_id
+        JOIN artifact_installation_settings settings ON settings.singleton = 1 AND settings.public_links_enabled = 1
         WHERE i.id = ? AND i.project_id = ? AND i.artifact_id = ?
-          AND i.revoked_at IS NULL AND p.archived_at IS NULL AND a.deleted_at IS NULL`)
+          AND i.revoked_at IS NULL AND a.deleted_at IS NULL`)
         .get(session.invitationId, session.projectId, session.artifactId);
       if (invitation === undefined) return "invalid";
       const parsedInvitation = z.object({id: z.string(), exchangeWindowStartedAt: z.string().nullable(), exchangeCount: z.number()}).parse(invitation);
@@ -2455,12 +2507,21 @@ export class SqliteArtifactRepository implements
       FROM guest_review_invitations i WHERE i.id = ?`).get(requestTime, requestTime, requestTime, invitationId) ?? {activeSessionCount: 0, limitHitRecently: 0}));
   }
 
-  reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<boolean> {
+  reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<"reserved" | "rate_limited" | "view_only" | "paused" | "invalid"> {
     return Promise.resolve().then(() => this.#transaction(() => {
-      const session = this.#database.prepare(`SELECT invitation_id AS invitationId FROM guest_review_sessions
-        WHERE id = ? AND expires_at > ? AND absolute_expires_at > ?`).get(guestId, requestTime, requestTime);
-      if (session === undefined) return false;
-      const invitationId = z.object({invitationId: z.string()}).parse(session).invitationId;
+      const session = this.#database.prepare(`SELECT s.invitation_id AS invitationId, i.permission,
+        p.archived_at AS archivedAt FROM guest_review_sessions s
+        JOIN guest_review_invitations i ON i.id = s.invitation_id AND i.project_id = s.project_id AND i.artifact_id = s.artifact_id
+        JOIN projects p ON p.id = s.project_id
+        JOIN artifacts a ON a.id = s.artifact_id AND a.project_id = s.project_id
+        JOIN artifact_installation_settings settings ON settings.singleton = 1 AND settings.public_links_enabled = 1
+        WHERE s.id = ? AND s.expires_at > ? AND s.absolute_expires_at > ?
+          AND i.revoked_at IS NULL AND a.deleted_at IS NULL`).get(guestId, requestTime, requestTime);
+      if (session === undefined) return "invalid";
+      const policy = z.object({invitationId: z.string(), permission: z.enum(["view", "comment"]), archivedAt: z.string().nullable()}).parse(session);
+      if (policy.archivedAt !== null && policy.permission === "comment") return "paused";
+      if (policy.permission !== "comment") return "view_only";
+      const invitationId = policy.invitationId;
       const invitation = z.object({windowStartedAt: z.string().nullable(), writeCount: z.number()}).parse(this.#database.prepare(`SELECT
         comment_window_started_at AS windowStartedAt, comment_write_count AS writeCount
         FROM guest_review_invitations WHERE id = ?`).get(invitationId));
@@ -2472,9 +2533,9 @@ export class SqliteArtifactRepository implements
         && Date.parse(perSession.windowStartedAt) > Date.parse(requestTime) - 60 * 60_000;
       if (invitationWindowActive && invitation.writeCount >= 3000) {
         this.#database.prepare("UPDATE guest_review_invitations SET last_limit_hit_at = ? WHERE id = ?").run(requestTime, invitationId);
-        return false;
+        return "rate_limited";
       }
-      if (sessionWindowActive && perSession.writeCount >= 30) return false;
+      if (sessionWindowActive && perSession.writeCount >= 30) return "rate_limited";
       this.#database.prepare(`UPDATE guest_review_invitations SET
         comment_window_started_at = ?, comment_write_count = ? WHERE id = ?`).run(
         invitationWindowActive ? invitation.windowStartedAt : requestTime,
@@ -2485,7 +2546,7 @@ export class SqliteArtifactRepository implements
         sessionWindowActive ? perSession.windowStartedAt : requestTime,
         sessionWindowActive ? perSession.writeCount + 1 : 1, guestId,
       );
-      return true;
+      return "reserved";
     }));
   }
 
@@ -2523,18 +2584,19 @@ export class SqliteArtifactRepository implements
     }));
   }
 
-  findGuestSession(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null> {
+  findGuestSession(tokenDigest: string, artifactId: string, requestTime: string): Promise<GuestReviewSession | null> {
     return Promise.resolve().then(() => {
       const idleExpiresAt = new Date(Date.parse(requestTime) + 2 * 60 * 60 * 1_000).toISOString();
       const updated = this.#database.prepare(`UPDATE guest_review_sessions SET
         last_used_at = ?, expires_at = MIN(absolute_expires_at, ?)
-        WHERE token_digest = ? AND expires_at > ? AND absolute_expires_at > ?
+        WHERE token_digest = ? AND artifact_id = ? AND expires_at > ? AND absolute_expires_at > ?
+          AND (SELECT public_links_enabled FROM artifact_installation_settings WHERE singleton = 1) = 1
           AND EXISTS (SELECT 1 FROM guest_review_invitations i
             JOIN artifacts a ON a.id = i.artifact_id AND a.project_id = i.project_id
             JOIN projects p ON p.id = i.project_id
             WHERE i.id = guest_review_sessions.invitation_id
-              AND i.revoked_at IS NULL AND a.deleted_at IS NULL AND p.archived_at IS NULL)`)
-        .run(requestTime, idleExpiresAt, tokenDigest, requestTime, requestTime).changes;
+              AND i.revoked_at IS NULL AND a.deleted_at IS NULL)`)
+        .run(requestTime, idleExpiresAt, tokenDigest, artifactId, requestTime, requestTime).changes;
       if (updated === 0) return null;
       const row = this.#database.prepare(`SELECT s.id AS guestId,
         s.token_digest AS tokenDigest, s.csrf_digest AS csrfDigest,
@@ -2542,16 +2604,48 @@ export class SqliteArtifactRepository implements
         s.artifact_id AS artifactId, s.display_name AS displayName,
         s.created_at AS createdAt, s.expires_at AS expiresAt,
         s.absolute_expires_at AS absoluteExpiresAt, s.last_used_at AS lastUsedAt,
-        i.created_by_principal_id AS invitationCreatorPrincipalId
+        i.created_by_principal_id AS invitationCreatorPrincipalId,
+        CASE WHEN p.archived_at IS NULL THEN i.permission ELSE 'view' END AS permission
         FROM guest_review_sessions s
         JOIN guest_review_invitations i ON i.id = s.invitation_id
           AND i.project_id = s.project_id AND i.artifact_id = s.artifact_id
         JOIN artifacts a ON a.id = s.artifact_id AND a.project_id = s.project_id
         JOIN projects p ON p.id = s.project_id
-        WHERE s.token_digest = ? AND s.expires_at > ? AND s.absolute_expires_at > ?
-          AND i.revoked_at IS NULL AND a.deleted_at IS NULL AND p.archived_at IS NULL`).get(tokenDigest, requestTime, requestTime);
+        JOIN artifact_installation_settings settings ON settings.singleton = 1
+          AND settings.public_links_enabled = 1
+        WHERE s.token_digest = ? AND s.artifact_id = ? AND s.expires_at > ? AND s.absolute_expires_at > ?
+          AND i.revoked_at IS NULL AND a.deleted_at IS NULL`).get(tokenDigest, artifactId, requestTime, requestTime);
       return guestSessionRowSchema.nullable().parse(row ?? null);
     });
+  }
+
+  findGuestSessionByTokenDigest(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null> {
+    return Promise.resolve().then(() => this.#transaction(() => {
+      const idleExpiresAt = new Date(Date.parse(requestTime) + 2 * 60 * 60 * 1_000).toISOString();
+      const row = this.#database.prepare(`SELECT s.id AS guestId,
+        s.token_digest AS tokenDigest, s.csrf_digest AS csrfDigest,
+        s.invitation_id AS invitationId, s.project_id AS projectId,
+        s.artifact_id AS artifactId, s.display_name AS displayName,
+        s.created_at AS createdAt, s.expires_at AS expiresAt,
+        s.absolute_expires_at AS absoluteExpiresAt, s.last_used_at AS lastUsedAt,
+        i.created_by_principal_id AS invitationCreatorPrincipalId,
+        CASE WHEN p.archived_at IS NULL THEN i.permission ELSE 'view' END AS permission
+        FROM guest_review_sessions s
+        JOIN guest_review_invitations i ON i.id = s.invitation_id
+          AND i.project_id = s.project_id AND i.artifact_id = s.artifact_id
+        JOIN artifacts a ON a.id = s.artifact_id AND a.project_id = s.project_id
+        JOIN projects p ON p.id = s.project_id
+        JOIN artifact_installation_settings settings ON settings.singleton = 1 AND settings.public_links_enabled = 1
+        WHERE s.token_digest = ? AND s.expires_at > ? AND s.absolute_expires_at > ?
+          AND i.revoked_at IS NULL AND a.deleted_at IS NULL
+        ORDER BY s.last_used_at DESC, s.id LIMIT 1`).get(tokenDigest, requestTime, requestTime);
+      const session = guestSessionRowSchema.nullable().parse(row ?? null);
+      if (session === null) return null;
+      const expiresAt = session.absoluteExpiresAt < idleExpiresAt ? session.absoluteExpiresAt : idleExpiresAt;
+      this.#database.prepare("UPDATE guest_review_sessions SET last_used_at = ?, expires_at = ? WHERE id = ?")
+        .run(requestTime, expiresAt, session.guestId);
+      return {...session, expiresAt, lastUsedAt: requestTime};
+    }));
   }
 
   deleteExpiredGuestContentRows(expiredBefore: string, limit: number): Promise<number> {
@@ -2602,7 +2696,7 @@ export class SqliteArtifactRepository implements
               AND b.expires_at > ?
               AND a.deleted_at IS NULL
               AND ((b.guest_session_id IS NULL AND substr(b.principal_id, 1, 6) <> 'guest_') OR (
-                gs.expires_at > ? AND gi.revoked_at IS NULL AND gp.archived_at IS NULL
+                gs.expires_at > ? AND gi.revoked_at IS NULL
                 AND EXISTS (SELECT 1 FROM installation_members creator
                   WHERE creator.id = gi.created_by_principal_id AND creator.status = 'active'
                     AND (gp.access_mode = 'installation' OR gp.created_by_member_id = creator.id OR creator.role IN ('administrator', 'owner') OR EXISTS (
@@ -2696,7 +2790,7 @@ export class SqliteArtifactRepository implements
             AND s.expires_at > ?
             AND a.deleted_at IS NULL
             AND ((s.guest_session_id IS NULL AND substr(s.principal_id, 1, 6) <> 'guest_') OR (
-              gs.expires_at > ? AND gi.revoked_at IS NULL AND gp.archived_at IS NULL
+              gs.expires_at > ? AND gi.revoked_at IS NULL
               AND EXISTS (SELECT 1 FROM installation_members creator
                 WHERE creator.id = gi.created_by_principal_id AND creator.status = 'active'
                   AND (gp.access_mode = 'installation' OR gp.created_by_member_id = creator.id OR creator.role IN ('administrator', 'owner') OR EXISTS (
@@ -5282,6 +5376,12 @@ export class SqliteArtifactRepository implements
         project_id TEXT NOT NULL REFERENCES projects(id),
         artifact_id TEXT NOT NULL REFERENCES artifacts(id),
         token_digest TEXT NOT NULL UNIQUE,
+        permission TEXT NOT NULL DEFAULT 'comment' CHECK (permission IN ('view', 'comment')),
+        sealed_secret TEXT,
+        seal_key_fingerprint TEXT,
+        generation INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT,
+        updated_by_principal_id TEXT,
         created_by_principal_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
         revoked_at TEXT,
@@ -5298,12 +5398,12 @@ export class SqliteArtifactRepository implements
         WHERE revoked_at IS NULL;
       CREATE TABLE IF NOT EXISTS guest_review_sessions (
         id TEXT PRIMARY KEY,
-        token_digest TEXT NOT NULL UNIQUE,
+        token_digest TEXT NOT NULL,
         csrf_digest TEXT NOT NULL,
         invitation_id TEXT NOT NULL REFERENCES guest_review_invitations(id),
         project_id TEXT NOT NULL REFERENCES projects(id),
         artifact_id TEXT NOT NULL REFERENCES artifacts(id),
-        display_name TEXT NOT NULL,
+        display_name TEXT,
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         absolute_expires_at TEXT,
@@ -5311,7 +5411,8 @@ export class SqliteArtifactRepository implements
         comment_window_started_at TEXT,
         comment_write_count INTEGER NOT NULL DEFAULT 0,
         bootstrap_window_started_at TEXT,
-        bootstrap_issue_count INTEGER NOT NULL DEFAULT 0
+        bootstrap_issue_count INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (token_digest, artifact_id)
       ) STRICT;
       CREATE INDEX IF NOT EXISTS guest_review_sessions_expiry
         ON guest_review_sessions (expires_at);
@@ -5323,6 +5424,12 @@ export class SqliteArtifactRepository implements
     }
     const guestColumns = this.#tableColumns("guest_review_sessions");
     const invitationColumns = this.#tableColumns("guest_review_invitations");
+    if (!invitationColumns.includes("permission")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN permission TEXT NOT NULL DEFAULT 'comment' CHECK (permission IN ('view', 'comment'))");
+    if (!invitationColumns.includes("sealed_secret")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN sealed_secret TEXT");
+    if (!invitationColumns.includes("seal_key_fingerprint")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN seal_key_fingerprint TEXT");
+    if (!invitationColumns.includes("generation")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN generation INTEGER NOT NULL DEFAULT 1");
+    if (!invitationColumns.includes("updated_at")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN updated_at TEXT");
+    if (!invitationColumns.includes("updated_by_principal_id")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN updated_by_principal_id TEXT");
     if (!invitationColumns.includes("exchange_window_started_at")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN exchange_window_started_at TEXT");
     if (!invitationColumns.includes("exchange_count")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN exchange_count INTEGER NOT NULL DEFAULT 0");
     if (!invitationColumns.includes("last_limit_hit_at")) this.#database.exec("ALTER TABLE guest_review_invitations ADD COLUMN last_limit_hit_at TEXT");
@@ -5340,6 +5447,38 @@ export class SqliteArtifactRepository implements
     if (!guestColumns.includes("last_used_at")) this.#database.exec("ALTER TABLE guest_review_sessions ADD COLUMN last_used_at TEXT");
     if (!guestColumns.includes("bootstrap_window_started_at")) this.#database.exec("ALTER TABLE guest_review_sessions ADD COLUMN bootstrap_window_started_at TEXT");
     if (!guestColumns.includes("bootstrap_issue_count")) this.#database.exec("ALTER TABLE guest_review_sessions ADD COLUMN bootstrap_issue_count INTEGER NOT NULL DEFAULT 0");
+    // Rebuild to replace the old token-only uniqueness with one grant per
+    // visitor token and artifact. Keep all active session and budget state.
+    const sessionTableSql = z.object({sql: z.string()}).parse(this.#database.prepare(
+      "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'guest_review_sessions'",
+    ).get()).sql;
+    if (sessionTableSql.includes("token_digest TEXT NOT NULL UNIQUE")) {
+      this.#transaction(() => {
+        this.#database.exec(`
+          CREATE TABLE guest_review_sessions_next (
+            id TEXT PRIMARY KEY, token_digest TEXT NOT NULL, csrf_digest TEXT NOT NULL,
+            invitation_id TEXT NOT NULL REFERENCES guest_review_invitations(id),
+            project_id TEXT NOT NULL REFERENCES projects(id), artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+            display_name TEXT, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+            absolute_expires_at TEXT, last_used_at TEXT, comment_window_started_at TEXT,
+            comment_write_count INTEGER NOT NULL DEFAULT 0, bootstrap_window_started_at TEXT,
+            bootstrap_issue_count INTEGER NOT NULL DEFAULT 0, UNIQUE (token_digest, artifact_id)
+          ) STRICT;
+          INSERT INTO guest_review_sessions_next SELECT id, token_digest, csrf_digest, invitation_id,
+            project_id, artifact_id, display_name, created_at, expires_at, absolute_expires_at,
+            last_used_at, comment_window_started_at, comment_write_count,
+            bootstrap_window_started_at, bootstrap_issue_count FROM guest_review_sessions;
+          DROP TABLE guest_review_sessions;
+          ALTER TABLE guest_review_sessions_next RENAME TO guest_review_sessions;
+          CREATE INDEX guest_review_sessions_expiry ON guest_review_sessions (expires_at);
+        `);
+      });
+    }
+    this.#database.exec(`CREATE TABLE IF NOT EXISTS artifact_installation_settings (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      public_links_enabled INTEGER NOT NULL DEFAULT 1 CHECK (public_links_enabled IN (0, 1))
+    ) STRICT;
+    INSERT OR IGNORE INTO artifact_installation_settings (singleton) VALUES (1);`);
     this.#database.exec(`UPDATE guest_review_sessions SET absolute_expires_at = expires_at WHERE absolute_expires_at IS NULL;
       UPDATE guest_review_sessions SET last_used_at = created_at WHERE last_used_at IS NULL;`);
     this.#database.exec(`CREATE INDEX IF NOT EXISTS content_bootstraps_guest_session

@@ -42,7 +42,7 @@ import {
 } from "../application/content-access.js";
 import {ExpiredStagingCleanupService} from
   "../application/expired-staging-cleanup.js";
-import {GuestReviewService} from "../application/guest-review.js";
+import {GuestReviewService, type GuestReviewDependencies} from "../application/guest-review.js";
 import {
   type GitHistoryAccessDependencies,
   GitHistoryAccessService,
@@ -170,6 +170,8 @@ export interface ApplicationAdapters {
   readonly dispatches: AgentDispatchRepository;
   readonly ids: IdGenerator;
   readonly contentTokenPrefix?: string;
+  readonly publicLinkKey?: Redacted.Redacted;
+  readonly publicLinkKeyPrevious?: Redacted.Redacted;
   readonly identityRepository: IdentityRepository;
   readonly installationId: string;
   readonly organizationDirectoryVisibility?: boolean | undefined;
@@ -725,11 +727,19 @@ export function createApplicationLayer(
     },
   };
   const publicLinkAdministrationRepository: PublicLinkAdministrationRepository = {
+    getPublicLinksEnabled: () => Effect.tryPromise({
+      try: () => adapters.repository.getPublicLinksEnabled(),
+      catch: (cause) => repositoryFailure("getPublicLinksEnabled", cause),
+    }),
     listPublicLinks: (command) =>
       Effect.tryPromise({
         try: () => adapters.repository.listPublicLinks(command),
         catch: (cause) => repositoryFailure("listPublicLinks", cause),
       }),
+    setPublicLinksEnabled: (enabled) => Effect.tryPromise({
+      try: () => adapters.repository.setPublicLinksEnabled(enabled),
+      catch: (cause) => repositoryFailure("setPublicLinksEnabled", cause),
+    }),
   };
   const comparisonDependencies: CompareArtifactDependencies = {
     blobs: {
@@ -1410,17 +1420,22 @@ export function createApplicationLayer(
   ).pipe(
     Layer.provideMerge(Layer.mergeAll(authorizationLayer, managementLayer)),
   );
-  const guestReviewLayer = GuestReviewService.layer({
+  const guestReviewDependencies: GuestReviewDependencies = {
     clock,
     ids: adapters.ids,
+    installationId: adapters.installationId,
     organizationDirectoryVisibility: adapters.organizationDirectoryVisibility === true,
     repository: {
       createGuestInvitation: (invitation) => Effect.tryPromise({try: () => adapters.repository.createGuestInvitation(invitation), catch: (cause) => repositoryFailure("createGuestInvitation", cause)}),
+      getPublicLinksEnabled: () => Effect.tryPromise({try: () => adapters.repository.getPublicLinksEnabled(), catch: (cause) => repositoryFailure("getPublicLinksEnabled", cause)}),
+      resetGuestInvitation: (invitation) => Effect.tryPromise({try: () => adapters.repository.resetGuestInvitation(invitation), catch: (cause) => repositoryFailure("resetGuestInvitation", cause)}),
       findGuestInvitation: (projectId, artifactId) => Effect.tryPromise({try: () => adapters.repository.findGuestInvitation(projectId, artifactId), catch: (cause) => repositoryFailure("findGuestInvitation", cause)}),
       findGuestInvitationByDigest: (digest) => Effect.tryPromise({try: () => adapters.repository.findGuestInvitationByDigest(digest), catch: (cause) => repositoryFailure("findGuestInvitationByDigest", cause)}),
       revokeGuestInvitation: (projectId, artifactId, at) => Effect.tryPromise({try: () => adapters.repository.revokeGuestInvitation(projectId, artifactId, at), catch: (cause) => repositoryFailure("revokeGuestInvitation", cause)}),
+      setGuestInvitationPermission: (invitationId, permission, at, principalId) => Effect.tryPromise({try: () => adapters.repository.setGuestInvitationPermission(invitationId, permission, at, principalId), catch: (cause) => repositoryFailure("setGuestInvitationPermission", cause)}),
       createGuestSession: (session) => Effect.tryPromise({try: () => adapters.repository.createGuestSession(session), catch: (cause) => repositoryFailure("createGuestSession", cause)}),
-      findGuestSession: (digest, at) => Effect.tryPromise({try: () => adapters.repository.findGuestSession(digest, at), catch: (cause) => repositoryFailure("findGuestSession", cause)}),
+      findGuestSessionByTokenDigest: (tokenDigest, requestTime) => Effect.tryPromise({try: () => adapters.repository.findGuestSessionByTokenDigest(tokenDigest, requestTime), catch: (cause) => repositoryFailure("findGuestSessionByTokenDigest", cause)}),
+      findGuestSession: (digest, artifactId, at) => Effect.tryPromise({try: () => adapters.repository.findGuestSession(digest, artifactId, at), catch: (cause) => repositoryFailure("findGuestSession", cause)}),
       listGuestSessions: (projectId, artifactId, at) => Effect.tryPromise({try: () => adapters.repository.listGuestSessions(projectId, artifactId, at), catch: (cause) => repositoryFailure("listGuestSessions", cause)}),
       revokeGuestSession: (projectId, artifactId, guestId) => Effect.tryPromise({try: () => adapters.repository.revokeGuestSession(projectId, artifactId, guestId), catch: (cause) => repositoryFailure("revokeGuestSession", cause)}),
       getGuestInvitationUsage: (invitationId, at) => Effect.tryPromise({try: () => adapters.repository.getGuestInvitationUsage(invitationId, at), catch: (cause) => repositoryFailure("getGuestInvitationUsage", cause)}),
@@ -1432,7 +1447,16 @@ export function createApplicationLayer(
       catch: (cause) => repositoryFailure("findArtifact", cause),
     }),
     secrets: contentDependencies.secrets,
-  }).pipe(Layer.provideMerge(Layer.mergeAll(authorizationLayer, projectLayer, identityLayer)));
+  };
+  if (adapters.publicLinkKey !== undefined) {
+    Object.assign(guestReviewDependencies, {publicLinkKey: Buffer.from(Redacted.value(adapters.publicLinkKey), "base64url")});
+  }
+  if (adapters.publicLinkKeyPrevious !== undefined) {
+    Object.assign(guestReviewDependencies, {publicLinkKeyPrevious: Buffer.from(Redacted.value(adapters.publicLinkKeyPrevious), "base64url")});
+  }
+  const guestReviewLayer = GuestReviewService.layer(guestReviewDependencies).pipe(
+    Layer.provideMerge(Layer.mergeAll(authorizationLayer, projectLayer, identityLayer)),
+  );
   const commentsAndGuestReviewLayer = Layer.mergeAll(commentLayer, guestReviewLayer);
   const comparisonLayer = CompareArtifactService.layer(
     comparisonDependencies,

@@ -67,8 +67,8 @@ describe("invited guest review", () => {
     return fetch(`${server.baseUrl}${path}`, init);
   }
 
-  async function enableInvitation(): Promise<{readonly secret: string; readonly url: string}> {
-    const response = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`, "{}");
+  async function enableInvitation(artifact = artifactId, project = projectId): Promise<{readonly secret: string; readonly url: string}> {
+    const response = await ownerRequest("POST", `/api/v1/artifacts/${artifact}/guest-invitation?projectId=${project}`, "{}");
     expect(response.status).toBe(201);
     const invitation = invitationSchema.parse(await response.json());
     const link = new URL(invitation.url);
@@ -138,8 +138,132 @@ describe("invited guest review", () => {
     expect(text).not.toContain(invitation.secret);
   });
 
-  test("wrong, revoked, and other-artifact secrets return the same 404; regeneration revokes the prior secret", async () => {
+  test("PLK-017-B: legacy public links reject comment permission until reset", async () => {
+    const legacy = await publishNew(server, installation, {
+      accessSetting: "public_link",
+      content: "legacy public artifact",
+      idempotencyKey: "plk-017-legacy-link",
+    });
+    const response = await ownerRequest(
+      "PATCH",
+      `/api/v1/artifacts/${legacy.body.artifact.id}/public-link?projectId=${legacy.body.artifact.projectId}`,
+      JSON.stringify({permission: "comment"}),
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: {code: "PUBLIC_LINK_LEGACY", message: "Reset this legacy public link to enable commenting."},
+    });
+    const reset = await ownerRequest(
+      "POST",
+      `/api/v1/artifacts/${legacy.body.artifact.id}/public-link/reset?projectId=${legacy.body.artifact.projectId}`,
+      "{}",
+    );
+    expect(reset.status).toBe(201);
+    const resetLink = new URL(z.object({url: z.url()}).parse(await reset.json()).url);
+    expect(new URLSearchParams(resetLink.hash.slice(1)).get("link")).toBeTruthy();
+    const enabled = await ownerRequest(
+      "PATCH",
+      `/api/v1/artifacts/${legacy.body.artifact.id}/public-link?projectId=${legacy.body.artifact.projectId}`,
+      JSON.stringify({permission: "comment"}),
+    );
+    expect(enabled.status).toBe(200);
+    expect(await enabled.json()).toEqual({permission: "comment"});
+  });
+
+  test("PLK-006-F: changing a comment link to view refuses the next existing-session write", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const changed = await ownerRequest(
+      "PATCH",
+      `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`,
+      JSON.stringify({permission: "view"}),
+    );
+    expect(changed.status).toBe(200);
+
+    const refused = await guestRequest(
+      guest,
+      "POST",
+      `/api/v1/public/artifacts/${artifactId}/guest/comments`,
+      JSON.stringify({body: "No longer allowed", versionId: currentVersionId}),
+      true,
+      "plk-006-downgrade-write-001",
+    );
+    expect(refused.status).toBe(403);
+  });
+
+  test("PLK-006-B: public-link creation, permission changes, and explicit reset preserve the expected URL lifecycle", async () => {
+    const created = await ownerRequest(
+      "POST",
+      `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`,
+      JSON.stringify({permission: "comment"}),
+    );
+    expect(created.status).toBe(201);
+    const firstUrl = z.object({url: z.url()}).parse(await created.json()).url;
+
+    const status = await ownerRequest(
+      "GET",
+      `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`,
+    );
+    expect(await status.json()).toMatchObject({
+      copyAvailable: false,
+      createdAt: expect.any(String),
+      enabled: true,
+      permission: "comment",
+      updatedAt: expect.any(String),
+      url: null,
+    });
+    expect((await ownerRequest(
+      "POST",
+      `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`,
+      JSON.stringify({permission: "view"}),
+    )).status).toBe(409);
+
+    expect((await ownerRequest(
+      "PATCH",
+      `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`,
+      JSON.stringify({permission: "view"}),
+    )).status).toBe(200);
+    const reset = await ownerRequest(
+      "POST",
+      `/api/v1/artifacts/${artifactId}/public-link/reset?projectId=${projectId}`,
+      JSON.stringify({permission: "view"}),
+    );
+    expect(reset.status).toBe(201);
+    expect(z.object({url: z.url()}).parse(await reset.json()).url).not.toBe(firstUrl);
+  });
+
+  test("PLK-009-F: comment exchanges reject missing and overlong names", async () => {
+    const invitation = await enableInvitation();
+    expect((await exchangeResponse(artifactId, invitation.secret, "")).status).toBe(422);
+    expect((await exchangeResponse(artifactId, invitation.secret, "x".repeat(81))).status).toBe(422);
+  });
+
+  test("PLK-009-B: new public comment authors use the visitor label", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret, "Public reviewer");
+    const thread = await createGuestThread(guest, "A public comment");
+    expect(thread.author.displayName).toBe("Public reviewer (visitor)");
+  });
+
+  test("PLK-012-B: one visitor cookie carries grants for multiple links", async () => {
+    const firstLink = await enableInvitation();
+    const secondLink = await enableInvitation(otherArtifactId, projectId);
+    const firstVisitor = await exchange(artifactId, firstLink.secret);
+    const secondExchange = await exchangeResponse(otherArtifactId, secondLink.secret, "Guest Reviewer", {Cookie: firstVisitor.cookie});
+    expect(secondExchange.status).toBe(201);
+    const setCookies = secondExchange.headers.getSetCookie();
+    const session = setCookies.find((item) => item.startsWith("artifact_guest_session="))?.split(";", 1)[0];
+    const csrf = setCookies.find((item) => item.startsWith("artifact_guest_csrf="))?.split(";", 1)[0];
+    expect(session).toBe(firstVisitor.cookie.split("; ")[0]);
+    expect(csrf).toBe(firstVisitor.cookie.split("; ")[1]);
+    const sharedVisitor = {cookie: `${session ?? ""}; ${csrf ?? ""}`, csrf: csrf?.split("=", 2)[1] ?? ""};
+    expect((await guestRequest(firstVisitor, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(201);
+    expect((await guestRequest(sharedVisitor, "GET", `/api/v1/public/artifacts/${otherArtifactId}/guest/current`)).status).toBe(201);
+  });
+
+  test("PLK-007-F: wrong, revoked, and other-artifact secrets return the same 404; reset revokes old grants", async () => {
     const first = await enableInvitation();
+    const priorVisitor = await exchange(artifactId, first.secret);
     const wrong = await exchangeResponse(artifactId, "x".repeat(40), "Guest");
     expect(wrong.status).toBe(404);
     const regenerated = await enableInvitation();
@@ -150,9 +274,10 @@ describe("invited guest review", () => {
     const genericBody = await wrong.text();
     expect(await revoked.text()).toBe(genericBody);
     expect(await otherArtifact.text()).toBe(genericBody);
+    expect((await guestRequest(priorVisitor, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
   });
 
-  test("a guest can edit and delete only their own thread and replies", async () => {
+  test("PLK-008-B: a guest can edit and delete only their own thread and replies", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
     const otherGuest = await exchange(artifactId, invitation.secret, "Other Guest");
@@ -184,7 +309,7 @@ describe("invited guest review", () => {
     expect(unauthorized.map((response) => response.status)).toEqual([404, 404, 404, 404]);
   });
 
-  test("guests cannot resolve comments or use authenticated API routes", async () => {
+  test("PLK-015-F: guests cannot resolve comments or use authenticated API routes", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
     const thread = await createGuestThread(guest, "Cannot resolve me");
@@ -198,14 +323,14 @@ describe("invited guest review", () => {
     expect(responses.map((response) => response.status)).toEqual([401, 401, 404]);
   });
 
-  test("mutations without the guest CSRF token are refused", async () => {
+  test("PLK-010-F: mutations without the guest CSRF token are refused", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
     const response = await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Blocked", versionId: currentVersionId}), false, "guest-no-csrf-key-0001");
     expect(response.status).toBe(403);
   });
 
-  test("a guest views the private artifact's current version through the content origin", async () => {
+  test("PLK-013-B: a guest views the private artifact's current version through the content origin", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
     const currentResponse = await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`);
@@ -217,7 +342,7 @@ describe("invited guest review", () => {
     expect(contentResponse.status).toBe(200);
   });
 
-  test("guest listing, detail, replies, paging, and author projections are isolated", async () => {
+  test("PLK-015-B: guest listing, detail, replies, paging, and author projections are isolated", async () => {
     const invitation = await enableInvitation();
     const guestA = await exchange(artifactId, invitation.secret, "Guest A");
     const guestB = await exchange(artifactId, invitation.secret, "Guest B");
@@ -252,7 +377,7 @@ describe("invited guest review", () => {
     const detailResponse = await guestRequest(guestA, "GET", `/api/v1/public/artifacts/${artifactId}/guest/comments/${ownFirst.id}`);
     const detailText = await detailResponse.text();
     const detail = guestThreadDetailsSchema.parse(JSON.parse(detailText));
-    expect(detail.thread.author).toEqual({displayName: "Guest A (guest)", isYou: true});
+    expect(detail.thread.author).toEqual({displayName: "Guest A (visitor)", isYou: true});
     expect(detail.thread.replyCount).toBe(detail.replies.length);
     expect(detail.replies).toContainEqual({author: {displayName: expect.any(String), isYou: false}, body: "Team reply"});
     expect(detailText).not.toMatch(/principalId|authorizedByPrincipalId|principalKind|email/i);
@@ -260,21 +385,42 @@ describe("invited guest review", () => {
 
     const memberList = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/comments?projectId=${projectId}`);
     const memberText = await memberList.text();
-    expect(memberText).toContain("Guest A (guest)");
+    expect(memberText).toContain("Guest A (visitor)");
     expect(memberText).toContain(ownFirst.id);
   });
 
-  test("archiving the project invalidates guest current, comment creation, and comment listing", async () => {
+  test("PLK-014-B: archive preserves public views, pauses comments, and unarchive resumes them", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
     const archive = await ownerRequest("POST", `/api/v1/projects/${projectId}/archive`, "{}");
     expect(archive.status).toBe(200);
-    const responses = await Promise.all([
-      guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`),
-      guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Archived", versionId: currentVersionId}), true, "archived-guest-create-0001"),
-      guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/comments`),
-    ]);
-    expect(responses.map((response) => response.status)).toEqual([404, 404, 404]);
+    expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(201);
+    const paused = await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Archived", versionId: currentVersionId}), true, "archived-guest-create-0001");
+    expect(paused.status).toBe(409);
+    expect(await paused.json()).toMatchObject({error: {code: "PUBLIC_LINK_PAUSED"}});
+    expect((await ownerRequest("POST", `/api/v1/projects/${projectId}/unarchive`, "{}")).status).toBe(200);
+    expect((await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Unarchived", versionId: currentVersionId}), true, "unarchived-guest-create-0001")).status).toBe(201);
+  });
+
+  test("PLK-016-B: kill switch off blocks and on resumes the same public link", async () => {
+    const created = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "comment"}));
+    expect(created.status).toBe(201);
+    const link = z.object({url: z.url()}).parse(await created.json()).url;
+    const secret = new URLSearchParams(new URL(link).hash.slice(1)).get("link");
+    expect(secret).toBeTruthy();
+    const guest = await exchange(artifactId, secret ?? "");
+
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    database.prepare("UPDATE artifact_installation_settings SET public_links_enabled = 0 WHERE singleton = 1").run();
+    expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
+    expect((await exchangeResponse(artifactId, secret ?? "")).status).toBe(404);
+
+    database.prepare("UPDATE artifact_installation_settings SET public_links_enabled = 1 WHERE singleton = 1").run();
+    expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(201);
+    expect((await exchangeResponse(artifactId, secret ?? "")).status).toBe(201);
+    const status = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`);
+    expect(await status.json()).toMatchObject({enabled: true, permission: "comment"});
+    database.close();
   });
 
   test("exchange requires a same-origin JSON request", async () => {
@@ -302,7 +448,7 @@ describe("invited guest review", () => {
     database.close();
   });
 
-  test("the 31st exchange for one invitation in a minute is rate limited", async () => {
+  test("PLK-011-F: the 31st exchange for one invitation in a minute is rate limited", async () => {
     const invitation = await enableInvitation();
     expect((await Promise.all(Array.from({length: 30}, (_, index) => exchangeResponse(artifactId, invitation.secret, `Guest ${index}`)))).map((response) => response.status))
       .toEqual(Array.from({length: 30}, () => 201));
@@ -311,7 +457,7 @@ describe("invited guest review", () => {
       .toMatchObject({activeSessionCount: 30, limitHitRecently: true});
   });
 
-  test("owners can list guest sessions and revoke one session including its content cookie", async () => {
+  test("PLK-013-F: owners can list guest sessions and revoke one session including its content cookie", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret, "Reviewer to revoke");
     const current = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).json());

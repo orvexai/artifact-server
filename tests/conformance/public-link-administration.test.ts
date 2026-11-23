@@ -89,6 +89,26 @@ describe("public-link administration", () => {
     await removeTestInstallation(installation);
   });
 
+  test("installation administrators can turn public links off and back on", async () => {
+    const read = await administratorFetch("/api/v1/administration/public-links/policy");
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual({enabled: true});
+
+    const disabled = await administratorFetch("/api/v1/administration/public-links/policy", {
+      body: JSON.stringify({enabled: false}),
+      method: "PATCH",
+    });
+    expect(disabled.status).toBe(200);
+    expect(await disabled.json()).toEqual({enabled: false});
+
+    const resumed = await administratorFetch("/api/v1/administration/public-links/policy", {
+      body: JSON.stringify({enabled: true}),
+      method: "PATCH",
+    });
+    expect(resumed.status).toBe(200);
+    expect(await resumed.json()).toEqual({enabled: true});
+  });
+
   test("AUTH-018-B: administrators page across projects and make one public artifact private", async () => {
     const projectA = await createProject("Product");
     const projectB = await createProject("Support");
