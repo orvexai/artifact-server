@@ -9,7 +9,7 @@ import {
 
 async function clickWithin(locator: Locator): Promise<boolean> {
   try {
-    await locator.click({timeout: 1_200});
+    await locator.click();
     return true;
   } catch {
     return false;
@@ -25,8 +25,6 @@ test("artifact-server-7gk: review workspace and Projects stay usable at 390px", 
     viewport: {width: 390, height: 844},
   });
   const fixture = {...started, context, page: await context.newPage()};
-  fixture.page.setDefaultTimeout(1_200);
-  fixture.page.setDefaultNavigationTimeout(5_000);
 
   try {
     const published = await publishNew(fixture.server, fixture.installation, {
@@ -42,7 +40,8 @@ test("artifact-server-7gk: review workspace and Projects stay usable at 390px", 
       project: "prj_default",
       artifact: published.body.artifact.id,
     })}`;
-    await fixture.page.goto(reviewUrl, {timeout: 5_000, waitUntil: "domcontentloaded"});
+    await fixture.page.goto(reviewUrl, {waitUntil: "domcontentloaded"});
+    await expect(fixture.page.locator(".as-preview-panel")).toBeVisible();
 
     const pageOverflow = () => fixture.page.evaluate(
       () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
@@ -61,7 +60,7 @@ test("artifact-server-7gk: review workspace and Projects stay usable at 390px", 
     if (!(await catalog.isVisible())) {
       expect.soft(await clickWithin(openCatalog), "step d: open the artifact catalog").toBe(true);
     }
-    await expect.soft(catalog, "step d: artifact catalog is available").toBeVisible({timeout: 1_200});
+    await expect.soft(catalog, "step d: artifact catalog is available").toBeVisible();
     const catalogBox = await catalog.boundingBox();
     expect.soft(catalogBox?.x, "step d: catalog begins at the left viewport edge").toBe(0);
     expect.soft(catalogBox?.width, "step d: catalog fills the compact viewport").toBe(390);
@@ -84,7 +83,7 @@ test("artifact-server-7gk: review workspace and Projects stay usable at 390px", 
 
     const toolbar = fixture.page.getByRole("toolbar", {name: "Artifact viewer controls"});
     await expect.soft(toolbar, "step e: full-screen controls toolbar is present")
-      .toBeVisible({timeout: 1_200});
+      .toBeVisible();
     const toolbarButtons = toolbar.getByRole("button");
     const buttonCount = await toolbarButtons.count();
     const toolbarBoxes = await Promise.all(
@@ -120,7 +119,7 @@ test("artifact-server-7gk: review workspace and Projects stay usable at 390px", 
 
     await fixture.page.goto(
       `${fixture.server.baseUrl}/review/settings/projects`,
-      {timeout: 5_000, waitUntil: "domcontentloaded"},
+      {waitUntil: "domcontentloaded"},
     );
     expect.soft(await pageOverflow(), "step f: page has no horizontal overflow").toBe(0);
     const projectContainer = fixture.page.locator("#settings-project-table");
@@ -133,8 +132,8 @@ test("artifact-server-7gk: review workspace and Projects stay usable at 390px", 
 
     const projectRow = table.getByRole("row").filter({hasText: "prj_default"});
     const createdCell = projectRow.getByRole("cell").nth(2);
-    expect.soft(await createdCell.isVisible(), "step f: default project's Created value is visible")
-      .toBe(true);
+    await expect.soft(createdCell, "step f: default project's Created value is visible")
+      .toBeVisible();
     const createdBox = await createdCell.boundingBox();
     expect.soft(
       createdBox !== null && createdBox.x + createdBox.width <= 390,
@@ -144,22 +143,19 @@ test("artifact-server-7gk: review workspace and Projects stay usable at 390px", 
       .toBe("Projects");
 
     await fixture.page.setViewportSize({width: 1280, height: 800});
-    const wideColumnHeaders = await Promise.all(
-      ["Project", "State", "Created", "Actions"].map(async (column) => ({
-        column,
-        visible: await fixture.page.getByRole("columnheader", {name: column}).isVisible(),
-      })),
+    await Promise.all(
+      ["Project", "State", "Created", "Actions"].map(async (column) =>
+        await expect.soft(
+          fixture.page.getByRole("columnheader", {name: column}),
+          `wide Projects table displays the ${column} header`,
+        ).toBeVisible(),
+      ),
     );
-    wideColumnHeaders.forEach(({column, visible}) => {
-      expect.soft(
-        visible,
-        `wide Projects table displays the ${column} header`,
-      ).toBe(true);
-    });
 
     await fixture.page.setViewportSize({width: 390, height: 844});
     await fixture.page.emulateMedia({colorScheme: "dark"});
-    await fixture.page.goto(reviewUrl, {timeout: 5_000, waitUntil: "domcontentloaded"});
+    await fixture.page.goto(reviewUrl, {waitUntil: "domcontentloaded"});
+    await expect(fixture.page.locator(".as-preview-panel")).toBeVisible();
     expect.soft(await pageOverflow(), "step g: dark mode page has no horizontal overflow").toBe(0);
     const darkPreviewHit = await fixture.page.evaluate(() => {
       const element = document.elementFromPoint(195, 400);
@@ -169,7 +165,7 @@ test("artifact-server-7gk: review workspace and Projects stay usable at 390px", 
 
     await fixture.page.goto(
       `${fixture.server.baseUrl}/review/settings/projects`,
-      {timeout: 5_000, waitUntil: "domcontentloaded"},
+      {waitUntil: "domcontentloaded"},
     );
     expect.soft(await pageOverflow(), "step g: dark mode page has no horizontal overflow").toBe(0);
     const darkContainer = fixture.page.locator("#settings-project-table");
@@ -179,8 +175,8 @@ test("artifact-server-7gk: review workspace and Projects stay usable at 390px", 
     ).toBe(0);
     const darkCreated = darkContainer.locator("table").getByRole("row")
       .filter({hasText: "prj_default"}).getByRole("cell").nth(2);
-    expect.soft(await darkCreated.isVisible(), "step g: dark mode Created value is visible")
-      .toBe(true);
+    await expect.soft(darkCreated, "step g: dark mode Created value is visible")
+      .toBeVisible();
   } finally {
     await stopBrowserFixture(fixture);
   }
@@ -188,8 +184,6 @@ test("artifact-server-7gk: review workspace and Projects stay usable at 390px", 
 
 test("artifact-server-7gk: resizing across 720px keeps one sheet in compact and restores the wide layout", async ({browser}) => {
   const fixture = await startBrowserFixture(browser);
-  fixture.page.setDefaultTimeout(1_200);
-  fixture.page.setDefaultNavigationTimeout(5_000);
 
   try {
     const published = await publishNew(fixture.server, fixture.installation, {
@@ -205,16 +199,13 @@ test("artifact-server-7gk: resizing across 720px keeps one sheet in compact and 
       project: "prj_default",
       artifact: published.body.artifact.id,
     })}`;
-    await fixture.page.goto(reviewUrl, {timeout: 5_000, waitUntil: "domcontentloaded"});
+    await fixture.page.goto(reviewUrl, {waitUntil: "domcontentloaded"});
 
     const catalog = fixture.page.getByRole("complementary", {name: "Artifact catalog"});
     const inspector = fixture.page.getByRole("complementary", {name: "Artifact inspector"});
-    const openCatalog = fixture.page.getByRole("button", {name: "Open artifact catalog"});
     const openInspector = fixture.page.getByRole("button", {name: "Open inspector"});
     const closeInspector = fixture.page.getByRole("button", {name: "Close inspector"});
 
-    if (!(await catalog.isVisible())) await openCatalog.click();
-    if (!(await inspector.isVisible())) await openInspector.click();
     await expect(catalog).toBeVisible();
     await expect(closeInspector).toBeVisible();
     const catalogSearch = fixture.page.getByRole("searchbox", {name: "Search artifacts"});
@@ -227,9 +218,10 @@ test("artifact-server-7gk: resizing across 720px keeps one sheet in compact and 
     await expect(catalog).toBeVisible();
     await expect(closeInspector).toHaveCount(0);
     await expect(openInspector).toBeVisible();
-    await expect.poll(() => fixture.page.evaluate(
-      () => document.activeElement === document.body,
-    )).toBe(true);
+    await expect.poll(() => fixture.page.evaluate(async () => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      return document.activeElement === document.body;
+    })).toBe(true);
 
     await fixture.page.setViewportSize({width: 1280, height: 800});
     await expect(catalog).toBeVisible();
@@ -263,8 +255,6 @@ test("artifact-server-7gk: resizing across 720px keeps one sheet in compact and 
 
 test("artifact-server-7gk: resizing keeps the last-used sheet open with reduced motion", async ({browser}) => {
   const fixture = await startBrowserFixture(browser);
-  fixture.page.setDefaultTimeout(1_200);
-  fixture.page.setDefaultNavigationTimeout(5_000);
 
   try {
     const published = await publishNew(fixture.server, fixture.installation, {
@@ -281,14 +271,11 @@ test("artifact-server-7gk: resizing keeps the last-used sheet open with reduced 
       project: "prj_default",
       artifact: published.body.artifact.id,
     })}`;
-    await fixture.page.goto(reviewUrl, {timeout: 5_000, waitUntil: "domcontentloaded"});
+    await fixture.page.goto(reviewUrl, {waitUntil: "domcontentloaded"});
 
     const catalog = fixture.page.getByRole("complementary", {name: "Artifact catalog"});
     const inspector = fixture.page.getByRole("complementary", {name: "Artifact inspector"});
     const openCatalog = fixture.page.getByRole("button", {name: "Open artifact catalog"});
-    const openInspector = fixture.page.getByRole("button", {name: "Open inspector"});
-    if (!(await catalog.isVisible())) await openCatalog.click();
-    if (!(await inspector.isVisible())) await openInspector.click();
     await expect(catalog).toBeVisible();
     await expect(inspector).toBeVisible();
 
