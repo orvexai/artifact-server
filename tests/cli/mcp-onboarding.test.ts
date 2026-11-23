@@ -52,7 +52,7 @@ const doctorSchema = z.object({
   }),
   service: z.object({
     reachable: z.literal(true),
-  }),
+  }).loose(),
   status: z.literal("healthy"),
 }).loose();
 const registrationFileSchema = z.object({
@@ -76,6 +76,163 @@ afterEach(async () => {
 });
 
 describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
+  test("HTTP relay exposes only its cached authentication state", async () => {
+    const workspace = await temporaryWorkspace("artifact-server-mcp-auth-status-");
+    const dataDirectory = path.join(workspace, "data");
+    const home = path.join(workspace, "home");
+    await mkdir(dataDirectory, {recursive: true});
+    const fixture = await createAuthenticatedRemoteProfile(dataDirectory, home);
+    const addressFile = path.join(dataDirectory, "mcp-http-relay.json");
+    const relayProcess = spawn(process.execPath, [
+      "--import", "tsx", cliEntrypoint, "mcp", "relay", "--data", dataDirectory,
+      "--address-file", addressFile,
+    ], {cwd: repositoryRoot, env: fixture.environment, stdio: "ignore"});
+    if (relayProcess.pid !== undefined) managedServicePids.add(relayProcess.pid);
+    try {
+      await waitForFile(addressFile);
+      const address = z.object({pid: z.number().int().positive(), port: z.number().int().positive()})
+        .parse(JSON.parse(await readFile(addressFile, "utf8")));
+      managedServicePids.add(address.pid);
+      const response = await fetch(`http://127.0.0.1:${address.port}/auth-status`);
+      expect(response.status).toBe(200);
+      const body: unknown = await response.json();
+      expect(body).toEqual({authentication: "authenticated"});
+      expect(JSON.stringify(body)).not.toContain("R".repeat(48));
+      expect(JSON.stringify(body)).not.toContain(fixture.origin);
+    } finally {
+      await killProcess(relayProcess);
+      const addressContents = await readFile(addressFile, "utf8").catch(() => null);
+      if (addressContents !== null) {
+        const address = z.object({pid: z.number().int().positive()})
+          .parse(JSON.parse(addressContents));
+        await expectProcessExited(address.pid);
+        managedServicePids.delete(address.pid);
+        if (relayProcess.pid !== undefined) managedServicePids.delete(relayProcess.pid);
+      }
+      await closeRemoteProfileFixture(fixture);
+    }
+  });
+
+  test("doctor trusts the authenticated relay when the shell credential store rejects access", async () => {
+    const workspace = await temporaryWorkspace("artifact-server-mcp-doctor-relay-auth-");
+    const dataDirectory = path.join(workspace, "data");
+    const home = path.join(workspace, "home");
+    const binaryDirectory = path.join(workspace, "bin");
+    const fakeSecretToolLog = path.join(workspace, "secret-tool.log");
+    await Promise.all([
+      mkdir(dataDirectory, {recursive: true}),
+      mkdir(binaryDirectory, {recursive: true}),
+    ]);
+    await Promise.all([
+      symlink(process.execPath, path.join(binaryDirectory, "node")),
+      symlink("/usr/bin/dirname", path.join(binaryDirectory, "dirname")),
+      symlink("/usr/bin/sed", path.join(binaryDirectory, "sed")),
+      symlink("/usr/bin/uname", path.join(binaryDirectory, "uname")),
+    ]);
+    const secretTool = path.join(binaryDirectory, "secret-tool");
+    await writeFile(secretTool, "#!/bin/sh\n/bin/cat >/dev/null\nprintf 'called\\n' >> \"$FAKE_SECRET_TOOL_LOG\"\nprintf 'credential store rejected\\n' >&2\nexit 1\n", {mode: 0o700});
+    const fixture = await createAuthenticatedRemoteProfile(dataDirectory, home);
+    const addressFile = path.join(dataDirectory, "mcp-http-relay.json");
+    const relayProcess = spawn(process.execPath, [
+      "--import", "tsx", cliEntrypoint, "mcp", "relay", "--data", dataDirectory,
+      "--address-file", addressFile,
+    ], {cwd: repositoryRoot, env: fixture.environment, stdio: "ignore"});
+    if (relayProcess.pid !== undefined) managedServicePids.add(relayProcess.pid);
+    try {
+      await waitForFile(addressFile);
+      const doctor = await runCli(["doctor", "--data", dataDirectory], {
+        ...fixture.environment,
+        ARTIFACT_SERVER_CREDENTIAL_STORE: "keyring",
+        FAKE_SECRET_TOOL_LOG: fakeSecretToolLog,
+        PATH: binaryDirectory,
+      });
+      expect((await readFile(fakeSecretToolLog, "utf8")).trim()).toBe("called");
+      expect(doctor.exitCode, `${doctor.stdout}\\n${doctor.stderr}`).toBe(0);
+      expect(JSON.parse(doctor.stdout)).toMatchObject({
+        service: {
+          authentication: "authenticated",
+          authenticationSource: "relay",
+          shellCredentialStore: "rejected",
+        },
+        status: "healthy",
+      });
+      expect(doctor.stderr.trim().split("\n")).toEqual([
+        "Warning: this shell cannot read the credential store, but the running relay is signed in.",
+      ]);
+    } finally {
+      await killProcess(relayProcess);
+      const addressContents = await readFile(addressFile, "utf8").catch(() => null);
+      if (addressContents !== null) {
+        const address = z.object({pid: z.number().int().positive()})
+          .parse(JSON.parse(addressContents));
+        await expectProcessExited(address.pid);
+        managedServicePids.delete(address.pid);
+        if (relayProcess.pid !== undefined) managedServicePids.delete(relayProcess.pid);
+      }
+      await closeRemoteProfileFixture(fixture);
+    }
+  });
+
+  test("doctor reports an unavailable relay credential as unhealthy", async () => {
+    const workspace = await temporaryWorkspace("artifact-server-mcp-doctor-relay-unavailable-");
+    const dataDirectory = path.join(workspace, "data");
+    const home = path.join(workspace, "home");
+    const binaryDirectory = path.join(workspace, "bin");
+    await Promise.all([
+      mkdir(dataDirectory, {recursive: true}),
+      mkdir(binaryDirectory, {recursive: true}),
+    ]);
+    await Promise.all([
+      symlink(process.execPath, path.join(binaryDirectory, "node")),
+      symlink("/usr/bin/dirname", path.join(binaryDirectory, "dirname")),
+      symlink("/usr/bin/sed", path.join(binaryDirectory, "sed")),
+      symlink("/usr/bin/uname", path.join(binaryDirectory, "uname")),
+    ]);
+    const fixture = await createAuthenticatedRemoteProfile(dataDirectory, home);
+    const secretTool = path.join(binaryDirectory, "secret-tool");
+    await writeFile(secretTool, "#!/bin/sh\nprintf 'credential store rejected\\n' >&2\nexit 1\n", {mode: 0o700});
+    const environment = {
+      ...fixture.environment,
+      ARTIFACT_SERVER_CREDENTIAL_HELPER: secretTool,
+      ARTIFACT_SERVER_CREDENTIAL_STORE: "keyring",
+      PATH: binaryDirectory,
+    };
+    const addressFile = path.join(dataDirectory, "mcp-http-relay.json");
+    const relayProcess = spawn(process.execPath, [
+      "--import", "tsx", cliEntrypoint, "mcp", "relay", "--data", dataDirectory,
+      "--address-file", addressFile,
+    ], {cwd: repositoryRoot, env: environment, stdio: "ignore"});
+    if (relayProcess.pid !== undefined) managedServicePids.add(relayProcess.pid);
+    try {
+      await waitForFile(addressFile);
+      const address = z.object({pid: z.number().int().positive(), port: z.number().int().positive()})
+        .parse(JSON.parse(await readFile(addressFile, "utf8")));
+      managedServicePids.add(address.pid);
+      const authStatus = await fetch(`http://127.0.0.1:${address.port}/auth-status`);
+      expect(await authStatus.json()).toEqual({authentication: "unavailable"});
+      const doctor = await runCli(["doctor", "--data", dataDirectory], environment);
+      expect(doctor.exitCode).toBe(2);
+      expect(JSON.parse(doctor.stdout)).toMatchObject({
+        remediation: expect.arrayContaining([
+          "Run artifactserver auth login to repair the configured remote profile credential.",
+        ]),
+        service: {authentication: "unavailable", authenticationSource: "relay"},
+        status: "unhealthy",
+      });
+    } finally {
+      await killProcess(relayProcess);
+      const addressContents = await readFile(addressFile, "utf8").catch(() => null);
+      if (addressContents !== null) {
+        const address = z.object({pid: z.number().int().positive()})
+          .parse(JSON.parse(addressContents));
+        await expectProcessExited(address.pid);
+        managedServicePids.delete(address.pid);
+        if (relayProcess.pid !== undefined) managedServicePids.delete(relayProcess.pid);
+      }
+      await closeRemoteProfileFixture(fixture);
+    }
+  });
+
   test("stdio reuses one service and preserves modern discovery", async () => {
     const workspace = await temporaryWorkspace("artifact-server-mcp-stdio-");
     const dataDirectory = path.join(workspace, "data");
@@ -148,8 +305,38 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     expect(doctor.exitCode, `${doctor.stdout}\n${doctor.stderr}`).toBe(0);
     expect(doctorSchema.parse(JSON.parse(doctor.stdout))).toMatchObject({
       discovery: {protocol: "streamable-http"},
+      service: {
+        authentication: "logged_out",
+        authenticationSource: "shell",
+        shellCredentialStore: "available",
+      },
       status: "healthy",
     });
+    const shellErrorFixture = await createAuthenticatedRemoteProfile(dataDirectory, isolatedHome);
+    try {
+      const corruptConfigHome = path.join(workspace, "corrupt-config");
+      await mkdir(path.join(corruptConfigHome, "artifact-server"), {recursive: true});
+      await writeFile(path.join(corruptConfigHome, "artifact-server", "credentials.json"), "{invalid");
+      const shellStoreErrorDoctor = await runCli(
+        ["doctor", "--data", dataDirectory],
+        {
+          ...doctorEnvironment,
+          ARTIFACT_SERVER_CREDENTIAL_STORE: "file",
+          XDG_CONFIG_HOME: corruptConfigHome,
+        },
+      );
+      expect(shellStoreErrorDoctor.exitCode).toBe(0);
+      expect(JSON.parse(shellStoreErrorDoctor.stdout)).toMatchObject({
+        service: {
+          authentication: "invalid",
+          authenticationSource: "shell",
+          shellCredentialStore: "rejected",
+        },
+        status: "healthy",
+      });
+    } finally {
+      await closeRemoteProfileFixture(shellErrorFixture);
+    }
     const apiCredential = (await readFile(
       path.join(dataDirectory, "local-api-token"),
       "utf8",
@@ -175,7 +362,9 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     const workspace = await temporaryWorkspace("artifact-server-mcp-relay-");
     const dataDirectory = path.join(workspace, "data");
     const addressFile = path.join(dataDirectory, "mcp-http-relay.json");
-    const relayProcess = spawn(tsxExecutable, [
+    const relayProcess = spawn(process.execPath, [
+      "--import",
+      "tsx",
       cliEntrypoint,
       "mcp",
       "relay",
@@ -194,6 +383,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
         port: z.number().int().min(1).max(65_535),
         schemaVersion: z.literal(1),
       }).parse(JSON.parse(await readFile(addressFile, "utf8")));
+      managedServicePids.add(address.pid);
       client = new Client(
         {name: "artifact-server-http-relay-test", version: "0.0.0"},
       );
@@ -218,8 +408,15 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
         );
         if (localService.success) managedServicePids.add(localService.data.pid);
       }
-      if (relayProcess.pid !== undefined) managedServicePids.delete(relayProcess.pid);
       await killProcess(relayProcess);
+      const addressContents = await readFile(addressFile, "utf8").catch(() => null);
+      if (addressContents !== null) {
+        const address = z.object({pid: z.number().int().positive()})
+          .parse(JSON.parse(addressContents));
+        await expectProcessExited(address.pid);
+        managedServicePids.delete(address.pid);
+        if (relayProcess.pid !== undefined) managedServicePids.delete(relayProcess.pid);
+      }
     }
   }, 45_000);
 
@@ -272,15 +469,18 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     await once(remote, "close");
 
     const addressFile = path.join(dataDirectory, "mcp-http-relay.json");
-    const relayProcess = spawn(tsxExecutable, [
-      cliEntrypoint, "mcp", "relay", "--data", dataDirectory,
+    const relayProcess = spawn(process.execPath, [
+      "--import", "tsx", cliEntrypoint, "mcp", "relay", "--data", dataDirectory,
       "--address-file", addressFile,
     ], {cwd: repositoryRoot, env: environment, stdio: "ignore"});
     if (relayProcess.pid !== undefined) managedServicePids.add(relayProcess.pid);
     try {
       await waitForFile(addressFile);
-      const address = z.object({port: z.number().int().positive()})
-        .parse(JSON.parse(await readFile(addressFile, "utf8")));
+      const address = z.object({
+        pid: z.number().int().positive(),
+        port: z.number().int().positive(),
+      }).parse(JSON.parse(await readFile(addressFile, "utf8")));
+      managedServicePids.add(address.pid);
       const response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
         body: JSON.stringify({id: 1, jsonrpc: "2.0", method: "initialize", params: {}}),
         headers: {
@@ -298,8 +498,15 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
       await expect(readFile(path.join(dataDirectory, "local-service.json"), "utf8"))
         .rejects.toMatchObject({code: "ENOENT"});
     } finally {
-      managedServicePids.delete(relayProcess.pid ?? -1);
       await killProcess(relayProcess);
+      const addressContents = await readFile(addressFile, "utf8").catch(() => null);
+      if (addressContents !== null) {
+        const address = z.object({pid: z.number().int().positive()})
+          .parse(JSON.parse(addressContents));
+        await expectProcessExited(address.pid);
+        managedServicePids.delete(address.pid);
+        if (relayProcess.pid !== undefined) managedServicePids.delete(relayProcess.pid);
+      }
     }
   }, 45_000);
 
@@ -784,6 +991,69 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
   });
 });
 
+async function createAuthenticatedRemoteProfile(
+  dataDirectory: string,
+  home: string,
+): Promise<{
+  readonly environment: NodeJS.ProcessEnv;
+  readonly origin: string;
+  readonly remote: ReturnType<typeof createServer>;
+}> {
+  await mkdir(home, {recursive: true});
+  const remote = createServer((request, response) => {
+    if (request.url === "/api/v1/installation" && request.method === "GET") {
+      response.writeHead(200, {"content-type": "application/json"});
+      response.end(JSON.stringify({installationId: "installation-relay-test"}));
+      return;
+    }
+    if (request.url !== "/api/v1/session" || request.method !== "GET") {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, {"content-type": "application/json"});
+    response.end(JSON.stringify({
+      authenticationMethod: "bearer",
+      principal: {
+        authorizedByPrincipalId: null,
+        capabilities: ["artifact:create", "artifact:read"],
+        displayName: "Relay test",
+        id: "human-relay-test",
+        installationId: "installation-relay-test",
+        kind: "human",
+        membershipRole: "owner",
+      },
+    }));
+  });
+  remote.listen(0, "127.0.0.1");
+  await once(remote, "listening");
+  const remoteAddress = z.object({port: z.number().int().positive()})
+    .passthrough()
+    .parse(remote.address());
+  const origin = `http://127.0.0.1:${remoteAddress.port}`;
+  const environment = {
+    ...process.env,
+    ARTIFACT_SERVER_CREDENTIAL_STORE: "file",
+    ARTIFACT_SERVER_HOME: dataDirectory,
+    HOME: home,
+  };
+  const login = await runCli([
+    "auth", "login", origin, "--api-key-stdin", "--profile-data", dataDirectory,
+  ], environment, `${"R".repeat(48)}\n`);
+  if (login.exitCode !== 0) {
+    await new Promise<void>((resolve) => remote.close(() => resolve()));
+    throw new Error(`Remote profile fixture login failed: ${login.stderr}`);
+  }
+  return {environment, origin, remote};
+}
+
+async function closeRemoteProfileFixture(
+  fixture: Awaited<ReturnType<typeof createAuthenticatedRemoteProfile>>,
+): Promise<void> {
+  if (!fixture.remote.listening) return;
+  fixture.remote.close();
+  await once(fixture.remote, "close");
+}
+
 async function connectStdio(
   dataDirectory: string,
   protocolEra: "legacy" | "modern" = "modern",
@@ -945,11 +1215,51 @@ async function waitForFileUntil(filePath: string, deadline: number): Promise<voi
   return waitForFileUntil(filePath, deadline);
 }
 
-function killProcess(child: ReturnType<typeof spawn>): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", () => resolve());
-    child.kill("SIGKILL");
+async function killProcess(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
+  if (await waitForChildExit(child, 5_000)) return;
+  child.kill("SIGKILL");
+  if (!(await waitForChildExit(child, 5_000))) {
+    throw new Error(`Child process ${child.pid ?? "unknown"} did not exit after SIGKILL.`);
+  }
+}
+
+function waitForChildExit(
+  child: ReturnType<typeof spawn>,
+  timeoutMilliseconds: number,
+): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.off("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = (): void => finish(true);
+    const timeout = setTimeout(() => finish(false), timeoutMilliseconds);
+    child.once("exit", onExit);
+    if (child.exitCode !== null || child.signalCode !== null) finish(true);
   });
+}
+
+async function expectProcessExited(
+  pid: number,
+  deadline = Date.now() + 5_000,
+): Promise<void> {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    const parsed = systemErrorSchema.safeParse(error);
+    if (parsed.success && parsed.data.code === "ESRCH") return;
+    throw error;
+  }
+  if (Date.now() >= deadline) {
+    throw new Error(`Relay process ${pid} remained alive for 5 seconds after shutdown.`);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  return expectProcessExited(pid, deadline);
 }

@@ -14,6 +14,9 @@ import {readLocalApiCredential} from "../local/local-credentials.js";
 import {artifactServerRouteUrl} from "../core/server-address.js";
 
 const healthPath = "/health";
+const authStatusPath = "/auth-status";
+const authStatusCacheMilliseconds = 30_000;
+type RelayAuthentication = "authenticated" | "logged_out" | "unavailable";
 const mcpPath = "/mcp";
 const addressSchema = z.object({
   pid: z.number().int().positive(),
@@ -38,6 +41,23 @@ export async function startLocalMcpHttpRelay(
   invocation: CliInvocation = currentCliInvocation(),
 ): Promise<void> {
   let localServicePromise: ReturnType<typeof ensureManagedLocalService> | null = null;
+  let authStatusCache: {readonly authentication: RelayAuthentication; readonly expiresAt: number} | null = null;
+  const readAuthStatus = async (): Promise<RelayAuthentication> => {
+    if (authStatusCache !== null && authStatusCache.expiresAt > Date.now()) {
+      return authStatusCache.authentication;
+    }
+    let authentication: RelayAuthentication;
+    try {
+      const profile = await resolveDefaultMcpCliProfile(profileDirectory);
+      authentication = profile === null
+        ? "logged_out"
+        : (await profile.token(), "authenticated");
+    } catch {
+      authentication = "unavailable";
+    }
+    authStatusCache = {authentication, expiresAt: Date.now() + authStatusCacheMilliseconds};
+    return authentication;
+  };
   let reportedLocalMode = false;
   const localFallback = async (): Promise<{origin: string; token: string}> => {
     if (!reportedLocalMode) {
@@ -60,6 +80,7 @@ export async function startLocalMcpHttpRelay(
     void handleRequest(
       profileDirectory,
       localFallback,
+      readAuthStatus,
       request,
       response,
       activePort(server),
@@ -138,6 +159,7 @@ function activePort(server: ReturnType<typeof createServer>): number {
 async function handleRequest(
   profileDirectory: string,
   localFallback: () => Promise<{origin: string; token: string}>,
+  readAuthStatus: () => Promise<RelayAuthentication>,
   request: IncomingMessage,
   response: ServerResponse,
   port: number,
@@ -150,6 +172,11 @@ async function handleRequest(
   if (request.method === "GET" && requestUrl.pathname === healthPath) {
     response.writeHead(200, {"content-type": "application/json"});
     response.end('{"status":"ok"}');
+    return;
+  }
+  if (request.method === "GET" && requestUrl.pathname === authStatusPath) {
+    response.writeHead(200, {"content-type": "application/json"});
+    response.end(JSON.stringify({authentication: await readAuthStatus()}));
     return;
   }
   if (requestUrl.pathname !== mcpPath || !["GET", "POST", "DELETE"].includes(request.method ?? "")) {
