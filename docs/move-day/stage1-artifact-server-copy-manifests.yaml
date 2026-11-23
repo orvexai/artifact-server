@@ -2,9 +2,11 @@
 # MOVE-DAY.md namespace PSA-label check passes. Never add these to deploy/orvex.
 # Source: QMK addendum 2 S1(a)/S1(b) and addendum 5 (2026-11-23).
 # Image: rclone/rclone 1.76.0 linux/amd64, anonymous Docker Hub manifest digest.
-# The artifact-server-copy label is selected by orvex-allow-object-storage,
-# whose podSelector is empty; public source egress uses orvex-allow-internet.
-apiVersion: external-secrets.io/v1beta1
+# The Job carries label app.kubernetes.io/name=artifact-server; the empty
+# podSelector in orvex-allow-object-storage selects it; public source egress uses orvex-allow-internet.
+# Apply ExternalSecret and ServiceAccount first; wait for ExternalSecret Ready and
+# Secret hetzner-copy-ro to exist by name before applying the Job document.
+apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: hetzner-copy-ro
@@ -67,14 +69,32 @@ spec:
             - /bin/sh
             - -ec
             - |
-              src_before=$(rclone size src:artifact-server-storage --json)
-              dst_before=$(rclone size "dst:${BUCKET_NAME}" --json)
+              if ! src_before=$(rclone size src:artifact-server-storage --json --quiet 2>/dev/null); then
+                printf 'copy_status=failed step=source_before\n'
+                exit 1
+              fi
+              if ! dst_before=$(rclone size "dst:${BUCKET_NAME}" --json --quiet 2>/dev/null); then
+                printf 'copy_status=failed step=destination_before\n'
+                exit 1
+              fi
               printf 'source_before %s\n' "$src_before"
               printf 'destination_before %s\n' "$dst_before"
-              rclone copy src:artifact-server-storage "dst:${BUCKET_NAME}" --checksum --transfers 8 --checkers 8 --quiet
-              rclone check src:artifact-server-storage "dst:${BUCKET_NAME}" --one-way --quiet
-              src_after=$(rclone size src:artifact-server-storage --json)
-              dst_after=$(rclone size "dst:${BUCKET_NAME}" --json)
+              if ! rclone copy src:artifact-server-storage "dst:${BUCKET_NAME}" --checksum --transfers 8 --checkers 8 --quiet 2>/dev/null; then
+                printf 'copy_status=failed step=copy\n'
+                exit 1
+              fi
+              if ! rclone check src:artifact-server-storage "dst:${BUCKET_NAME}" --one-way --quiet 2>/dev/null; then
+                printf 'copy_status=failed step=check\n'
+                exit 1
+              fi
+              if ! src_after=$(rclone size src:artifact-server-storage --json --quiet 2>/dev/null); then
+                printf 'copy_status=failed step=source_after\n'
+                exit 1
+              fi
+              if ! dst_after=$(rclone size "dst:${BUCKET_NAME}" --json --quiet 2>/dev/null); then
+                printf 'copy_status=failed step=destination_after\n'
+                exit 1
+              fi
               printf 'source_after %s\n' "$src_after"
               printf 'destination_after %s\n' "$dst_after"
               printf 'copy_status=complete check_status=passed\n'
