@@ -2310,6 +2310,22 @@ export class PostgresArtifactRepository implements
     }));
   }
 
+  async updateGuestSessionDisplayName(projectId: string, artifactId: string, guestId: string, displayName: string): Promise<boolean> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`UPDATE guest_review_sessions s SET display_name = ${displayName}
+        FROM guest_review_invitations i, projects p, artifacts a
+        WHERE s.installation_id = ${installationId} AND s.id = ${guestId}
+          AND s.project_id = ${projectId} AND s.artifact_id = ${artifactId}
+          AND i.installation_id = s.installation_id AND i.id = s.invitation_id AND i.revoked_at IS NULL
+          AND p.installation_id = s.installation_id AND p.id = s.project_id AND p.archived_at IS NULL
+          AND a.installation_id = s.installation_id AND a.id = s.artifact_id AND a.deleted_at IS NULL
+        RETURNING s.id`;
+      return rows.length > 0;
+    }));
+  }
+
   async getGuestInvitationUsage(invitationId: string, requestTime: string): Promise<GuestReviewInvitationUsage> {
     const installationId = this.#installationId;
     return this.#database.run(Effect.gen(function*() {

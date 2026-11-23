@@ -2498,6 +2498,19 @@ export class SqliteArtifactRepository implements
     }));
   }
 
+  updateGuestSessionDisplayName(projectId: string, artifactId: string, guestId: string, displayName: string): Promise<boolean> {
+    return Promise.resolve().then(() => this.#transaction(() => {
+      const result = this.#database.prepare(`UPDATE guest_review_sessions SET display_name = ?
+        WHERE id = ? AND project_id = ? AND artifact_id = ?
+          AND EXISTS (SELECT 1 FROM guest_review_invitations i
+            WHERE i.id = guest_review_sessions.invitation_id AND i.revoked_at IS NULL)
+          AND EXISTS (SELECT 1 FROM projects p WHERE p.id = ? AND p.archived_at IS NULL)
+          AND EXISTS (SELECT 1 FROM artifacts a WHERE a.id = ? AND a.deleted_at IS NULL)`)
+        .run(displayName, guestId, projectId, artifactId, projectId, artifactId);
+      return result.changes > 0;
+    }));
+  }
+
   getGuestInvitationUsage(invitationId: string, requestTime: string): Promise<GuestReviewInvitationUsage> {
     return Promise.resolve().then(() => guestInvitationUsageRowSchema.parse(this.#database.prepare(`SELECT
       (SELECT COUNT(*) FROM guest_review_sessions s WHERE s.invitation_id = i.id

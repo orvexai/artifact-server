@@ -170,6 +170,102 @@ describe("invited guest review", () => {
     expect(await enabled.json()).toEqual({permission: "comment"});
   });
 
+  test("PLK-017-F: unavailable links have a neutral HTML page and indistinguishable exchange failures", async () => {
+    const privatePage = await fetch(`${server.baseUrl}/artifacts/${artifactId}`, {
+      headers: {Accept: "text/html"}, redirect: "manual",
+    });
+    const unknownPage = await fetch(`${server.baseUrl}/artifacts/art_00000000-0000-4000-8000-000000000000`, {
+      headers: {Accept: "text/html"}, redirect: "manual",
+    });
+    const privateHtml = await privatePage.text();
+    const unknownHtml = await unknownPage.text();
+    expect(privatePage.status).toBe(200);
+    expect(unknownPage.status).toBe(200);
+    expect(privatePage.headers.get("location")).toBeNull();
+    expect(unknownPage.headers.get("location")).toBeNull();
+    expect(privateHtml).toContain("This link isn't available");
+    expect(privateHtml).toContain("Ask the person who shared it for a new link.");
+    expect(privateHtml).not.toMatch(/sign in|choose another organization/iu);
+    expect(unknownHtml).toBe(privateHtml);
+
+    const enabled = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, "{\"permission\":\"view\"}");
+    expect(enabled.status).toBe(201);
+    const activeUrl = z.object({url: z.url()}).parse(await enabled.json()).url;
+    const activeSecret = new URLSearchParams(new URL(activeUrl).hash.slice(1)).get("link");
+    expect(activeSecret).toBeTruthy();
+    const revokedGuest = await exchange(artifactId, activeSecret ?? "", "Revoked visitor");
+    const revoked = await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`);
+    expect(revoked.status).toBe(204);
+    const revokedCurrent = await guestRequest(revokedGuest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`);
+    const revokedCurrentResult = {body: await revokedCurrent.text(), status: revokedCurrent.status};
+
+    const resetSource = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, "{\"permission\":\"view\"}");
+    expect(resetSource.status).toBe(201);
+    const resetSourceUrl = z.object({url: z.url()}).parse(await resetSource.json()).url;
+    const resetSecret = new URLSearchParams(new URL(resetSourceUrl).hash.slice(1)).get("link");
+    expect(resetSecret).toBeTruthy();
+    const reset = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link/reset?projectId=${projectId}`, "{}");
+    expect(reset.status).toBe(201);
+
+    const disabledLink = await ownerRequest("POST", `/api/v1/artifacts/${otherArtifactId}/public-link?projectId=${projectId}`, "{\"permission\":\"view\"}");
+    expect(disabledLink.status).toBe(201);
+    const disabledUrl = z.object({url: z.url()}).parse(await disabledLink.json()).url;
+    const disabledSecret = new URLSearchParams(new URL(disabledUrl).hash.slice(1)).get("link");
+    expect(disabledSecret).toBeTruthy();
+    const disabledGuest = await exchange(otherArtifactId, disabledSecret ?? "", "Disabled visitor");
+    const failedExchanges = await Promise.all([
+      exchangeResponse(artifactId, "unknown-secret-with-sufficient-length"),
+      exchangeResponse(artifactId, activeSecret ?? ""),
+      exchangeResponse(artifactId, resetSecret ?? ""),
+    ]);
+    const failureResults = await Promise.all(failedExchanges.map(async (response) => ({body: await response.text(), status: response.status})));
+    expect(failureResults).toHaveLength(3);
+    expect(failureResults.every((result) => result.status === 404)).toBe(true);
+    expect(failureResults[1]).toEqual(failureResults[0]);
+    expect(failureResults[2]).toEqual(failureResults[0]);
+
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    database.prepare("UPDATE artifact_installation_settings SET public_links_enabled = 0 WHERE singleton = 1").run();
+    const disabledResponse = await exchangeResponse(otherArtifactId, disabledSecret ?? "");
+    const disabledResult = {body: await disabledResponse.text(), status: disabledResponse.status};
+    expect(disabledResult).toEqual(failureResults[0]);
+    const disabledCurrent = await guestRequest(disabledGuest, "GET", `/api/v1/public/artifacts/${otherArtifactId}/guest/current`);
+    expect({body: await disabledCurrent.text(), status: disabledCurrent.status}).toEqual(revokedCurrentResult);
+    database.close();
+  });
+
+  test("PLK-007-B: the public-link routes list and revoke sessions and revoke the link", async () => {
+    const created = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "comment"}));
+    expect(created.status).toBe(201);
+    const url = z.object({url: z.url()}).parse(await created.json()).url;
+    const secret = new URLSearchParams(new URL(url).hash.slice(1)).get("link");
+    expect(secret).toBeTruthy();
+    const guest = await exchange(artifactId, secret ?? "");
+    const sessionsResponse = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/public-link/sessions?projectId=${projectId}`);
+    expect(sessionsResponse.status).toBe(200);
+    const sessions = z.object({sessions: z.array(z.object({guestId: z.string()}))}).parse(await sessionsResponse.json()).sessions;
+    expect(sessions).toHaveLength(1);
+    const sessionRevoked = await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}/public-link/sessions/${sessions[0]?.guestId}?projectId=${projectId}`);
+    expect(sessionRevoked.status).toBe(204);
+    expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
+
+    const second = await exchange(artifactId, secret ?? "");
+    const revoked = await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`);
+    expect(revoked.status).toBe(204);
+    expect((await guestRequest(second, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
+    const status = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`);
+    expect(await status.json()).toMatchObject({enabled: false});
+
+    const legacy = await publishNew(server, installation, {
+      accessSetting: "public_link", content: "legacy revoked to private", idempotencyKey: "plk-007-legacy-revoke",
+      name: "Legacy revoke", projectId,
+    });
+    const legacyRevoked = await ownerRequest("DELETE", `/api/v1/artifacts/${legacy.body.artifact.id}/public-link?projectId=${projectId}`);
+    expect(legacyRevoked.status).toBe(204);
+    const privateDetails = await ownerRequest("GET", `/api/v1/artifacts/${legacy.body.artifact.id}?projectId=${projectId}`);
+    expect((await privateDetails.json()).artifact.accessSetting).toBe("account_required");
+  });
+
   test("PLK-006-F: changing a comment link to view refuses the next existing-session write", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
@@ -421,6 +517,35 @@ describe("invited guest review", () => {
     const status = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`);
     expect(await status.json()).toMatchObject({enabled: true, permission: "comment"});
     database.close();
+  });
+
+  test("PLK-016-F: the disabled policy blocks legacy artifact reads", async () => {
+    const legacy = await publishNew(server, installation, {
+      accessSetting: "public_link", content: "legacy read is disabled", idempotencyKey: "plk-016-legacy-off",
+    });
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    database.prepare("UPDATE artifact_installation_settings SET public_links_enabled = 0 WHERE singleton = 1").run();
+    const response = await fetch(`${server.baseUrl}/artifacts/${legacy.body.artifact.id}`, {
+      headers: {Accept: "text/html"}, redirect: "manual",
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    expect(await response.text()).toContain("This link isn't available");
+    database.close();
+  });
+
+  test("PLK-010-B: a comment visitor can rename the current guest with CSRF", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret, "Initial Name");
+    const path = `/api/v1/public/artifacts/${artifactId}/guest/current`;
+    const denied = await guestRequest(guest, "PATCH", path, JSON.stringify({displayName: "Renamed"}), false);
+    expect(denied.status).toBe(403);
+    const renamed = await guestRequest(guest, "PATCH", path, JSON.stringify({displayName: "Renamed Visitor"}));
+    expect(renamed.status).toBe(200);
+    expect(await renamed.json()).toEqual({displayName: "Renamed Visitor"});
+    const current = await guestRequest(guest, "GET", path);
+    expect(current.status).toBe(201);
+    expect(await current.json()).toMatchObject({displayName: "Renamed Visitor"});
   });
 
   test("exchange requires a same-origin JSON request", async () => {

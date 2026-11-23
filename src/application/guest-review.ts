@@ -53,6 +53,7 @@ export interface GuestReviewDependencies {
     readonly findGuestSession: (tokenDigest: string, artifactId: string, requestTime: string) => Effect.Effect<GuestReviewSession | null, ArtifactRepositoryFailure>;
     readonly listGuestSessions: (projectId: string, artifactId: string, requestTime: string) => Effect.Effect<readonly GuestReviewSessionSummary[], ArtifactRepositoryFailure>;
     readonly revokeGuestSession: (projectId: string, artifactId: string, guestId: string) => Effect.Effect<boolean, ArtifactRepositoryFailure>;
+    readonly updateGuestSessionDisplayName: (projectId: string, artifactId: string, guestId: string, displayName: string) => Effect.Effect<boolean, ArtifactRepositoryFailure>;
     readonly getGuestInvitationUsage: (invitationId: string, requestTime: string) => Effect.Effect<GuestReviewInvitationUsage, ArtifactRepositoryFailure>;
     readonly deleteExpiredGuestSessions: (expiredBefore: string, limit: number) => Effect.Effect<number, ArtifactRepositoryFailure>;
     readonly deleteExpiredGuestContentRows: (expiredBefore: string, limit: number) => Effect.Effect<number, ArtifactRepositoryFailure>;
@@ -69,6 +70,8 @@ interface GuestReviewOperations {
   readonly setPermission: (command: {artifactId: string; permission: "view" | "comment"; principal: Principal; projectId: string | null}) => Effect.Effect<"legacy" | "updated", GuestReviewFailure>;
   readonly listSessions: (command: {artifactId: string; principal: Principal; projectId: string | null}) => Effect.Effect<readonly GuestReviewSessionSummary[], GuestReviewFailure>;
   readonly revokeSession: (command: {artifactId: string; guestId: string; principal: Principal; projectId: string | null}) => Effect.Effect<void, GuestReviewFailure>;
+  readonly renameCurrent: (command: {artifactId: string; displayName: string; guest: GuestReviewer}) => Effect.Effect<string, GuestReviewFailure>;
+  readonly policyEnabled: () => Effect.Effect<boolean, ArtifactRepositoryFailure>;
     readonly exchange: (command: GuestSessionExchangeCommand) => Effect.Effect<{csrfToken: string; expiresAt: string; reviewer: GuestReviewer; sessionToken: Redacted.Redacted}, GuestReviewFailure>;
   readonly authenticate: (token: Redacted.Redacted, artifactId: string, requestTime: string) => Effect.Effect<GuestReviewSession | null, GuestReviewFailure>;
 }
@@ -149,6 +152,18 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
         if (!revoked) return yield* new ArtifactNotFound({message: "The guest session does not exist."});
         return undefined;
       });
+      const renameCurrent = Effect.fn("GuestReviewService.renameCurrent")(function*(command: {artifactId: string; displayName: string; guest: GuestReviewer}) {
+        if (command.guest.artifactId !== command.artifactId || command.guest.permission !== "comment") return yield* new ArtifactNotFound({message: "The requested route does not exist."});
+        const requestedDisplayName = command.displayName.trim();
+        if (requestedDisplayName.length < 1 || requestedDisplayName.length > 80) return yield* new AuthorizationDenied({message: "The display name must contain 1 to 80 characters."});
+        const displayName = dependencies.organizationDirectoryVisibility === true && isReservedTenantIdentityName(requestedDisplayName)
+          ? "Orvex Support (member)"
+          : requestedDisplayName;
+        const updated = yield* dependencies.repository.updateGuestSessionDisplayName(command.guest.projectId, command.artifactId, command.guest.guestId, displayName);
+        if (!updated) return yield* new ArtifactNotFound({message: "The requested route does not exist."});
+        return displayName;
+      });
+      const policyEnabled = () => dependencies.repository.getPublicLinksEnabled();
       const enable = Effect.fn("GuestReviewService.enable")(function*(command: {artifactId: string; permission?: "view" | "comment"; principal: Principal; projectId: string | null}) {
         if (!(yield* dependencies.repository.getPublicLinksEnabled())) return yield* new AuthorizationDenied({message: "An administrator has disabled public links."});
         const result = yield* resolveManageableArtifact(command);
@@ -259,7 +274,7 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
         if (session === null || !(yield* creatorMayStillManage(session.projectId, session.invitationCreatorPrincipalId))) return null;
         return session;
       });
-      return GuestReviewService.of({authenticate, create, enable, exchange, listSessions, revoke, revokeSession, setPermission, status});
+      return GuestReviewService.of({authenticate, create, enable, exchange, listSessions, policyEnabled, renameCurrent, revoke, revokeSession, setPermission, status});
     }),
   );
 }

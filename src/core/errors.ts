@@ -418,6 +418,7 @@ export class ArtifactRepositoryFailure extends Schema.TaggedError<ArtifactReposi
       "findGuestSession",
       "listGuestSessions",
       "revokeGuestSession",
+      "updateGuestSessionDisplayName",
       "getGuestInvitationUsage",
       "setGuestInvitationPermission",
       "getPublicLinksEnabled",

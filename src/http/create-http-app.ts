@@ -316,6 +316,7 @@ const guestSessionExchangeSchema = z.object({
   secret: z.string().min(1).max(200),
 }).strict();
 const publicLinkPermissionSchema = z.object({permission: z.enum(["view", "comment"])}).strict();
+const guestDisplayNameSchema = z.object({displayName: z.string().trim().min(1).max(80)}).strict();
 const publicLinkCreateSchema = z.object({permission: z.enum(["view", "comment"]).default("view")}).strict();
 const guestCreateThreadSchema = z.object({
   anchor: z.unknown().optional(),
@@ -590,6 +591,22 @@ export function renderIdentityAdmissionDeniedPage(fontBase = "/assets/fonts/hous
     "</style></head><body><main class=\"shell\"><section class=\"card\"><div class=\"top\">" +
     houstonServerPageMark() +
     "<span class=\"brand\">Houston Artifacts</span></div><h1>We couldn’t sign you in to Houston Artifacts</h1><p>Your account does not have access to this organization.</p><div class=\"actions\"><a href=\"/\">Choose another organization</a><form method=\"post\" action=\"/api/v1/platform/session/logout\"><button type=\"submit\">Sign out</button></form></div></section></main></body></html>";
+}
+
+function acceptsHtml(value: string | undefined): boolean {
+  return value?.split(",").some((item) => item.trim().startsWith("text/html")) ?? false;
+}
+
+function publicLinkUnavailableResponse(context: Context<HttpEnvironment>): Response {
+  const styles = houstonServerPageStyles() +
+    ".card{width:min(100% - 40px,560px);padding:32px;border:1px solid var(--page-border);border-radius:12px;background:var(--page-surface);box-shadow:0 12px 36px #0f172a12}.card h1{margin:0;font-size:26px;line-height:1.2}";
+  const html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>Houston Artifacts — Link unavailable</title><meta name=\"robots\" content=\"noindex,nofollow\"><style>" +
+    styles + "</style></head><body><main class=\"shell\"><section class=\"card\"><div class=\"top\">" +
+    houstonServerPageMark() + "<span class=\"brand\">Houston Artifacts</span></div><h1>This link isn't available</h1><p>Ask the person who shared it for a new link.</p></section></main></body></html>";
+  return new Response(context.req.method === "HEAD" ? null : html, {headers: {
+    "Cache-Control": "no-store", "Content-Type": "text/html; charset=utf-8",
+    "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow",
+  }, status: 200});
 }
 
 export interface HttpAppDependencies {
@@ -1078,8 +1095,7 @@ export function createHttpApp(
   app.on(
     ["GET", "HEAD"],
     ["/review", "/review/*"],
-    (context) =>
-      serveWebAsset(context, dependencies, "/review.html", "application-shell"),
+    (context) => serveWebAsset(context, dependencies, "/review.html", "application-shell"),
   );
 
   app.on(["GET", "HEAD"], "/workbench", (context) => {
@@ -1217,6 +1233,16 @@ export function createHttpApp(
       responseApplicationUrl(context, dependencies), dependencies.contentDomain,
       issued.contentToken, Redacted.value(issued.token), requestedContentPath(context),
     ), versionId: issued.versionId}, 201);
+  });
+
+  app.patch("/api/v1/public/artifacts/:artifactId/guest/current", boundedJsonBody, async (context) => {
+    const artifactId = context.req.param("artifactId");
+    const guest = await requireGuestReviewer(context, dependencies, artifactId, true);
+    if (guest === null || guest.artifactId !== artifactId) return guestNotFound(context);
+    const body = guestDisplayNameSchema.parse(await context.req.json());
+    const displayName = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.renameCurrent({artifactId, displayName: body.displayName, guest})));
+    return context.json({displayName});
   });
 
   app.post("/api/v1/public/artifacts/:artifactId/guest/heartbeat", async (context) => {
@@ -3247,6 +3273,45 @@ export function createHttpApp(
     return context.json({permission: body.permission});
   });
 
+  app.delete("/api/v1/artifacts/:artifactId/public-link", async (context) => {
+    const artifactId = context.req.param("artifactId");
+    const principal = context.get("principal");
+    const projectId = requestedProjectId(context);
+    const status = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.status({artifactId, principal, projectId})));
+    if (status.legacy) {
+      const details = await runHttpApplicationEffect(context, dependencies,
+        ArtifactManagementService.use((management) => management.getArtifact({artifactId, principal, projectId})));
+      await runHttpApplicationEffect(context, dependencies,
+        ArtifactManagementService.use((management) => management.changeAccess({
+          accessSetting: accessSettings.accountRequired, artifactId,
+          expectedCurrentVersionId: details.current.version.id,
+          idempotencyKey: `public-link-revoke-${crypto.randomUUID()}`,
+          principal, projectId,
+        })));
+    }
+    await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.revoke({artifactId, principal, projectId})));
+    return context.body(null, 204);
+  });
+
+  app.get("/api/v1/artifacts/:artifactId/public-link/sessions", async (context) => {
+    const sessions = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.listSessions({
+        artifactId: context.req.param("artifactId"), principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    return context.json({sessions});
+  });
+
+  app.delete("/api/v1/artifacts/:artifactId/public-link/sessions/:guestId", async (context) => {
+    await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.revokeSession({
+        artifactId: context.req.param("artifactId"), guestId: context.req.param("guestId"),
+        principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    return context.body(null, 204);
+  });
+
   app.get("/api/v1/artifacts/:artifactId/guest-invitation", async (context) => {
     const status = await runHttpApplicationEffect(context, dependencies,
       GuestReviewService.use((guests) => guests.status({
@@ -3670,13 +3735,25 @@ export function createHttpApp(
   });
 
   app.get("/artifacts/:artifactId", async (context) => {
-    const current = await runHttpApplicationEffect(
-      context,
-      dependencies,
-      ContentAccessService.use((contentAccess) =>
-        contentAccess.resolvePublicArtifact(context.req.param("artifactId"))
-      ),
+    const policyEnabled = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.policyEnabled()).pipe(Effect.catch(() => Effect.succeed(false))));
+    if (!policyEnabled) {
+      return acceptsHtml(context.req.header("accept"))
+        ? publicLinkUnavailableResponse(context)
+        : context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404);
+    }
+    const resolveCurrent = ContentAccessService.use((contentAccess) =>
+      contentAccess.resolvePublicArtifact(context.req.param("artifactId"))
     );
+    const current = acceptsHtml(context.req.header("accept"))
+      ? await runHttpApplicationEffect(context, dependencies,
+        resolveCurrent.pipe(Effect.catch(() => Effect.succeed(null))))
+      : await runHttpApplicationEffect(context, dependencies, resolveCurrent);
+    if (current === null) {
+      return acceptsHtml(context.req.header("accept"))
+        ? publicLinkUnavailableResponse(context)
+        : context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404);
+    }
     const versionUrl = versionBrowserUrl(
       responseApplicationUrl(context, dependencies),
       dependencies.contentDomain,

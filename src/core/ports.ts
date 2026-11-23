@@ -807,6 +807,7 @@ export interface GuestReviewRepository {
   findGuestSession(tokenDigest: string, artifactId: string, requestTime: string): Promise<GuestReviewSession | null>;
   listGuestSessions(projectId: string, artifactId: string, requestTime: string): Promise<readonly GuestReviewSessionSummary[]>;
   revokeGuestSession(projectId: string, artifactId: string, guestId: string): Promise<boolean>;
+  updateGuestSessionDisplayName(projectId: string, artifactId: string, guestId: string, displayName: string): Promise<boolean>;
   getGuestInvitationUsage(invitationId: string, requestTime: string): Promise<GuestReviewInvitationUsage>;
   reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<"reserved" | "rate_limited" | "view_only" | "paused" | "invalid">;
   reserveGuestBootstrap(guestId: string, requestTime: string): Promise<boolean>;
