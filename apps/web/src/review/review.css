@@ -1290,6 +1290,25 @@ select:focus-visible {
   position: relative;
 }
 
+@media (min-width: 721px) {
+  .as-app[data-focus-mode="true"]:has(.as-preview-panel__body[data-preview-kind="pdf"]) {
+    --as-focus-dock-band: 3.75rem;
+  }
+
+  .as-app[data-focus-mode="true"] .as-preview-panel__body[data-preview-kind="pdf"] {
+    padding-top: var(--as-focus-dock-band);
+  }
+
+  .as-app[data-focus-mode="true"] .as-focus-controls-dock[data-preview-kind="pdf"][data-collapsed="true"] {
+    bottom: auto;
+    height: var(--as-focus-dock-band);
+  }
+
+  .as-app[data-focus-mode="true"] .as-focus-controls-dock[data-preview-kind="pdf"][data-collapsed="true"] .as-focus-controls__hover-zone {
+    height: var(--as-focus-dock-band);
+  }
+}
+
 .as-focus-controls-dock {
   position: absolute;
   right: 0.75rem;

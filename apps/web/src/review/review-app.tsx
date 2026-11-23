@@ -1765,6 +1765,7 @@ function ArtifactReview({
             <>
               <div
                 className="as-focus-controls-dock"
+                data-preview-kind={previewKind}
                 data-collapsed={focusControlsCollapsed}
                 data-comments-open={focusCommentsOpen}
                 data-hover-armed={focusControlsHoverArmed}
