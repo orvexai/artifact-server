@@ -17,12 +17,14 @@ No values or hashes belong in this list. The move-day read token is limited to t
 
 ### Stage 1 Hetzner storage copy credential
 
-After the C1-4 carry places the credential in Manchester OpenBao at `apps/artifact-server/hetzner-copy-ro`, QMK applies two temporary objects in namespace `artifact-server` under its named 8-hour go. These are Manchester writes and must not be added to `deploy/orvex`:
+After the C1-4 carry places the credential in Manchester OpenBao at `apps/artifact-server/hetzner-copy-ro`, QMK applies three temporary objects in namespace `artifact-server` under its named 8-hour go. These are Manchester writes and must not be added to `deploy/orvex`:
 
-1. Apply an `ExternalSecret` using `SecretStore` `orvex-secrets`, with `creationPolicy: Owner`, mapping `artifact-server/hetzner-copy-ro` to Secret `hetzner-copy-ro`. The Secret name is outside the `orvex-*` fence (R10).
-2. The storage-copy Job reads only that Secret through `secretKeyRef`, mapping `access-key-id` and `secret-access-key` to `RCLONE_S3_ACCESS_KEY_ID` and `RCLONE_S3_SECRET_ACCESS_KEY`. Its access is read-only to the Hetzner bucket `artifact-server-storage`; egress to the Hetzner S3 endpoint is covered by `orvex-allow-internet` (D107).
+1. Before applying, read only the `pod-security.kubernetes.io/*` labels on namespace `artifact-server`. Require `enforce=restricted` or `baseline`, `audit=restricted`, and `warn=restricted`; record the enforce value. If the namespace is not managed or these labels fail, STOP.
+2. Apply the exact hand-applied objects in [`docs/move-day/stage1-artifact-server-copy-manifests.yaml`](../../docs/move-day/stage1-artifact-server-copy-manifests.yaml). It contains the `ExternalSecret`, dedicated `ServiceAccount`, and `Job`; it is not part of the `deploy/orvex` GitOps tree. The ExternalSecret uses `SecretStore` `orvex-secrets`, with `creationPolicy: Owner`, mapping `artifact-server/hetzner-copy-ro` properties `access-key-id` and `secret-access-key` to Secret `hetzner-copy-ro`.
+3. The Job reads source keys from `hetzner-copy-ro` and destination keys from the Rook OBC Secret `artifact-server-storage` through individual `secretKeyRef`s. It reads `BUCKET_NAME`, `BUCKET_HOST`, and `BUCKET_PORT` from the same-name OBC ConfigMap through individual `configMapKeyRef`s. Bring-up confirms the OBC Secret and ConfigMap names by name only before freezing the apply copy. The source remote is read-only to Hetzner bucket `artifact-server-storage`; the target bucket name is generated and comes from the ConfigMap. Per-remote variables keep the source and destination credentials separate.
+4. The Job uses `docker.io/rclone/rclone:1.76.0@sha256:075cf0e4e0f623996646cfb8a434c71cb4fcfe75bbbe27ccbb296ca04a7cd260`, the `linux/amd64` image manifest resolved anonymously from Docker Hub on 2026-11-23. It carries `app.kubernetes.io/name=artifact-server`, which is selected by `orvex-allow-object-storage` (`podSelector: {}`); that policy allows the Job's egress to the in-cluster RGW. `orvex-allow-internet` covers the public Hetzner S3 endpoint (D107).
 
-Delete the Job and `ExternalSecret` immediately after the copy, delete Secret `hetzner-copy-ro`, and show all three are gone.
+Delete the Job, dedicated ServiceAccount, and `ExternalSecret` immediately after the copy; delete Secret `hetzner-copy-ro`; and show all four objects are gone. Keep the Rook-owned OBC Secret and ConfigMap.
 
 ### Stage 1 copy credential cleanup
 
@@ -126,7 +128,7 @@ The production configuration has no usable by-hand base backup until all four St
 
 If any prerequisite is false on Wednesday 25 November evening, Stage 1 does not start Thursday 26 November. The Captain takes the date change to QMK. No prerequisite is waived.
 
-The backup component is a prerequisite that is not yet on this branch. Add it to PR #86 in a separate commit after orvex-apps MA-34 #17 (now merged), and enable it in `deploy/orvex/production/kustomization.yaml` before the Stage-1 Backup. After the production database data is loaded on Manchester and all four prerequisites are confirmed, add this entry under `components:`:
+The backup component is a prerequisite for the Stage-1 Backup. It is enabled in `deploy/orvex/production/kustomization.yaml` after orvex-apps MA-34 #17 merged. After the production database data is loaded on Manchester and all four prerequisites are confirmed, the component patches the Cluster and adds the daily `ScheduledBackup`:
 
 ```yaml
 - ../components/backup

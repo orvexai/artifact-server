@@ -1,0 +1,159 @@
+# Stage 1 hand-applied objects. Apply only under QMK's named go after the
+# MOVE-DAY.md namespace PSA-label check passes. Never add these to deploy/orvex.
+# Source: QMK addendum 2 S1(a)/S1(b) and addendum 5 (2026-11-23).
+# Image: rclone/rclone 1.76.0 linux/amd64, anonymous Docker Hub manifest digest.
+# The artifact-server-copy label is selected by orvex-allow-object-storage,
+# whose podSelector is empty; public source egress uses orvex-allow-internet.
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: hetzner-copy-ro
+  namespace: artifact-server
+spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: orvex-secrets
+  target:
+    name: hetzner-copy-ro
+    creationPolicy: Owner
+    template:
+      type: Opaque
+  data:
+    - secretKey: access-key-id
+      remoteRef:
+        key: artifact-server/hetzner-copy-ro
+        property: access-key-id
+    - secretKey: secret-access-key
+      remoteRef:
+        key: artifact-server/hetzner-copy-ro
+        property: secret-access-key
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: artifact-server-copy
+  namespace: artifact-server
+automountServiceAccountToken: false
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: artifact-server-copy
+  namespace: artifact-server
+  labels:
+    app.kubernetes.io/name: artifact-server
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 21600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: artifact-server
+    spec:
+      serviceAccountName: artifact-server-copy
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rclone-copy
+          image: docker.io/rclone/rclone:1.76.0@sha256:075cf0e4e0f623996646cfb8a434c71cb4fcfe75bbbe27ccbb296ca04a7cd260
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              src_before=$(rclone size src:artifact-server-storage --json)
+              dst_before=$(rclone size "dst:${BUCKET_NAME}" --json)
+              printf 'source_before %s\n' "$src_before"
+              printf 'destination_before %s\n' "$dst_before"
+              rclone copy src:artifact-server-storage "dst:${BUCKET_NAME}" --checksum --transfers 8 --checkers 8 --quiet
+              rclone check src:artifact-server-storage "dst:${BUCKET_NAME}" --one-way --quiet
+              src_after=$(rclone size src:artifact-server-storage --json)
+              dst_after=$(rclone size "dst:${BUCKET_NAME}" --json)
+              printf 'source_after %s\n' "$src_after"
+              printf 'destination_after %s\n' "$dst_after"
+              printf 'copy_status=complete check_status=passed\n'
+          env:
+            - name: HOME
+              value: /tmp
+            - name: RCLONE_CACHE_DIR
+              value: /tmp
+            - name: BUCKET_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: artifact-server-storage
+                  key: BUCKET_NAME
+            - name: BUCKET_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: artifact-server-storage
+                  key: BUCKET_HOST
+            - name: BUCKET_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: artifact-server-storage
+                  key: BUCKET_PORT
+            - name: RCLONE_CONFIG_SRC_TYPE
+              value: s3
+            - name: RCLONE_CONFIG_SRC_PROVIDER
+              value: Ceph
+            - name: RCLONE_CONFIG_SRC_ENDPOINT
+              value: https://s3.eu-central-1.myidp.cloud
+            - name: RCLONE_CONFIG_SRC_REGION
+              value: us-east-1
+            - name: RCLONE_CONFIG_SRC_FORCE_PATH_STYLE
+              value: "true"
+            - name: RCLONE_CONFIG_SRC_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: hetzner-copy-ro
+                  key: access-key-id
+            - name: RCLONE_CONFIG_SRC_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hetzner-copy-ro
+                  key: secret-access-key
+            - name: RCLONE_CONFIG_DST_TYPE
+              value: s3
+            - name: RCLONE_CONFIG_DST_PROVIDER
+              value: Ceph
+            - name: RCLONE_CONFIG_DST_ENDPOINT
+              value: http://$(BUCKET_HOST):$(BUCKET_PORT)
+            - name: RCLONE_CONFIG_DST_REGION
+              value: us-east-1
+            - name: RCLONE_CONFIG_DST_FORCE_PATH_STYLE
+              value: "true"
+            - name: RCLONE_CONFIG_DST_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: artifact-server-storage
+                  key: AWS_ACCESS_KEY_ID
+            - name: RCLONE_CONFIG_DST_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: artifact-server-storage
+                  key: AWS_SECRET_ACCESS_KEY
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
