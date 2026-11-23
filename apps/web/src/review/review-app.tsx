@@ -630,6 +630,8 @@ function ArtifactReview({
   const inspectorOpenTriggerRef = useRef<HTMLButtonElement>(null);
   const inspectorCloseRef = useRef<HTMLButtonElement>(null);
   const previousCompactSheetsRef = useRef({catalogOpen, inspectorOpen});
+  const compactSuppressedInspectorRef = useRef(false);
+  const automaticSheetChangeRef = useRef(false);
   const previewPanelRef = useRef<HTMLElement>(null);
   const commentsInspectorRef = useRef<ReviewCommentsInspectorHandle>(null);
   const openCatalog = useCallback((): void => {
@@ -637,15 +639,29 @@ function ArtifactReview({
     if (compactViewport) setInspectorOpen(false);
   }, [compactViewport]);
   const openInspector = useCallback((): void => {
+    compactSuppressedInspectorRef.current = false;
     setInspectorOpen(true);
     if (compactViewport) setCatalogOpen(false);
   }, [compactViewport]);
   useEffect(() => {
-    if (compactViewport && catalogOpen && inspectorOpen) setCatalogOpen(false);
+    if (compactViewport && catalogOpen && inspectorOpen) {
+      compactSuppressedInspectorRef.current = true;
+      automaticSheetChangeRef.current = true;
+      setInspectorOpen(false);
+    }
   }, [catalogOpen, compactViewport, inspectorOpen]);
+  useEffect(() => {
+    if (compactViewport || !compactSuppressedInspectorRef.current) return;
+    compactSuppressedInspectorRef.current = false;
+    setInspectorOpen(true);
+  }, [compactViewport]);
   useEffect(() => {
     const previous = previousCompactSheetsRef.current;
     previousCompactSheetsRef.current = {catalogOpen, inspectorOpen};
+    if (automaticSheetChangeRef.current) {
+      automaticSheetChangeRef.current = false;
+      return;
+    }
     if (!compactViewport) return;
 
     let focusTarget: HTMLButtonElement | HTMLInputElement | null = null;

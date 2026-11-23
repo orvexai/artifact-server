@@ -185,3 +185,70 @@ test("artifact-server-7gk: review workspace and Projects stay usable at 390px", 
     await stopBrowserFixture(fixture);
   }
 });
+
+test("artifact-server-7gk: resizing across 720px keeps one sheet in compact and restores the wide layout", async ({browser}) => {
+  const fixture = await startBrowserFixture(browser);
+  fixture.page.setDefaultTimeout(1_200);
+  fixture.page.setDefaultNavigationTimeout(5_000);
+
+  try {
+    const published = await publishNew(fixture.server, fixture.installation, {
+      accessSetting: "account_required",
+      content: "<!doctype html><html lang=\"en\"><title>Resize review fixture</title><main><h1>Resize preview</h1></main></html>",
+      idempotencyKey: "artifact-server-7gk-compact-resize",
+      name: "Resize review fixture",
+    });
+
+    await localLogin(fixture, false);
+    await fixture.page.setViewportSize({width: 1280, height: 800});
+    const reviewUrl = `${fixture.server.baseUrl}/review?${new URLSearchParams({
+      project: "prj_default",
+      artifact: published.body.artifact.id,
+    })}`;
+    await fixture.page.goto(reviewUrl, {timeout: 5_000, waitUntil: "domcontentloaded"});
+
+    const catalog = fixture.page.getByRole("complementary", {name: "Artifact catalog"});
+    const inspector = fixture.page.getByRole("complementary", {name: "Artifact inspector"});
+    const openCatalog = fixture.page.getByRole("button", {name: "Open artifact catalog"});
+    const openInspector = fixture.page.getByRole("button", {name: "Open inspector"});
+    const closeInspector = fixture.page.getByRole("button", {name: "Close inspector"});
+
+    if (!(await catalog.isVisible())) await openCatalog.click();
+    if (!(await inspector.isVisible())) await openInspector.click();
+    await expect(catalog).toBeVisible();
+    await expect(closeInspector).toBeVisible();
+
+    await fixture.page.setViewportSize({width: 680, height: 720});
+    await expect(catalog).toBeVisible();
+    await expect(closeInspector).toHaveCount(0);
+    await expect(openInspector).toBeVisible();
+
+    await fixture.page.setViewportSize({width: 1280, height: 800});
+    await expect(catalog).toBeVisible();
+    await expect(closeInspector).toBeVisible();
+
+    await fixture.page.setViewportSize({width: 680, height: 720});
+    await expect(openInspector).toBeVisible();
+    await fixture.page.evaluate(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+    await fixture.page.keyboard.press("]");
+    await expect(inspector).toBeVisible();
+    await expect(catalog).toBeHidden();
+
+    await fixture.page.setViewportSize({width: 1280, height: 800});
+    await expect(inspector).toBeVisible();
+    await expect(catalog).toBeHidden();
+
+    await fixture.page.setViewportSize({width: 680, height: 720});
+    await closeInspector.click();
+    await expect(inspector).toBeHidden();
+
+    await fixture.page.setViewportSize({width: 1280, height: 800});
+    await expect(inspector).toBeHidden();
+    await expect(openInspector).toBeVisible();
+    await expect(catalog).toBeHidden();
+  } finally {
+    await stopBrowserFixture(fixture);
+  }
+});
