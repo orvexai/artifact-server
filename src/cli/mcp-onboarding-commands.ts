@@ -3,6 +3,7 @@ import {connect as connectTcp} from "node:net";
 import {once} from "node:events";
 
 import {type Command, Option} from "commander";
+import {z} from "zod";
 
 import {
   localMcpHttpRelayAddressPath,
@@ -28,6 +29,7 @@ import {
   readDefaultMcpCliProfileAddress,
   resolveDefaultMcpCliProfile,
 } from "./mcp-cli-profile.js";
+import {CliCredentialStoreError} from "./system-credential-store.js";
 
 
 interface DataOptions {
@@ -168,13 +170,31 @@ function configureDoctorCommand(
         readLocalMcpHttpRelayAddress(localMcpHttpRelayAddressPath(dataDirectory)),
         inspectManagedLocalService(dataDirectory),
         resolveDefaultMcpCliProfile(dataDirectory).then(
-          (profile) => ({error: null, profile}),
-          (cause) => ({error: cause instanceof Error ? cause.message : String(cause), profile: null}),
+          (profile) => ({cause: null, error: null, profile}),
+          (cause: unknown) => ({
+            cause,
+            error: cause instanceof Error ? cause.message : String(cause),
+            profile: null,
+          }),
         ),
         readDefaultMcpCliProfileAddress(dataDirectory),
         inspectMcpClientRegistrations(dataDirectory),
       ]);
       const profile = profileResult.profile;
+      const relayAuthentication = reachable
+        ? await readRelayAuthenticationStatus(relayAddress?.port)
+        : null;
+      const shellCredentialStore = profileResult.cause instanceof CliCredentialStoreError
+        ? profileResult.cause.reason === "backend_unavailable"
+          ? "unavailable"
+          : profileResult.cause.reason === "operation_failed"
+            ? "rejected"
+            : "missing"
+        : "available";
+      const authentication = relayAuthentication ?? (profile !== null
+        ? "authenticated"
+        : profileResult.error === null ? "logged_out" : "invalid");
+      const authenticationSource = relayAuthentication === null ? "shell" : "relay";
       const selectedClients = requestedClient === null
         ? clients
         : clients.filter((client) => client.client === requestedClient);
@@ -216,14 +236,15 @@ function configureDoctorCommand(
       });
       const healthy = serviceReachable
         && discovery.status === "healthy"
-        && clientHealthy;
-      console.log(JSON.stringify({
-        clients: reportedClients,
-        dataDirectory,
-        discovery,
-        remediation: healthy
-          ? (profile === null ? ["Run artifactserver auth login when remote MCP access is needed."] : [])
-          : [...new Set([
+        && clientHealthy
+        && relayAuthentication !== "unavailable";
+      const remediation = [
+        ...(!healthy && relayAuthentication === "unavailable"
+          ? ["Run artifactserver auth login to repair the configured remote profile credential."]
+          : []),
+        ...(healthy
+          ? (authentication === "logged_out" ? ["Run artifactserver auth login when remote MCP access is needed."] : [])
+          : [
             ...reportedClients
               .filter((client) => client.relayEndpointHealthy === false)
               .map((client) => `artifactserver connect ${client.client}`),
@@ -233,13 +254,19 @@ function configureDoctorCommand(
             ...reportedClients
               .filter((client) => client.installed && !client.managed)
               .map((client) => `artifactserver connect ${client.client}`),
-          ])],
+          ]),
+      ];
+      console.log(JSON.stringify({
+        clients: reportedClients,
+        dataDirectory,
+        discovery,
+        remediation: [...new Set(remediation)],
         service: {
           remoteProfile: profileAddress,
           profileError: profileResult.error ?? undefined,
-          authentication: profile === null
-            ? profileResult.error === null ? "logged_out" : "invalid"
-            : "authenticated",
+          authentication,
+          authenticationSource,
+          shellCredentialStore,
           processAlive: isHttpClient || (requestedClient === null && reachable)
             ? reachable
             : localService.processAlive,
@@ -247,6 +274,12 @@ function configureDoctorCommand(
         },
         status: healthy ? "healthy" : "unhealthy",
       }, null, 2));
+      if (
+        relayAuthentication === "authenticated"
+        && (shellCredentialStore === "rejected" || shellCredentialStore === "unavailable")
+      ) {
+        console.error("Warning: this shell cannot read the credential store, but the running relay is signed in.");
+      }
       if (!healthy) process.exitCode = 2;
     });
 }
@@ -302,6 +335,24 @@ async function relayIsHealthy(dataDirectory: string): Promise<boolean> {
     return response.ok;
   } catch {
     return false;
+  }
+}
+
+async function readRelayAuthenticationStatus(
+  port: number | undefined,
+): Promise<"authenticated" | "logged_out" | "unavailable" | null> {
+  if (port === undefined) return null;
+  try {
+    const response = await fetch(`${localMcpHttpRelayOrigin(port)}/auth-status`, {
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!response.ok) return null;
+    const body = z.object({
+      authentication: z.enum(["authenticated", "logged_out", "unavailable"]),
+    }).strict().safeParse(await response.json());
+    return body.success ? body.data.authentication : null;
+  } catch {
+    return null;
   }
 }
 

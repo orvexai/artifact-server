@@ -72,4 +72,10 @@ to `keyring` to require the operating-system keyring and disable fallback.
 Existing file credentials with group or world read permissions are refused;
 change them to mode `0600` before using the file store again.
 
+## Diagnose MCP setup
+
+Run `artifactserver doctor` to inspect the local service, relay, and client setup. Its `service.authentication` is `authenticated`, `logged_out`, `invalid`, or `unavailable`; `service.authenticationSource` is `relay` when a healthy relay answers `/auth-status`, otherwise `shell`. On the shell path, authentication remains `authenticated` for a resolved profile, `logged_out` when no profile exists and resolution succeeds, or `invalid` for any resolution error. `service.shellCredentialStore` is `available`, `unavailable`, `rejected`, or `missing` and separately describes credential access from the doctor process. If the relay is signed in while the shell store is rejected or unavailable, doctor exits successfully and prints one warning line. A relay-reported `unavailable` authentication state makes doctor unhealthy and exits with code 2; `logged_out` remains healthy because the relay can use the local service.
+
+The relay `/auth-status` endpoint is loopback-only. It returns only an authentication state and never returns credentials, server origins, or account details.
+
 Run `artifactserver --help` or `artifactserver <command> --help` for the complete command reference.
