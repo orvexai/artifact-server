@@ -1290,6 +1290,25 @@ select:focus-visible {
   position: relative;
 }
 
+@media (min-width: 721px) {
+  .as-app[data-focus-mode="true"]:has(.as-preview-panel__body[data-preview-kind="pdf"]) {
+    --as-focus-dock-band: 3.75rem;
+  }
+
+  .as-app[data-focus-mode="true"] .as-preview-panel__body[data-preview-kind="pdf"] {
+    padding-top: var(--as-focus-dock-band);
+  }
+
+  .as-app[data-focus-mode="true"] .as-focus-controls-dock[data-preview-kind="pdf"][data-collapsed="true"] {
+    bottom: auto;
+    height: var(--as-focus-dock-band);
+  }
+
+  .as-app[data-focus-mode="true"] .as-focus-controls-dock[data-preview-kind="pdf"][data-collapsed="true"] .as-focus-controls__hover-zone {
+    height: var(--as-focus-dock-band);
+  }
+}
+
 .as-focus-controls-dock {
   position: absolute;
   right: 0.75rem;
@@ -3789,6 +3808,170 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
 
   .as-projects-table__actions > * {
     flex: 1 1 0;
+  }
+}
+
+.as-members-inventory {
+  border: 1px solid var(--as-border);
+  container-name: members;
+  container-type: inline-size;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.as-members-table {
+  border-collapse: collapse;
+}
+
+.as-members-table__row {
+  border-bottom: 1px solid var(--as-border);
+}
+
+.as-members-table__row:last-child {
+  border-bottom: 0;
+}
+
+.as-members-table__label {
+  display: none;
+}
+
+@container members (max-width: 40rem) {
+  .as-members-table,
+  .as-members-table tbody {
+    display: block;
+  }
+
+  .as-members-table thead {
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    height: 1px;
+    overflow: hidden;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
+  }
+
+  .as-members-table__row {
+    display: grid;
+    gap: 0.35rem 0.65rem;
+    grid-template-areas:
+      "member status"
+      "role role"
+      "admitted admitted"
+      "actions actions";
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 0.75rem;
+  }
+
+  .as-members-table__row td {
+    min-width: 0;
+    padding: 0;
+  }
+
+  .as-members-table__member {
+    grid-area: member;
+  }
+
+  .as-members-table__role {
+    grid-area: role;
+  }
+
+  .as-members-table__status {
+    grid-area: status;
+  }
+
+  .as-members-table__admitted {
+    grid-area: admitted;
+  }
+
+  .as-members-table__label {
+    color: var(--as-subtle);
+    display: inline;
+    margin-inline-end: 0.35rem;
+  }
+
+  .as-members-table__actions-cell {
+    grid-area: actions;
+    text-align: start;
+  }
+}
+
+.as-groups-inventory {
+  border: 1px solid var(--as-border);
+  container-name: groups;
+  container-type: inline-size;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.as-groups-table {
+  border-collapse: collapse;
+}
+
+.as-groups-table__row {
+  border-bottom: 1px solid var(--as-border);
+}
+
+.as-groups-table__row:last-child {
+  border-bottom: 0;
+}
+
+.as-groups-table__label {
+  display: none;
+}
+
+@container groups (max-width: 40rem) {
+  .as-groups-table,
+  .as-groups-table tbody {
+    display: block;
+  }
+
+  .as-groups-table thead {
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    height: 1px;
+    overflow: hidden;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
+  }
+
+  .as-groups-table__row {
+    display: grid;
+    gap: 0.35rem 0.65rem;
+    grid-template-areas:
+      "group members"
+      "role role"
+      "synced synced";
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 0.75rem;
+  }
+
+  .as-groups-table__row td {
+    min-width: 0;
+    padding: 0;
+  }
+
+  .as-groups-table__group {
+    grid-area: group;
+  }
+
+  .as-groups-table__members {
+    grid-area: members;
+  }
+
+  .as-groups-table__role {
+    grid-area: role;
+  }
+
+  .as-groups-table__synced {
+    grid-area: synced;
+  }
+
+  .as-groups-table__label {
+    color: var(--as-subtle);
+    display: inline;
+    margin-inline-end: 0.35rem;
   }
 }
 
