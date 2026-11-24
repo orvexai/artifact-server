@@ -56,7 +56,7 @@ export function GroupsScreen({canEdit}: {readonly canEdit: boolean}) {
 
       {error === null ? null : <ErrorPanel error={error} onRetry={() => void load()} />}
       {loading && groups.length === 0
-        ? <StatePanel description="Loading directory groups." title="Loading groups" />
+        ? <StatePanel description="Loading directory groups." loading title="Loading groups" />
         : groups.length === 0
         ? (
           <StatePanel

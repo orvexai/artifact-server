@@ -1,6 +1,7 @@
 import {useEffect, useState, type ReactNode} from "react";
 import {createPortal} from "react-dom";
 
+import "@/brand/houston/motion/houston-loader.js";
 import {api, ApiError, type PlatformOrganization} from "@/api/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -118,14 +119,17 @@ export function PageHeader({
 export function StatePanel({
   action,
   description,
+  loading = false,
   title,
 }: {
   readonly action?: ReactNode;
   readonly description: string;
+  readonly loading?: boolean;
   readonly title: string;
 }) {
   return (
     <section className="flex min-h-56 flex-col items-start justify-center border p-6 sm:p-8">
+      {loading ? <div className="ox-loading"><houston-loader label={title} variant="orbit" /></div> : null}
       <h2 className="font-heading text-lg font-semibold">{title}</h2>
       <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
         {description}

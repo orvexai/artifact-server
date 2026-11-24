@@ -380,10 +380,7 @@ export function SendToAgentControl({
           variant={buttonVariant}
         >
           {agents === null ? (
-            <span
-              aria-hidden
-              className="size-3 animate-spin rounded-full border border-current border-t-transparent motion-reduce:animate-none"
-            />
+            <houston-loader label="Loading connected agents" variant="orbit" />
           ) : mainAgent === null ? null : (
             <PresenceGlyph
               className="-my-1"
@@ -470,7 +467,7 @@ export function SendToAgentControl({
           )}
 
           {loading ? (
-            <p className="text-sm text-muted-foreground">Reading connected agents…</p>
+            <p className="text-sm text-muted-foreground"><houston-loader label="Reading connected agents" variant="orbit" /> Reading connected agents…</p>
           ) : connectedDialogAgents.length === 0 ? (
             <p className="text-sm leading-6 text-muted-foreground">
               No agent connected — connect one to send.

@@ -237,7 +237,7 @@ export function ApiKeysScreen() {
       {error === null ? null : <ErrorPanel error={error} onRetry={() => void load()} />}
       {loading && apiKeys.length === 0
         ? (
-          <StatePanel description="Loading managed API keys." title="Loading API keys" />
+          <StatePanel description="Loading managed API keys." loading title="Loading API keys" />
         )
         : apiKeys.length === 0
           ? (

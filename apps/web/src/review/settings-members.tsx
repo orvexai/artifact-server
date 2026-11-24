@@ -156,6 +156,7 @@ export function MembersScreen({canAdmit, canManage, showEmails, showRoles}: {
         ? (
           <StatePanel
             description="Loading installation members."
+            loading
             title="Loading members"
           />
         )

@@ -5,6 +5,8 @@ import {
 } from "@plannotator/ui/components/html-viewer";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import "../brand/houston/motion/houston-loader.js";
+import "../brand/houston/loader.css";
 import { withBaseHref } from "./base-href.ts";
 import {
   frameMessageSchema,
@@ -260,9 +262,10 @@ export function ReviewFrame(): React.ReactNode {
 
   if (session === null) {
     return (
-      <p className="p-4 text-sm text-muted-foreground" role="status">
-        Waiting for the artifact to load.
-      </p>
+      <div className="ox-loading">
+        <houston-loader label="Waiting for the artifact to load" variant="orbit" />
+        <p>Waiting for the artifact to load.</p>
+      </div>
     );
   }
 

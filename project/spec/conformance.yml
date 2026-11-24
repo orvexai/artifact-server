@@ -5445,7 +5445,7 @@ requirements:
       failure: {id: BRD-004-F, description: "A mark that renders the light accent in dark theme or colours the frame or ring with the accent fails."}
     deployments: *all
     status: implementing
-    proof_gap: "Unit assertions verify token mapping and Mark D source colors, but browser-computed rendering is not exercised; browser evidence follows in R2."
+    proof_gap: "Unit assertions verify token mapping and Mark D source colors, and the BRD-004-F browser spec asserts mark size and dot contrast in both themes; browser execution is not permitted in this lane."
     depends_on: [BRD-003]
     evidence: []
 
@@ -5458,7 +5458,8 @@ requirements:
       behavior: {id: BRD-005-B, description: "Every loader exposes an accessible name and a status role, or a progressbar role with a value, and shows no rotation when reduced motion is requested."}
       failure: {id: BRD-005-F, description: "A loader without an accessible name or role, or that rotates under reduced motion, or a CSP change, fails."}
     deployments: *all
-    status: specified
+    status: implementing
+    proof_gap: "The BRD-005-B static usage check and BRD-005-F valued-progressbar case are implemented; browser evidence is pending a recorded browser run."
     depends_on: [BRD-001]
     evidence: []
 

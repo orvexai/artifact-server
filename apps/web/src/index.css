@@ -4,6 +4,7 @@
 @import "./brand/houston/variables.css";
 @import "./brand/houston/contrast.css";
 @import "./theme-tokens.css";
+@import "./brand/houston/loader.css";
 
 @font-face {
   font-family: "Inter";

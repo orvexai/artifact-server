@@ -377,7 +377,9 @@ export function SettingsProject({
               </p>
             </div>
             <StatusBadge tone={gitSetting?.enabled === true ? "primary" : "neutral"}>
-              {gitSetting === null ? "Loading" : gitSetting.state.replaceAll("-", " ")}
+              {gitSetting === null
+                ? <><houston-loader aria-hidden="true" label="Loading Git history settings" variant="orbit" /> Loading</>
+                : gitSetting.state.replaceAll("-", " ")}
             </StatusBadge>
           </div>
           <div>
