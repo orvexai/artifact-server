@@ -1,5 +1,5 @@
 /**
- * Boundary declaration for `@plannotator/ui/utils/skillCatalog` (0.63.0,
+ * Boundary declaration for `@plannotator/ui/utils/skillCatalog` (0.64.0,
  * utils/skillCatalog.ts:38-70). The composer's `/`-trigger autocomplete
  * otherwise calls `GET /api/skills`, a Plannotator route this server does not
  * serve and the review frame's `connect-src 'none'` forbids; the frame

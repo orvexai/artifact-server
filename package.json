@@ -30,7 +30,7 @@
     },
     "patchedDependencies": {
       "undici@7.29.0": "patches/undici@7.29.0.patch",
-      "@plannotator/ui@0.63.0": "patches/@plannotator__ui@0.63.0.patch"
+      "@plannotator/ui@0.64.0": "patches/@plannotator__ui@0.64.0.patch"
     }
   },
   "scripts": {

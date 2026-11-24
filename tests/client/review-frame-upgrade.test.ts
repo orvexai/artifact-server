@@ -19,7 +19,7 @@ const rootPackageManifestSchema = z.object({
 });
 const installedViewerManifestSchema = z.object({version: z.string()});
 
-describe("Review frame @plannotator/ui 0.63.0 boundary", () => {
+describe("Review frame @plannotator/ui 0.64.0 boundary", () => {
   it("T1 installs the pinned registry package", async () => {
     const [appPackage, installedPackage] = await Promise.all([
       read("apps/web/package.json").then((source) =>
@@ -28,8 +28,8 @@ describe("Review frame @plannotator/ui 0.63.0 boundary", () => {
         installedViewerManifestSchema.parse(JSON.parse(source))),
     ]);
 
-    expect(appPackage.dependencies["@plannotator/ui"]).toBe("0.63.0");
-    expect(installedPackage["version"]).toBe("0.63.0");
+    expect(appPackage.dependencies["@plannotator/ui"]).toBe("0.64.0");
+    expect(installedPackage["version"]).toBe("0.64.0");
   });
 
   it("T2 pins the sandbox and keeps unreviewed viewer capabilities absent", async () => {
@@ -118,15 +118,60 @@ describe("Review frame @plannotator/ui 0.63.0 boundary", () => {
     const bridge = await read("apps/web/node_modules/@plannotator/ui/components/html-viewer/bridge-script.ts");
     const sandboxShim = await read("apps/web/node_modules/@plannotator/ui/components/html-viewer/sandboxShim.ts");
 
-    expect(rootPackage.pnpm?.patchedDependencies?.["@plannotator/ui@0.63.0"]).toBe(
-      "patches/@plannotator__ui@0.63.0.patch",
+    expect(rootPackage.pnpm?.patchedDependencies?.["@plannotator/ui@0.64.0"]).toBe(
+      "patches/@plannotator__ui@0.64.0.patch",
     );
     expect(bridge).toContain("if (!annotateModeActive) return; // Interact");
     expect(sandboxShim).not.toContain("var h = window.history");
     expect(sandboxShim).not.toContain("h[name] = shim");
     expect(sandboxShim).not.toContain("plannotatorSandboxShim = true");
     expect(sandboxShim).not.toMatch(/history\.(pushState|replaceState)\s*=/u);
+    expect(sandboxShim).not.toMatch(/(?:h\[[^\]]+\]|history\.pushState)\s*=\s*shim/u);
     expect(sandboxShim).toContain("memoryStorage");
     expect(sandboxShim).toContain("History block removed by artifact-server patch");
+  });
+
+  it("T7 keeps followable link clicks with the browser after patching", async () => {
+    const [bridge, srcdoc, frame] = await Promise.all([
+      read("apps/web/node_modules/@plannotator/ui/components/html-viewer/bridge-script.ts"),
+      read("apps/web/node_modules/@plannotator/ui/components/html-viewer/srcdoc.ts"),
+      read("apps/web/src/review-frame/review-frame.tsx"),
+    ]);
+    const handlerOpening = [
+      "document.addEventListener('click', function(e) {",
+      "      if (!annotateModeActive) return; // Interact: links behave as in a tab (artifact-server-3jo DELTA 2)",
+    ].join(String.fromCharCode(10));
+    const afterArmedPin = [
+      "        e.preventDefault();",
+      "        return;",
+      "      }",
+      "      return; // artifact-server: followable links belong to the browser (UPS-A1 r2)",
+      "      if (raw.charAt(0) === '#') {",
+    ].join(String.fromCharCode(10));
+    expect(bridge).toContain(handlerOpening);
+    expect(bridge).toContain(afterArmedPin);
+
+    const guard = bridge.indexOf("if (!annotateModeActive) return; // Interact: links behave as in a tab (artifact-server-3jo DELTA 2)");
+    const linkHandlerEnd = bridge.indexOf("    }, true);", guard);
+    const handler = bridge.slice(guard, linkHandlerEnd);
+    const armedPin = handler.indexOf("if (annotateModeActive && currentInputMethod === 'pinpoint'");
+    const r2Return = handler.indexOf("return; // artifact-server: followable links belong to the browser (UPS-A1 r2)");
+    const fragment = handler.indexOf("if (raw.charAt(0) === '#')");
+    const linkPort = handler.indexOf("sendOnLinkPort(");
+
+    expect(guard).toBeGreaterThanOrEqual(0);
+    expect(armedPin).toBeGreaterThan(0);
+    expect(r2Return).toBeGreaterThan(armedPin);
+    expect(fragment).toBeGreaterThan(r2Return);
+    expect(linkPort).toBeGreaterThan(r2Return);
+    expect(srcdoc).toContain('BRIDGE_SCRIPT } from "./bridge-script"');
+
+    const viewerStart = frame.indexOf("<HtmlViewer");
+    const viewerEnd = frame.indexOf("/>", viewerStart);
+    const viewer = frame.slice(viewerStart, viewerEnd + 2);
+    expect(viewer).toBeDefined();
+    for (const prop of ["bridgeUrl", "onOpenLink", "pageNavigation", "stepInInteract"]) {
+      expect(viewer).not.toMatch(new RegExp("\\b" + prop + "\\s*="));
+    }
   });
 });
