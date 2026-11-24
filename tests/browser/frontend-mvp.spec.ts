@@ -716,14 +716,22 @@ test.describe("Houston Artifacts frontend MVP", () => {
         transition: getComputedStyle(node).backgroundColor,
       }));
       expect(transitionColors.transition).toBe(transitionColors.body);
-      const homeAnimationGeometry = await homeAnimation.evaluate((node) => ({
-        height: node.getBoundingClientRect().height,
-        naturalWidth: node instanceof HTMLImageElement ? node.naturalWidth : 0,
-        width: node.getBoundingClientRect().width,
-      }));
+      const homeAnimationGeometry = await homeAnimation.evaluate((node) => {
+        const svg = node.shadowRoot?.querySelector("svg");
+        const svgBounds = svg?.getBoundingClientRect();
+        return {
+          height: node.getBoundingClientRect().height,
+          svgExists: svg !== null && svg !== undefined,
+          svgHeight: svgBounds?.height ?? 0,
+          svgWidth: svgBounds?.width ?? 0,
+          width: node.getBoundingClientRect().width,
+        };
+      });
       expect(homeAnimationGeometry.width).toBeLessThanOrEqual(672);
       expect(homeAnimationGeometry.height).toBeGreaterThan(0);
-      expect(homeAnimationGeometry.naturalWidth).toBeGreaterThan(0);
+      expect(homeAnimationGeometry.svgExists).toBe(true);
+      expect(homeAnimationGeometry.svgWidth).toBeGreaterThan(0);
+      expect(homeAnimationGeometry.svgHeight).toBeGreaterThan(0);
       await expect(homeOverlay.getByRole("link", {name: /^GitHub Source and releases$/u}))
         .toHaveAttribute("href", "https://github.com/plannotator/artifact-server");
       await expect(homeOverlay.getByRole("link", {name: /Homepage/u}))

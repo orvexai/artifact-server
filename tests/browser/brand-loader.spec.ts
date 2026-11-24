@@ -2,6 +2,12 @@ import {expect, test, type Locator, type Page} from "@playwright/test";
 
 import {localLogin, startBrowserFixture, stopBrowserFixture} from "./browser-fixture.js";
 
+declare global {
+  interface Window {
+    __asCspViolationCount?: number;
+  }
+}
+
 test("BRD-004-F mark stays visible in the catalog and settings headers in both themes", async ({browser}) => {
   const fixture = await startBrowserFixture(browser);
   try {
@@ -70,10 +76,9 @@ test("BRD-005-F visible loaders stay named, status-bearing, reduced-motion safe,
   try {
     await fixture.page.emulateMedia({reducedMotion: "reduce"});
     await fixture.page.addInitScript(() => {
-      document.documentElement.dataset["cspViolationCount"] = "0";
+      Reflect.set(window, "__asCspViolationCount", 0);
       window.addEventListener("securitypolicyviolation", () => {
-        const current = Number(document.documentElement.dataset["cspViolationCount"] ?? "0");
-        document.documentElement.dataset["cspViolationCount"] = String(current + 1);
+        window["__asCspViolationCount"] = (window["__asCspViolationCount"] ?? 0) + 1;
       });
     });
     await fixture.page.route(/\/api\/v1\/artifacts\?.*/u, async (route) => {
@@ -136,11 +141,26 @@ test("BRD-005-F visible loaders stay named, status-bearing, reduced-motion safe,
     });
     expect(["none", "rest"]).toContain(progressAnimation);
 
-    const violationCounts = await Promise.all(fixture.page.frames().map(async (frame) =>
-      frame.locator("html").getAttribute("data-csp-violation-count")
-    ));
-    expect(violationCounts.length).toBeGreaterThan(0);
-    expect(violationCounts.every((count) => count === "0")).toBe(true);
+    const allFrames = fixture.page.frames();
+    // Exclude only exact about:blank frames because the init script may not run in them.
+    const checkedFrames = allFrames.filter((frame) => frame.url() !== "about:blank");
+    const violationReports = await Promise.all(checkedFrames.map(async (frame) => ({
+      count: await frame.evaluate(() => window["__asCspViolationCount"]),
+      frame,
+    })));
+    expect(violationReports.length).toBeGreaterThan(0);
+    for (const report of violationReports) {
+      expect(report.count).toBe(0);
+    }
+    expect(violationReports.some((report) =>
+      report.frame === fixture.page.mainFrame() && report.count === 0
+    )).toBe(true);
+    const reviewProbeSrc = await fixture.page.locator('iframe[data-loader-probe="true"]').getAttribute("src");
+    expect(reviewProbeSrc).toBe("/review-frame");
+    const reviewProbeUrl = new URL("/review-frame", fixture.server.baseUrl).href;
+    expect(violationReports.some((report) =>
+      report.frame.url() === reviewProbeUrl && report.count === 0
+    )).toBe(true);
 
     releaseCatalog();
     await fixture.page.route(/\/api\/v1\/administration\/public-links\?/u, async (route) => {
