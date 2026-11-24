@@ -51,7 +51,7 @@ const failureSchema = z.object({
 }).loose();
 
 const capabilityUnavailableExplanation =
-  "This server does not link files. Linking works only on a local Artifact Server started with ARTIFACT_SERVER_LINKED_FILES=on and reached on its loopback address.";
+  "This server does not link files. Linking works only on a local Houston Artifacts started with ARTIFACT_SERVER_LINKED_FILES=on and reached on its loopback address.";
 
 /** Add the linked-file command to the Artifact Server CLI. */
 export function configureLinkCommand(
@@ -67,17 +67,17 @@ export function configureLinkCommand(
     .addOption(new Option("--project <id>", "project ID; optional when one active project exists"))
     .addOption(new Option("--name <name>", "name for the linked artifact"))
     .addOption(
-      new Option("--server <origin>", "Artifact Server origin")
+      new Option("--server <origin>", "Houston Artifacts origin")
         .env("ARTIFACT_SERVER_URL"),
     )
     .addOption(
-      new Option("--data <directory>", "local Artifact Server data directory")
+      new Option("--data <directory>", "local Houston Artifacts data directory")
         .default(".artifact-server"),
     )
     .addOption(
-      new Option("--token-file <path>", "file containing an Artifact Server API token"),
+      new Option("--token-file <path>", "file containing a Houston Artifacts API token"),
     )
-    .addOption(new Option("--profile <name>", "saved Artifact Server profile"))
+    .addOption(new Option("--profile <name>", "saved Houston Artifacts profile"))
     .addOption(
       new Option("--profile-data <directory>", "user-local CLI profile directory")
         .default(commandOptions.defaultProfileDirectory)

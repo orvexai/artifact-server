@@ -31,10 +31,10 @@ export function configureDownloadCommand(
     .argument("<version-id>", "exact version ID")
     .addOption(new Option("--project <id>", "project ID; optional when one active project exists"))
     .addOption(new Option("--output <file>", "ZIP file to create; defaults to the server filename"))
-    .addOption(new Option("--server <origin>", "Artifact Server origin").env("ARTIFACT_SERVER_URL"))
-    .addOption(new Option("--data <directory>", "local Artifact Server data directory").default(".artifact-server"))
-    .addOption(new Option("--token-file <path>", "file containing an Artifact Server API token"))
-    .addOption(new Option("--profile <name>", "saved Artifact Server profile"))
+    .addOption(new Option("--server <origin>", "Houston Artifacts origin").env("ARTIFACT_SERVER_URL"))
+    .addOption(new Option("--data <directory>", "local Houston Artifacts data directory").default(".artifact-server"))
+    .addOption(new Option("--token-file <path>", "file containing a Houston Artifacts API token"))
+    .addOption(new Option("--profile <name>", "saved Houston Artifacts profile"))
     .addOption(new Option("--profile-data <directory>", "user-local CLI profile directory")
       .default(commandOptions.defaultProfileDirectory).env("ARTIFACT_SERVER_HOME"))
     .action(async (artifactId: string, versionId: string, options: DownloadOptions) => {
@@ -52,7 +52,7 @@ export function configureDownloadCommand(
         const detail = await response.text();
         throw new Error(`Artifact download failed (${response.status}): ${detail.slice(0, 1000)}`);
       }
-      if (response.body === null) throw new Error("Artifact Server returned an empty download.");
+      if (response.body === null) throw new Error("Houston Artifacts returned an empty download.");
       const disposition = response.headers.get("content-disposition") ?? "";
       const serverFilename = disposition.match(/filename\*=UTF-8''([^;]+)/iu)?.[1];
       const filename = serverFilename === undefined

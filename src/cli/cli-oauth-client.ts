@@ -135,7 +135,7 @@ export const loginWithDeviceOAuth = Effect.fn("CliOAuth.loginDevice")(
     const discovery = yield* Effect.tryPromise({
       try: () => discoverCliApi(origin, basePath),
       catch: () => new CliAuthenticationError({
-        message: "The Artifact Server CLI authorization metadata is invalid or unavailable.",
+        message: "The Houston Artifacts CLI authorization metadata is invalid or unavailable.",
         reason: "invalid_metadata",
       }),
     });
@@ -178,7 +178,7 @@ export const loginWithDeviceOAuth = Effect.fn("CliOAuth.loginDevice")(
           const intervalSeconds = Math.min(Math.max(authorization.data.interval ?? 5, 1), deviceIntervalCapSeconds);
           const deadline = io.now() + lifetimeSeconds * 1_000;
           io.write(
-            `\nSign in to Artifact Server from any device with a browser:\n\n  1. Open ${terminalLink(verificationUri)}\n  2. Enter the code ${authorization.data.user_code}\n\n`
+            `\nSign in to Houston Artifacts from any device with a browser:\n\n  1. Open ${terminalLink(verificationUri)}\n  2. Enter the code ${authorization.data.user_code}\n\n`
             + (verificationComplete === undefined
               ? ""
               : `Or open ${terminalLink(verificationComplete)} to skip typing the code.\n\n`)
@@ -237,7 +237,7 @@ function checkedOAuthEndpoint(value: string): URL {
     || url.password !== ""
   ) {
     throw new CliAuthenticationError({
-      message: "The Artifact Server CLI authorization metadata is invalid or unavailable.",
+      message: "The Houston Artifacts CLI authorization metadata is invalid or unavailable.",
       reason: "invalid_metadata",
     });
   }
@@ -256,12 +256,12 @@ async function fetchDeviceIssuerMetadata(issuer: string): Promise<z.infer<typeof
     const issuerUrl = checkedOAuthEndpoint(issuer);
     if (issuerUrl.search !== "" || issuerUrl.hash !== "") {
       throw new CliAuthenticationError({
-        message: "The Artifact Server CLI authorization metadata is invalid or unavailable.",
+        message: "The Houston Artifacts CLI authorization metadata is invalid or unavailable.",
         reason: "invalid_metadata",
       });
     }
     const invalidMetadata = (): CliAuthenticationError => new CliAuthenticationError({
-      message: "The Artifact Server CLI authorization metadata is invalid or unavailable.",
+      message: "The Houston Artifacts CLI authorization metadata is invalid or unavailable.",
       reason: "invalid_metadata",
     });
     const discoveryUrls = buildDiscoveryUrls(issuer);
@@ -305,7 +305,7 @@ async function fetchDeviceIssuerMetadata(issuer: string): Promise<z.infer<typeof
   } catch (cause) {
     if (cause instanceof CliAuthenticationError) throw cause;
     throw new CliAuthenticationError({
-      message: "The Artifact Server CLI authorization metadata is invalid or unavailable.",
+      message: "The Houston Artifacts CLI authorization metadata is invalid or unavailable.",
       reason: "invalid_metadata",
     });
   }
@@ -447,7 +447,7 @@ function loginWithOAuth(
     const discovery = yield* Effect.tryPromise({
       try: () => discoverCliApi(origin, basePath),
       catch: (cause) => new CliAuthenticationError({
-        message: cause instanceof Error ? cause.message : "The Artifact Server API resource could not be discovered.",
+        message: cause instanceof Error ? cause.message : "The Houston Artifacts API resource could not be discovered.",
         reason: "invalid_metadata",
       }),
     });
@@ -680,7 +680,7 @@ export const refreshCliOAuthCredential = Effect.fn("CliOAuth.refresh")(
         ? cause
         : new CliAuthenticationError({
           message:
-            "The Artifact Server browser grant could not be renewed. Run artifactserver auth login again.",
+            "The Houston Artifacts browser grant could not be renewed. Run artifactserver auth login again.",
           reason: "credential_revoked",
         }),
     });
@@ -742,7 +742,7 @@ async function oauthTemporarilyUnavailable(origin: string): Promise<boolean> {
 function temporarilyUnavailableError(): CliAuthenticationError {
   return new CliAuthenticationError({
     message:
-      "This Artifact Server has not connected to its identity provider yet, so browser authorization is temporarily unavailable. Try again shortly.",
+      "Houston Artifacts has not connected to its identity provider yet, so browser authorization is temporarily unavailable. Try again shortly.",
     reason: "server_unavailable",
   });
 }
@@ -803,7 +803,7 @@ class ArtifactServerOAuthProvider implements OAuthClientProvider {
   get clientMetadata(): OAuthClientMetadata {
     return {
       application_type: "native",
-      client_name: "Artifact Server CLI",
+      client_name: "Houston Artifacts CLI",
       grant_types: ["authorization_code", "refresh_token"],
       redirect_uris: [this.redirectUrl],
       response_types: ["code"],
@@ -849,7 +849,7 @@ class ArtifactServerOAuthProvider implements OAuthClientProvider {
     }
     if (this.#headless) {
       process.stderr.write(`
-Sign in to Artifact Server from any computer with a browser:
+Sign in to Houston Artifacts from any computer with a browser:
 
   1. Open this link (click it, or copy it into your browser):
      ${terminalLink(url)}
@@ -865,7 +865,7 @@ Sign in to Artifact Server from any computer with a browser:
     // Print the address before launching so sign-in never depends on the
     // opener actually reaching a browser.
     process.stderr.write(`
-Opening a browser to sign in to Artifact Server. If it does not open, visit:
+Opening a browser to sign in to Houston Artifacts. If it does not open, visit:
 ${terminalLink(url)}
 
 `);
@@ -937,7 +937,7 @@ function verifyProtectedResourceMetadata(
       if (response.status === 404) {
         throw new CliAuthenticationError({
           message:
-            "This Artifact Server does not advertise browser authorization for the CLI. Use --api-key-stdin with an administrator-issued key.",
+            "Houston Artifacts does not advertise browser authorization for the CLI. Use --api-key-stdin with an administrator-issued key.",
           reason: "browser_authorization_unavailable",
         });
       }
@@ -952,7 +952,7 @@ function verifyProtectedResourceMetadata(
       }
       const issuer = metadata.authorization_servers[0];
       if (issuer === undefined) {
-        throw new Error("The Artifact Server omitted its authorization server.");
+        throw new Error("Houston Artifacts omitted its authorization server.");
       }
       return issuer;
     },
@@ -960,7 +960,7 @@ function verifyProtectedResourceMetadata(
       ? cause
       : new CliAuthenticationError({
         message:
-          "The Artifact Server CLI authorization metadata is invalid or unavailable.",
+          "The Houston Artifacts CLI authorization metadata is invalid or unavailable.",
         reason: "invalid_metadata",
       }),
   });
@@ -979,7 +979,7 @@ function openLoopbackCallback(
     try: () => createLoopbackCallback(expectedState),
     catch: () => new CliAuthenticationError({
       message:
-        `Artifact Server could not open a private loopback OAuth callback on 127.0.0.1:${cliOAuthCallbackPort}. Another artifactserver auth login may still be running; stop it and try again.`,
+        `Houston Artifacts could not open a private loopback OAuth callback on 127.0.0.1:${cliOAuthCallbackPort}. Another artifactserver auth login may still be running; stop it and try again.`,
       reason: "oauth_failed",
     }),
   });
@@ -1006,7 +1006,7 @@ async function createLoopbackCallback(
     const parsed = callbackQuerySchema.safeParse(Object.fromEntries(url.searchParams));
     if (!parsed.success || parsed.data.state !== expectedState) {
       response.writeHead(400, {"Content-Type": "text/plain; charset=utf-8"});
-      response.end("Artifact Server rejected this authorization response.");
+      response.end("Houston Artifacts rejected this authorization response.");
       rejectResult(new Error("The OAuth callback state was invalid."));
       return;
     }

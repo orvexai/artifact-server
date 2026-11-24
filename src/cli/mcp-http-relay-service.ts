@@ -51,7 +51,7 @@ export async function ensureMcpHttpRelayService(
     "--port",
     "0",
   ].map(quoteUnitArgument).join(" ");
-  const contents = `[Unit]\nDescription=Artifact Server MCP authentication relay\n\n[Service]\nType=simple\nExecStart=${executable} ${execArguments}\nRestart=on-failure\nRestartSec=2s\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
+  const contents = `[Unit]\nDescription=Houston Artifacts MCP authentication relay\n\n[Service]\nType=simple\nExecStart=${executable} ${execArguments}\nRestart=on-failure\nRestartSec=2s\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
   let current = "";
   try {
     current = await readFile(unitPath, "utf8");
@@ -112,7 +112,7 @@ async function waitForRelayAttempt(addressFile: string, deadline: number): Promi
     // Retry briefly while systemd starts the relay process.
   }
   if (Date.now() >= deadline) {
-    throw new Error("The local Artifact Server MCP HTTP relay did not become healthy.");
+    throw new Error("The local Houston Artifacts MCP HTTP relay did not become healthy.");
   }
   await new Promise((resolve) => setTimeout(resolve, 100));
   return waitForRelayAttempt(addressFile, deadline);

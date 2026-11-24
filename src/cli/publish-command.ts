@@ -52,17 +52,17 @@ export function configurePublishCommand(
     .description("Publish one file or finished directory.")
     .argument("<path>", "file or finished directory to publish")
     .addOption(
-      new Option("--server <origin>", "Artifact Server origin")
+      new Option("--server <origin>", "Houston Artifacts origin")
         .env("ARTIFACT_SERVER_URL"),
     )
     .addOption(
-      new Option("--data <directory>", "local Artifact Server data directory")
+      new Option("--data <directory>", "local Houston Artifacts data directory")
         .default(".artifact-server"),
     )
     .addOption(
-      new Option("--token-file <path>", "file containing an Artifact Server API token"),
+      new Option("--token-file <path>", "file containing a Houston Artifacts API token"),
     )
-    .addOption(new Option("--profile <name>", "saved Artifact Server profile"))
+    .addOption(new Option("--profile <name>", "saved Houston Artifacts profile"))
     .addOption(
       new Option("--profile-data <directory>", "user-local CLI profile directory")
         .default(commandOptions.defaultProfileDirectory)

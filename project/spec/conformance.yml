@@ -5471,7 +5471,8 @@ requirements:
       behavior: {id: BRD-006-B, description: "A scan of apps/web/src, src/http, src/shared, src/cli, src/mcp and integrations/*/index.ts finds no user-visible Artifact Server or Orvex product string outside brand-naming-allowlist.json."}
       failure: {id: BRD-006-F, description: "A new user-visible Artifact Server or Orvex product string outside the allowlist fails, naming file and line."}
     deployments: *all
-    status: specified
+    status: implementing
+    proof_gap: The focused source scan and hostile sample cover the named source paths; rendered browser and installed-client surfaces are not exercised by these checks.
     depends_on: []
     evidence: []
 
@@ -5484,7 +5485,8 @@ requirements:
       behavior: {id: BRD-007-B, description: "The compatibility snapshot preserves the established binary, environment, MCP, tool, and cookie names."}
       failure: {id: BRD-007-F, description: "Any change to the bin, env name set, MCP server or tool names, or cookie names fails the snapshot."}
     deployments: *all
-    status: specified
+    status: implementing
+    proof_gap: The source snapshot covers the established binary, environment, MCP, tool, cookie, and metadata URL names; cross-version external-client compatibility has not been exercised.
     depends_on: []
     evidence: []
 
@@ -5497,7 +5499,8 @@ requirements:
       behavior: {id: BRD-008-B, description: "The serverInfo title, resource_name and client_name read Houston Artifacts, and the client id, server name and scope equal their established values."}
       failure: {id: BRD-008-F, description: "A renamed client id, server name or scope, or a display name still reading Artifact Server, fails."}
     deployments: *all
-    status: specified
+    status: implementing
+    proof_gap: Source assertions cover serverInfo and OAuth display/protected identifiers; a live MCP initialize and OAuth metadata exchange has not been exercised.
     depends_on: [BRD-007]
     evidence: []
 

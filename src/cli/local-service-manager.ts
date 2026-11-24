@@ -176,7 +176,7 @@ async function waitForHealthyServiceAttempt(
   if (Date.now() >= deadline) {
     const detail = previous?.recordReason
       ?? `record=${previous?.recordState ?? "unknown"}`;
-    throw new Error(`The local Artifact Server did not become healthy (${detail}).`);
+    throw new Error(`The local Houston Artifacts service did not become healthy (${detail}).`);
   }
   const inspected = await inspectManagedLocalService(dataDirectory);
   if (inspected.reachable && inspected.record !== null) return inspected.record;
@@ -213,7 +213,7 @@ function refuseCompetingDatabaseOwner(inspection: LocalServiceInspection): void 
     && !inspection.reachable
   ) {
     throw new Error(
-      "The managed local Artifact Server process is running but is not healthy. Run artifactserver doctor; a second process was not started against the same database.",
+      "The managed local Houston Artifacts process is running but is not healthy. Run artifactserver doctor; a second process was not started against the same database.",
     );
   }
 }

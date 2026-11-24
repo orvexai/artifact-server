@@ -61,18 +61,18 @@ export function configureCommentsCommand(
 ): void {
   program
     .command("comments")
-    .description("Read comment threads from an Artifact Server artifact.")
+    .description("Read comment threads from a Houston Artifacts artifact.")
     .command("list <artifact-id>")
     .description("List comment threads, including replies counts, across versions by default.")
-    .addOption(new Option("--server <origin>", "Artifact Server origin").env("ARTIFACT_SERVER_URL"))
-    .addOption(new Option("--profile <name>", "saved Artifact Server profile"))
+    .addOption(new Option("--server <origin>", "Houston Artifacts origin").env("ARTIFACT_SERVER_URL"))
+    .addOption(new Option("--profile <name>", "saved Houston Artifacts profile"))
     .addOption(
       new Option("--profile-data <directory>", "user-local CLI profile directory")
         .default(commandOptions.defaultProfileDirectory)
         .env("ARTIFACT_SERVER_HOME"),
     )
-    .addOption(new Option("--data <directory>", "local Artifact Server data directory").default(".artifact-server"))
-    .addOption(new Option("--token-file <path>", "file containing an Artifact Server API token"))
+    .addOption(new Option("--data <directory>", "local Houston Artifacts data directory").default(".artifact-server"))
+    .addOption(new Option("--token-file <path>", "file containing a Houston Artifacts API token"))
     .addOption(new Option("--project <id>", "project ID; optional when one active project exists"))
     .addOption(new Option("--version <id>", "restrict comments to one version"))
     .addOption(new Option("--include-replies", "include each thread's replies").default(false))

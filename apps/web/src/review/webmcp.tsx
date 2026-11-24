@@ -356,7 +356,7 @@ function openView(snapshot: WebmcpSnapshot) {
 // The seven tools.
 // ---------------------------------------------------------------------------
 
-const provenance = "Artifact Server review tool.";
+const provenance = "Houston Artifacts review tool.";
 
 function reviewTools(ref: BindingsRef): readonly ModelContextToolLike[] {
   return [

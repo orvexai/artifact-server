@@ -21,11 +21,11 @@ export function configurePublicLinkCommand(program: Command, options: {readonly 
   for (const operation of ["get", "create", "set", "reset", "revoke"] as const) {
     const command = publicLink.command(`${operation} <artifact-id>`)
       .description(publicLinkDescription(operation))
-      .addOption(new Option("--server <origin>", "Artifact Server origin").env("ARTIFACT_SERVER_URL"))
-      .addOption(new Option("--profile <name>", "saved Artifact Server profile"))
+      .addOption(new Option("--server <origin>", "Houston Artifacts origin").env("ARTIFACT_SERVER_URL"))
+      .addOption(new Option("--profile <name>", "saved Houston Artifacts profile"))
       .addOption(new Option("--profile-data <directory>", "user-local CLI profile directory").default(options.defaultProfileDirectory).env("ARTIFACT_SERVER_HOME"))
-      .addOption(new Option("--data <directory>", "local Artifact Server data directory").default(".artifact-server"))
-      .addOption(new Option("--token-file <path>", "file containing an Artifact Server API token"))
+      .addOption(new Option("--data <directory>", "local Houston Artifacts data directory").default(".artifact-server"))
+      .addOption(new Option("--token-file <path>", "file containing a Houston Artifacts API token"))
       .addOption(new Option("--project <id>", "project ID; optional when one active project exists"));
     if (["create", "set", "reset"].includes(operation)) {
       command.addOption(new Option("--permission <permission>", "public-link permission").choices(["view", "comment"]));
@@ -69,11 +69,11 @@ export function configurePublicLinkCommand(program: Command, options: {readonly 
 
   const sessions = publicLink.command("sessions <artifact-id>")
     .description("List active public-link sessions")
-    .addOption(new Option("--server <origin>", "Artifact Server origin").env("ARTIFACT_SERVER_URL"))
-    .addOption(new Option("--profile <name>", "saved Artifact Server profile"))
+    .addOption(new Option("--server <origin>", "Houston Artifacts origin").env("ARTIFACT_SERVER_URL"))
+    .addOption(new Option("--profile <name>", "saved Houston Artifacts profile"))
     .addOption(new Option("--profile-data <directory>", "user-local CLI profile directory").default(options.defaultProfileDirectory).env("ARTIFACT_SERVER_HOME"))
-    .addOption(new Option("--data <directory>", "local Artifact Server data directory").default(".artifact-server"))
-    .addOption(new Option("--token-file <path>", "file containing an Artifact Server API token"))
+    .addOption(new Option("--data <directory>", "local Houston Artifacts data directory").default(".artifact-server"))
+    .addOption(new Option("--token-file <path>", "file containing a Houston Artifacts API token"))
     .addOption(new Option("--project <id>", "project ID; optional when one active project exists"));
   sessions.action(async (artifactId: string, commandOptions: PublicLinkOptions) => {
     if (!artifactId.trim()) throw new Error("Artifact ID is required.");
@@ -88,11 +88,11 @@ export function configurePublicLinkCommand(program: Command, options: {readonly 
 
   const revokeSession = publicLink.command("revoke-session <artifact-id> <guest-id>")
     .description("Revoke one active public-link session")
-    .addOption(new Option("--server <origin>", "Artifact Server origin").env("ARTIFACT_SERVER_URL"))
-    .addOption(new Option("--profile <name>", "saved Artifact Server profile"))
+    .addOption(new Option("--server <origin>", "Houston Artifacts origin").env("ARTIFACT_SERVER_URL"))
+    .addOption(new Option("--profile <name>", "saved Houston Artifacts profile"))
     .addOption(new Option("--profile-data <directory>", "user-local CLI profile directory").default(options.defaultProfileDirectory).env("ARTIFACT_SERVER_HOME"))
-    .addOption(new Option("--data <directory>", "local Artifact Server data directory").default(".artifact-server"))
-    .addOption(new Option("--token-file <path>", "file containing an Artifact Server API token"))
+    .addOption(new Option("--data <directory>", "local Houston Artifacts data directory").default(".artifact-server"))
+    .addOption(new Option("--token-file <path>", "file containing a Houston Artifacts API token"))
     .addOption(new Option("--project <id>", "project ID; optional when one active project exists"));
   revokeSession.action(async (artifactId: string, guestId: string, commandOptions: PublicLinkOptions) => {
     if (!artifactId.trim() || !guestId.trim()) throw new Error("Artifact ID and guest ID are required.");

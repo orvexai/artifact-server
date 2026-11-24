@@ -40,7 +40,7 @@ LABEL org.opencontainers.image.created=${IMAGE_CREATED} \
       org.opencontainers.image.description="Self-hosted server for publishing and versioning finished client-side artifacts" \
       org.opencontainers.image.revision=${IMAGE_REVISION} \
       org.opencontainers.image.source=${IMAGE_SOURCE} \
-      org.opencontainers.image.title="Artifact Server" \
+      org.opencontainers.image.title="Houston Artifacts" \
       org.opencontainers.image.version=${IMAGE_VERSION} \
       org.artifactserver.image.source-tree-clean=${IMAGE_SOURCE_TREE_CLEAN}
 

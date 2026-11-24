@@ -492,7 +492,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
       });
       expect(response.status).toBe(502);
       expect(await response.json()).toMatchObject({
-        error: "Configured remote Artifact Server profile is unavailable.",
+        error: "Configured remote Houston Artifacts profile is unavailable.",
         message: "The remote profile could not be authenticated. No local fallback was attempted.",
       });
       await expect(readFile(path.join(dataDirectory, "local-service.json"), "utf8"))
@@ -707,7 +707,7 @@ describe("local MCP onboarding", {timeout: testTimeoutMilliseconds}, () => {
     await expect(connectMcpClient("codex", dataDirectory, invocation, {
       ...baseEnvironment,
       FAKE_CLIENT_FAIL_AFTER_ADD: "1",
-    }, "http://127.0.0.1:43127/mcp")).rejects.toThrow("Could not add Artifact Server to Codex");
+    }, "http://127.0.0.1:43127/mcp")).rejects.toThrow("Could not add Houston Artifacts to Codex");
     await expect(stat(path.join(fakeStateDirectory, "codex.connected")))
       .rejects.toMatchObject({code: "ENOENT"});
     await expect(stat(path.join(dataDirectory, "mcp-onboarding-transaction.json")))

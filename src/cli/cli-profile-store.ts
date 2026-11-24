@@ -76,7 +76,7 @@ export function parseArtifactServerOrigin(
     },
     catch: () => new CliProfileError({
       message:
-        "The Artifact Server address must be an HTTP or HTTPS origin with an optional /o/<slug> path, without credentials, a query, or a fragment.",
+        "The Houston Artifacts address must be an HTTP or HTTPS origin with an optional /o/<slug> path, without credentials, a query, or a fragment.",
       reason: "invalid_origin",
     }),
   });
@@ -93,7 +93,7 @@ export const readCliProfileState = Effect.fn("CliProfileStore.read")(
       Effect.catch((cause) => isMissingFile(cause)
         ? Effect.succeed<string | null>(null)
         : Effect.fail(new CliProfileError({
-          message: "The Artifact Server CLI profile index could not be read.",
+          message: "The Houston Artifacts CLI profile index could not be read.",
           reason: "profile_store_unavailable",
         }))),
     );
@@ -101,7 +101,7 @@ export const readCliProfileState = Effect.fn("CliProfileStore.read")(
     return yield* Effect.try({
       try: () => profileStateSchema.parse(JSON.parse(source)),
       catch: () => new CliProfileError({
-        message: "The Artifact Server CLI profile index is invalid.",
+        message: "The Houston Artifacts CLI profile index is invalid.",
         reason: "invalid_profile",
       }),
     });
@@ -233,8 +233,8 @@ export const resolveCliProfile = Effect.fn("CliProfileStore.resolve")(
     }
     return yield* new CliProfileError({
       message: state.profiles.length === 0
-        ? "No remote Artifact Server profile is saved. Run artifactserver auth login <server>."
-        : "More than one Artifact Server profile is saved. Select one with --profile.",
+        ? "No remote Houston Artifacts profile is saved. Run artifactserver auth login <server>."
+        : "More than one Houston Artifacts profile is saved. Select one with --profile.",
       reason: state.profiles.length === 0
         ? "missing_profile"
         : "ambiguous_profile",
@@ -267,7 +267,7 @@ function writeCliProfileState(
       await chmod(profilePath, 0o600);
     },
     catch: () => new CliProfileError({
-      message: "The Artifact Server CLI profile index could not be updated.",
+      message: "The Houston Artifacts CLI profile index could not be updated.",
       reason: "profile_store_unavailable",
     }),
   });
@@ -319,8 +319,8 @@ function isMissingFile(cause: unknown): boolean {
 function missingProfile(selection?: string): Effect.Effect<never, CliProfileError> {
   return Effect.fail(new CliProfileError({
     message: selection === undefined
-      ? "The Artifact Server profile does not exist."
-      : `No Artifact Server profile matches ${selection}.`,
+      ? "The Houston Artifacts profile does not exist."
+      : `No Houston Artifacts profile matches ${selection}.`,
     reason: "missing_profile",
   }));
 }

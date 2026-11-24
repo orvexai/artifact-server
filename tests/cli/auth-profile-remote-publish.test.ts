@@ -1025,10 +1025,10 @@ async function waitForReady(
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let output = "";
-    const expected = `Artifact Server: http://localhost:${port}`;
+    const expected = `Houston Artifacts: http://localhost:${port}`;
     const timeout = setTimeout(() => {
       cleanup();
-      reject(new Error("Artifact Server did not become ready."));
+      reject(new Error("Houston Artifacts did not become ready."));
     }, 30_000);
     const receive = (chunk: Buffer) => {
       output += chunk.toString("utf8");
@@ -1038,7 +1038,7 @@ async function waitForReady(
     };
     const exit = () => {
       cleanup();
-      reject(new Error("Artifact Server exited before becoming ready."));
+      reject(new Error("Houston Artifacts exited before becoming ready."));
     };
     const cleanup = () => {
       clearTimeout(timeout);

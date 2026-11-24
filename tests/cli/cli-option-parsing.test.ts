@@ -46,7 +46,7 @@ describe("CLI option parsing", () => {
       expect(comments.stdout.trim()).not.toBe(packageMetadata.version);
       expect(comments.exitCode).not.toBe(0);
       expect(comments.stderr).toContain(
-        "No Artifact Server profile matches https://artifacts.example.test",
+        "No Houston Artifacts profile matches https://artifacts.example.test",
       );
     } finally {
       await rm(profileData, {force: true, recursive: true});

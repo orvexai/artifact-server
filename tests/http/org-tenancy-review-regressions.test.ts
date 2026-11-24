@@ -511,9 +511,9 @@ describe("M4: tenant Members and Agents pages accept masked staff rows", () => {
       ["POST /api/v1/members/owner-id/deactivate", {member: tenantMemberMutationResponse(ordinaryMember)}],
     ]), async () => {
       const members = await api.members();
-      expect(members.at(1)).toEqual({displayName: "Orvex Support", id: "staff_opaque", staff: true, status: "active"});
+      expect(members.at(1)).toEqual({displayName: "Houston Support", id: "staff_opaque", staff: true, status: "active"});
       await expect(api.deactivateMember("staff_opaque")).resolves.toEqual({
-        displayName: "Orvex Support", id: "staff_opaque", staff: true, status: "inactive",
+        displayName: "Houston Support", id: "staff_opaque", staff: true, status: "inactive",
       });
       await expect(api.deactivateMember("owner-id")).resolves.toEqual({displayName: "Ann Owner", id: "owner-id", status: "active"});
     });
@@ -528,7 +528,7 @@ describe("M4: tenant Members and Agents pages accept masked staff rows", () => {
     expect(JSON.stringify(agent)).not.toContain("/home/staff/secret");
     await withServer(new Map<string, object>([["GET /api/v1/agents", {items: [{...agent, connected: false}]}]]), async () => {
       expect((await api.agents()).at(0)?.workingDirectory).toBeNull();
-      expect((await api.agentPresence()).at(0)?.displayName).toBe("Orvex Support");
+      expect((await api.agentPresence()).at(0)?.displayName).toBe("Houston Support");
     });
   });
 });

@@ -97,7 +97,7 @@ export function createSystemCredentialStore(
       break;
     default:
       nativeStore = unavailableStore(
-        "This operating system has no supported Artifact Server credential-store adapter.",
+        "This operating system has no supported Houston Artifacts credential-store adapter.",
       );
       break;
   }
@@ -153,7 +153,7 @@ function fileCredentialStore(
       : new CliCredentialStoreError({
         message: cause instanceof Error
           ? cause.message
-          : "The Artifact Server file credential store could not be accessed.",
+          : "The Houston Artifacts file credential store could not be accessed.",
         operation,
         reason: "operation_failed",
       }),
@@ -172,7 +172,7 @@ function fileCredentialStore(
     try {
       parsed = fileCredentialStateSchema.parse(JSON.parse(source));
     } catch {
-      throw new Error("The Artifact Server file credential store contains invalid JSON or an invalid format.");
+      throw new Error("The Houston Artifacts file credential store contains invalid JSON or an invalid format.");
     }
     return parsed;
   };
@@ -208,7 +208,7 @@ function fileCredentialStore(
       const secret = state[account];
       if (secret === undefined) {
         throw new CliCredentialStoreError({
-          message: "The Artifact Server CLI credential was not found in the file store.",
+          message: "The Houston Artifacts CLI credential was not found in the file store.",
           operation: "read",
           reason: "credential_missing",
         });
@@ -227,7 +227,7 @@ async function ensurePrivateDirectory(directory: string): Promise<void> {
   await mkdir(directory, {recursive: true, mode: 0o700});
   const metadata = await lstat(directory);
   if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-    throw new Error("The Artifact Server file credential directory must be a real directory.");
+    throw new Error("The Houston Artifacts file credential directory must be a real directory.");
   }
   await chmod(directory, 0o700);
 }
@@ -235,11 +235,11 @@ async function ensurePrivateDirectory(directory: string): Promise<void> {
 async function ensurePrivateFile(filePath: string): Promise<void> {
   const metadata = await lstat(filePath);
   if (!metadata.isFile() || metadata.isSymbolicLink()) {
-    throw new Error("The Artifact Server file credential store must be a regular file.");
+    throw new Error("The Houston Artifacts file credential store must be a regular file.");
   }
   if ((metadata.mode & 0o077) !== 0) {
     throw new Error(
-      "The Artifact Server file credential store has unsafe permissions; set it to 0600 before continuing.",
+      "The Houston Artifacts file credential store has unsafe permissions; set it to 0600 before continuing.",
     );
   }
 }
@@ -402,7 +402,7 @@ function linuxCredentialStore(
     write: (account, secret) => runCredentialProcess({
       arguments: [
         "store",
-        "--label=Artifact Server CLI",
+        "--label=Houston Artifacts CLI",
         ...attributes,
         account,
       ],
@@ -510,7 +510,7 @@ $pointer = [Runtime.InteropServices.Marshal]::AllocCoTaskMem($bytes.Length)
 try {
   [Runtime.InteropServices.Marshal]::Copy($bytes, 0, $pointer, $bytes.Length)
   $credential = New-Object ArtifactServerCredential+NativeCredential
-  $credential.Type = 1; $credential.TargetName = $target; $credential.UserName = 'Artifact Server CLI'
+  $credential.Type = 1; $credential.TargetName = $target; $credential.UserName = 'Houston Artifacts CLI'
   $credential.CredentialBlob = $pointer; $credential.CredentialBlobSize = $bytes.Length; $credential.Persist = 2
   if (-not [ArtifactServerCredential]::Write([ref]$credential, 0)) { exit 1 }
 } finally { [Runtime.InteropServices.Marshal]::FreeCoTaskMem($pointer) }
@@ -635,7 +635,7 @@ function missingCredential(
   operation: "delete" | "read" | "write",
 ): Effect.Effect<never, CliCredentialStoreError> {
   return Effect.fail(new CliCredentialStoreError({
-    message: "The secure credential for this Artifact Server profile is missing.",
+    message: "The secure credential for this Houston Artifacts profile is missing.",
     operation,
     reason: "credential_missing",
   }));

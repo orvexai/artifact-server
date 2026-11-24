@@ -357,7 +357,7 @@ async function collectCursorPages<T>(
     if (page.nextCursor === null) return;
     const cursorKey = `${page.nextCursor.createdAt}\u0000${page.nextCursor.id}`;
     if (seen.has(cursorKey)) {
-      throw new Error("A paginated Artifact Server operation repeated its cursor.");
+      throw new Error("A paginated Houston Artifacts operation repeated its cursor.");
     }
     seen.add(cursorKey);
     await collect(page.nextCursor);
@@ -499,7 +499,7 @@ export function createArtifactMcpServer(
 ): McpServer {
   const applicationUrl = new URL(dependencies.applicationOrigin);
   const server = new McpServer(
-    {name: "artifact-server", version: serverVersion},
+    {name: "artifact-server", title: "Houston Artifacts", version: serverVersion},
     {
       cacheHints: {
         "resources/read": {cacheScope: "private", ttlMs: 0},
@@ -711,7 +711,7 @@ export function createArtifactMcpServer(
   registerNudgedTool(
     "artifact_capabilities",
     {
-      title: "Artifact Server capabilities",
+      title: "Houston Artifacts capabilities",
       description:
         "Read this installation's publishing workflow, limits, sharing modes, and optional local capabilities before choosing another tool.",
       inputSchema: z.object({}).strict(),
@@ -762,8 +762,8 @@ export function createArtifactMcpServer(
         dependencies.gitHistory,
       ),
       dependencies.mode === "local"
-        ? "This tool is connected to a local Artifact Server installation. It publishes actual files through an upload plan and does not accept inline HTML, CSS, JavaScript, or base64 content."
-        : "This tool is connected to a remote Artifact Server installation. It publishes actual files through an upload plan and does not accept inline HTML, CSS, JavaScript, or base64 content.",
+        ? "This tool is connected to a local Houston Artifacts installation. It publishes actual files through an upload plan and does not accept inline HTML, CSS, JavaScript, or base64 content."
+        : "This tool is connected to a remote Houston Artifacts installation. It publishes actual files through an upload plan and does not accept inline HTML, CSS, JavaScript, or base64 content.",
     ),
   );
 
@@ -1705,7 +1705,7 @@ export function createArtifactMcpServer(
     {
       title: "Change artifact visibility",
       description:
-        "Change an artifact between account-required and public-link access without changing its saved files. Use artifact_public_link_get/create/set_permission/reset/revoke to manage the public link. Public copies already downloaded outside Artifact Server cannot be recalled.",
+        "Change an artifact between account-required and public-link access without changing its saved files. Use artifact_public_link_get/create/set_permission/reset/revoke to manage the public link. Public copies already downloaded outside Houston Artifacts cannot be recalled.",
       inputSchema: z.object({
         accessSetting: accessSettingSchema,
         artifactId: artifactIdSchema,
@@ -1739,7 +1739,7 @@ export function createArtifactMcpServer(
         replayed: state.replayed,
         version: state.version,
         warning: input.accessSetting === accessSettings.accountRequired
-          ? "New public requests are blocked. Copies already downloaded or cached outside Artifact Server cannot be recalled."
+          ? "New public requests are blocked. Copies already downloaded or cached outside Houston Artifacts cannot be recalled."
           : null,
       };
     }),
@@ -3096,7 +3096,7 @@ const destructiveWriteAnnotations = {
 
 function agentInstructions(mode: "local" | "remote"): string {
   return [
-    "Artifact Server stores actual files as immutable versions. It does not accept inline HTML, CSS, JavaScript, base64, or invented file contents through MCP.",
+    "Houston Artifacts stores actual files as immutable versions. It does not accept inline HTML, CSS, JavaScript, base64, or invented file contents through MCP.",
     "Start with artifact_capabilities when you do not know this installation's limits.",
     "Artifacts belong to projects. Omit projectId only when the installation has one active project; otherwise call project_list and choose explicitly.",
     "A new project is restricted: only administrators, its creator (its manager), and the groups it is shared with can see it. When you create a project for someone, pass shareWith with the identity-provider groups that should see it (group_list shows them); change it later with project_share, project_unshare and project_set_access, and read it with project_sharing.",
@@ -3109,8 +3109,8 @@ function agentInstructions(mode: "local" | "remote"): string {
     "dispatch_inbox is this caller's mailbox for annotation bundles a reviewer dispatched to it: list registers the caller as a mailbox-tier agent and shows its queued dispatches, claim takes the oldest one as a rendered message, and delivered or failed reports the outcome. Address a delivered bundle's threads with comment_reply, then comment_resolve.",
     "artifact_get returns the current complete manifest, current.links.review for exact full-screen Review, and links.artifact for the moving latest version. artifact_open returns reviewUrl for exact full-screen Review and browserUrl for raw immutable content. Prefer the Review URL for human handoff, and never describe browserUrl as a Review link. A remote server never opens a browser on the server machine.",
     mode === "local"
-      ? "This is a local MCP connection, but the MCP protocol still carries metadata rather than file bytes. Use the bundled Artifact Server skill or CLI to upload a local path."
-      : "This is a remote MCP connection. The server cannot read paths on the agent's computer; use the returned upload plan or the bundled Artifact Server skill.",
+      ? "This is a local MCP connection, but the MCP protocol still carries metadata rather than file bytes. Use the bundled Houston Artifacts skill or CLI to upload a local path."
+      : "This is a remote MCP connection. The server cannot read paths on the agent's computer; use the returned upload plan or the bundled Houston Artifacts skill.",
   ].join("\n");
 }
 
@@ -3313,8 +3313,8 @@ function mailboxAgentProjection(
   const staffOwner = tenant && (agent.principalId === principal?.id && principal.staff === true ||
     principal?.tenantStaffPrincipalIds?.includes(agent.principalId) === true);
   const displayName = staffOwner
-    ? `${agent.displayName.split(" for ", 1)[0]} for Orvex Support`
-    : tenant && isReservedTenantIdentityName(agent.displayName) ? "Orvex Support (member)" : agent.displayName;
+    ? `${agent.displayName.split(" for ", 1)[0]} for Houston Support`
+    : tenant && isReservedTenantIdentityName(agent.displayName) ? "Houston Support (member)" : agent.displayName;
   return {
     capabilities: agent.capabilities,
     displayName,
@@ -3441,7 +3441,7 @@ function commentAuthorProjection(author: CommentAuthor, isGuest: boolean, princi
     const staff = tenant && (author.staff === true || principal?.tenantStaffPrincipalIds?.includes(author.principalId) === true);
     const displayName = tenant ? tenantIdentityPresentation(undefined, author).displayName : author.displayName;
     const authorizedByPrincipalId = visibleAuthor.authorizedByPrincipalId === null ? null : tenantVisiblePrincipalId(principal, visibleAuthor.authorizedByPrincipalId);
-    return {...visibleAuthor, authorizedByPrincipalId: staff ? null : authorizedByPrincipalId, displayName: staff ? "Orvex Support" : displayName.includes("@") ? "Team member" : displayName};
+    return {...visibleAuthor, authorizedByPrincipalId: staff ? null : authorizedByPrincipalId, displayName: staff ? "Houston Support" : displayName.includes("@") ? "Team member" : displayName};
   }
   const {staff: _staff, ...visibleAuthor} = author;
   if (tenant) {

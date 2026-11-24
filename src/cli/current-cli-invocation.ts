@@ -16,7 +16,7 @@ export interface LocalMcpCommand {
 export function currentCliInvocation(): CliInvocation {
   const entrypoint = process.argv[1];
   if (entrypoint === undefined) {
-    throw new Error("Artifact Server could not resolve its CLI entrypoint.");
+    throw new Error("Houston Artifacts could not resolve its CLI entrypoint.");
   }
   return {
     command: process.execPath,

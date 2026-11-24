@@ -310,7 +310,7 @@ async function planNativeChange(
     : before;
   if (current.exists && !nativeInspectionMatches(current, adoptedBefore)) {
     throw new Error(
-      `${displayName(client)}'s ${managedServerName} entry changed after Artifact Server created it.`,
+      `${displayName(client)}'s ${managedServerName} entry changed after Houston Artifacts created it.`,
     );
   }
   return {
@@ -356,7 +356,7 @@ async function planJsonChange(
     )
   ) {
     throw new Error(
-      `${displayName(client)}'s ${managedServerName} entry changed after Artifact Server created it.`,
+      `${displayName(client)}'s ${managedServerName} entry changed after Houston Artifacts created it.`,
     );
   }
   const afterEntry = after === null ? null : jsonEntry(client, after);
@@ -613,7 +613,7 @@ async function replaceNativeClient(
       executable,
       removeArguments,
       environment,
-      `Could not remove Artifact Server from ${displayName(client)}.`,
+      `Could not remove Houston Artifacts from ${displayName(client)}.`,
     );
   }
   if (after === null) return;
@@ -649,7 +649,7 @@ async function replaceNativeClient(
     executable,
     addArguments,
     environment,
-    `Could not add Artifact Server to ${displayName(client)}.`,
+    `Could not add Houston Artifacts to ${displayName(client)}.`,
   );
 }
 

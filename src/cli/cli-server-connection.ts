@@ -171,7 +171,7 @@ async function loadExplicitApiToken(
   try {
     candidate = (await readFile(tokenPath, "utf8")).trim();
   } catch {
-    throw new Error(`Artifact Server API token not found at ${tokenPath}.`);
+    throw new Error(`Houston Artifacts API token not found at ${tokenPath}.`);
   }
   const parsed = bearerCredentialSchema.safeParse(candidate);
   if (!parsed.success) {
@@ -191,7 +191,7 @@ async function loadLocalApiToken(
   } catch {
     const renderedDataDirectory = JSON.stringify(resolvedDataDirectory);
     throw new Error(
-      `Local Artifact Server credentials were not found in ${resolvedDataDirectory}. `
+      `Local Houston Artifacts credentials were not found in ${resolvedDataDirectory}. `
       + `Run artifactserver open --data ${renderedDataDirectory} to start the managed local service, `
       + `or use artifactserver start --data ${renderedDataDirectory} for a foreground service.`,
     );

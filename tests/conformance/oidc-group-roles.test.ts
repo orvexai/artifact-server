@@ -107,7 +107,7 @@ describe("generic OIDC browser login with issuer group roles", () => {
     expect(refused.status).toBe(403);
     expectRefusalCookies(refused);
     expect(failureSchema.parse(await refused.json()).error.message)
-      .toBe("This person is not in a group admitted to the Artifact Server.");
+      .toBe("This person is not in a group admitted to Houston Artifacts.");
   });
 
   test("a mirrored rule guest signs in again on a seeded installation; an unmirrored path is denied", async () => {
@@ -170,7 +170,7 @@ describe("generic OIDC browser login with issuer group roles", () => {
     expectRefusalCookies(refused);
     expect(failureSchema.parse(await refused.json()).error).toEqual({
       code: "IDENTITY_ADMISSION_DENIED",
-      message: "No group has been given a role in the Artifact Server yet.",
+      message: "No group has been given a role in Houston Artifacts yet.",
     });
     expect(members(installation)).toEqual([]);
   });
@@ -269,7 +269,7 @@ describe("generic OIDC browser login with issuer group roles", () => {
     expectRefusalCookies(refused);
     expect(failureSchema.parse(await refused.json()).error).toEqual({
       code: "IDENTITY_ADMISSION_DENIED",
-      message: "This person is not in a group admitted to the Artifact Server.",
+      message: "This person is not in a group admitted to Houston Artifacts.",
     });
     expect(members(installation)).toEqual([
       {email: bootstrapEmail, role: "member", status: "inactive"},

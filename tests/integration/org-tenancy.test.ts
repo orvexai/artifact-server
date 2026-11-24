@@ -1472,13 +1472,13 @@ describe.sequential("organization tenancy security boundary", () => {
           headers: {"Content-Type": "application/json", Origin: applicationOrigin, "Sec-Fetch-Site": "same-origin"}, method: "POST"},
       ));
       expect(reservedGuestResponse.status).toBe(201);
-      expect(await reservedGuestResponse.clone().text()).toContain("Orvex Support (member)");
+      expect(await reservedGuestResponse.clone().text()).toContain("Houston Support (member)");
       const tenantGuestSessions = await admissionRuntime.app.fetch(new Request(
         `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/guest-invitation/sessions?projectId=${staffProjectId}`,
         {headers: {Cookie: staffCookieHeader}},
       ));
       expect(tenantGuestSessions.status).toBe(200);
-      expect(await tenantGuestSessions.text()).toContain("Orvex Support (member)");
+      expect(await tenantGuestSessions.text()).toContain("Houston Support (member)");
 
       const staffMemberRows = await database.run(Effect.gen(function*() {
         const sql = yield* SqlClient;
@@ -1516,7 +1516,7 @@ describe.sequential("organization tenancy security boundary", () => {
           operation: z.enum(["claim", "list"])}).parse(decoded.result.structuredContent);
       };
       const staffMailbox = await callStaffMailbox("list");
-      expect(staffMailbox.agent.displayName).toBe("Support Reviewer for Orvex Support");
+      expect(staffMailbox.agent.displayName).toBe("Support Reviewer for Houston Support");
       const staffMailboxAgentId = staffMailbox.agent.id;
       const mailboxThreadResponse = await admissionRuntime.app.fetch(new Request(
         `https://artifacts.example.com/api/v1/artifacts/${staffArtifact.id}/versions/${staffVersionId}/comments?projectId=${staffProjectId}`,
@@ -1542,7 +1542,7 @@ describe.sequential("organization tenancy security boundary", () => {
         agentDisplayName: "Orvex Support", senderDisplayName: "Orvex Support",
       })]);
       const claimedStaffMailbox = await callStaffMailbox("claim");
-      expect(claimedStaffMailbox.agent.displayName).toBe("Support Reviewer for Orvex Support");
+      expect(claimedStaffMailbox.agent.displayName).toBe("Support Reviewer for Houston Support");
       expect(claimedStaffMailbox.claimed).not.toBeNull();
 
       const editorLogin = await loginWithGroups([`/teams/${orgB.slug}/editors`], "route-walker-editor-mutations");
@@ -1573,7 +1573,7 @@ describe.sequential("organization tenancy security boundary", () => {
       ));
       expect(editorDispatch.status).toBe(201);
       const editorDispatchBody = await editorDispatch.json();
-      expect(JSON.stringify(editorDispatchBody)).toContain("Orvex Support");
+      expect(JSON.stringify(editorDispatchBody)).toContain("Houston Support");
       expect(JSON.stringify(editorDispatchBody)).not.toContain(staffMember.displayName);
       const editorMutationHeaders = new Headers({Cookie: editorActor.cookie, "Content-Type": "application/json",
         Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": editorActor.csrf});
@@ -1835,7 +1835,7 @@ describe.sequential("organization tenancy security boundary", () => {
         expect(dispatch.status).toBe(200);
         const dispatchBody = await dispatch.text();
         assertNoStaffIdentity(dispatchBody, staffSecrets);
-        expect(dispatchBody).toContain("Orvex Support");
+        expect(dispatchBody).toContain("Houston Support");
 
         const token = mcpActorTokens.get(role);
         if (token === undefined) throw new Error(`The route walker has no ${role} MCP credential.`);
@@ -1907,7 +1907,7 @@ describe.sequential("organization tenancy security boundary", () => {
         }, {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "comment_get", Accept: "application/json, text/event-stream", Origin: applicationOrigin}));
         expect(mcpCommentList.status).toBe(200);
         const mcpText = await mcpCommentList.text();
-        expect(mcpText).toContain("Orvex Support");
+        expect(mcpText).toContain("Houston Support");
         expect(mcpText).not.toContain("tenant-support-user@example.test");
       } finally {
         await staffMcpRuntime.close();
@@ -1933,7 +1933,7 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(ownerMembersResponse.status).toBe(200);
       const ownerMembers = z.object({members: z.array(z.object({id: z.string(), displayName: z.string(), status: z.string().optional()}).passthrough())})
         .parse(await ownerMembersResponse.json()).members;
-      const staffSectionRow = ownerMembers.find(({displayName}) => displayName === "Orvex Support");
+      const staffSectionRow = ownerMembers.find(({displayName}) => displayName === "Houston Support");
       if (staffSectionRow === undefined) throw new Error("Owner directory omitted the staff section.");
       expect(staffSectionRow.id).toMatch(/^staff_[A-Za-z0-9_-]{22}$/u);
       expect(staffSectionRow.status).toBe("active");
@@ -3657,14 +3657,14 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(staffDeactivate.status).toBe(200);
       const staffDeactivateBody = await staffDeactivate.text();
       assertNoStaffIdentity(staffDeactivateBody, ["staff-a", "staff-a@example.test", staffMember.id]);
-      expect(JSON.parse(staffDeactivateBody)).toEqual({member: {displayName: "Orvex Support", id: staffHandle, staff: true, status: "inactive"}});
+      expect(JSON.parse(staffDeactivateBody)).toEqual({member: {displayName: "Houston Support", id: staffHandle, staff: true, status: "inactive"}});
       const staffReactivate = await fetch(`${baseUrl}/o/${aliasA}/api/v1/members/${staffHandle}/reactivate`, {
         method: "POST", headers: staffHeaders, body: "{}",
       });
       expect(staffReactivate.status).toBe(200);
       const staffReactivateBody = await staffReactivate.text();
       assertNoStaffIdentity(staffReactivateBody, ["staff-a", "staff-a@example.test", staffMember.id]);
-      expect(JSON.parse(staffReactivateBody)).toEqual({member: {displayName: "Orvex Support", id: staffHandle, staff: true, status: "inactive"}});
+      expect(JSON.parse(staffReactivateBody)).toEqual({member: {displayName: "Houston Support", id: staffHandle, staff: true, status: "inactive"}});
     } finally {
       await Promise.all([runtimeA.close(), runtimeB.close()]);
     }

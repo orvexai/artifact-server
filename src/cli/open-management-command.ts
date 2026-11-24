@@ -15,7 +15,7 @@ export function configureOpenManagementCommand(
   defaultDataDirectory: string,
 ): void {
   program.command("open")
-    .description("Open the local Artifact Server application.")
+    .description("Open the local Houston Artifacts application.")
     .addOption(
       new Option("--data <directory>", "persistent data directory")
         .default(defaultDataDirectory),
@@ -28,7 +28,7 @@ export function configureOpenManagementCommand(
       )).origin;
       await openSystemBrowser(new URL(origin), process.env);
       process.stdout.write(
-        `Opened the local Artifact Server application: ${origin}\n`,
+        `Opened the local Houston Artifacts application: ${origin}\n`,
       );
     });
 }

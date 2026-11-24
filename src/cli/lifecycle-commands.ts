@@ -284,7 +284,7 @@ function configureMaintenance(program: Command): void {
 
 function configureOrganizations(program: Command): void {
   const organization = program.command("org")
-    .description("Manage configured Artifact Server organizations.");
+    .description("Manage configured Houston Artifacts organizations.");
   organization.command("create")
     .description("Register an organization without creating credentials.")
     .argument("<slug>", "lowercase organization route slug")
@@ -346,7 +346,7 @@ function configureOrganizations(program: Command): void {
     });
   organization.command("link")
     .description("Deliberately link a registered organization to a Keycloak organization id.")
-    .argument("<slug>", "registered Artifact Server organization slug")
+    .argument("<slug>", "registered Houston Artifacts organization slug")
     .argument("<keycloak-id>", "Keycloak organization UUID")
     .action(async (slug: string, keycloakId: string) => {
       const configuration = await runCliEffect(
@@ -369,7 +369,7 @@ function configureOrganizations(program: Command): void {
     });
   organization.command("suspend")
     .description("Suspend an organization and deactivate its members; reversible only with org resume.")
-    .argument("<slug>", "registered Artifact Server organization slug")
+    .argument("<slug>", "registered Houston Artifacts organization slug")
     .option("--yes", "confirm suspension of this organization")
     .action(async (slug: string, options: {readonly yes?: boolean}) => {
       if (options.yes !== true) throw new Error("Organization suspension requires --yes.");
@@ -389,7 +389,7 @@ function configureOrganizations(program: Command): void {
     });
   organization.command("resume")
     .description("Resume an organization and immediately sync its Keycloak members.")
-    .argument("<slug>", "registered Artifact Server organization slug")
+    .argument("<slug>", "registered Houston Artifacts organization slug")
     .action(async (slug: string) => {
       const configuration = await parseExternalConfiguration();
       try {
@@ -597,7 +597,7 @@ async function syncKeycloakOrganizations(
         const organization = result.organization;
         discovered.push(organization.slug);
         if (organization.status !== "active") {
-          skipped.push({alias: keycloakOrganization.alias, reason: "Artifact Server organization is suspended."});
+          skipped.push({alias: keycloakOrganization.alias, reason: "Houston Artifacts organization is suspended."});
           continue;
         }
         // oxlint-disable-next-line eslint/no-await-in-loop
@@ -653,7 +653,7 @@ async function syncKeycloakOrganizations(
 function configureInitialization(program: Command): void {
   program
     .command("init")
-    .description("Initialize an empty compact Artifact Server data directory.")
+    .description("Initialize an empty compact Houston Artifacts data directory.")
     .requiredOption("--admin-email <email>", "initial administrator email")
     .addOption(dataOption())
     .action(async (options: InitOptions) => {
@@ -891,7 +891,7 @@ function configureExternalStorageStart(
         ? "localhost"
         : server.hostname;
       console.log(
-        `Artifact Server (external-storage): http://${displayHostname}:${server.port}`,
+        `Houston Artifacts (external-storage): http://${displayHostname}:${server.port}`,
       );
       await waitForProcessSignal(async () => {
         oidcAuthentication?.close();
