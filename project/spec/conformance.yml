@@ -5392,3 +5392,59 @@ requirements:
     proof_gap: "SQLite HTTP coverage proves secret-link inventory metadata, non-admin refusal, deleted and revoked item omission, and stale-generation revocation. Another installation's links and hosted Postgres execution evidence remain unproved and require hosted verification."
     depends_on: []
     evidence: []
+
+  - id: BRD-001
+    kind: constraint
+    behavior: The vendored Houston brand tokens and contrast proof are byte-identical to the pinned Houston Brand and Design System v0.4.0 source.
+    owner: web-application
+    source: {file: houston-brand-spec.md, anchor: brand-source}
+    acceptance:
+      behavior: {id: BRD-001-B, description: "variables.css and contrast.json under apps/web/src/brand/houston hash to the orvexai/houston 524b0137 design-system blobs, and variables.css defines all 108 tokens."}
+      failure: {id: BRD-001-F, description: "A vendored token or contrast file whose bytes differ from the pinned blob fails the parity check."}
+    deployments: *all
+    status: implementing
+    proof_gap: Unit evidence for BRD-001-B is not yet recorded.
+    depends_on: []
+    evidence: []
+
+  - id: BRD-002
+    kind: constraint
+    behavior: Every Houston contrast pair and the three local tokens meet their contrast thresholds in light and dark themes.
+    owner: web-application
+    source: {file: houston-brand-spec.md, anchor: brand-contrast}
+    acceptance:
+      behavior: {id: BRD-002-B, description: "All 62 design-system pairs plus accent-text-strong, danger-hover and destructive reach 4.5 to 1 for text and 3 to 1 for non-text in both themes."}
+      failure: {id: BRD-002-F, description: "A token change that drops any listed pair below its threshold fails, naming the pair and theme."}
+    deployments: *all
+    status: implementing
+    proof_gap: Unit evidence for BRD-002-B is not yet recorded.
+    depends_on: [BRD-001]
+    evidence: []
+
+  - id: BRD-003
+    kind: constraint
+    behavior: Every product mark surface draws Mark D and every favicon and app icon equals the design-system file.
+    owner: web-application
+    source: {file: houston-brand-spec.md, anchor: brand-mark}
+    acceptance:
+      behavior: {id: BRD-003-B, description: "ArtifactMark, the shared server-page mark, the CLI sign-in page and favicon.svg use the Mark D frame, ring and dot geometry, and the six icon files hash to the design-system files."}
+      failure: {id: BRD-003-F, description: "Any radar-scope geometry (stroke width 6.8 or the sweep path) or an icon whose bytes differ from the design system fails."}
+    deployments: *all
+    status: implementing
+    proof_gap: "Unit assertions verify the shared Mark D helper and its CLI source import and call, but do not start the loopback OAuth callback; runtime callback delivery remains untested."
+    depends_on: [BRD-001]
+    evidence: []
+
+  - id: BRD-004
+    kind: behavior
+    behavior: The Mark D dot uses the theme accent and the frame and ring use the theme text colour wherever the mark renders.
+    owner: web-application
+    source: {file: houston-brand-spec.md, anchor: brand-mark-theme}
+    acceptance:
+      behavior: {id: BRD-004-B, description: "The dot resolves to #0891b2 in light and #23b5d1 in dark, and the frame and ring resolve to the theme text colour."}
+      failure: {id: BRD-004-F, description: "A mark that renders the light accent in dark theme or colours the frame or ring with the accent fails."}
+    deployments: *all
+    status: implementing
+    proof_gap: "Unit assertions verify token mapping and Mark D source colors, but browser-computed rendering is not exercised; browser evidence follows in R2."
+    depends_on: [BRD-003]
+    evidence: []
