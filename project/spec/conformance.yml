@@ -5237,7 +5237,7 @@ requirements:
       failure: {id: PLK-013-F, description: "Lease reads fail after the grant or link is revoked or reset."}
     deployments: *external_storage
     status: implementing
-    proof_gap: Guest lease issue and recheck evidence is pending.
+    proof_gap: PLK-013-B visitor lease preview and session-binding evidence is pending.
     evidence: []
 
   - id: PLK-014
@@ -5250,7 +5250,7 @@ requirements:
       failure: {id: PLK-014-F, description: "Archive does not enable writes or exchanges for deleted artifacts or suspended organizations."}
     deployments: *external_storage
     status: implementing
-    proof_gap: PLK-014-F remains unproved for deleted artifacts and suspended organizations; PLK-014-B covers archive pause and unarchive resume only.
+    proof_gap: PLK-014-F proves deleted artifacts reject visitor exchange and comment writes after project unarchive; refusal for suspended organizations remains unproved and requires the tenancy fixture.
     evidence: []
 
   - id: PLK-015
@@ -5302,7 +5302,7 @@ requirements:
       failure: {id: PLK-018-F, description: "A link from one organization never resolves at root or in another organization."}
     deployments: *external_storage
     status: implementing
-    proof_gap: PLK-018-B and PLK-018-F need a multi-organization integration matrix proving prefixed route resolution, organization cookie suffixes, and rejection at root and another organization; this lane has no such fixture evidence.
+    proof_gap: PLK-018-B still needs broader multi-organization proof of prefixed route resolution and organization-scoped visitor cookies; PLK-018-F proves a link and visitor cookie are refused outside their organization.
     evidence: []
 
   - id: PLK-019

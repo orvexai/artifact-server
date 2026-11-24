@@ -547,6 +547,21 @@ describe("invited guest review", () => {
     expect((await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Unarchived", versionId: currentVersionId}), true, "unarchived-guest-create-0001")).status).toBe(201);
   });
 
+  test("PLK-014-F: deleted artifacts reject visitor exchange and comments after unarchive", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const deletion = await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}?project=${projectId}`, JSON.stringify({expectedCurrentVersionId: currentVersionId}), {"Idempotency-Key": "plk-014-delete-artifact"});
+    expect(deletion.status).toBe(200);
+    const archive = await ownerRequest("POST", `/api/v1/projects/${projectId}/archive`, "{}");
+    expect(archive.status).toBe(200);
+    expect((await ownerRequest("POST", `/api/v1/projects/${projectId}/unarchive`, "{}")).status).toBe(200);
+
+    const exchangeAfterDelete = await exchangeResponse(artifactId, invitation.secret);
+    expect(exchangeAfterDelete.status).toBe(404);
+    const commentAfterDelete = await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Must not persist", versionId: currentVersionId}), true, "plk-014-deleted-comment");
+    expect(commentAfterDelete.status).toBe(404);
+  });
+
   test("PLK-016-B: kill switch off blocks and on resumes the same public link", async () => {
     const created = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "comment"}));
     expect(created.status).toBe(201);
@@ -642,7 +657,7 @@ describe("invited guest review", () => {
       .toMatchObject({activeSessionCount: 30, limitHitRecently: true});
   });
 
-  test("PLK-013-F: owners can list guest sessions and revoke one session including its content cookie", async () => {
+  test("owners can list guest sessions and revoke one session including its content cookie", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret, "Reviewer to revoke");
     const current = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).json());
@@ -657,6 +672,24 @@ describe("invited guest review", () => {
     expect((await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}/guest-invitation/sessions/${listed.sessions[0]?.guestId}?projectId=${projectId}`)).status).toBe(204);
     expect((await (await ownerRequest("GET", listPath)).json())).toEqual({sessions: []});
     expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
+    const contentUrl = new URL("/", current.bootstrapUrl).toString();
+    expect((await fetchVersion(server, contentUrl, "GET", {Cookie: contentCookie ?? ""})).status).not.toBe(200);
+  });
+
+  test("PLK-013-F: revoking a visitor grant invalidates its issued content lease", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret, "Lease visitor");
+    const current = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).json());
+    const contentResponse = await fetchVersion(server, current.bootstrapUrl);
+    expect(contentResponse.status).toBe(200);
+    const contentCookie = contentResponse.headers.getSetCookie().find((cookie) => cookie.startsWith("artifact_content="))?.split(";", 1)[0];
+    expect(contentCookie).toBeDefined();
+
+    const sessionsPath = `/api/v1/artifacts/${artifactId}/guest-invitation/sessions?projectId=${projectId}`;
+    const sessions = z.object({sessions: z.array(z.object({guestId: z.string()}))}).parse(await (await ownerRequest("GET", sessionsPath)).json()).sessions;
+    expect(sessions).toHaveLength(1);
+    expect((await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}/guest-invitation/sessions/${sessions[0]?.guestId}?projectId=${projectId}`)).status).toBe(204);
+
     const contentUrl = new URL("/", current.bootstrapUrl).toString();
     expect((await fetchVersion(server, contentUrl, "GET", {Cookie: contentCookie ?? ""})).status).not.toBe(200);
   });
