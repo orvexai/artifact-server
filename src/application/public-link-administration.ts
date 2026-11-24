@@ -28,9 +28,17 @@ const maximumBulkSize = 100;
 
 /** One active public-link artifact with its project and current-version context. */
 export interface PublicLinkInventoryItem {
+  readonly kind: "legacy" | "secret";
   readonly artifact: ArtifactRecord;
   readonly currentVersion: VersionRecord;
   readonly project: ProjectRecord;
+  readonly secretLink: null | {
+    readonly createdAt: string;
+    readonly generation: number;
+    readonly invitationId: string;
+    readonly permission: "view" | "comment";
+    readonly updatedAt: string;
+  };
 }
 
 /** One bounded cross-project page of active public-link artifacts. */
@@ -47,9 +55,17 @@ export interface ListPublicLinks {
 
 /** Persistence required by installation-level public-link administration. */
 export interface PublicLinkAdministrationRepository {
+  readonly getPublicLinksEnabled: () => Effect.Effect<boolean, ArtifactRepositoryFailure>;
+  readonly setPublicLinksEnabled: (enabled: boolean) => Effect.Effect<void, ArtifactRepositoryFailure>;
   readonly listPublicLinks: (
     command: ListPublicLinks,
   ) => Effect.Effect<PublicLinkInventoryPage, ArtifactRepositoryFailure>;
+  readonly revokeGuestInvitationAtGeneration: (
+    projectId: string,
+    artifactId: string,
+    generation: number,
+    revokedAt: string,
+  ) => Effect.Effect<boolean, ArtifactRepositoryFailure>;
 }
 
 /** Input for listing active public links across the installation. */
@@ -58,12 +74,22 @@ export interface ListPublicLinksCommand extends ListPublicLinks {
 }
 
 /** One optimistic visibility command inside a bounded make-private request. */
-export interface MakePublicLinkPrivateItem {
+export interface MakeArtifactPrivateItem {
+  readonly kind?: "artifact";
   readonly artifactId: string;
   readonly expectedCurrentVersionId: string;
   readonly idempotencyKey: string;
   readonly projectId: string;
 }
+
+export interface RevokePublicLinkSecretItem {
+  readonly kind: "secret";
+  readonly artifactId: string;
+  readonly generation: number;
+  readonly projectId: string;
+}
+
+export type MakePublicLinkPrivateItem = MakeArtifactPrivateItem | RevokePublicLinkSecretItem;
 
 /** Input for making one bounded selection of public links private. */
 export interface MakePublicLinksPrivateCommand {
@@ -81,8 +107,12 @@ export type MakePublicLinkPrivateResult =
   }
   | {
     readonly failure: ArtifactManagementFailure;
-    readonly item: MakePublicLinkPrivateItem;
+    readonly item: MakeArtifactPrivateItem;
     readonly status: "failed";
+  }
+  | {
+    readonly item: RevokePublicLinkSecretItem;
+    readonly status: "revoked" | "stale_generation";
   };
 
 /** Expected top-level failures produced by public-link administration. */
@@ -92,6 +122,8 @@ export type PublicLinkAdministrationFailure =
   | InvalidPagination;
 
 interface PublicLinkAdministrationOperations {
+  readonly getPolicy: (principal: Principal) => Effect.Effect<{enabled: boolean}, PublicLinkAdministrationFailure>;
+  readonly setPolicy: (principal: Principal, enabled: boolean) => Effect.Effect<{enabled: boolean}, PublicLinkAdministrationFailure>;
   readonly listPublicLinks: (
     command: ListPublicLinksCommand,
   ) => Effect.Effect<PublicLinkInventoryPage, PublicLinkAdministrationFailure>;
@@ -167,6 +199,17 @@ function makePublicLinkAdministrationService(
     }))});
   });
 
+  const getPolicy = Effect.fn("PublicLinkAdministrationService.getPolicy")(function*(principal: Principal) {
+    yield* authorization.requireInstallationAdministration(principal);
+    return {enabled: yield* repository.getPublicLinksEnabled()};
+  });
+
+  const setPolicy = Effect.fn("PublicLinkAdministrationService.setPolicy")(function*(principal: Principal, enabled: boolean) {
+    yield* authorization.requireInstallationAdministration(principal);
+    yield* repository.setPublicLinksEnabled(enabled);
+    return {enabled};
+  });
+
   const makePrivate = Effect.fn(
     "PublicLinkAdministrationService.makePrivate",
   )(function*(command: MakePublicLinksPrivateCommand) {
@@ -176,8 +219,17 @@ function makePublicLinkAdministrationService(
     yield* requireBound(command.items.length, "bulk request", maximumBulkSize);
     return yield* Effect.forEach(
       command.items,
-      (item) =>
-        artifacts.changeAccess({
+      (item) => item.kind === "secret"
+        ? repository.revokeGuestInvitationAtGeneration(
+          item.projectId,
+          item.artifactId,
+          item.generation,
+          new Date().toISOString(),
+        ).pipe(Effect.map((revoked): MakePublicLinkPrivateResult => ({
+          item,
+          status: revoked ? "revoked" : "stale_generation",
+        })))
+        : artifacts.changeAccess({
           accessSetting: accessSettings.accountRequired,
           artifactId: item.artifactId,
           expectedCurrentVersionId: item.expectedCurrentVersionId,
@@ -185,24 +237,17 @@ function makePublicLinkAdministrationService(
           principal: command.principal,
           projectId: item.projectId,
         }).pipe(Effect.match({
-          onFailure: (failure): MakePublicLinkPrivateResult => ({
-            failure,
-            item,
-            status: "failed",
-          }),
-          onSuccess: (state): MakePublicLinkPrivateResult => ({
-            item,
-            replayed: state.replayed,
-            state,
-            status: "made_private",
-          }),
+          onFailure: (failure): MakePublicLinkPrivateResult => ({failure, item, status: "failed"}),
+          onSuccess: (state): MakePublicLinkPrivateResult => ({item, replayed: state.replayed, state, status: "made_private"}),
         })),
       {concurrency: 1},
     );
   });
 
   return PublicLinkAdministrationService.of({
+    getPolicy,
     listPublicLinks,
     makePrivate,
+    setPolicy,
   });
 }

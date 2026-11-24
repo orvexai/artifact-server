@@ -106,6 +106,8 @@ export interface LocalRuntimeConfig {
   readonly contentDomain: string;
   readonly embedBindingSecret?: Redacted.Redacted | undefined;
   readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
+  readonly publicLinkKey?: Redacted.Redacted | undefined;
+  readonly publicLinkKeyPrevious?: Redacted.Redacted | undefined;
   readonly embedOrigins?: readonly string[];
   readonly dataDirectory: string;
   /** Server-only credential shared with a co-launched development proxy. */
@@ -289,6 +291,12 @@ export async function createLocalRuntime(
     staging,
     stagingCleanupPolicy,
   };
+  if (config.publicLinkKey !== undefined) {
+    Object.assign(applicationAdapters, {publicLinkKey: config.publicLinkKey});
+  }
+  if (config.publicLinkKeyPrevious !== undefined) {
+    Object.assign(applicationAdapters, {publicLinkKeyPrevious: config.publicLinkKeyPrevious});
+  }
   if (config.uploadUrlLifetimeMilliseconds !== undefined) {
     Object.assign(applicationAdapters, {
       uploadUrlLifetimeMilliseconds: config.uploadUrlLifetimeMilliseconds,

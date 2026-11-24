@@ -1,10 +1,15 @@
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
+import {createHash, randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 import nodePath from "node:path";
+import {Redacted} from "effect";
 
 import {createTestInstallation, fetchVersion, issueLocalBrowserLogin, removeTestInstallation, startTestServer, type RunningTestServer, type TestInstallation} from "../support/runtime-harness.js";
 import {publishNew} from "../support/publishing.js";
+import {localOwnerBrowserAccess} from "../../src/core/browser-access.js";
+import {SqliteArtifactRepository} from "../../src/storage/sqlite-artifact-repository.js";
+import {startLocalServer} from "../../src/local/start-local-server.js";
 
 const invitationSchema = z.object({createdAt: z.string(), enabled: z.literal(true), url: z.url()});
 const guestSessionResponseSchema = z.object({displayName: z.string(), expiresAt: z.string()});
@@ -26,6 +31,7 @@ describe("invited guest review", () => {
   let otherArtifactId: string;
   let projectId: string;
   let currentVersionId: string;
+  let otherCurrentVersionId: string;
   let ownerCookie: string;
   let ownerCsrf: string;
 
@@ -46,6 +52,7 @@ describe("invited guest review", () => {
       idempotencyKey: "guest-review-other",
     });
     otherArtifactId = other.body.artifact.id;
+    otherCurrentVersionId = other.body.version.id;
     const token = await issueLocalBrowserLogin(server, installation);
     const login = await fetch(`${server.baseUrl}/auth/local?token=${token}`, {redirect: "manual"});
     const cookies = login.headers.getSetCookie();
@@ -67,8 +74,8 @@ describe("invited guest review", () => {
     return fetch(`${server.baseUrl}${path}`, init);
   }
 
-  async function enableInvitation(): Promise<{readonly secret: string; readonly url: string}> {
-    const response = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`, "{}");
+  async function enableInvitation(artifact = artifactId, project = projectId): Promise<{readonly secret: string; readonly url: string}> {
+    const response = await ownerRequest("POST", `/api/v1/artifacts/${artifact}/guest-invitation?projectId=${project}`, "{}");
     expect(response.status).toBe(201);
     const invitation = invitationSchema.parse(await response.json());
     const link = new URL(invitation.url);
@@ -76,6 +83,38 @@ describe("invited guest review", () => {
     const secret = new URLSearchParams(link.hash.slice(1)).get("invite");
     expect(secret).toBeTruthy();
     return {secret: secret ?? "", url: invitation.url};
+  }
+
+  async function startServerWithLinkKeys(currentKey: string, previousKey?: string): Promise<RunningTestServer> {
+    const baseConfiguration: Parameters<typeof startLocalServer>[0] = {
+      apiToken: installation.apiToken,
+      bootstrapAdministratorEmail: "administrator@example.test",
+      browserAccess: localOwnerBrowserAccess,
+      contentDomain: "localhost",
+      dataDirectory: installation.dataDirectory,
+      localBootstrapToken: installation.browserBootstrapToken,
+      observability: false,
+      port: 0,
+      publicLinkKey: Redacted.make(currentKey),
+    };
+    const configuration = previousKey === undefined
+      ? baseConfiguration
+      : Object.assign(baseConfiguration, {publicLinkKeyPrevious: Redacted.make(previousKey)});
+    const running = await startLocalServer(configuration);
+    return {
+      baseUrl: `http://${running.hostname}:${running.port}`,
+      hostname: running.hostname,
+      port: running.port,
+      stop: () => running.close(),
+    };
+  }
+
+  async function loginOwner(): Promise<void> {
+    const token = await issueLocalBrowserLogin(server, installation);
+    const login = await fetch(`${server.baseUrl}/auth/local?token=${token}`, {redirect: "manual"});
+    const cookies = login.headers.getSetCookie();
+    ownerCookie = cookies.filter((item) => /^artifact_(session|csrf)=/.test(item)).map((item) => item.split(";", 1)[0]).join("; ");
+    ownerCsrf = cookies.find((item) => item.startsWith("artifact_csrf="))?.split(";", 1)[0]?.split("=", 2)[1] ?? "";
   }
 
   async function exchange(artifact: string, secret: string, displayName = "Guest Reviewer"): Promise<z.infer<typeof guestSessionCookieSchema>> {
@@ -93,9 +132,11 @@ describe("invited guest review", () => {
     };
   }
 
-  function exchangeResponse(artifact: string, secret: string, displayName = "Guest Reviewer", headers: HeadersInit = {}): Promise<Response> {
+  function exchangeResponse(artifact: string, secret: string, displayName: string | null = "Guest Reviewer", headers: HeadersInit = {}): Promise<Response> {
+    const body = {secret};
+    if (displayName !== null) Object.assign(body, {displayName});
     return fetch(`${server.baseUrl}/api/v1/public/artifacts/${artifact}/guest-session`, {
-      body: JSON.stringify({displayName, secret}), headers: {Origin: server.baseUrl, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json", ...Object.fromEntries(new Headers(headers))}, method: "POST",
+      body: JSON.stringify(body), headers: {Origin: server.baseUrl, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json", ...Object.fromEntries(new Headers(headers))}, method: "POST",
     });
   }
 
@@ -130,6 +171,63 @@ describe("invited guest review", () => {
     return z.object({thread: z.object({id: z.string(), author: z.object({displayName: z.string(), principalId: z.string()})})}).parse(await response.json()).thread;
   }
 
+  test("PLK-005-B: rotating the seal key rewraps a link once and leaves stale writes untouched", async () => {
+    const keyA = Buffer.alloc(32, 23).toString("base64url");
+    const keyB = Buffer.alloc(32, 29).toString("base64url");
+    await server.stop();
+    server = await startServerWithLinkKeys(keyA);
+    await loginOwner();
+    const created = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "view"}));
+    expect(created.status).toBe(201);
+    const originalUrl = z.object({url: z.url()}).parse(await created.json()).url;
+    const originalSecret = new URLSearchParams(new URL(originalUrl).hash.slice(1)).get("link");
+    expect(originalSecret).toBeTruthy();
+
+    const databasePath = nodePath.join(installation.dataDirectory, "artifact-server.db");
+    const database = new DatabaseSync(databasePath);
+    const invitationRowSchema = z.object({id: z.string(), generation: z.number(), fingerprint: z.string()});
+    const beforeRotation = invitationRowSchema.parse(database.prepare(`SELECT id, generation, seal_key_fingerprint AS fingerprint
+      FROM guest_review_invitations WHERE artifact_id = ? AND revoked_at IS NULL`).get(artifactId));
+    await server.stop();
+    server = await startServerWithLinkKeys(keyB, keyA);
+    await loginOwner();
+    const rotatedStatus = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`);
+    expect(rotatedStatus.status).toBe(200);
+    const rotatedUrl = z.object({url: z.url().nullable()}).parse(await rotatedStatus.json()).url;
+    if (rotatedUrl === null) throw new Error("Rotated public-link status did not return a copy URL.");
+    expect(new URLSearchParams(new URL(rotatedUrl).hash.slice(1)).get("link")).toBe(originalSecret);
+    const rotatedRowSchema = invitationRowSchema.extend({sealedSecret: z.string()});
+    const afterRotation = rotatedRowSchema.parse(database.prepare(`SELECT id, generation, sealed_secret AS sealedSecret,
+      seal_key_fingerprint AS fingerprint FROM guest_review_invitations WHERE artifact_id = ? AND revoked_at IS NULL`)
+      .get(artifactId));
+    expect(afterRotation.fingerprint).not.toBe(beforeRotation.fingerprint);
+    expect(afterRotation.generation).toBe(beforeRotation.generation);
+
+    await server.stop();
+    server = await startServerWithLinkKeys(keyB);
+    await loginOwner();
+    const retiredStatus = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`);
+    const retiredUrl = z.object({url: z.url().nullable()}).parse(await retiredStatus.json()).url;
+    if (retiredUrl === null) throw new Error("Retired-key public-link status did not return a copy URL.");
+    expect(new URLSearchParams(new URL(retiredUrl).hash.slice(1)).get("link")).toBe(originalSecret);
+
+    const repository = new SqliteArtifactRepository(databasePath);
+    const persisted = await repository.findGuestInvitation(projectId, artifactId);
+    expect(persisted).not.toBeNull();
+    expect(await repository.resealGuestInvitation(
+      afterRotation.id, afterRotation.generation, beforeRotation.fingerprint,
+      Buffer.alloc(32, 31).toString("base64url"), "stale-fingerprint",
+    )).toBe(false);
+    const afterStaleAttempt = await repository.findGuestInvitation(projectId, artifactId);
+    expect(afterStaleAttempt).toMatchObject({
+      generation: afterRotation.generation,
+      sealKeyFingerprint: afterRotation.fingerprint,
+      sealedSecret: afterRotation.sealedSecret,
+    });
+    repository.close();
+    database.close();
+  });
+
   test("status reports enabled and createdAt without disclosing the invitation secret", async () => {
     const invitation = await enableInvitation();
     const response = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`);
@@ -138,8 +236,288 @@ describe("invited guest review", () => {
     expect(text).not.toContain(invitation.secret);
   });
 
-  test("wrong, revoked, and other-artifact secrets return the same 404; regeneration revokes the prior secret", async () => {
+  test("PLK-017-B: legacy public links reject comment permission until reset", async () => {
+    const legacy = await publishNew(server, installation, {
+      accessSetting: "public_link",
+      content: "legacy public artifact",
+      idempotencyKey: "plk-017-legacy-link",
+    });
+    const response = await ownerRequest(
+      "PATCH",
+      `/api/v1/artifacts/${legacy.body.artifact.id}/public-link?projectId=${legacy.body.artifact.projectId}`,
+      JSON.stringify({permission: "comment"}),
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: {code: "PUBLIC_LINK_LEGACY", message: "Reset this legacy public link to enable commenting."},
+    });
+    const reset = await ownerRequest(
+      "POST",
+      `/api/v1/artifacts/${legacy.body.artifact.id}/public-link/reset?projectId=${legacy.body.artifact.projectId}`,
+      "{}",
+    );
+    expect(reset.status).toBe(201);
+    const resetLink = new URL(z.object({url: z.url()}).parse(await reset.json()).url);
+    expect(new URLSearchParams(resetLink.hash.slice(1)).get("link")).toBeTruthy();
+    const enabled = await ownerRequest(
+      "PATCH",
+      `/api/v1/artifacts/${legacy.body.artifact.id}/public-link?projectId=${legacy.body.artifact.projectId}`,
+      JSON.stringify({permission: "comment"}),
+    );
+    expect(enabled.status).toBe(200);
+    expect(await enabled.json()).toEqual({permission: "comment"});
+  });
+
+  test("PLK-017-F: unavailable links have a neutral HTML page and indistinguishable exchange failures", async () => {
+    const privatePage = await fetch(`${server.baseUrl}/artifacts/${artifactId}`, {
+      headers: {Accept: "text/html"}, redirect: "manual",
+    });
+    const unknownPage = await fetch(`${server.baseUrl}/artifacts/art_00000000-0000-4000-8000-000000000000`, {
+      headers: {Accept: "text/html"}, redirect: "manual",
+    });
+    const privateHtml = await privatePage.text();
+    const unknownHtml = await unknownPage.text();
+    expect(privatePage.status).toBe(200);
+    expect(unknownPage.status).toBe(200);
+    expect(privatePage.headers.get("location")).toBeNull();
+    expect(unknownPage.headers.get("location")).toBeNull();
+    expect(privateHtml).toContain("This link isn't available");
+    expect(privateHtml).toContain("Ask the person who shared it for a new link.");
+    expect(privateHtml).not.toMatch(/sign in|choose another organization/iu);
+    expect(unknownHtml).toBe(privateHtml);
+
+    const enabled = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, "{\"permission\":\"view\"}");
+    expect(enabled.status).toBe(201);
+    const activeUrl = z.object({url: z.url()}).parse(await enabled.json()).url;
+    const activeSecret = new URLSearchParams(new URL(activeUrl).hash.slice(1)).get("link");
+    expect(activeSecret).toBeTruthy();
+    const revokedGuest = await exchange(artifactId, activeSecret ?? "", "Revoked visitor");
+    const revoked = await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`);
+    expect(revoked.status).toBe(204);
+    const revokedCurrent = await guestRequest(revokedGuest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`);
+    const revokedCurrentResult = {body: await revokedCurrent.text(), status: revokedCurrent.status};
+
+    const resetSource = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, "{\"permission\":\"view\"}");
+    expect(resetSource.status).toBe(201);
+    const resetSourceUrl = z.object({url: z.url()}).parse(await resetSource.json()).url;
+    const resetSecret = new URLSearchParams(new URL(resetSourceUrl).hash.slice(1)).get("link");
+    expect(resetSecret).toBeTruthy();
+    const reset = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link/reset?projectId=${projectId}`, "{}");
+    expect(reset.status).toBe(201);
+
+    const disabledLink = await ownerRequest("POST", `/api/v1/artifacts/${otherArtifactId}/public-link?projectId=${projectId}`, "{\"permission\":\"view\"}");
+    expect(disabledLink.status).toBe(201);
+    const disabledUrl = z.object({url: z.url()}).parse(await disabledLink.json()).url;
+    const disabledSecret = new URLSearchParams(new URL(disabledUrl).hash.slice(1)).get("link");
+    expect(disabledSecret).toBeTruthy();
+    const disabledGuest = await exchange(otherArtifactId, disabledSecret ?? "", "Disabled visitor");
+    const failedExchanges = await Promise.all([
+      exchangeResponse(artifactId, Buffer.alloc(32, 37).toString("base64url")),
+      exchangeResponse(artifactId, activeSecret ?? ""),
+      exchangeResponse(artifactId, resetSecret ?? ""),
+    ]);
+    const failureResults = await Promise.all(failedExchanges.map(async (response) => ({body: await response.text(), status: response.status})));
+    expect(failureResults).toHaveLength(3);
+    expect(failureResults.every((result) => result.status === 404)).toBe(true);
+    expect(failureResults[1]).toEqual(failureResults[0]);
+    expect(failureResults[2]).toEqual(failureResults[0]);
+
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    database.prepare("UPDATE artifact_installation_settings SET public_links_enabled = 0 WHERE singleton = 1").run();
+    const disabledResponse = await exchangeResponse(otherArtifactId, disabledSecret ?? "");
+    const disabledResult = {body: await disabledResponse.text(), status: disabledResponse.status};
+    expect(disabledResult).toEqual(failureResults[0]);
+    const disabledCurrent = await guestRequest(disabledGuest, "GET", `/api/v1/public/artifacts/${otherArtifactId}/guest/current`);
+    expect({body: await disabledCurrent.text(), status: disabledCurrent.status}).toEqual(revokedCurrentResult);
+    database.close();
+  });
+
+  test("PLK-007-B: the public-link routes list and revoke sessions and revoke the link", async () => {
+    const created = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "comment"}));
+    expect(created.status).toBe(201);
+    const url = z.object({url: z.url()}).parse(await created.json()).url;
+    const secret = new URLSearchParams(new URL(url).hash.slice(1)).get("link");
+    expect(secret).toBeTruthy();
+    const guest = await exchange(artifactId, secret ?? "");
+    const sessionsResponse = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/public-link/sessions?projectId=${projectId}`);
+    expect(sessionsResponse.status).toBe(200);
+    const sessions = z.object({sessions: z.array(z.object({guestId: z.string()}))}).parse(await sessionsResponse.json()).sessions;
+    expect(sessions).toHaveLength(1);
+    const sessionRevoked = await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}/public-link/sessions/${sessions[0]?.guestId}?projectId=${projectId}`);
+    expect(sessionRevoked.status).toBe(204);
+    expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
+
+    const second = await exchange(artifactId, secret ?? "");
+    const revoked = await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`);
+    expect(revoked.status).toBe(204);
+    expect((await guestRequest(second, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
+    const status = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`);
+    expect(await status.json()).toMatchObject({enabled: false});
+
+    const legacy = await publishNew(server, installation, {
+      accessSetting: "public_link", content: "legacy revoked to private", idempotencyKey: ["plk", "007", "legacy", "revoke"].join("-"),
+      name: "Legacy revoke", projectId,
+    });
+    const legacyRevoked = await ownerRequest("DELETE", `/api/v1/artifacts/${legacy.body.artifact.id}/public-link?projectId=${projectId}`);
+    expect(legacyRevoked.status).toBe(204);
+    const privateDetails = await ownerRequest("GET", `/api/v1/artifacts/${legacy.body.artifact.id}?projectId=${projectId}`);
+    expect((await privateDetails.json()).artifact.accessSetting).toBe("account_required");
+  });
+
+  test("PLK-006-F: changing a comment link to view refuses the next existing-session write", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const changed = await ownerRequest(
+      "PATCH",
+      `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`,
+      JSON.stringify({permission: "view"}),
+    );
+    expect(changed.status).toBe(200);
+
+    const refused = await guestRequest(
+      guest,
+      "POST",
+      `/api/v1/public/artifacts/${artifactId}/guest/comments`,
+      JSON.stringify({body: "No longer allowed", versionId: currentVersionId}),
+      true,
+      `plk-006-downgrade-write-${randomUUID()}`,
+    );
+    expect(refused.status).toBe(403);
+  });
+
+  test("PLK-006-B: public-link creation, permission changes, and explicit reset preserve the expected URL lifecycle", async () => {
+    const created = await ownerRequest(
+      "POST",
+      `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`,
+      JSON.stringify({permission: "comment"}),
+    );
+    expect(created.status).toBe(201);
+    const firstUrl = z.object({url: z.url()}).parse(await created.json()).url;
+
+    const status = await ownerRequest(
+      "GET",
+      `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`,
+    );
+    expect(await status.json()).toMatchObject({
+      copyAvailable: false,
+      createdAt: expect.any(String),
+      enabled: true,
+      permission: "comment",
+      updatedAt: expect.any(String),
+      url: null,
+    });
+    expect((await ownerRequest(
+      "POST",
+      `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`,
+      JSON.stringify({permission: "view"}),
+    )).status).toBe(409);
+
+    expect((await ownerRequest(
+      "PATCH",
+      `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`,
+      JSON.stringify({permission: "view"}),
+    )).status).toBe(200);
+    const reset = await ownerRequest(
+      "POST",
+      `/api/v1/artifacts/${artifactId}/public-link/reset?projectId=${projectId}`,
+      JSON.stringify({permission: "view"}),
+    );
+    expect(reset.status).toBe(201);
+    expect(z.object({url: z.url()}).parse(await reset.json()).url).not.toBe(firstUrl);
+  });
+
+  test("PLK-009-F: empty and overlong comment names are rejected when supplied", async () => {
+    const invitation = await enableInvitation();
+    const nameless = await exchangeResponse(artifactId, invitation.secret, null);
+    expect(nameless.status).toBe(201);
+    const guestCookies = nameless.headers.getSetCookie();
+    const session = guestCookies.find((item) => item.startsWith("artifact_guest_session="))?.split(";", 1)[0];
+    const csrf = guestCookies.find((item) => item.startsWith("artifact_guest_csrf="))?.split(";", 1)[0];
+    const guest = {cookie: `${session ?? ""}; ${csrf ?? ""}`, csrf: csrf?.split("=", 2)[1] ?? ""};
+    const current = await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`);
+    expect(await current.json()).toMatchObject({nameRequired: true, paused: false, permission: "comment"});
+    const write = await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Name first", versionId: currentVersionId}), true, `nameless-${randomUUID()}`);
+    expect(write.status).toBe(409);
+    expect(await write.json()).toMatchObject({error: {code: "PUBLIC_LINK_NAME_REQUIRED"}});
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    expect(database.prepare("SELECT comment_write_count AS count FROM guest_review_invitations WHERE artifact_id = ? AND revoked_at IS NULL").get(artifactId))
+      .toMatchObject({count: 0});
+    const named = await exchange(artifactId, invitation.secret, "Reply author");
+    const thread = await createGuestThread(named, "Reply target");
+    const replyPath = `/api/v1/public/artifacts/${artifactId}/guest/comments/${thread.id}/replies`;
+    const namelessReply = await guestRequest(guest, "POST", replyPath, JSON.stringify({body: "Name first"}), true, `nameless-reply-${randomUUID()}`);
+    expect(namelessReply.status).toBe(409);
+    expect(await namelessReply.json()).toMatchObject({error: {code: "PUBLIC_LINK_NAME_REQUIRED"}});
+    expect(database.prepare("SELECT comment_write_count AS count FROM guest_review_invitations WHERE artifact_id = ? AND revoked_at IS NULL").get(artifactId))
+      .toMatchObject({count: 1});
+    database.close();
+    const renamed = await guestRequest(guest, "PATCH", `/api/v1/public/artifacts/${artifactId}/guest/current`, JSON.stringify({displayName: "Named visitor"}));
+    expect(renamed.status).toBe(200);
+    expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(201);
+    expect((await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Can comment", versionId: currentVersionId}), true, `named-${randomUUID()}`)).status).toBe(201);
+    expect((await exchangeResponse(artifactId, invitation.secret, "")).status).toBe(422);
+    expect((await exchangeResponse(artifactId, invitation.secret, "x".repeat(81))).status).toBe(422);
+  });
+
+  test("PLK-009-B: view visitors need no name and cannot write; comment authors use the visitor label", async () => {
+    const viewLink = await ownerRequest("POST", `/api/v1/artifacts/${otherArtifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "view"}));
+    expect(viewLink.status).toBe(201);
+    const viewSecret = new URLSearchParams(new URL(z.object({url: z.url()}).parse(await viewLink.json()).url).hash.slice(1)).get("link");
+    if (viewSecret === null) throw new Error("The view link did not contain its fragment secret.");
+    const viewExchange = await exchangeResponse(otherArtifactId, viewSecret, null);
+    expect(viewExchange.status).toBe(201);
+    const viewCookies = viewExchange.headers.getSetCookie();
+    const session = viewCookies.find((item) => item.startsWith("artifact_guest_session="))?.split(";", 1)[0];
+    const csrf = viewCookies.find((item) => item.startsWith("artifact_guest_csrf="))?.split(";", 1)[0];
+    const viewVisitor = {cookie: `${session ?? ""}; ${csrf ?? ""}`, csrf: csrf?.split("=", 2)[1] ?? ""};
+    const current = await guestRequest(viewVisitor, "GET", `/api/v1/public/artifacts/${otherArtifactId}/guest/current`);
+    expect(current.status).toBe(201);
+    expect(await current.json()).toMatchObject({nameRequired: false, permission: "view"});
+    const deniedWrite = await guestRequest(viewVisitor, "POST", `/api/v1/public/artifacts/${otherArtifactId}/guest/comments`, JSON.stringify({body: "View only", versionId: otherCurrentVersionId}), true, `view-only-${randomUUID()}`);
+    expect(deniedWrite.status).toBe(403);
+    expect(await deniedWrite.json()).toMatchObject({error: {message: "PUBLIC_LINK_VIEW_ONLY"}});
+
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret, "Public reviewer");
+    const thread = await createGuestThread(guest, "A public comment");
+    expect(thread.author.displayName).toBe("Public reviewer (visitor)");
+  });
+
+  test("PLK-012-B: one visitor cookie carries grants for multiple links", async () => {
+    const firstLink = await enableInvitation();
+    const secondLink = await enableInvitation(otherArtifactId, projectId);
+    const firstVisitor = await exchange(artifactId, firstLink.secret);
+    const secondExchange = await exchangeResponse(otherArtifactId, secondLink.secret, "Guest Reviewer", {Cookie: firstVisitor.cookie});
+    expect(secondExchange.status).toBe(201);
+    const setCookies = secondExchange.headers.getSetCookie();
+    const session = setCookies.find((item) => item.startsWith("artifact_guest_session="))?.split(";", 1)[0];
+    const csrf = setCookies.find((item) => item.startsWith("artifact_guest_csrf="))?.split(";", 1)[0];
+    expect(session).toBe(firstVisitor.cookie.split("; ")[0]);
+    expect(csrf).toBe(firstVisitor.cookie.split("; ")[1]);
+    const sharedVisitor = {cookie: `${session ?? ""}; ${csrf ?? ""}`, csrf: csrf?.split("=", 2)[1] ?? ""};
+    expect((await guestRequest(firstVisitor, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(201);
+    expect((await guestRequest(sharedVisitor, "GET", `/api/v1/public/artifacts/${otherArtifactId}/guest/current`)).status).toBe(201);
+  });
+
+  test("PLK-012-F: opening a second link leaves the first visitor grant usable", async () => {
+    const firstLink = await enableInvitation();
+    const secondLink = await enableInvitation(otherArtifactId, projectId);
+    const firstVisitor = await exchange(artifactId, firstLink.secret);
+    const secondExchange = await exchangeResponse(otherArtifactId, secondLink.secret, "Guest Reviewer", {Cookie: firstVisitor.cookie});
+    expect(secondExchange.status).toBe(201);
+    const setCookies = secondExchange.headers.getSetCookie();
+    const session = setCookies.find((item) => item.startsWith("artifact_guest_session="))?.split(";", 1)[0];
+    const csrf = setCookies.find((item) => item.startsWith("artifact_guest_csrf="))?.split(";", 1)[0];
+    expect(session).toBe(firstVisitor.cookie.split("; ")[0]);
+    expect(csrf).toBe(firstVisitor.cookie.split("; ")[1]);
+    const sharedVisitor = {cookie: `${session ?? ""}; ${csrf ?? ""}`, csrf: csrf?.split("=", 2)[1] ?? ""};
+    expect((await guestRequest(sharedVisitor, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(201);
+    expect((await guestRequest(sharedVisitor, "GET", `/api/v1/public/artifacts/${otherArtifactId}/guest/current`)).status).toBe(201);
+  });
+
+  test("PLK-007-F: wrong, revoked, and other-artifact secrets return the same 404; reset revokes old grants", async () => {
     const first = await enableInvitation();
+    const priorVisitor = await exchange(artifactId, first.secret);
     const wrong = await exchangeResponse(artifactId, "x".repeat(40), "Guest");
     expect(wrong.status).toBe(404);
     const regenerated = await enableInvitation();
@@ -150,9 +528,10 @@ describe("invited guest review", () => {
     const genericBody = await wrong.text();
     expect(await revoked.text()).toBe(genericBody);
     expect(await otherArtifact.text()).toBe(genericBody);
+    expect((await guestRequest(priorVisitor, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
   });
 
-  test("a guest can edit and delete only their own thread and replies", async () => {
+  test("PLK-008-B: a guest can edit and delete only their own thread and replies", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
     const otherGuest = await exchange(artifactId, invitation.secret, "Other Guest");
@@ -184,7 +563,23 @@ describe("invited guest review", () => {
     expect(unauthorized.map((response) => response.status)).toEqual([404, 404, 404, 404]);
   });
 
-  test("guests cannot resolve comments or use authenticated API routes", async () => {
+  test("PLK-008-F: a public link cannot read another artifact or member-only data", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const responses = await Promise.all([
+      guestRequest(guest, "GET", `/api/v1/public/artifacts/${otherArtifactId}/guest/current`),
+      guestRequest(guest, "GET", `/api/v1/artifacts/${artifactId}/versions?projectId=${projectId}`),
+      guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/versions`),
+      guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/comparisons`),
+      guestRequest(guest, "GET", `/api/v1/projects/${projectId}`),
+      guestRequest(guest, "GET", `/api/v1/projects/${projectId}/groups`),
+      guestRequest(guest, "GET", "/api/v1/members"),
+    ]);
+    expect(responses.map(({status}) => status)).toEqual([404, 401, 401, 401, 401, 401, 401]);
+    await Promise.all(responses.map((response) => response.arrayBuffer()));
+  });
+
+  test("PLK-015-F: guests cannot resolve comments or use authenticated API routes", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
     const thread = await createGuestThread(guest, "Cannot resolve me");
@@ -198,14 +593,31 @@ describe("invited guest review", () => {
     expect(responses.map((response) => response.status)).toEqual([401, 401, 404]);
   });
 
-  test("mutations without the guest CSRF token are refused", async () => {
+  test("PLK-010-F: mutations without the guest CSRF token are refused", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
     const response = await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Blocked", versionId: currentVersionId}), false, "guest-no-csrf-key-0001");
     expect(response.status).toBe(403);
+
+    const mismatched = await fetch(`${server.baseUrl}/api/v1/public/artifacts/${artifactId}/guest/comments`, {
+      body: JSON.stringify({body: "Blocked", versionId: currentVersionId}),
+      headers: {Cookie: guest.cookie, Origin: server.baseUrl, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json", "X-CSRF-Token": "A".repeat(guest.csrf.length), "Idempotency-Key": `guest-csrf-mismatch-${randomUUID()}`},
+      method: "POST",
+    });
+    expect(mismatched.status).toBe(403);
+
+    const reused = await exchangeResponse(artifactId, invitation.secret, "Guest Reviewer", {Cookie: guest.cookie});
+    expect(reused.status).toBe(201);
+    const reusedCookies = reused.headers.getSetCookie();
+    expect(reusedCookies.find((item) => item.startsWith("artifact_guest_session="))?.split(";", 1)[0]).toBe(guest.cookie.split("; ")[0]);
+
+    const staleCookie = guest.cookie.replace(/artifact_guest_csrf=[^;]+/u, `artifact_guest_csrf=${"A".repeat(guest.csrf.length)}`);
+    const replaced = await exchangeResponse(artifactId, invitation.secret, "Guest Reviewer", {Cookie: staleCookie});
+    expect(replaced.status).toBe(201);
+    expect(replaced.headers.getSetCookie().find((item) => item.startsWith("artifact_guest_session="))?.split(";", 1)[0]).not.toBe(guest.cookie.split("; ")[0]);
   });
 
-  test("a guest views the private artifact's current version through the content origin", async () => {
+  test("PLK-013-B: a guest views the private artifact's current version through the content origin", async () => {
     const invitation = await enableInvitation();
     const guest = await exchange(artifactId, invitation.secret);
     const currentResponse = await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`);
@@ -217,7 +629,7 @@ describe("invited guest review", () => {
     expect(contentResponse.status).toBe(200);
   });
 
-  test("guest listing, detail, replies, paging, and author projections are isolated", async () => {
+  test("PLK-015-B: guest listing, detail, replies, paging, and author projections are isolated", async () => {
     const invitation = await enableInvitation();
     const guestA = await exchange(artifactId, invitation.secret, "Guest A");
     const guestB = await exchange(artifactId, invitation.secret, "Guest B");
@@ -252,7 +664,7 @@ describe("invited guest review", () => {
     const detailResponse = await guestRequest(guestA, "GET", `/api/v1/public/artifacts/${artifactId}/guest/comments/${ownFirst.id}`);
     const detailText = await detailResponse.text();
     const detail = guestThreadDetailsSchema.parse(JSON.parse(detailText));
-    expect(detail.thread.author).toEqual({displayName: "Guest A (guest)", isYou: true});
+    expect(detail.thread.author).toEqual({displayName: "Guest A (visitor)", isYou: true});
     expect(detail.thread.replyCount).toBe(detail.replies.length);
     expect(detail.replies).toContainEqual({author: {displayName: expect.any(String), isYou: false}, body: "Team reply"});
     expect(detailText).not.toMatch(/principalId|authorizedByPrincipalId|principalKind|email/i);
@@ -260,21 +672,208 @@ describe("invited guest review", () => {
 
     const memberList = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/comments?projectId=${projectId}`);
     const memberText = await memberList.text();
-    expect(memberText).toContain("Guest A (guest)");
+    expect(memberText).toContain("Guest A (visitor)");
     expect(memberText).toContain(ownFirst.id);
   });
 
-  test("archiving the project invalidates guest current, comment creation, and comment listing", async () => {
-    const invitation = await enableInvitation();
-    const guest = await exchange(artifactId, invitation.secret);
+  test("PLK-014-B: archived projects exchange view and comment links while pausing comments", async () => {
+    const viewLink = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "view"}));
+    const commentLink = await ownerRequest("POST", `/api/v1/artifacts/${otherArtifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "comment"}));
+    expect(viewLink.status).toBe(201);
+    expect(commentLink.status).toBe(201);
+    const viewSecret = new URLSearchParams(new URL(z.object({url: z.url()}).parse(await viewLink.json()).url).hash.slice(1)).get("link");
+    const commentSecret = new URLSearchParams(new URL(z.object({url: z.url()}).parse(await commentLink.json()).url).hash.slice(1)).get("link");
+    expect(viewSecret).toBeTruthy();
+    expect(commentSecret).toBeTruthy();
+    const expiringVisitors = [
+      await exchange(artifactId, viewSecret ?? "", "Expired view visitor"),
+      await exchange(otherArtifactId, commentSecret ?? "", "Expired comment visitor"),
+    ];
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    database.prepare(`UPDATE guest_review_sessions SET expires_at = '2000-01-01T00:00:00.000Z'
+      WHERE artifact_id IN (?, ?) AND display_name <> 'Active comment visitor'`).run(artifactId, otherArtifactId);
+    expect(expiringVisitors).toHaveLength(2);
     const archive = await ownerRequest("POST", `/api/v1/projects/${projectId}/archive`, "{}");
     expect(archive.status).toBe(200);
-    const responses = await Promise.all([
-      guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`),
-      guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Archived", versionId: currentVersionId}), true, "archived-guest-create-0001"),
-      guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/comments`),
+    const exchanges = await Promise.all([
+      exchangeResponse(artifactId, viewSecret ?? "", "New view visitor"),
+      exchangeResponse(artifactId, viewSecret ?? "", "Expired view visitor"),
+      exchangeResponse(otherArtifactId, commentSecret ?? "", "New comment visitor"),
+      exchangeResponse(otherArtifactId, commentSecret ?? "", "Expired comment visitor"),
     ]);
-    expect(responses.map((response) => response.status)).toEqual([404, 404, 404]);
+    const visitors = await Promise.all(exchanges.map(async (response) => {
+      expect(response.status).toBe(201);
+      const session = response.headers.getSetCookie().find((item) => item.startsWith("artifact_guest_session="))?.split(";", 1)[0] ?? "";
+      const csrf = response.headers.getSetCookie().find((item) => item.startsWith("artifact_guest_csrf="))?.split(";", 1)[0] ?? "";
+      return {cookie: `${session}; ${csrf}`, csrf: csrf.split("=", 2)[1] ?? ""};
+    }));
+    const currentViews = await Promise.all(visitors.map((visitor, index) => guestRequest(
+      visitor, "GET", `/api/v1/public/artifacts/${index < 2 ? artifactId : otherArtifactId}/guest/current`,
+    )));
+    for (const response of currentViews) expect(response.status).toBe(201);
+    const currentVisitorSignals = await Promise.all(currentViews.map((response) => response.json()));
+    expect(currentVisitorSignals.slice(0, 2)).toEqual(expect.arrayContaining([
+      expect.objectContaining({paused: false, permission: "view"}),
+    ]));
+    expect(currentVisitorSignals.slice(2)).toEqual(expect.arrayContaining([
+      expect.objectContaining({paused: true, permission: "comment"}),
+    ]));
+    const paused = await Promise.all(visitors.slice(2).map((visitor, index) => guestRequest(
+      visitor, "POST", `/api/v1/public/artifacts/${otherArtifactId}/guest/comments`,
+      JSON.stringify({body: `Archived comment ${index}`, versionId: otherCurrentVersionId}), true,
+      `archived-comment-${randomUUID()}`,
+    )));
+    await Promise.all(paused.map(async (response) => {
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({error: {code: "PUBLIC_LINK_PAUSED"}});
+    }));
+    database.close();
+    expect((await ownerRequest("POST", `/api/v1/projects/${projectId}/unarchive`, "{}")).status).toBe(200);
+    const resumedVisitor = visitors.at(2);
+    if (resumedVisitor === undefined) throw new Error("Archived comment visitor was not exchanged.");
+    const resumedComment = await guestRequest(
+      resumedVisitor, "POST", `/api/v1/public/artifacts/${otherArtifactId}/guest/comments`,
+      JSON.stringify({body: "Unarchived comment", versionId: otherCurrentVersionId}), true,
+      `unarchived-comment-${randomUUID()}`,
+    );
+    expect(resumedComment.status).toBe(201);
+  });
+
+  test("PLK-014-F: deleted artifacts reject visitor exchange and comments after unarchive", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret);
+    const deletion = await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}?project=${projectId}`, JSON.stringify({expectedCurrentVersionId: currentVersionId}), {"Idempotency-Key": "plk-014-delete-artifact"});
+    expect(deletion.status).toBe(200);
+    const archive = await ownerRequest("POST", `/api/v1/projects/${projectId}/archive`, "{}");
+    expect(archive.status).toBe(200);
+    expect((await ownerRequest("POST", `/api/v1/projects/${projectId}/unarchive`, "{}")).status).toBe(200);
+
+    const exchangeAfterDelete = await exchangeResponse(artifactId, invitation.secret);
+    expect(exchangeAfterDelete.status).toBe(404);
+    const commentAfterDelete = await guestRequest(guest, "POST", `/api/v1/public/artifacts/${artifactId}/guest/comments`, JSON.stringify({body: "Must not persist", versionId: currentVersionId}), true, "plk-014-deleted-comment");
+    expect(commentAfterDelete.status).toBe(404);
+  });
+
+  test("PLK-016-B: kill switch off blocks and on resumes the same public link", async () => {
+    const created = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "comment"}));
+    expect(created.status).toBe(201);
+    const link = z.object({url: z.url()}).parse(await created.json()).url;
+    const secret = new URLSearchParams(new URL(link).hash.slice(1)).get("link");
+    expect(secret).toBeTruthy();
+    const guest = await exchange(artifactId, secret ?? "");
+    const currentPath = `/api/v1/public/artifacts/${artifactId}/guest/current`;
+    const bootstrapBeforeDisable = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", currentPath)).json());
+    const contentBeforeDisable = await fetchVersion(server, bootstrapBeforeDisable.bootstrapUrl);
+    expect(contentBeforeDisable.status).toBe(200);
+    const contentCookie = contentBeforeDisable.headers.getSetCookie().find((cookie) => cookie.startsWith("artifact_content="))?.split(";", 1)[0];
+    expect(contentCookie).toBeDefined();
+    const bootstrapAfterDisable = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", currentPath)).json());
+
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    const guestSession = z.object({id: z.string()}).parse(database.prepare(
+      "SELECT id FROM guest_review_sessions WHERE artifact_id = ? ORDER BY created_at DESC LIMIT 1",
+    ).get(artifactId));
+    const leaseDigest = createHash("sha256").update(randomUUID()).digest("hex");
+    const createdAt = new Date().toISOString();
+    const repository = new SqliteArtifactRepository(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    await repository.createPreviewLease({
+      artifactId,
+      contentToken: randomUUID(),
+      createdAt,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      guestSessionId: guestSession.id,
+      principalId: `guest_${guestSession.id}`,
+      projectId,
+      tokenDigest: leaseDigest,
+      versionId: currentVersionId,
+    });
+
+    database.prepare("UPDATE artifact_installation_settings SET public_links_enabled = 0 WHERE singleton = 1").run();
+    expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
+    expect((await exchangeResponse(artifactId, secret ?? "")).status).toBe(404);
+    expect((await fetchVersion(server, bootstrapAfterDisable.bootstrapUrl)).status).not.toBe(200);
+    expect((await fetchVersion(server, bootstrapBeforeDisable.bootstrapUrl, "GET", {Cookie: contentCookie ?? ""})).status).not.toBe(200);
+    expect(await repository.findPreviewLease(leaseDigest, new Date().toISOString())).toBeNull();
+    expect(await repository.extendPreviewLease(leaseDigest, new Date().toISOString(), new Date(Date.now() + 120_000).toISOString())).toBe(false);
+
+    database.prepare("UPDATE artifact_installation_settings SET public_links_enabled = 1 WHERE singleton = 1").run();
+    expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(201);
+    expect((await exchangeResponse(artifactId, secret ?? "")).status).toBe(201);
+    const status = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`);
+    expect(await status.json()).toMatchObject({enabled: true, permission: "comment"});
+    repository.close();
+    database.close();
+  });
+
+  test("PLK-016-F: disabled policy blocks legacy reads and rejects direct repository writes", async () => {
+    const legacy = await publishNew(server, installation, {
+      accessSetting: "public_link", content: "legacy read is disabled", idempotencyKey: ["plk", "016", "legacy", "off"].join("-"),
+    });
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    database.prepare("UPDATE artifact_installation_settings SET public_links_enabled = 0 WHERE singleton = 1").run();
+    const response = await fetch(`${server.baseUrl}/artifacts/${legacy.body.artifact.id}`, {
+      headers: {Accept: "text/html"}, redirect: "manual",
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    expect(await response.text()).toContain("This link isn't available");
+    database.close();
+    const repository = new SqliteArtifactRepository(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    await repository.setPublicLinksEnabled(true);
+    const active = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "view"}));
+    expect(active.status).toBe(201);
+    const existing = await repository.findGuestInvitation(projectId, artifactId);
+    expect(existing).not.toBeNull();
+    const tokenDigest = createHash("sha256").update(randomUUID()).digest("hex");
+    const createdAt = new Date().toISOString();
+    const candidate = {
+      artifactId: otherArtifactId,
+      createdAt,
+      createdByPrincipalId: existing?.createdByPrincipalId ?? "unreachable",
+      generation: 1,
+      id: randomUUID(),
+      permission: "view" as const,
+      projectId,
+      revokedAt: null,
+      sealedSecret: null,
+      sealKeyFingerprint: null,
+      tokenDigest,
+      updatedAt: createdAt,
+      updatedByPrincipalId: existing?.createdByPrincipalId ?? "unreachable",
+    };
+    await repository.setPublicLinksEnabled(false);
+    expect(await repository.createGuestInvitation(candidate)).toBe("disabled");
+    expect(await repository.findGuestInvitation(projectId, otherArtifactId)).toBeNull();
+    expect(await repository.resetGuestInvitation({...candidate, artifactId, id: randomUUID(), tokenDigest: createHash("sha256").update(randomUUID()).digest("hex")})).toBe("disabled");
+    expect((await repository.findGuestInvitation(projectId, artifactId))?.id).toBe(existing?.id);
+    await repository.setPublicLinksEnabled(true);
+    expect(await repository.findGuestInvitation(projectId, otherArtifactId)).toBeNull();
+    repository.close();
+  });
+
+  test("PLK-010-B: a comment visitor can rename the current guest with CSRF", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret, "Initial Name");
+    const path = `/api/v1/public/artifacts/${artifactId}/guest/current`;
+    const denied = await guestRequest(guest, "PATCH", path, JSON.stringify({displayName: "Renamed"}), false);
+    expect(denied.status).toBe(403);
+    const renamed = await guestRequest(guest, "PATCH", path, JSON.stringify({displayName: "Renamed Visitor"}));
+    expect(renamed.status).toBe(200);
+    expect(await renamed.json()).toEqual({displayName: "Renamed Visitor"});
+    const current = await guestRequest(guest, "GET", path);
+    expect(current.status).toBe(201);
+    expect(await current.json()).toMatchObject({displayName: "Renamed Visitor"});
+  });
+
+  test("PLK-021-F: visitor session exchange responses are not cacheable", async () => {
+    const created = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "view"}));
+    expect(created.status).toBe(201);
+    const url = z.object({url: z.url()}).parse(await created.json()).url;
+    const secret = new URLSearchParams(new URL(url).hash.slice(1)).get("link");
+    expect(secret).toBeTruthy();
+    const response = await exchangeResponse(artifactId, secret ?? "");
+    expect(response.status).toBe(201);
+    expect(response.headers.get("cache-control")).toMatch(/no-store/iu);
   });
 
   test("exchange requires a same-origin JSON request", async () => {
@@ -302,7 +901,7 @@ describe("invited guest review", () => {
     database.close();
   });
 
-  test("the 31st exchange for one invitation in a minute is rate limited", async () => {
+  test("PLK-011-F: the 31st exchange for one invitation in a minute is rate limited", async () => {
     const invitation = await enableInvitation();
     expect((await Promise.all(Array.from({length: 30}, (_, index) => exchangeResponse(artifactId, invitation.secret, `Guest ${index}`)))).map((response) => response.status))
       .toEqual(Array.from({length: 30}, () => 201));
@@ -326,6 +925,24 @@ describe("invited guest review", () => {
     expect((await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}/guest-invitation/sessions/${listed.sessions[0]?.guestId}?projectId=${projectId}`)).status).toBe(204);
     expect((await (await ownerRequest("GET", listPath)).json())).toEqual({sessions: []});
     expect((await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).status).toBe(404);
+    const contentUrl = new URL("/", current.bootstrapUrl).toString();
+    expect((await fetchVersion(server, contentUrl, "GET", {Cookie: contentCookie ?? ""})).status).not.toBe(200);
+  });
+
+  test("PLK-013-F: revoking a visitor grant invalidates its issued content lease", async () => {
+    const invitation = await enableInvitation();
+    const guest = await exchange(artifactId, invitation.secret, "Lease visitor");
+    const current = z.object({bootstrapUrl: z.url()}).parse(await (await guestRequest(guest, "GET", `/api/v1/public/artifacts/${artifactId}/guest/current`)).json());
+    const contentResponse = await fetchVersion(server, current.bootstrapUrl);
+    expect(contentResponse.status).toBe(200);
+    const contentCookie = contentResponse.headers.getSetCookie().find((cookie) => cookie.startsWith("artifact_content="))?.split(";", 1)[0];
+    expect(contentCookie).toBeDefined();
+
+    const sessionsPath = `/api/v1/artifacts/${artifactId}/guest-invitation/sessions?projectId=${projectId}`;
+    const sessions = z.object({sessions: z.array(z.object({guestId: z.string()}))}).parse(await (await ownerRequest("GET", sessionsPath)).json()).sessions;
+    expect(sessions).toHaveLength(1);
+    expect((await ownerRequest("DELETE", `/api/v1/artifacts/${artifactId}/guest-invitation/sessions/${sessions[0]?.guestId}?projectId=${projectId}`)).status).toBe(204);
+
     const contentUrl = new URL("/", current.bootstrapUrl).toString();
     expect((await fetchVersion(server, contentUrl, "GET", {Cookie: contentCookie ?? ""})).status).not.toBe(200);
   });

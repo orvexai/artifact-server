@@ -787,7 +787,12 @@ export interface ContentSessionRepository {
 
 /** Durable invitation and guest-session operations for invited review. */
 export interface GuestReviewRepository {
-  createGuestInvitation(invitation: GuestReviewInvitation): Promise<void>;
+  getPublicLinksEnabled(): Promise<boolean>;
+  setPublicLinksEnabled(enabled: boolean): Promise<void>;
+  createGuestInvitation(invitation: GuestReviewInvitation): Promise<"created" | "exists" | "disabled">;
+  resetGuestInvitation(invitation: GuestReviewInvitation): Promise<"updated" | "missing" | "disabled">;
+  resealGuestInvitation(invitationId: string, generation: number, oldFingerprint: string, sealedSecret: string, currentFingerprint: string): Promise<boolean>;
+  setGuestInvitationPermission(invitationId: string, permission: "view" | "comment", updatedAt: string, updatedByPrincipalId: string): Promise<boolean>;
   findGuestInvitation(
     projectId: string,
     artifactId: string,
@@ -798,12 +803,20 @@ export interface GuestReviewRepository {
     artifactId: string,
     revokedAt: string,
   ): Promise<boolean>;
+  revokeGuestInvitationAtGeneration(
+    projectId: string,
+    artifactId: string,
+    generation: number,
+    revokedAt: string,
+  ): Promise<boolean>;
   createGuestSession(session: GuestReviewSession): Promise<"created" | "rate_limited" | "invalid">;
-  findGuestSession(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null>;
+  findGuestSessionByTokenDigest(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null>;
+  findGuestSession(tokenDigest: string, artifactId: string, requestTime: string): Promise<GuestReviewSession | null>;
   listGuestSessions(projectId: string, artifactId: string, requestTime: string): Promise<readonly GuestReviewSessionSummary[]>;
   revokeGuestSession(projectId: string, artifactId: string, guestId: string): Promise<boolean>;
+  updateGuestSessionDisplayName(projectId: string, artifactId: string, guestId: string, displayName: string): Promise<boolean>;
   getGuestInvitationUsage(invitationId: string, requestTime: string): Promise<GuestReviewInvitationUsage>;
-  reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<boolean>;
+  reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<"reserved" | "rate_limited" | "view_only" | "paused" | "invalid">;
   reserveGuestBootstrap(guestId: string, requestTime: string): Promise<boolean>;
   deleteExpiredGuestContentRows(expiredBefore: string, limit: number): Promise<number>;
   deleteExpiredGuestSessions(expiredBefore: string, limit: number): Promise<number>;

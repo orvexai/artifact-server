@@ -31,6 +31,8 @@ import {
   type InvalidIdempotencyKey,
   InvalidPagination,
   GuestRateLimitExceeded,
+  PublicLinkPaused,
+  PublicLinkNameRequired,
   VersionNotFound,
 } from "../core/errors.js";
 import {
@@ -270,7 +272,7 @@ export interface ArtifactCommentRepository {
     projectId: string,
     artifactId: string,
   ) => Effect.Effect<readonly ArtifactStateEntry[], CommentRepositoryFailure>;
-  readonly reserveGuestCommentWrite: (guestId: string, requestTime: string) => Effect.Effect<boolean, ArtifactRepositoryFailure>;
+  readonly reserveGuestCommentWrite: (guestId: string, requestTime: string) => Effect.Effect<"reserved" | "rate_limited" | "view_only" | "paused" | "invalid", ArtifactRepositoryFailure>;
   readonly updateReply: (
     command: UpdateCommentReply,
   ) => Effect.Effect<CommentReplyRecord, CommentRepositoryFailure>;
@@ -311,6 +313,8 @@ export type ArtifactCommentFailure =
   | InvalidIdempotencyKey
   | InvalidPagination
   | GuestRateLimitExceeded
+  | PublicLinkPaused
+  | PublicLinkNameRequired
   | ProjectManagementFailure
   | VersionNotFound
   | LinkedCommentCaptureFailure;
@@ -408,7 +412,7 @@ function deletionRole(principal: Principal): ProjectRole {
 function makeGuestAuthor(guest: GuestReviewer): CommentAuthor {
   return {
     authorizedByPrincipalId: guest.invitationCreatorPrincipalId,
-    displayName: `${guest.displayName} (guest)`,
+    displayName: `${guest.displayName} (visitor)`,
     principalId: `guest_${guest.guestId}`,
     principalKind: "human",
   };
@@ -443,7 +447,11 @@ function makeArtifactCommentService(
     return yield* projects.resolveActiveProject({minimumRole, principal, projectId});
   });
   const reserveGuestWrite = Effect.fn("ArtifactCommentService.reserveGuestWrite")(function*(guest: GuestReviewer, now: string) {
-    if (!(yield* dependencies.repository.reserveGuestCommentWrite(guest.guestId, now))) {
+    const reservation = yield* dependencies.repository.reserveGuestCommentWrite(guest.guestId, now);
+    if (reservation === "paused") return yield* new PublicLinkPaused({message: "Comments are paused for this public link."});
+    if (reservation === "view_only") return yield* new AuthorizationDenied({message: "PUBLIC_LINK_VIEW_ONLY"});
+    if (reservation === "invalid") return yield* new ArtifactNotFound({message: "The requested route does not exist."});
+    if (reservation === "rate_limited") {
       return yield* new GuestRateLimitExceeded({message: "This guest session has reached its comment limit. Try again later."});
     }
     return now;
@@ -1084,6 +1092,9 @@ function makeArtifactCommentService(
   );
   const guestCreateThread = Effect.fn("ArtifactCommentService.guestCreateThread")(
     function*(command: {readonly guest: GuestReviewer; readonly anchor: unknown; readonly body: string; readonly idempotencyKey: string; readonly path: string | null; readonly versionId: string}) {
+      if (!command.guest.paused && command.guest.nameRequired) {
+        return yield* new PublicLinkNameRequired({message: "Choose a display name before commenting."});
+      }
       const artifact = yield* requireArtifact(command.guest.projectId, command.guest.artifactId);
       if (command.versionId !== artifact.currentVersionId) return yield* new VersionNotFound({message: "The saved version does not exist on this artifact."});
       const version = yield* requireVersion(command.guest.projectId, artifact.id, command.versionId);
@@ -1109,6 +1120,9 @@ function makeArtifactCommentService(
   );
   const guestCreateReply = Effect.fn("ArtifactCommentService.guestCreateReply")(
     function*(command: {readonly guest: GuestReviewer; readonly threadId: string; readonly body: string; readonly idempotencyKey: string}) {
+      if (!command.guest.paused && command.guest.nameRequired) {
+        return yield* new PublicLinkNameRequired({message: "Choose a display name before commenting."});
+      }
       const thread = yield* requireGuestThread(command.guest, command.threadId);
       const body = yield* requireBody(command.body);
       const idempotencyKey = yield* parseIdempotencyKey(command.idempotencyKey);

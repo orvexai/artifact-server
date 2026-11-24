@@ -10,6 +10,7 @@ export const errorCodes = {
   authenticationRequired: "AUTHENTICATION_REQUIRED",
   commentNotFound: "COMMENT_NOT_FOUND",
   commentResolved: "COMMENT_RESOLVED",
+  publicLinkNameRequired: "PUBLIC_LINK_NAME_REQUIRED",
   dispatchNotFound: "DISPATCH_NOT_FOUND",
   dispatchStateConflict: "DISPATCH_STATE_CONFLICT",
   contentBootstrapRejected: "CONTENT_BOOTSTRAP_REJECTED",
@@ -130,6 +131,18 @@ export class CommentResolved extends Schema.TaggedError<CommentResolved>()(
 /** A bounded guest-review operation exceeded its per-invitation/session cap. */
 export class GuestRateLimitExceeded extends Schema.TaggedError<GuestRateLimitExceeded>()(
   "GuestRateLimitExceeded",
+  messageField,
+) {}
+
+/** A public link keeps serving views while comment writes are paused by archive. */
+export class PublicLinkPaused extends Schema.TaggedError<PublicLinkPaused>()(
+  "PublicLinkPaused",
+  messageField,
+) {}
+
+/** A comment-capable visitor must choose a name before writing. */
+export class PublicLinkNameRequired extends Schema.TaggedError<PublicLinkNameRequired>()(
+  "PublicLinkNameRequired",
   messageField,
 ) {}
 
@@ -403,14 +416,20 @@ export class ArtifactRepositoryFailure extends Schema.TaggedError<ArtifactReposi
       "createArtifactResponse",
       "createContentBootstrap",
       "createGuestInvitation",
+      "resetGuestInvitation",
+      "resealGuestInvitation",
       "findGuestInvitation",
       "findGuestInvitationByDigest",
       "revokeGuestInvitation",
       "createGuestSession",
+      "findGuestSessionByTokenDigest",
       "findGuestSession",
       "listGuestSessions",
       "revokeGuestSession",
+      "updateGuestSessionDisplayName",
       "getGuestInvitationUsage",
+      "setGuestInvitationPermission",
+      "getPublicLinksEnabled",
       "deleteExpiredGuestSessions",
       "createPreviewLease",
       "createStagedUpload",
@@ -447,6 +466,7 @@ export class ArtifactRepositoryFailure extends Schema.TaggedError<ArtifactReposi
       "listProjectAuditEvents",
       "recordProjectProvisionerAuditEvent",
       "listPublicLinks",
+      "setPublicLinksEnabled",
       "listExpiredStagedUploads",
       "listRegisteredAgents",
       "markAgentDispatchDelivered",
@@ -556,6 +576,7 @@ const artifactServerFailureSchema = Schema.Union([
   CommentNotFound,
   CommentResolved,
   GuestRateLimitExceeded,
+  PublicLinkNameRequired,
   DispatchStateConflict,
   InvalidComment,
   ArtifactResponseTooLarge,

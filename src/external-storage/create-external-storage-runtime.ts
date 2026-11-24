@@ -105,6 +105,8 @@ export interface ExternalStorageRuntimeConfig {
   readonly contentDomain: string;
   readonly embedBindingSecret?: Redacted.Redacted | undefined;
   readonly embedBindingPreviousSecret?: Redacted.Redacted | undefined;
+  readonly publicLinkKey?: Redacted.Redacted | undefined;
+  readonly publicLinkKeyPrevious?: Redacted.Redacted | undefined;
   readonly embedOrigins?: readonly string[];
   readonly databaseUrl: Redacted.Redacted;
   /** OIDC OAuth that turns on when the issuer is discovered, instead of the static resources. */
@@ -451,6 +453,8 @@ export async function createOrgRuntime(
       contentDomain: config.contentDomain,
       embedBindingSecret: config.embedBindingSecret,
       embedBindingPreviousSecret: config.embedBindingPreviousSecret,
+      publicLinkKey: config.publicLinkKey,
+      publicLinkKeyPrevious: config.publicLinkKeyPrevious,
       gitHistory: gitHistoryMonitor?.reader ??
         fixedGitHistoryCapabilityReader(gitHistory.capability),
       readiness: () => externalStorageReadiness(database, connectedObjectStorage),

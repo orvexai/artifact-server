@@ -1551,7 +1551,9 @@ function makeInstallationAccessService(
       dependencies.installationId,
       memberId,
     );
-    return member?.status === memberStatuses.active ? humanPrincipal(member) : null;
+    return member?.status === memberStatuses.active
+      ? yield* withTenantStaffContext(humanPrincipal(member))
+      : null;
   });
 
   const authenticateSession = Effect.fn(

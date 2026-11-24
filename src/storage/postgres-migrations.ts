@@ -1051,6 +1051,25 @@ const addOrganizationEmbedOrigins = Effect.gen(function*() {
     $$`);
 });
 
+const addPublicLinkPermissions = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`ALTER TABLE guest_review_invitations
+    ADD COLUMN permission TEXT NOT NULL DEFAULT 'comment' CHECK (permission IN ('view', 'comment')),
+    ADD COLUMN sealed_secret TEXT,
+    ADD COLUMN seal_key_fingerprint TEXT,
+    ADD COLUMN generation INTEGER NOT NULL DEFAULT 1,
+    ADD COLUMN updated_at TIMESTAMPTZ,
+    ADD COLUMN updated_by_principal_id TEXT`);
+  yield* sql.unsafe(`ALTER TABLE guest_review_sessions ALTER COLUMN display_name DROP NOT NULL`);
+  yield* sql.unsafe(`ALTER TABLE guest_review_sessions DROP CONSTRAINT guest_review_sessions_installation_id_token_digest_key`);
+  yield* sql.unsafe(`ALTER TABLE guest_review_sessions ADD CONSTRAINT guest_review_sessions_token_artifact_key
+    UNIQUE (installation_id, token_digest, artifact_id)`);
+  yield* sql.unsafe(`CREATE INDEX guest_review_sessions_token_digest
+    ON guest_review_sessions (installation_id, token_digest)`);
+  yield* sql.unsafe(`ALTER TABLE artifact_installations
+    ADD COLUMN public_links_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+});
+
 const addPlatformSessions = Effect.gen(function*() {
   const sql = yield* SqlClient;
   yield* sql.unsafe(`ALTER TABLE installation_members ADD COLUMN staff BOOLEAN NOT NULL DEFAULT FALSE`);
@@ -1114,6 +1133,7 @@ const postgresMigrations = {
   "0032_org_tenancy_identity_fields": addOrgTenancyIdentityFields,
   "0033_platform_sessions": addPlatformSessions,
   "0034_organization_embed_origins": addOrganizationEmbedOrigins,
+  "0035_public_link_permissions": addPublicLinkPermissions,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

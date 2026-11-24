@@ -42,6 +42,8 @@ export function artifactServerFailureResponse(failure: ArtifactServerFailure) {
       return {code: errorCodes.commentResolved, message: failure.message, status: 409};
     case "GuestRateLimitExceeded":
       return {code: errorCodes.rateLimitExceeded, message: failure.message, status: 429};
+    case "PublicLinkNameRequired":
+      return {code: errorCodes.publicLinkNameRequired, message: failure.message, status: 409};
     case "InvalidComment":
       return {code: errorCodes.invalidComment, message: failure.message, status: 422};
     case "ArtifactResponseTooLarge":

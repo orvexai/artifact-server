@@ -27,7 +27,7 @@ describe("read-only public Review page", () => {
     await removeTestInstallation(installation);
   });
 
-  test("describe a public-link artifact's current version without a session", async () => {
+  test("PLK-021-B: public artifact API responses set noindex and no-referrer headers", async () => {
     const first = await publishNew(server, installation, {
       accessSetting: "public_link",
       content: "<!doctype html><title>One</title>",
@@ -43,6 +43,8 @@ describe("read-only public Review page", () => {
 
     const response = await readPublic(server, first.body.artifact.id);
     expect(response.status).toBe(200);
+    expect(response.headers.get("x-robots-tag")).toMatch(/noindex, nofollow/iu);
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
     expect(await response.json()).toEqual({
       artifact: {id: first.body.artifact.id, name: first.body.artifact.name},
       links: {version: second.body.links.version},

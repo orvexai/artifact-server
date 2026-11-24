@@ -345,14 +345,16 @@ const contentRecordRowSchema = z.object({
 });
 const guestInvitationRecordSchema = z.object({
   artifactId: z.string(), createdAt: z.string(), createdByPrincipalId: z.string(),
+  generation: z.number(), permission: z.enum(["view", "comment"]), sealedSecret: z.string().nullable(),
+  sealKeyFingerprint: z.string().nullable(), updatedAt: z.string().nullable(), updatedByPrincipalId: z.string().nullable(),
   id: z.string(), projectId: z.string(), revokedAt: z.string().nullable(),
   tokenDigest: z.string(),
 });
 const guestSessionRecordSchema = z.object({
   absoluteExpiresAt: z.string(), artifactId: z.string(), createdAt: z.string(), csrfDigest: z.string(),
-  displayName: z.string(), expiresAt: z.string(), guestId: z.string(),
+  displayName: z.string().nullable(), expiresAt: z.string(), guestId: z.string(),
   invitationCreatorPrincipalId: z.string(), invitationId: z.string(), lastUsedAt: z.string(),
-  projectId: z.string(), tokenDigest: z.string(),
+  paused: z.boolean(), permission: z.enum(["view", "comment"]), projectId: z.string(), tokenDigest: z.string(),
 });
 const guestSessionSummaryRecordSchema = z.object({createdAt: z.string(), displayName: z.string(), guestId: z.string(), lastUsedAt: z.string()});
 const guestInvitationUsageRecordSchema = z.object({activeSessionCount: z.number(), limitHitRecently: z.boolean()});
@@ -1844,6 +1846,23 @@ export class PostgresArtifactRepository implements
     }));
   }
 
+  async getPublicLinksEnabled(): Promise<boolean> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`SELECT public_links_enabled AS enabled FROM artifact_installations WHERE id = ${installationId}`;
+      return z.object({enabled: z.boolean()}).parse(rows[0]).enabled;
+    }));
+  }
+
+  async setPublicLinksEnabled(enabled: boolean): Promise<void> {
+    const installationId = this.#installationId;
+    await this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      yield* sql`UPDATE artifact_installations SET public_links_enabled = ${enabled} WHERE id = ${installationId}`;
+    }));
+  }
+
   /** List one bounded installation-wide page of active public-link artifacts. */
   async listPublicLinks(command: ListPublicLinks): Promise<PublicLinkInventoryPage> {
     const installationId = this.#installationId;
@@ -1854,6 +1873,11 @@ export class PostgresArtifactRepository implements
           artifact.id AS "artifactId",
           artifact.project_id AS "projectId",
           artifact.name AS "artifactName",
+          invitation.created_at AS "secretCreatedAt",
+          invitation.generation AS "secretGeneration",
+          invitation.permission AS "secretPermission",
+          invitation.id AS "secretInvitationId",
+          invitation.updated_at AS "secretUpdatedAt",
           artifact.access_setting AS "accessSetting",
           artifact.current_version_id AS "currentVersionId",
           artifact.created_at AS "artifactCreatedAt",
@@ -1879,9 +1903,17 @@ export class PostgresArtifactRepository implements
            AND version.project_id = artifact.project_id
            AND version.artifact_id = artifact.id
            AND version.id = artifact.current_version_id
+         LEFT JOIN LATERAL (
+           SELECT candidate.id, candidate.created_at, candidate.updated_at, candidate.generation, candidate.permission
+           FROM guest_review_invitations candidate
+           WHERE candidate.installation_id = artifact.installation_id
+             AND candidate.project_id = artifact.project_id AND candidate.artifact_id = artifact.id
+             AND candidate.revoked_at IS NULL
+           ORDER BY candidate.created_at DESC, candidate.id DESC LIMIT 1
+         ) invitation ON TRUE
          WHERE artifact.installation_id = $1
            AND artifact.deleted_at IS NULL
-           AND artifact.access_setting = 'public_link'
+           AND (artifact.access_setting = 'public_link' OR invitation.id IS NOT NULL)
            AND ($2::text IS NULL OR artifact.created_at < $2
              OR (artifact.created_at = $2 AND artifact.id < $3))
          ORDER BY artifact.created_at DESC, artifact.id DESC
@@ -2088,16 +2120,79 @@ export class PostgresArtifactRepository implements
     return command;
   }
 
-  async createGuestInvitation(invitation: GuestReviewInvitation): Promise<void> {
+  async createGuestInvitation(invitation: GuestReviewInvitation): Promise<"created" | "exists" | "disabled"> {
     const installationId = this.#installationId;
-    await this.#database.run(Effect.gen({self: this}, function*() {
+    return this.#database.run(Effect.gen({self: this}, function*() {
       const sql = yield* SqlClient;
-      yield* sql`INSERT INTO guest_review_invitations (
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        const settings = yield* sql`SELECT public_links_enabled FROM artifact_installations
+          WHERE id = ${installationId} FOR SHARE`;
+        if (settings[0]?.["public_links_enabled"] !== true) return "disabled";
+        const rows = yield* sql`INSERT INTO guest_review_invitations (
         installation_id, id, project_id, artifact_id, token_digest,
-        created_by_principal_id, created_at, revoked_at
+        created_by_principal_id, created_at, revoked_at, permission, sealed_secret,
+        seal_key_fingerprint, generation, updated_at, updated_by_principal_id
       ) VALUES (${installationId}, ${invitation.id}, ${invitation.projectId},
         ${invitation.artifactId}, ${invitation.tokenDigest},
-        ${invitation.createdByPrincipalId}, ${invitation.createdAt}, NULL)`;
+        ${invitation.createdByPrincipalId}, ${invitation.createdAt}, NULL, ${invitation.permission},
+        ${invitation.sealedSecret}, ${invitation.sealKeyFingerprint}, ${invitation.generation},
+        ${invitation.updatedAt}, ${invitation.updatedByPrincipalId})
+        ON CONFLICT (installation_id, project_id, artifact_id) WHERE revoked_at IS NULL DO NOTHING
+        RETURNING id`;
+        return rows.length > 0 ? "created" : "exists";
+      }));
+    }));
+  }
+
+  async resetGuestInvitation(invitation: GuestReviewInvitation): Promise<"updated" | "missing" | "disabled"> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        const enabled = yield* sql`SELECT public_links_enabled FROM artifact_installations
+          WHERE id = ${installationId} FOR UPDATE`;
+        if (enabled[0]?.["public_links_enabled"] !== true) return "disabled";
+        const changed = yield* sql`UPDATE artifacts SET access_setting = 'account_required'
+          WHERE installation_id = ${installationId} AND project_id = ${invitation.projectId}
+            AND id = ${invitation.artifactId} AND deleted_at IS NULL RETURNING id`;
+        if (changed.length === 0) return "missing";
+        yield* sql`UPDATE guest_review_invitations SET revoked_at = ${invitation.createdAt}
+          WHERE installation_id = ${installationId} AND project_id = ${invitation.projectId}
+            AND artifact_id = ${invitation.artifactId} AND revoked_at IS NULL`;
+        yield* sql`INSERT INTO guest_review_invitations (
+          installation_id, id, project_id, artifact_id, token_digest,
+          created_by_principal_id, created_at, revoked_at, permission, sealed_secret,
+          seal_key_fingerprint, generation, updated_at, updated_by_principal_id
+        ) VALUES (${installationId}, ${invitation.id}, ${invitation.projectId}, ${invitation.artifactId},
+          ${invitation.tokenDigest}, ${invitation.createdByPrincipalId}, ${invitation.createdAt}, NULL,
+          ${invitation.permission}, ${invitation.sealedSecret}, ${invitation.sealKeyFingerprint},
+          ${invitation.generation}, ${invitation.updatedAt}, ${invitation.updatedByPrincipalId})`;
+        return "updated";
+      }));
+    }));
+  }
+
+  async resealGuestInvitation(invitationId: string, generation: number, oldFingerprint: string, sealedSecret: string, currentFingerprint: string): Promise<boolean> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`UPDATE guest_review_invitations
+        SET sealed_secret = ${sealedSecret}, seal_key_fingerprint = ${currentFingerprint}
+        WHERE installation_id = ${installationId} AND id = ${invitationId}
+          AND generation = ${generation} AND seal_key_fingerprint = ${oldFingerprint}
+          AND revoked_at IS NULL RETURNING id`;
+      return rows.length > 0;
+    }));
+  }
+
+  async setGuestInvitationPermission(invitationId: string, permission: "view" | "comment", updatedAt: string, updatedByPrincipalId: string): Promise<boolean> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`UPDATE guest_review_invitations SET permission = ${permission}, updated_at = ${updatedAt},
+        updated_by_principal_id = ${updatedByPrincipalId}
+        WHERE installation_id = ${installationId} AND id = ${invitationId} AND revoked_at IS NULL RETURNING id`;
+      return rows.length > 0;
     }));
   }
 
@@ -2108,7 +2203,9 @@ export class PostgresArtifactRepository implements
       const rows = yield* sql.unsafe<object>(`SELECT id, project_id AS "projectId",
         artifact_id AS "artifactId", token_digest AS "tokenDigest",
         created_by_principal_id AS "createdByPrincipalId", created_at AS "createdAt",
-        revoked_at AS "revokedAt" FROM guest_review_invitations
+        revoked_at AS "revokedAt", permission, sealed_secret AS "sealedSecret",
+        seal_key_fingerprint AS "sealKeyFingerprint", generation,
+        updated_at AS "updatedAt", updated_by_principal_id AS "updatedByPrincipalId" FROM guest_review_invitations
         WHERE installation_id = $1 AND project_id = $2 AND artifact_id = $3
         ORDER BY created_at DESC, id DESC LIMIT 1`, [installationId, projectId, artifactId]);
       return guestInvitationRecordSchema.nullable().parse(rows[0] ?? null);
@@ -2122,12 +2219,15 @@ export class PostgresArtifactRepository implements
       const rows = yield* sql.unsafe<object>(`SELECT i.id, i.project_id AS "projectId",
         i.artifact_id AS "artifactId", i.token_digest AS "tokenDigest",
         i.created_by_principal_id AS "createdByPrincipalId", i.created_at AS "createdAt",
-        i.revoked_at AS "revokedAt" FROM guest_review_invitations i
+        i.revoked_at AS "revokedAt", CASE WHEN p.archived_at IS NULL THEN i.permission ELSE 'view' END AS permission, i.sealed_secret AS "sealedSecret",
+        i.seal_key_fingerprint AS "sealKeyFingerprint", i.generation,
+        i.updated_at AS "updatedAt", i.updated_by_principal_id AS "updatedByPrincipalId" FROM guest_review_invitations i
         JOIN artifacts a ON a.installation_id = i.installation_id
           AND a.project_id = i.project_id AND a.id = i.artifact_id
         JOIN projects p ON p.installation_id = i.installation_id AND p.id = i.project_id
+        JOIN artifact_installations ai ON ai.id = i.installation_id AND ai.public_links_enabled = TRUE
         WHERE i.installation_id = $1 AND i.token_digest = $2
-          AND i.revoked_at IS NULL AND a.deleted_at IS NULL AND p.archived_at IS NULL`, [installationId, tokenDigest]);
+          AND i.revoked_at IS NULL AND a.deleted_at IS NULL`, [installationId, tokenDigest]);
       return guestInvitationRecordSchema.nullable().parse(rows[0] ?? null);
     }));
   }
@@ -2157,6 +2257,32 @@ export class PostgresArtifactRepository implements
     }));
   }
 
+  async revokeGuestInvitationAtGeneration(projectId: string, artifactId: string, generation: number, revokedAt: string): Promise<boolean> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql.withTransaction(Effect.gen(function*() {
+        const rows = yield* sql`UPDATE guest_review_invitations SET revoked_at = ${revokedAt}
+          WHERE installation_id = ${installationId} AND project_id = ${projectId}
+            AND artifact_id = ${artifactId} AND generation = ${generation} AND revoked_at IS NULL
+          RETURNING id`;
+        const invitationId = rows[0]?.["id"];
+        if (invitationId === undefined) return false;
+        yield* sql`DELETE FROM content_bootstraps WHERE installation_id = ${installationId}
+          AND (guest_session_id IN (SELECT id FROM guest_review_sessions
+            WHERE installation_id = ${installationId} AND invitation_id = ${invitationId})
+          OR principal_id IN (SELECT 'guest_' || id FROM guest_review_sessions
+            WHERE installation_id = ${installationId} AND invitation_id = ${invitationId}))`;
+        yield* sql`DELETE FROM content_sessions WHERE installation_id = ${installationId}
+          AND (guest_session_id IN (SELECT id FROM guest_review_sessions
+            WHERE installation_id = ${installationId} AND invitation_id = ${invitationId})
+          OR principal_id IN (SELECT 'guest_' || id FROM guest_review_sessions
+            WHERE installation_id = ${installationId} AND invitation_id = ${invitationId}))`;
+        return true;
+      }));
+    }));
+  }
+
   async createGuestSession(session: GuestReviewSession): Promise<"created" | "rate_limited" | "invalid"> {
     const installationId = this.#installationId;
     return this.#database.run(Effect.gen({self: this}, function*() {
@@ -2169,9 +2295,10 @@ export class PostgresArtifactRepository implements
         i.exchange_count AS "exchangeCount" FROM guest_review_invitations i
         JOIN projects p ON p.installation_id = i.installation_id AND p.id = i.project_id
         JOIN artifacts a ON a.installation_id = i.installation_id AND a.project_id = i.project_id AND a.id = i.artifact_id
+        JOIN artifact_installations ai ON ai.id = i.installation_id AND ai.public_links_enabled = TRUE
         WHERE i.installation_id = ${installationId} AND i.id = ${session.invitationId}
           AND i.project_id = ${session.projectId} AND i.artifact_id = ${session.artifactId}
-          AND i.revoked_at IS NULL AND p.archived_at IS NULL AND a.deleted_at IS NULL
+          AND i.revoked_at IS NULL AND a.deleted_at IS NULL
         FOR UPDATE OF i`;
       if (invitation.length === 0) return "invalid";
       const invitationWindow = z.object({exchangeWindowStartedAt: z.string().nullable(), exchangeCount: z.number()}).parse(invitation[0]);
@@ -2214,6 +2341,8 @@ export class PostgresArtifactRepository implements
         FROM guest_review_sessions s
         JOIN guest_review_invitations i ON i.installation_id = s.installation_id AND i.id = s.invitation_id
         JOIN projects p ON p.installation_id = s.installation_id AND p.id = s.project_id
+        JOIN artifact_installations ai ON ai.id = s.installation_id
+          AND ai.public_links_enabled = TRUE
         JOIN artifacts a ON a.installation_id = s.installation_id AND a.id = s.artifact_id
         WHERE s.installation_id = $1 AND s.project_id = $2 AND s.artifact_id = $3
           AND s.expires_at > $4 AND s.absolute_expires_at > $4
@@ -2241,6 +2370,22 @@ export class PostgresArtifactRepository implements
     }));
   }
 
+  async updateGuestSessionDisplayName(projectId: string, artifactId: string, guestId: string, displayName: string): Promise<boolean> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql`UPDATE guest_review_sessions s SET display_name = ${displayName}
+        FROM guest_review_invitations i, projects p, artifacts a
+        WHERE s.installation_id = ${installationId} AND s.id = ${guestId}
+          AND s.project_id = ${projectId} AND s.artifact_id = ${artifactId}
+          AND i.installation_id = s.installation_id AND i.id = s.invitation_id AND i.revoked_at IS NULL
+          AND p.installation_id = s.installation_id AND p.id = s.project_id AND p.archived_at IS NULL
+          AND a.installation_id = s.installation_id AND a.id = s.artifact_id AND a.deleted_at IS NULL
+        RETURNING s.id`;
+      return rows.length > 0;
+    }));
+  }
+
   async getGuestInvitationUsage(invitationId: string, requestTime: string): Promise<GuestReviewInvitationUsage> {
     const installationId = this.#installationId;
     return this.#database.run(Effect.gen(function*() {
@@ -2254,35 +2399,45 @@ export class PostgresArtifactRepository implements
     }));
   }
 
-  async reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<boolean> {
+  async reserveGuestCommentWrite(guestId: string, requestTime: string): Promise<"reserved" | "rate_limited" | "view_only" | "paused" | "invalid"> {
     const installationId = this.#installationId;
     return this.#database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql.withTransaction(Effect.gen(function*() {
-        const session = yield* sql`SELECT invitation_id AS "invitationId", comment_window_started_at AS "windowStartedAt",
-          comment_write_count AS "writeCount" FROM guest_review_sessions WHERE installation_id = ${installationId}
-          AND id = ${guestId} AND expires_at > ${requestTime} AND absolute_expires_at > ${requestTime} FOR UPDATE`;
-        if (session.length === 0) return false;
-        const sessionRow = z.object({invitationId: z.string(), windowStartedAt: z.string().nullable(), writeCount: z.number()}).parse(session[0]);
+        const session = yield* sql`SELECT s.invitation_id AS "invitationId", s.comment_window_started_at AS "windowStartedAt",
+          s.comment_write_count AS "writeCount", i.permission, p.archived_at AS "archivedAt"
+          FROM guest_review_sessions s
+          JOIN guest_review_invitations i ON i.installation_id = s.installation_id AND i.id = s.invitation_id
+            AND i.project_id = s.project_id AND i.artifact_id = s.artifact_id
+          JOIN projects p ON p.installation_id = s.installation_id AND p.id = s.project_id
+          JOIN artifacts a ON a.installation_id = s.installation_id AND a.project_id = s.project_id AND a.id = s.artifact_id
+          JOIN artifact_installations ai ON ai.id = s.installation_id AND ai.public_links_enabled = TRUE
+          WHERE s.installation_id = ${installationId} AND s.id = ${guestId}
+            AND s.expires_at > ${requestTime} AND s.absolute_expires_at > ${requestTime}
+            AND i.revoked_at IS NULL AND a.deleted_at IS NULL FOR UPDATE OF s, i, p`;
+        if (session.length === 0) return "invalid";
+        const sessionRow = z.object({invitationId: z.string(), windowStartedAt: z.string().nullable(), writeCount: z.number(), permission: z.enum(["view", "comment"]), archivedAt: z.string().nullable()}).parse(session[0]);
+        if (sessionRow.archivedAt !== null && sessionRow.permission === "comment") return "paused";
+        if (sessionRow.permission !== "comment") return "view_only";
         const invitations = yield* sql`SELECT comment_window_started_at AS "windowStartedAt", comment_write_count AS "writeCount"
           FROM guest_review_invitations WHERE installation_id = ${installationId} AND id = ${sessionRow.invitationId} FOR UPDATE`;
-        if (invitations.length === 0) return false;
+        if (invitations.length === 0) return "invalid";
         const invitation = z.object({windowStartedAt: z.string().nullable(), writeCount: z.number()}).parse(invitations[0]);
         const invitationActive = invitation.windowStartedAt !== null && Date.parse(invitation.windowStartedAt) > Date.parse(requestTime) - 3_600_000;
         const sessionActive = sessionRow.windowStartedAt !== null && Date.parse(sessionRow.windowStartedAt) > Date.parse(requestTime) - 3_600_000;
         if (invitationActive && invitation.writeCount >= 3000) {
           yield* sql`UPDATE guest_review_invitations SET last_limit_hit_at = ${requestTime}
             WHERE installation_id = ${installationId} AND id = ${sessionRow.invitationId}`;
-          return false;
+          return "rate_limited";
         }
-        if (sessionActive && sessionRow.writeCount >= 30) return false;
+        if (sessionActive && sessionRow.writeCount >= 30) return "rate_limited";
         yield* sql`UPDATE guest_review_invitations SET comment_window_started_at = ${invitationActive ? invitation.windowStartedAt : requestTime},
           comment_write_count = ${invitationActive ? invitation.writeCount + 1 : 1}
           WHERE installation_id = ${installationId} AND id = ${sessionRow.invitationId}`;
         yield* sql`UPDATE guest_review_sessions SET comment_window_started_at = ${sessionActive ? sessionRow.windowStartedAt : requestTime},
           comment_write_count = ${sessionActive ? sessionRow.writeCount + 1 : 1}
           WHERE installation_id = ${installationId} AND id = ${guestId}`;
-        return true;
+        return "reserved";
       }));
     }));
   }
@@ -2320,7 +2475,7 @@ export class PostgresArtifactRepository implements
     }));
   }
 
-  async findGuestSession(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null> {
+  async findGuestSession(tokenDigest: string, artifactId: string, requestTime: string): Promise<GuestReviewSession | null> {
     const installationId = this.#installationId;
     return this.#database.run(Effect.gen({self: this}, function*() {
       const sql = yield* SqlClient;
@@ -2331,7 +2486,9 @@ export class PostgresArtifactRepository implements
         s.artifact_id AS "artifactId", s.display_name AS "displayName",
         s.created_at AS "createdAt", s.expires_at AS "expiresAt",
         s.absolute_expires_at AS "absoluteExpiresAt", s.last_used_at AS "lastUsedAt",
-        i.created_by_principal_id AS "invitationCreatorPrincipalId"
+        i.created_by_principal_id AS "invitationCreatorPrincipalId",
+        CASE WHEN p.archived_at IS NULL THEN i.permission ELSE 'view' END AS permission,
+        (p.archived_at IS NOT NULL AND i.permission = 'comment') AS paused
         FROM guest_review_sessions s
         JOIN guest_review_invitations i ON i.installation_id = s.installation_id
           AND i.id = s.invitation_id AND i.project_id = s.project_id
@@ -2339,11 +2496,12 @@ export class PostgresArtifactRepository implements
         JOIN artifacts a ON a.installation_id = s.installation_id
           AND a.project_id = s.project_id AND a.id = s.artifact_id
         JOIN projects p ON p.installation_id = s.installation_id AND p.id = s.project_id
-        WHERE s.installation_id = $1 AND s.token_digest = $2
-          AND s.expires_at > $3 AND s.absolute_expires_at > $3
-          AND i.revoked_at IS NULL AND a.deleted_at IS NULL AND p.archived_at IS NULL
+        JOIN artifact_installations ai ON ai.id = s.installation_id AND ai.public_links_enabled = TRUE
+        WHERE s.installation_id = $1 AND s.token_digest = $2 AND s.artifact_id = $3
+          AND s.expires_at > $4 AND s.absolute_expires_at > $4
+          AND i.revoked_at IS NULL AND a.deleted_at IS NULL
         FOR UPDATE OF s`,
-        [installationId, tokenDigest, requestTime]);
+        [installationId, tokenDigest, artifactId, requestTime]);
       const session = guestSessionRecordSchema.nullable().parse(rows[0] ?? null);
       if (session === null) return null;
       const idleExpiresAt = new Date(Date.parse(requestTime) + 2 * 60 * 60 * 1_000).toISOString();
@@ -2352,6 +2510,40 @@ export class PostgresArtifactRepository implements
         WHERE installation_id = ${installationId} AND id = ${session.guestId}`;
       return {...session, expiresAt, lastUsedAt: requestTime};
       }));
+    }));
+  }
+
+  async findGuestSessionByTokenDigest(tokenDigest: string, requestTime: string): Promise<GuestReviewSession | null> {
+    const installationId = this.#installationId;
+    return this.#database.run(Effect.gen({self: this}, function*() {
+      const sql = yield* SqlClient;
+      const rows = yield* sql.unsafe<object>(`SELECT s.id AS "guestId",
+        s.token_digest AS "tokenDigest", s.csrf_digest AS "csrfDigest",
+        s.invitation_id AS "invitationId", s.project_id AS "projectId",
+        s.artifact_id AS "artifactId", s.display_name AS "displayName",
+        s.created_at AS "createdAt", s.expires_at AS "expiresAt",
+        s.absolute_expires_at AS "absoluteExpiresAt", s.last_used_at AS "lastUsedAt",
+        i.created_by_principal_id AS "invitationCreatorPrincipalId",
+        CASE WHEN p.archived_at IS NULL THEN i.permission ELSE 'view' END AS permission,
+        (p.archived_at IS NOT NULL AND i.permission = 'comment') AS paused
+        FROM guest_review_sessions s
+        JOIN guest_review_invitations i ON i.installation_id = s.installation_id
+          AND i.id = s.invitation_id AND i.project_id = s.project_id AND i.artifact_id = s.artifact_id
+        JOIN artifacts a ON a.installation_id = s.installation_id
+          AND a.project_id = s.project_id AND a.id = s.artifact_id
+        JOIN projects p ON p.installation_id = s.installation_id AND p.id = s.project_id
+        JOIN artifact_installations ai ON ai.id = s.installation_id AND ai.public_links_enabled = TRUE
+        WHERE s.installation_id = $1 AND s.token_digest = $2
+          AND s.expires_at > $3 AND s.absolute_expires_at > $3
+          AND i.revoked_at IS NULL AND a.deleted_at IS NULL
+        ORDER BY s.last_used_at DESC, s.id LIMIT 1 FOR UPDATE OF s`, [installationId, tokenDigest, requestTime]);
+      const session = guestSessionRecordSchema.nullable().parse(rows[0] ?? null);
+      if (session === null) return null;
+      const idleExpiresAt = new Date(Date.parse(requestTime) + 2 * 60 * 60 * 1_000).toISOString();
+      const expiresAt = session.absoluteExpiresAt < idleExpiresAt ? session.absoluteExpiresAt : idleExpiresAt;
+      yield* sql`UPDATE guest_review_sessions SET last_used_at = ${requestTime}, expires_at = ${expiresAt}
+        WHERE installation_id = ${installationId} AND id = ${session.guestId}`;
+      return {...session, expiresAt, lastUsedAt: requestTime};
     }));
   }
 
@@ -2411,13 +2603,17 @@ export class PostgresArtifactRepository implements
              AND b.content_token = $3 AND b.consumed_at IS NULL
              AND b.expires_at > $4 AND a.deleted_at IS NULL
              AND ((b.guest_session_id IS NULL AND substring(b.principal_id FROM 1 FOR 6) <> 'guest_') OR EXISTS (
+               SELECT 1 FROM artifact_installations ai
+               WHERE ai.id = b.installation_id AND ai.public_links_enabled = TRUE
+             ))
+             AND ((b.guest_session_id IS NULL AND substring(b.principal_id FROM 1 FOR 6) <> 'guest_') OR EXISTS (
                SELECT 1 FROM guest_review_sessions gs
                JOIN guest_review_invitations gi ON gi.installation_id = gs.installation_id AND gi.id = gs.invitation_id
                JOIN projects gp ON gp.installation_id = gs.installation_id AND gp.id = gs.project_id
                JOIN installation_members creator ON creator.installation_id = gi.installation_id
                  AND creator.id = gi.created_by_principal_id AND creator.status = 'active'
                WHERE gs.installation_id = b.installation_id AND gs.id = COALESCE(b.guest_session_id, CASE WHEN substring(b.principal_id FROM 1 FOR 6) = 'guest_' THEN substring(b.principal_id FROM 7) END)
-                 AND gs.expires_at > $4 AND gi.revoked_at IS NULL AND gp.archived_at IS NULL
+                 AND gs.expires_at > $4 AND gi.revoked_at IS NULL
                  AND (gp.access_mode = 'installation' OR gp.created_by_member_id = creator.id OR creator.role IN ('administrator', 'owner') OR EXISTS (
                    SELECT 1 FROM project_group_grants pgg
                    JOIN directory_group_members dgm ON dgm.installation_id = pgg.installation_id
@@ -2493,13 +2689,17 @@ export class PostgresArtifactRepository implements
            AND s.content_token = $3 AND s.expires_at > $4
            AND a.deleted_at IS NULL
            AND ((s.guest_session_id IS NULL AND substring(s.principal_id FROM 1 FOR 6) <> 'guest_') OR EXISTS (
+             SELECT 1 FROM artifact_installations ai
+             WHERE ai.id = s.installation_id AND ai.public_links_enabled = TRUE
+           ))
+           AND ((s.guest_session_id IS NULL AND substring(s.principal_id FROM 1 FOR 6) <> 'guest_') OR EXISTS (
              SELECT 1 FROM guest_review_sessions gs
              JOIN guest_review_invitations gi ON gi.installation_id = gs.installation_id AND gi.id = gs.invitation_id
              JOIN projects gp ON gp.installation_id = gs.installation_id AND gp.id = gs.project_id
              JOIN installation_members creator ON creator.installation_id = gi.installation_id
                AND creator.id = gi.created_by_principal_id AND creator.status = 'active'
              WHERE gs.installation_id = s.installation_id AND gs.id = COALESCE(s.guest_session_id, CASE WHEN substring(s.principal_id FROM 1 FOR 6) = 'guest_' THEN substring(s.principal_id FROM 7) END)
-               AND gs.expires_at > $4 AND gi.revoked_at IS NULL AND gp.archived_at IS NULL
+               AND gs.expires_at > $4 AND gi.revoked_at IS NULL
                AND (gp.access_mode = 'installation' OR gp.created_by_member_id = creator.id OR creator.role IN ('administrator', 'owner') OR EXISTS (
                  SELECT 1 FROM project_group_grants pgg
                  JOIN directory_group_members dgm ON dgm.installation_id = pgg.installation_id
@@ -2551,7 +2751,11 @@ export class PostgresArtifactRepository implements
         JOIN artifacts a
           ON a.installation_id = s.installation_id AND a.id = s.artifact_id
         WHERE s.installation_id = $1 AND s.token_digest = $2
-          AND s.expires_at > $3 AND a.deleted_at IS NULL`,
+          AND s.expires_at > $3 AND a.deleted_at IS NULL
+          AND ((s.guest_session_id IS NULL AND substring(s.principal_id FROM 1 FOR 6) <> 'guest_') OR EXISTS (
+            SELECT 1 FROM artifact_installations ai
+            WHERE ai.id = s.installation_id AND ai.public_links_enabled = TRUE
+          ))`,
         [installationId, tokenDigest, requestTime],
       );
       return contentRecordRowSchema.nullable().parse(rows[0] ?? null);
@@ -2570,6 +2774,10 @@ export class PostgresArtifactRepository implements
         `UPDATE content_sessions SET expires_at = $4
         WHERE installation_id = $1 AND token_digest = $2
           AND expires_at > $3 AND expires_at < $4
+          AND ((guest_session_id IS NULL AND substring(principal_id FROM 1 FOR 6) <> 'guest_') OR EXISTS (
+            SELECT 1 FROM artifact_installations ai
+            WHERE ai.id = content_sessions.installation_id AND ai.public_links_enabled = TRUE
+          ))
         RETURNING token_digest`,
         [installationId, tokenDigest, requestTime, expiresAt],
       );

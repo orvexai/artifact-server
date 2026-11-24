@@ -46,11 +46,12 @@ import {
 import {
   ArtifactCommentService,
   inspectArtifactResponseData,
+  type ArtifactCommentFailure,
   type CommentThreadDetails,
   type ReadCommentThreadCommand,
   type UpdateCommentThreadCommand,
 } from "../application/artifact-comments.js";
-import {GuestReviewService, type GuestReviewer} from "../application/guest-review.js";
+import {GuestReviewService, type GuestReviewer, type GuestSessionExchangeCommand} from "../application/guest-review.js";
 import {
   type ArtifactDetails,
   type ArtifactVersionDetails,
@@ -311,9 +312,12 @@ const createCommentThreadSchema = z.object({
   path: manifestEntryPathSchema.optional(),
 }).strict();
 const guestSessionExchangeSchema = z.object({
-  displayName: z.string().trim().min(1).max(80),
+  displayName: z.string().trim().min(1).max(80).optional(),
   secret: z.string().min(1).max(200),
 }).strict();
+const publicLinkPermissionSchema = z.object({permission: z.enum(["view", "comment"])}).strict();
+const guestDisplayNameSchema = z.object({displayName: z.string().trim().min(1).max(80)}).strict();
+const publicLinkCreateSchema = z.object({permission: z.enum(["view", "comment"]).default("view")}).strict();
 const guestCreateThreadSchema = z.object({
   anchor: z.unknown().optional(),
   body: z.string().min(1),
@@ -463,12 +467,19 @@ const artifactPageQuerySchema = pageQuerySchema.extend({
   tags: z.array(z.string().max(200)).max(20).default([]),
 });
 const publicLinksPageQuerySchema = pageQuerySchema.omit({search: true});
-const makePublicLinkPrivateItemSchema = z.object({
+const makeArtifactPrivateItemSchema = z.object({
   artifactId: z.string().min(1).max(200),
   expectedCurrentVersionId: z.string().min(1).max(200),
   idempotencyKey: z.string().min(16).max(200),
   projectId: projectIdSchema,
 }).strict();
+const makeSecretPrivateItemSchema = z.object({
+  artifactId: z.string().min(1).max(200),
+  generation: z.number().int().positive(),
+  kind: z.literal("secret"),
+  projectId: projectIdSchema,
+}).strict();
+const makePublicLinkPrivateItemSchema = z.union([makeArtifactPrivateItemSchema, makeSecretPrivateItemSchema]);
 const issueGitCloneCredentialSchema = z.object({
   ttlSeconds: z.number().int().min(1).max(maximumGitCloneCredentialTtlSeconds)
     .default(defaultGitCloneCredentialTtlSeconds),
@@ -478,7 +489,7 @@ const makePublicLinksPrivateSchema = z.object({
 }).strict().superRefine(({items}, context) => {
   const seen = new Set<string>();
   for (const item of items) {
-    const identity = `${item.projectId}\0${item.artifactId}`;
+    const identity = `${item.projectId}\0${item.artifactId}\0${"kind" in item ? item.kind : "artifact"}`;
     if (seen.has(identity)) {
       context.addIssue({
         code: "custom",
@@ -587,6 +598,22 @@ export function renderIdentityAdmissionDeniedPage(fontBase = "/assets/fonts/hous
     "</style></head><body><main class=\"shell\"><section class=\"card\"><div class=\"top\">" +
     houstonServerPageMark() +
     "<span class=\"brand\">Houston Artifacts</span></div><h1>We couldn’t sign you in to Houston Artifacts</h1><p>Your account does not have access to this organization.</p><div class=\"actions\"><a href=\"/\">Choose another organization</a><form method=\"post\" action=\"/api/v1/platform/session/logout\"><button type=\"submit\">Sign out</button></form></div></section></main></body></html>";
+}
+
+function acceptsHtml(value: string | undefined): boolean {
+  return value?.split(",").some((item) => item.trim().startsWith("text/html")) ?? false;
+}
+
+function publicLinkUnavailableResponse(context: Context<HttpEnvironment>): Response {
+  const styles = houstonServerPageStyles() +
+    ".card{width:min(100% - 40px,560px);padding:32px;border:1px solid var(--page-border);border-radius:12px;background:var(--page-surface);box-shadow:0 12px 36px #0f172a12}.card h1{margin:0;font-size:26px;line-height:1.2}";
+  const html = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\"><title>Houston Artifacts — Link unavailable</title><meta name=\"robots\" content=\"noindex,nofollow\"><style>" +
+    styles + "</style></head><body><main class=\"shell\"><section class=\"card\"><div class=\"top\">" +
+    houstonServerPageMark() + "<span class=\"brand\">Houston Artifacts</span></div><h1>This link isn't available</h1><p>Ask the person who shared it for a new link.</p></section></main></body></html>";
+  return new Response(context.req.method === "HEAD" ? null : html, {headers: {
+    "Cache-Control": "no-store", "Content-Type": "text/html; charset=utf-8",
+    "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow",
+  }, status: 200});
 }
 
 export interface HttpAppDependencies {
@@ -839,6 +866,17 @@ export function createHttpApp(
   });
 
   app.use("*", async (context, next) => {
+    await next();
+    const pathname = new URL(context.req.url).pathname;
+    if (context.res.status === 429) context.header("Retry-After", "60");
+    if (pathname === "/review" || pathname.startsWith("/api/v1/public/artifacts/") || pathname.startsWith("/artifacts/")) {
+      context.header("X-Robots-Tag", "noindex, nofollow");
+      context.header("Referrer-Policy", "no-referrer");
+      if (pathname.startsWith("/api/v1/public/artifacts/")) context.header("Cache-Control", "no-store");
+    }
+  });
+
+  app.use("*", async (context, next) => {
     const requestId = crypto.randomUUID();
     const startedAt = performance.now();
     const method = safeHttpMethod(context.req.method);
@@ -1064,8 +1102,7 @@ export function createHttpApp(
   app.on(
     ["GET", "HEAD"],
     ["/review", "/review/*"],
-    (context) =>
-      serveWebAsset(context, dependencies, "/review.html", "application-shell"),
+    (context) => serveWebAsset(context, dependencies, "/review.html", "application-shell"),
   );
 
   app.on(["GET", "HEAD"], "/workbench", (context) => {
@@ -1165,12 +1202,20 @@ export function createHttpApp(
   app.post("/api/v1/public/artifacts/:artifactId/guest-session", boundedJsonBody, async (context) => {
     requireGuestSessionExchangeBoundary(context, dependencies);
     const body = guestSessionExchangeSchema.parse(await context.req.json());
+    const secure = usesSecureApplicationCookies(dependencies);
+    const suffix = dependencies.organizationCookieSuffix ?? "";
+    const sessionName = `${secure ? secureGuestSessionCookie : guestSessionCookie}${suffix}`;
+    const csrfName = `${secure ? secureGuestCsrfCookie : guestCsrfCookie}${suffix}`;
+    const existingSession = sessionTokenSchema.safeParse(getCookie(context, sessionName));
+    const existingCsrf = csrfTokenSchema.safeParse(getCookie(context, csrfName));
+    const exchangeCommand: GuestSessionExchangeCommand = {artifactId: context.req.param("artifactId"), secret: body.secret};
+    if (body.displayName !== undefined) exchangeCommand.displayName = body.displayName;
+    if (existingSession.success && existingCsrf.success) {
+      exchangeCommand.existingSessionToken = existingSession.data;
+      exchangeCommand.existingCsrfToken = existingCsrf.data;
+    }
     const exchangeResult = await runHttpApplicationEffect(context, dependencies,
-      GuestReviewService.use((guests) => guests.exchange({
-        artifactId: context.req.param("artifactId"),
-        displayName: body.displayName,
-        secret: body.secret,
-      })).pipe(
+      GuestReviewService.use((guests) => guests.exchange(exchangeCommand)).pipe(
         Effect.catchTag("GuestRateLimitExceeded", (failure) => Effect.succeed({rateLimitFailure: failure})),
         Effect.catch(() => Effect.succeed(null)),
       ));
@@ -1180,10 +1225,6 @@ export function createHttpApp(
     }
     const issued = exchangeResult;
     if (issued === null) return context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404);
-    const secure = usesSecureApplicationCookies(dependencies);
-    const suffix = dependencies.organizationCookieSuffix ?? "";
-    const sessionName = `${secure ? secureGuestSessionCookie : guestSessionCookie}${suffix}`;
-    const csrfName = `${secure ? secureGuestCsrfCookie : guestCsrfCookie}${suffix}`;
     const expires = new Date(issued.expiresAt);
     setCookie(context, sessionName, Redacted.value(issued.sessionToken), {expires, httpOnly: true, maxAge: 7 * 24 * 60 * 60, path: "/", sameSite: "Strict", secure});
     setCookie(context, csrfName, issued.csrfToken, {expires, httpOnly: false, maxAge: 7 * 24 * 60 * 60, path: "/", sameSite: "Strict", secure});
@@ -1191,24 +1232,35 @@ export function createHttpApp(
   });
 
   app.get("/api/v1/public/artifacts/:artifactId/guest/current", async (context) => {
-    const guest = await requireGuestReviewer(context, dependencies, false);
+    const guest = await requireGuestReviewer(context, dependencies, context.req.param("artifactId"), false);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const issued = await runHttpApplicationEffect(context, dependencies,
       ContentAccessService.use((contentAccess) => contentAccess.issueGuestContentBootstrap(guest)));
-    return context.json({artifactName: issued.artifactName, createdAt: issued.createdAt, displayName: guest.displayName, number: issued.number, bootstrapUrl: contentBootstrapBrowserUrl(
+    return context.json({artifactName: issued.artifactName, createdAt: issued.createdAt, displayName: guest.displayName,
+      nameRequired: guest.nameRequired, paused: guest.paused, permission: guest.paused ? "comment" : guest.permission, number: issued.number, bootstrapUrl: contentBootstrapBrowserUrl(
       responseApplicationUrl(context, dependencies), dependencies.contentDomain,
       issued.contentToken, Redacted.value(issued.token), requestedContentPath(context),
     ), versionId: issued.versionId}, 201);
   });
 
+  app.patch("/api/v1/public/artifacts/:artifactId/guest/current", boundedJsonBody, async (context) => {
+    const artifactId = context.req.param("artifactId");
+    const guest = await requireGuestReviewer(context, dependencies, artifactId, true);
+    if (guest === null || guest.artifactId !== artifactId) return guestNotFound(context);
+    const body = guestDisplayNameSchema.parse(await context.req.json());
+    const displayName = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.renameCurrent({artifactId, displayName: body.displayName, guest})));
+    return context.json({displayName});
+  });
+
   app.post("/api/v1/public/artifacts/:artifactId/guest/heartbeat", async (context) => {
-    const guest = await requireGuestReviewer(context, dependencies, true);
+    const guest = await requireGuestReviewer(context, dependencies, context.req.param("artifactId"), true);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     return context.body(null, 204);
   });
 
   app.get("/api/v1/public/artifacts/:artifactId/guest/responses", async (context) => {
-    const guest = await requireGuestReviewer(context, dependencies, false);
+    const guest = await requireGuestReviewer(context, dependencies, context.req.param("artifactId"), false);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const query = artifactResponseQuerySchema.parse(context.req.query());
     const page = await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((service) => service.guestListResponses({
@@ -1219,25 +1271,26 @@ export function createHttpApp(
   });
 
   app.get("/api/v1/public/artifacts/:artifactId/guest/responses/:responseId", async (context) => {
-    const guest = await requireGuestReviewer(context, dependencies, false);
+    const guest = await requireGuestReviewer(context, dependencies, context.req.param("artifactId"), false);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const response = await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((service) => service.guestGetResponse({guest, responseId: context.req.param("responseId")})));
     return response === null ? guestNotFound(context) : context.json(await projectGuestResponse(context, dependencies, response));
   });
 
   app.post("/api/v1/public/artifacts/:artifactId/guest/responses", boundedJsonBody, async (context) => {
-    const guest = await requireGuestReviewer(context, dependencies, true);
+    const guest = await requireGuestReviewer(context, dependencies, context.req.param("artifactId"), true);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const body = artifactResponseWriteSchema.parse(await context.req.json());
-    const response = await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((service) => service.guestCreateResponse({
+    const response = await runGuestMutationEffect(context, dependencies, ArtifactCommentService.use((service) => service.guestCreateResponse({
       choice: body.choice ?? null, data: body.data ?? null, guest,
       questionId: body.questionId, versionId: body.versionId,
     })));
+    if (response instanceof Response) return response;
     return context.json(await projectGuestResponse(context, dependencies, response), 201);
   });
 
   app.get("/api/v1/public/artifacts/:artifactId/guest/comments", async (context) => {
-    const guest = await requireGuestReviewer(context, dependencies, false);
+    const guest = await requireGuestReviewer(context, dependencies, context.req.param("artifactId"), false);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const query = commentPageQuerySchema.parse(context.req.query());
     const page = await runHttpApplicationEffect(context, dependencies,
@@ -1250,7 +1303,7 @@ export function createHttpApp(
   });
 
   app.get("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", async (context) => {
-    const guest = await requireGuestReviewer(context, dependencies, false);
+    const guest = await requireGuestReviewer(context, dependencies, context.req.param("artifactId"), false);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const details = await runHttpApplicationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestGetThread({guest, threadId: context.req.param("threadId")})));
@@ -1258,65 +1311,71 @@ export function createHttpApp(
   });
 
   app.post("/api/v1/public/artifacts/:artifactId/guest/comments", boundedJsonBody, async (context) => {
-    const guest = await requireGuestReviewer(context, dependencies, true);
+    const guest = await requireGuestReviewer(context, dependencies, context.req.param("artifactId"), true);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const body = guestCreateThreadSchema.parse(await context.req.json());
-    const created = await runHttpApplicationEffect(context, dependencies,
+    const created = await runGuestMutationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestCreateThread({
         guest, body: body.body, anchor: body.anchor ?? null, path: body.path ?? null,
         idempotencyKey: requiredIdempotencyKey(context.req.header("idempotency-key")),
         versionId: body.versionId,
       })));
+    if (created instanceof Response) return created;
     return context.json({replayed: created.replayed, thread: guestThreadResponse(responseApplicationUrl(context, dependencies), created.thread, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies))}, 201);
   });
 
   app.post("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies", boundedJsonBody, async (context) => {
-    const guest = await requireGuestReviewer(context, dependencies, true);
+    const guest = await requireGuestReviewer(context, dependencies, context.req.param("artifactId"), true);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const body = createCommentReplySchema.parse(await context.req.json());
-    const created = await runHttpApplicationEffect(context, dependencies,
+    const created = await runGuestMutationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestCreateReply({guest, threadId: context.req.param("threadId"), body: body.body, idempotencyKey: requiredIdempotencyKey(context.req.header("idempotency-key"))})));
+    if (created instanceof Response) return created;
     return context.json({replayed: created.replayed, reply: guestReplyResponse(created.reply, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies))}, 201);
   });
 
   app.patch("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", boundedJsonBody, async (context) => {
-    const guest = await requireGuestReviewer(context, dependencies, true);
+    const guest = await requireGuestReviewer(context, dependencies, context.req.param("artifactId"), true);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const body = updateCommentThreadSchema.parse(await context.req.json());
     if (body.state !== undefined) return context.json({error: {code: "AUTHORIZATION_DENIED", message: "Guests cannot change comment state."}}, 403);
     const update: GuestThreadUpdate = {};
     if (body.anchor !== undefined) update.anchor = body.anchor;
     if (body.body !== undefined) update.body = body.body;
-    const thread = await runHttpApplicationEffect(context, dependencies,
+    const thread = await runGuestMutationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestUpdateThread({guest, threadId: context.req.param("threadId"), ...update})));
+    if (thread instanceof Response) return thread;
     return context.json({thread: guestThreadResponse(responseApplicationUrl(context, dependencies), thread, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies))});
   });
 
   app.delete("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId", async (context) => {
-    const guest = await requireGuestReviewer(context, dependencies, true);
+    const guest = await requireGuestReviewer(context, dependencies, context.req.param("artifactId"), true);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
-    await runHttpApplicationEffect(context, dependencies, ArtifactCommentService.use((comments) => comments.guestDeleteThread({guest, threadId: context.req.param("threadId")})));
+    const deleted = await runGuestMutationEffect(context, dependencies, ArtifactCommentService.use((comments) => comments.guestDeleteThread({guest, threadId: context.req.param("threadId")})));
+    if (deleted instanceof Response) return deleted;
     return context.body(null, 204);
   });
 
   app.patch("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId", boundedJsonBody, async (context) => {
-    const guest = await requireGuestReviewer(context, dependencies, true);
+    const guest = await requireGuestReviewer(context, dependencies, context.req.param("artifactId"), true);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
     const body = createCommentReplySchema.parse(await context.req.json());
-    const reply = await runHttpApplicationEffect(context, dependencies,
+    const reply = await runGuestMutationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestUpdateReply({
         guest, threadId: context.req.param("threadId"), replyId: context.req.param("replyId"), body: body.body,
       })));
+    if (reply instanceof Response) return reply;
     return context.json({reply: guestReplyResponse(reply, guest, dependencies.organizationSlug !== undefined && dependencies.organizationSlug !== "orvex", await guestMaskingStaffIds(context, dependencies))});
   });
 
   app.delete("/api/v1/public/artifacts/:artifactId/guest/comments/:threadId/replies/:replyId", async (context) => {
-    const guest = await requireGuestReviewer(context, dependencies, true);
+    const guest = await requireGuestReviewer(context, dependencies, context.req.param("artifactId"), true);
     if (guest === null || guest.artifactId !== context.req.param("artifactId")) return guestNotFound(context);
-    await runHttpApplicationEffect(context, dependencies,
+    const deleted = await runGuestMutationEffect(context, dependencies,
       ArtifactCommentService.use((comments) => comments.guestDeleteReply({
         guest, threadId: context.req.param("threadId"), replyId: context.req.param("replyId"),
       })));
+    if (deleted instanceof Response) return deleted;
     return context.body(null, 204);
   });
 
@@ -1933,6 +1992,19 @@ export function createHttpApp(
       responseApplicationUrl(context, dependencies),
       page,
     ));
+  });
+
+  app.get("/api/v1/administration/public-links/policy", async (context) => {
+    const policy = await runHttpApplicationEffect(context, dependencies,
+      PublicLinkAdministrationService.use((administration) => administration.getPolicy(context.get("principal"))));
+    return context.json(policy);
+  });
+
+  app.patch("/api/v1/administration/public-links/policy", boundedJsonBody, async (context) => {
+    const body = z.object({enabled: z.boolean()}).strict().parse(await context.req.json());
+    const policy = await runHttpApplicationEffect(context, dependencies,
+      PublicLinkAdministrationService.use((administration) => administration.setPolicy(context.get("principal"), body.enabled)));
+    return context.json(policy);
   });
 
   app.post(
@@ -3131,6 +3203,123 @@ export function createHttpApp(
     },
   );
 
+  const createPublicLink = async (context: Context<HttpEnvironment>) => {
+    const body = publicLinkCreateSchema.parse(await context.req.json());
+    const artifactId = context.req.param("artifactId");
+    if (artifactId === undefined) return context.notFound();
+    const issued = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.create({
+        artifactId, permission: body.permission,
+        principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    if (issued === "disabled") {
+      return context.json({error: {code: "PUBLIC_LINKS_DISABLED", message: "An administrator has disabled public links."}}, 403);
+    }
+    if (issued === "exists") {
+      return context.json({error: {code: "PUBLIC_LINK_EXISTS", message: "Reset the existing public link to rotate its address."}}, 409);
+    }
+    context.header("Cache-Control", "no-store");
+    const link = applicationPathUrl(responseApplicationUrl(context, dependencies), "/review");
+    link.searchParams.set("artifact", artifactId);
+    const projectId = requestedProjectId(context);
+    if (projectId !== null) link.searchParams.set("project", projectId);
+    link.hash = `link=${encodeURIComponent(issued.linkSecret)}`;
+    return context.json({createdAt: issued.createdAt, permission: body.permission, url: link.toString()}, 201);
+  };
+
+  app.post("/api/v1/artifacts/:artifactId/public-link", boundedJsonBody, createPublicLink);
+  app.post("/api/v1/artifacts/:artifactId/public-link/reset", boundedJsonBody, async (context) => {
+    const body = publicLinkCreateSchema.parse(await context.req.json());
+    const artifactId = context.req.param("artifactId");
+    if (artifactId === undefined) return context.notFound();
+    const issued = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.enable({
+        artifactId, permission: body.permission,
+        principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    context.header("Cache-Control", "no-store");
+    const link = applicationPathUrl(responseApplicationUrl(context, dependencies), "/review");
+    link.searchParams.set("artifact", artifactId);
+    const projectId = requestedProjectId(context);
+    if (projectId !== null) link.searchParams.set("project", projectId);
+    link.hash = `link=${encodeURIComponent(issued.linkSecret)}`;
+    return context.json({createdAt: issued.createdAt, permission: body.permission, url: link.toString()}, 201);
+  });
+
+  app.get("/api/v1/artifacts/:artifactId/public-link", async (context) => {
+    const status = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.status({
+        artifactId: context.req.param("artifactId"),
+        principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    context.header("Cache-Control", "no-store");
+    const url = status.legacy
+      ? applicationPathUrl(responseApplicationUrl(context, dependencies), `/artifacts/${encodeURIComponent(context.req.param("artifactId"))}`).toString()
+      : status.linkSecret === null ? null : (() => {
+        const link = applicationPathUrl(responseApplicationUrl(context, dependencies), "/review");
+        link.searchParams.set("artifact", context.req.param("artifactId"));
+        const projectId = requestedProjectId(context);
+        if (projectId !== null) link.searchParams.set("project", projectId);
+        link.hash = `link=${encodeURIComponent(status.linkSecret)}`;
+        return link.toString();
+      })();
+    return context.json({activeSessionCount: status.activeSessionCount, copyAvailable: url !== null,
+      createdAt: status.createdAt, enabled: status.enabled, legacy: status.legacy,
+      limitHitRecently: status.limitHitRecently, permission: status.permission, updatedAt: status.updatedAt, url});
+  });
+
+  app.patch("/api/v1/artifacts/:artifactId/public-link", boundedJsonBody, async (context) => {
+    const body = publicLinkPermissionSchema.parse(await context.req.json());
+    const result = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.setPermission({
+        artifactId: context.req.param("artifactId"), permission: body.permission,
+        principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    if (result === "legacy") {
+      return context.json({error: {code: "PUBLIC_LINK_LEGACY", message: "Reset this legacy public link to enable commenting."}}, 409);
+    }
+    return context.json({permission: body.permission});
+  });
+
+  app.delete("/api/v1/artifacts/:artifactId/public-link", async (context) => {
+    const artifactId = context.req.param("artifactId");
+    const principal = context.get("principal");
+    const projectId = requestedProjectId(context);
+    const status = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.status({artifactId, principal, projectId})));
+    if (status.legacy) {
+      const details = await runHttpApplicationEffect(context, dependencies,
+        ArtifactManagementService.use((management) => management.getArtifact({artifactId, principal, projectId})));
+      await runHttpApplicationEffect(context, dependencies,
+        ArtifactManagementService.use((management) => management.changeAccess({
+          accessSetting: accessSettings.accountRequired, artifactId,
+          expectedCurrentVersionId: details.current.version.id,
+          idempotencyKey: `public-link-revoke-${crypto.randomUUID()}`,
+          principal, projectId,
+        })));
+    }
+    await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.revoke({artifactId, principal, projectId})));
+    return context.body(null, 204);
+  });
+
+  app.get("/api/v1/artifacts/:artifactId/public-link/sessions", async (context) => {
+    const sessions = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.listSessions({
+        artifactId: context.req.param("artifactId"), principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    return context.json({sessions});
+  });
+
+  app.delete("/api/v1/artifacts/:artifactId/public-link/sessions/:guestId", async (context) => {
+    await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.revokeSession({
+        artifactId: context.req.param("artifactId"), guestId: context.req.param("guestId"),
+        principal: context.get("principal"), projectId: requestedProjectId(context),
+      })));
+    return context.body(null, 204);
+  });
+
   app.get("/api/v1/artifacts/:artifactId/guest-invitation", async (context) => {
     const status = await runHttpApplicationEffect(context, dependencies,
       GuestReviewService.use((guests) => guests.status({
@@ -3554,13 +3743,25 @@ export function createHttpApp(
   });
 
   app.get("/artifacts/:artifactId", async (context) => {
-    const current = await runHttpApplicationEffect(
-      context,
-      dependencies,
-      ContentAccessService.use((contentAccess) =>
-        contentAccess.resolvePublicArtifact(context.req.param("artifactId"))
-      ),
+    const policyEnabled = await runHttpApplicationEffect(context, dependencies,
+      GuestReviewService.use((guests) => guests.policyEnabled()).pipe(Effect.catch(() => Effect.succeed(false))));
+    if (!policyEnabled) {
+      return acceptsHtml(context.req.header("accept"))
+        ? publicLinkUnavailableResponse(context)
+        : context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404);
+    }
+    const resolveCurrent = ContentAccessService.use((contentAccess) =>
+      contentAccess.resolvePublicArtifact(context.req.param("artifactId"))
     );
+    const current = acceptsHtml(context.req.header("accept"))
+      ? await runHttpApplicationEffect(context, dependencies,
+        resolveCurrent.pipe(Effect.catch(() => Effect.succeed(null))))
+      : await runHttpApplicationEffect(context, dependencies, resolveCurrent);
+    if (current === null) {
+      return acceptsHtml(context.req.header("accept"))
+        ? publicLinkUnavailableResponse(context)
+        : context.json({error: {code: "NOT_FOUND", message: "The requested route does not exist."}}, 404);
+    }
     const versionUrl = versionBrowserUrl(
       responseApplicationUrl(context, dependencies),
       dependencies.contentDomain,
@@ -4044,6 +4245,7 @@ function requireBrowserMutationSecurity(
 async function requireGuestReviewer(
   context: Context<HttpEnvironment>,
   dependencies: HttpAppDependencies,
+  artifactId: string,
   mutation: boolean,
 ): Promise<GuestReviewer | null> {
   const secure = usesSecureApplicationCookies(dependencies);
@@ -4055,6 +4257,7 @@ async function requireGuestReviewer(
   const session = await runHttpApplicationEffect(context, dependencies,
     GuestReviewService.use((guests) => guests.authenticate(
       Redacted.make(rawSession.data, {label: "guest-session"}),
+      artifactId,
       new Date().toISOString(),
     ))).catch(() => null);
   if (session === null || session.artifactId !== context.req.param("artifactId")) return null;
@@ -4068,7 +4271,8 @@ async function requireGuestReviewer(
     if (
       context.req.header("origin") !== trustedOrigin ||
       context.req.header("sec-fetch-site") !== "same-origin" ||
-      !header.success || !cookie.success || header.data !== cookie.data ||
+      !header.success || !cookie.success ||
+      !identitySecretsEqual(digestIdentitySecret(header.data), digestIdentitySecret(cookie.data)) ||
       !identitySecretsEqual(digestIdentitySecret(header.data), session.csrfDigest)
     ) {
       throw new AuthorizationDenied({message: "A valid guest browser CSRF token is required."});
@@ -4076,9 +4280,12 @@ async function requireGuestReviewer(
   }
   return {
     artifactId: session.artifactId,
-    displayName: session.displayName,
+    displayName: session.displayName ?? "Visitor",
+    nameRequired: session.displayName === null && (session.permission === "comment" || session.paused),
     guestId: session.guestId,
     invitationCreatorPrincipalId: session.invitationCreatorPrincipalId,
+    permission: session.permission,
+    paused: session.paused,
     projectId: session.projectId,
   };
 }
@@ -4203,6 +4410,16 @@ function runHttpApplicationEffect<A, E>(
       spanName: `${safeHttpMethod(context.req.method)} ${matchedRoute}`,
     },
   );
+}
+
+function runGuestMutationEffect<A>(
+  context: Context<HttpEnvironment>,
+  dependencies: Pick<HttpAppDependencies, "applicationRuntime">,
+  effect: Effect.Effect<A, ArtifactCommentFailure, ApplicationServices>,
+): Promise<A | Response> {
+  const mapped = effect.pipe(Effect.catchTag("PublicLinkPaused", () =>
+    Effect.succeed(context.json({error: {code: "PUBLIC_LINK_PAUSED", message: "Comments are paused for this link."}}, 409))));
+  return runHttpApplicationEffect(context, dependencies, mapped);
 }
 
 function requestWithRequestId(context: Context<HttpEnvironment>): Request {
@@ -4382,11 +4599,13 @@ function publicLinkInventoryPageResponse(
     nextCursor: encodePageCursor(page.nextCursor),
     publicLinks: page.items.map((item) => ({
       artifact: item.artifact,
+      kind: item.kind,
       currentVersion: item.currentVersion,
       links: {
         public: artifactBrowserUrl(requestUrl, item.artifact.id),
       },
       project: item.project,
+      secretLink: item.secretLink,
     })),
   };
 }
@@ -4395,6 +4614,14 @@ function publicLinkMutationResponse(
   results: readonly MakePublicLinkPrivateResult[],
 ) {
   const projected = results.map((result) => {
+    if (result.status === "revoked" || result.status === "stale_generation") {
+      return {
+        artifactId: result.item.artifactId,
+        expectedGeneration: result.item.generation,
+        projectId: result.item.projectId,
+        status: result.status,
+      };
+    }
     if (result.status === "made_private") {
       return {
         artifactId: result.item.artifactId,
@@ -4404,6 +4631,7 @@ function publicLinkMutationResponse(
         status: result.status,
       };
     }
+    if (result.status !== "failed") throw new Error("Unexpected public-link mutation result.");
     const error = artifactServerFailureResponse(result.failure);
     return {
       artifactId: result.item.artifactId,
@@ -4419,7 +4647,7 @@ function publicLinkMutationResponse(
     };
   });
   const succeeded = projected.filter((result) =>
-    result.status === "made_private"
+    result.status === "made_private" || result.status === "revoked"
   ).length;
   return {
     results: projected,

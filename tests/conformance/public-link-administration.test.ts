@@ -1,4 +1,6 @@
 import {Effect, Redacted} from "effect";
+import {DatabaseSync} from "node:sqlite";
+import nodePath from "node:path";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
 
@@ -24,12 +26,13 @@ import {
 const administratorToken = "trusted-installation-administrator";
 const publicLinkItemSchema = z.object({
   artifact: z.object({
-    accessSetting: z.literal("public_link"),
+    accessSetting: z.enum(["public_link", "account_required"]),
     currentVersionId: z.string(),
     id: z.string(),
     name: z.string(),
     projectId: z.string(),
   }),
+  kind: z.enum(["legacy", "secret"]),
   currentVersion: z.object({
     createdAt: z.string(),
     id: z.string(),
@@ -41,6 +44,13 @@ const publicLinkItemSchema = z.object({
     id: z.string(),
     name: z.string(),
   }),
+  secretLink: z.object({
+    createdAt: z.string(),
+    generation: z.number().int().positive(),
+    invitationId: z.string(),
+    permission: z.enum(["view", "comment"]),
+    updatedAt: z.string(),
+  }).nullable(),
 });
 const publicLinkPageSchema = z.object({
   nextCursor: z.string().nullable(),
@@ -61,6 +71,12 @@ const mutationResultSchema = z.discriminatedUnion("status", [
     projectId: z.string(),
     retry: z.enum(["not_retryable", "refresh_current_version", "same_command"]),
     status: z.literal("failed"),
+  }),
+  z.object({
+    artifactId: z.string(),
+    expectedGeneration: z.number().int().positive(),
+    projectId: z.string(),
+    status: z.enum(["revoked", "stale_generation"]),
   }),
 ]);
 const mutationResponseSchema = z.object({
@@ -87,6 +103,26 @@ describe("public-link administration", () => {
   afterEach(async () => {
     await server.stop();
     await removeTestInstallation(installation);
+  });
+
+  test("installation administrators can turn public links off and back on", async () => {
+    const read = await administratorFetch("/api/v1/administration/public-links/policy");
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual({enabled: true});
+
+    const disabled = await administratorFetch("/api/v1/administration/public-links/policy", {
+      body: JSON.stringify({enabled: false}),
+      method: "PATCH",
+    });
+    expect(disabled.status).toBe(200);
+    expect(await disabled.json()).toEqual({enabled: false});
+
+    const resumed = await administratorFetch("/api/v1/administration/public-links/policy", {
+      body: JSON.stringify({enabled: true}),
+      method: "PATCH",
+    });
+    expect(resumed.status).toBe(200);
+    expect(await resumed.json()).toEqual({enabled: true});
   });
 
   test("AUTH-018-B: administrators page across projects and make one public artifact private", async () => {
@@ -276,6 +312,100 @@ describe("public-link administration", () => {
     await expectNoPublicBytes(staleUpdate.body);
   });
 
+  test("PLK-023-B: inventory exposes secret-link metadata without secret material", async () => {
+    const legacy = await publicArtifact("Legacy inventory", "public-admin-legacy-inventory");
+    const published = await privateArtifact("Secret inventory", "public-admin-secret-inventory");
+    const created = await administratorFetch(
+      `/api/v1/artifacts/${published.artifact.id}/public-link?projectId=${published.artifact.projectId}`,
+      {body: JSON.stringify({permission: "view"}), method: "POST"},
+    );
+    expect(created.status).toBe(201);
+    const archived = await fetch(`${server.baseUrl}/api/v1/projects/${published.artifact.projectId}/archive`, {
+      headers: apiHeaders(installation, "unused-public-admin-archive"),
+      method: "POST",
+    });
+    expect(archived.status).toBe(200);
+    const page = (await listEveryPublicLink(100)).flatMap(({publicLinks}) => publicLinks);
+    const legacyItem = page.find(({artifact}) => artifact.id === legacy.artifact.id);
+    expect(legacyItem).toMatchObject({kind: "legacy", secretLink: null});
+    const item = page.find(({artifact}) => artifact.id === published.artifact.id);
+    expect(item).toMatchObject({
+      kind: "secret",
+      project: {archivedAt: expect.any(String)},
+      secretLink: {
+        createdAt: expect.any(String), generation: 1, invitationId: expect.any(String),
+        permission: "view", updatedAt: expect.any(String),
+      },
+    });
+    const serialized = JSON.stringify(item);
+    expect(serialized).not.toMatch(/sealedSecret|tokenDigest|#invite=/i);
+    expect(serialized).not.toContain(new URL(z.object({url: z.url()}).parse(await created.json()).url).hash);
+  });
+
+  test("PLK-023-F: inventory refuses non-admins and omits deleted or revoked secret links", async () => {
+    const published = await privateArtifact("Rotating inventory", "public-admin-secret-stale");
+    const created = await administratorFetch(
+      `/api/v1/artifacts/${published.artifact.id}/public-link?projectId=${published.artifact.projectId}`,
+      {body: JSON.stringify({permission: "comment"}), method: "POST"},
+    );
+    expect(created.status).toBe(201);
+    const before = (await listEveryPublicLink(100)).flatMap(({publicLinks}) => publicLinks)
+      .find(({artifact}) => artifact.id === published.artifact.id)?.secretLink;
+    if (before === null || before === undefined) throw new Error("Secret inventory metadata was missing.");
+    const deniedList = await fetch(`${server.baseUrl}/api/v1/administration/public-links`, {
+      headers: apiHeaders(installation, "unused-public-inventory-denial"),
+    });
+    expect(deniedList.status).toBe(403);
+    const deniedSecretRevoke = await fetch(`${server.baseUrl}/api/v1/administration/public-links/make-private`, {
+      body: JSON.stringify({items: [{artifactId: published.artifact.id, generation: before.generation, kind: "secret", projectId: published.artifact.projectId}]}),
+      headers: apiHeaders(installation, "unused-public-secret-denial"),
+      method: "POST",
+    });
+    expect(deniedSecretRevoke.status).toBe(403);
+    const reset = await administratorFetch(
+      `/api/v1/artifacts/${published.artifact.id}/public-link/reset?projectId=${published.artifact.projectId}`,
+      {body: JSON.stringify({permission: "view"}), method: "POST"},
+    );
+    expect(reset.status).toBe(201);
+    const stale = await makePrivate([{
+      artifactId: published.artifact.id,
+      generation: before.generation,
+      kind: "secret",
+      projectId: published.artifact.projectId,
+    }]);
+    expect(stale.status).toBe(200);
+    expect(await stale.json()).toMatchObject({results: [{
+      artifactId: published.artifact.id,
+      expectedGeneration: before.generation,
+      status: "stale_generation",
+    }], summary: {failed: 1, requested: 1, succeeded: 0}});
+    const after = (await listEveryPublicLink(100)).flatMap(({publicLinks}) => publicLinks)
+      .find(({artifact}) => artifact.id === published.artifact.id)?.secretLink;
+    expect(after).toMatchObject({generation: before.generation + 1, permission: "view"});
+    const revoked = await makePrivate([{
+      artifactId: published.artifact.id,
+      generation: before.generation + 1,
+      kind: "secret",
+      projectId: published.artifact.projectId,
+    }]);
+    expect(await revoked.json()).toMatchObject({results: [{status: "revoked"}], summary: {failed: 0, requested: 1, succeeded: 1}});
+    const afterRevoke = (await listEveryPublicLink(100)).flatMap(({publicLinks}) => publicLinks);
+    expect(afterRevoke.some(({artifact}) => artifact.id === published.artifact.id)).toBe(false);
+
+    const deleted = await privateArtifact("Deleted inventory", "public-admin-secret-deleted");
+    const deletedInvitation = await administratorFetch(
+      `/api/v1/artifacts/${deleted.artifact.id}/public-link?projectId=${deleted.artifact.projectId}`,
+      {body: JSON.stringify({permission: "view"}), method: "POST"},
+    );
+    expect(deletedInvitation.status).toBe(201);
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    database.prepare("UPDATE artifacts SET deleted_at = ? WHERE id = ?")
+      .run(new Date().toISOString(), deleted.artifact.id);
+    database.close();
+    const afterDelete = (await listEveryPublicLink(100)).flatMap(({publicLinks}) => publicLinks);
+    expect(afterDelete.some(({artifact}) => artifact.id === deleted.artifact.id)).toBe(false);
+  });
+
   async function publicArtifact(
     name: string,
     idempotencyKey: string,
@@ -292,6 +422,18 @@ describe("public-link administration", () => {
       installation,
       projectId === undefined ? base : {...base, projectId},
     )).body;
+  }
+
+  async function privateArtifact(
+    name: string,
+    idempotencyKey: string,
+  ): Promise<PublishResponse> {
+    return (await publishNew(server, installation, {
+      accessSetting: "account_required",
+      content: `${name} bytes`,
+      idempotencyKey,
+      name,
+    })).body;
   }
 
   async function createProject(name: string): Promise<{readonly id: string}> {
@@ -328,12 +470,12 @@ describe("public-link administration", () => {
   }
 
   async function makePrivate(
-    items: readonly {
+    items: readonly ({
       readonly artifactId: string;
       readonly expectedCurrentVersionId: string;
       readonly idempotencyKey: string;
       readonly projectId: string;
-    }[],
+    } | {readonly artifactId: string; readonly generation: number; readonly kind: "secret"; readonly projectId: string})[],
   ): Promise<Response> {
     return administratorFetch(
       "/api/v1/administration/public-links/make-private",

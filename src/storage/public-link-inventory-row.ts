@@ -17,6 +17,11 @@ export const publicLinkInventoryRowSchema = z.object({
   artifactDeletedAt: z.string().nullable(),
   artifactId: z.string(),
   artifactName: z.string(),
+  secretCreatedAt: z.string().nullable(),
+  secretGeneration: z.number().nullable(),
+  secretPermission: z.enum(["view", "comment"]).nullable(),
+  secretInvitationId: z.string().nullable(),
+  secretUpdatedAt: z.string().nullable(),
   contentToken: z.string(),
   currentVersionId: z.string(),
   entryPath: z.string(),
@@ -46,8 +51,23 @@ export function publicLinkPageFromRows(
     if (artifact === undefined) {
       throw new Error("A public-link inventory artifact disappeared during row projection.");
     }
+    let secretLink: PublicLinkInventoryPage["items"][number]["secretLink"] = null;
+    if (row.secretInvitationId !== null) {
+      if (row.secretCreatedAt === null || row.secretUpdatedAt === null || row.secretGeneration === null || row.secretPermission === null) {
+        throw new Error("A live public-link inventory invitation is missing metadata.");
+      }
+      secretLink = {
+        createdAt: row.secretCreatedAt,
+        generation: row.secretGeneration,
+        invitationId: row.secretInvitationId,
+        permission: row.secretPermission,
+        updatedAt: row.secretUpdatedAt,
+      };
+    }
     return {
       artifact,
+      kind: row.accessSetting === accessSettings.publicLink ? "legacy" as const : "secret" as const,
+      secretLink,
       currentVersion: {
         artifactId: row.artifactId,
         contentToken: row.contentToken,

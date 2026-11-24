@@ -1368,7 +1368,8 @@ requirements:
       behavior: {id: AUTH-006-B, description: "Disable public links and confirm that new and existing artifacts cannot be made or remain publicly readable under server policy."}
       failure: {id: AUTH-006-F, description: "Members, agents, API keys, and Plannotator cannot bypass the administrator's public-link policy."}
     deployments: *all
-    status: specified
+    status: implementing
+    proof_gap: "By code design, SQLite create and reset check the policy in one synchronous transaction; Postgres create locks the installation-settings row FOR SHARE and reset locks it FOR UPDATE. The test proves disabled writes are rejected, but a concurrent toggle-versus-write interleaving test remains pending hosted Postgres evidence. Hosted Postgres, Cloudflare and browser evidence also remain pending."
     depends_on: [AUTH-003]
     evidence: []
 
@@ -5068,4 +5069,326 @@ requirements:
     status: implementing
     proof_gap: Service evidence for CMT-023-B and CMT-023-F is not yet recorded.
     depends_on: [CMT-012]
+    evidence: []
+
+  - id: PLK-001
+    kind: security
+    behavior: Public link requests never redirect to or contact the identity provider.
+    owner: authorization
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-001-B, description: "Opening a public link at root or under an organization prefix returns the public page and its APIs without an identity-provider redirect."}
+      failure: {id: PLK-001-F, description: "Opening, refreshing, exchanging, reading comments, or requesting preview content makes zero identity-provider requests and returns zero login redirects, including after visitor-session expiry."}
+    deployments: *all
+    status: implementing
+    proof_gap: "PLK-1 server routes are unauthenticated, but PLK-001-B and PLK-001-F require PLK-3 browser network evidence across page load, refresh, exchange, comments, preview, and expired-session renewal; keep implementing until that proof lands."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-002
+    kind: behavior
+    behavior: Public-link pages and errors never render a Sign in control.
+    owner: http-api
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-002-B, description: "Public link pages render without a Sign in control."}
+      failure: {id: PLK-002-F, description: "Unknown, revoked, expired-session, and disabled-link states contain no Sign in control."}
+    deployments: *all
+    status: implementing
+    proof_gap: "PLK-002-B and PLK-002-F require PLK-3 UI/browser evidence for public, unknown, revoked, and expired-session states; keep implementing until that proof lands."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-003
+    kind: behavior
+    behavior: Link secrets survive page load and visitor-session renewal in the URL fragment.
+    owner: http-api
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-003-B, description: "The #link secret remains in the fragment and supports a new exchange after visitor-session expiry."}
+      failure: {id: PLK-003-F, description: "Reload does not strand the visitor, and the legacy #invite fragment remains accepted."}
+    deployments: *all
+    status: implementing
+    proof_gap: "PLK-003-B and PLK-003-F require PLK-3 browser evidence that the SPA preserves and reuses #link after reload and accepts legacy #invite fragments; keep implementing until that proof lands."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-004
+    kind: security
+    behavior: A valid public-link fragment takes precedence over an unrelated signed-in identity.
+    owner: authorization
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-004-B, description: "A signed-in member without project access receives the public artifact page for a valid link."}
+      failure: {id: PLK-004-F, description: "The signed-in member's lack of project access does not redirect or turn the valid link into a not-found response."}
+    deployments: *all
+    status: implementing
+    proof_gap: "PLK-004-B and PLK-004-F require PLK-3 browser evidence that a valid fragment overrides an unrelated signed-in identity; keep implementing until that proof lands."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-005
+    kind: security
+    behavior: Capability secrets are digest-indexed and authenticated-encrypted at rest.
+    owner: authorization
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-005-B, description: "Secrets contain 32 random bytes, are looked up by digest, sealed with AES-256-GCM and installation/link/generation AAD, and are returned only to managers."}
+      failure: {id: PLK-005-F, description: "Secrets never enter logs, spans, audit events, or errors; responses are no-store; without a key copyAvailable is false."}
+    deployments: *all
+    status: implementing
+    proof_gap: "Log, span and audit redaction evidence remains pending."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-006
+    kind: security
+    behavior: Changing a link permission preserves its URL and applies a downgrade to the next write.
+    owner: authorization
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-006-B, description: "A permission change keeps the secret URL and comment access works while permission is comment."}
+      failure: {id: PLK-006-F, description: "After downgrading to view, the next write is refused."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "Permission management and server-side enforcement evidence are pending."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-007
+    kind: security
+    behavior: Reset and revoke immediately invalidate visitor grants and content leases.
+    owner: authorization
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-007-B, description: "Reset issues a new secret and revokes the old secret and all associated visitor sessions, content sessions, bootstraps, and preview leases."}
+      failure: {id: PLK-007-F, description: "Old grants fail immediately and a link stops working when its creator loses artifact-management rights."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "Reset transaction and invalidation evidence are pending."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-008
+    kind: security
+    behavior: A public link is scoped to one artifact and its current version.
+    owner: authorization
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-008-B, description: "A visitor reads only the linked artifact's current version and own comment threads."}
+      failure: {id: PLK-008-F, description: "The link exposes no version list, comparisons, other artifact, project, group, or member data."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "PLK-008-F now checks another-artifact, version-list, comparison, project, group, and member routes on local SQLite; hosted external-storage evidence remains pending."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-009
+    kind: behavior
+    behavior: View links need no visitor name; comment links collect and label one.
+    owner: http-api
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-009-B, description: "View visitors are not asked for a name; comment visitors see the artifact before a 1 to 80 character name prompt and new comments use the visitor label."}
+      failure: {id: PLK-009-F, description: "Empty or overlong comment names are rejected; existing stored guest labels are unchanged."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "PLK-009-B and PLK-009-F have SQLite HTTP coverage for nameless exchange, the nameRequired current signal, comment and reply rejection before budget reservation, PATCH rename, visitor labels, and empty or overlong names; hosted Postgres parity evidence remains pending."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-010
+    kind: security
+    behavior: Visitor writes enforce same-origin double-submit CSRF with an org-scoped host cookie.
+    owner: authorization
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-010-B, description: "A valid visitor write uses the __Host-, HttpOnly, SameSite=Strict, organization-scoped cookie and matching CSRF token."}
+      failure: {id: PLK-010-F, description: "Writes fail unless Origin, Sec-Fetch-Site, double-submit value, and stored digest all match."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "Existing CSRF behavior must be proven against shared visitor grants."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-011
+    kind: security
+    behavior: Visitor exchanges, live grants, writes, and content leases are budgeted.
+    owner: authorization
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-011-B, description: "View and comment links both consume the configured exchange, grant, comment, bootstrap, and lease budgets."}
+      failure: {id: PLK-011-F, description: "Every exhausted budget returns 429 with Retry-After."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "PLK-011-B is not proved: the existing tests exercise selected counters, but not successful consumption of every configured exchange, grant, comment, bootstrap, and lease budget for both permissions. PLK-011-F covers selected 429 paths; full budget matrix remains a proof gap."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-012
+    kind: behavior
+    behavior: One visitor cookie carries grants for several public links.
+    owner: http-api
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-012-B, description: "The same browser token can create grants for two links and continue using both."}
+      failure: {id: PLK-012-F, description: "Opening a second link does not revoke or replace the first grant."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "PLK-012-B and PLK-012-F prove SQLite shared-cookie grants across two links; Postgres parity remains pending hosted External Storage Runtime evidence."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-013
+    kind: security
+    behavior: Visitor preview leases bind to the current version and guest grant.
+    owner: authorization
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-013-B, description: "A visitor lease serves a preview of the current version and records the visitor session binding."}
+      failure: {id: PLK-013-F, description: "Lease reads fail after the grant or link is revoked or reset."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "PLK-013-B visitor lease preview and session-binding evidence is pending."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-014
+    kind: behavior
+    behavior: Project archive preserves public reads and pauses comment writes.
+    owner: http-api
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-014-B, description: "View access continues during archive, comment writes return PUBLIC_LINK_PAUSED, and unarchive restores writes."}
+      failure: {id: PLK-014-F, description: "Archive does not enable writes or exchanges for deleted artifacts or suspended organizations."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "PLK-014-B has SQLite HTTP coverage for archived view and comment exchange, paused current signals, refused comment writes, and restored writes after unarchive; suspended-organization refusal and hosted Postgres execution evidence remain pending."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-015
+    kind: behavior
+    behavior: Visitors see only their own threads and member replies on those threads.
+    owner: http-api
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-015-B, description: "A visitor lists and reads only threads they authored, with replies on those threads."}
+      failure: {id: PLK-015-F, description: "Threads authored by another visitor are not observable."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "Existing guest thread filters need PLK evidence."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-016
+    kind: security
+    behavior: Installation administrators can disable and re-enable public links.
+    owner: authorization
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-016-B, description: "Disabling blocks link exchange, legacy public reads, and new link creation; re-enabling makes retained links usable again."}
+      failure: {id: PLK-016-F, description: "Members, agents, API keys, and Plannotator cannot bypass the installation policy."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "By code design, SQLite create and reset check the policy in one synchronous transaction; Postgres create locks the installation-settings row FOR SHARE and reset locks it FOR UPDATE. The test proves disabled writes are rejected, but a concurrent toggle-versus-write interleaving test remains pending hosted Postgres evidence. Operator route evidence also remains pending."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-017
+    kind: behavior
+    behavior: Legacy public artifacts remain viewable until they are switched to a secret link.
+    owner: http-api
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-017-B, description: "Legacy artifacts appear as view links; Reset issues a secret link and makes the artifact account-required."}
+      failure: {id: PLK-017-F, description: "Legacy comment permission returns 409 until Reset; old paths route under the Orvex prefix and unavailable HTML is neutral."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "Legacy path and reset behavior evidence is pending."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-018
+    kind: security
+    behavior: Public links and visitor cookies remain isolated to one organization.
+    owner: authorization
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-018-B, description: "A link works under its organization prefix and the visitor cookie has that org's route suffix."}
+      failure: {id: PLK-018-F, description: "A link from one organization never resolves at root or in another organization."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "PLK-018-B and PLK-018-F have tenancy integration coverage for organization-prefixed exchange, scoped cookies, and cross-organization refusal; hosted External Storage Runtime execution evidence is pending."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-019
+    kind: behavior
+    behavior: Public-link management is consistent across HTTP, MCP, and CLI on both schemas.
+    owner: mcp
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-019-B, description: "Get, create, change permission, reset, revoke, and session management agree across supported interfaces and SQLite and Postgres."}
+      failure: {id: PLK-019-F, description: "No interface bypasses permission, tenant, or policy checks."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "PLK-019-B and PLK-019-F require MCP/CLI coverage assigned to PLK-2 plus the complete SQLite/Postgres parity matrix; PLK-1 HTTP tests cannot prove the cross-interface acceptance and Docker-backed Postgres suite is hosted."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-020
+    kind: behavior
+    behavior: The organization switcher stays in the catalog and settings headers, not public pages.
+    owner: web-application
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-020-B, description: "The multi-organization switcher is styled in both headers and absent from public pages."}
+      failure: {id: PLK-020-F, description: "At two viewport sizes and in both themes the shell has no overflow and accessibility checks pass."}
+    deployments: *all
+    status: implementing
+    proof_gap: "PLK-020-B and PLK-020-F are PLK-3 browser UI and responsive accessibility evidence; this server lane cannot prove them."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-021
+    kind: security
+    behavior: Public-link pages use noindex, nofollow and no-referrer response headers.
+    owner: authorization
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-021-B, description: "Public-link pages and visitor endpoints send X-Robots-Tag noindex, nofollow and Referrer-Policy no-referrer."}
+      failure: {id: PLK-021-F, description: "Secret-bearing visitor responses are no-store."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "Local HTTP tests prove public API noindex/no-referrer and visitor exchange no-store; HTML page headers and hosted deployment evidence remain pending."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-022
+    kind: behavior
+    behavior: Public-link sharing and visitor pages are accessible in both themes and supported viewport sizes.
+    owner: web-application
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: PLK-022-B, description: "Share and public pages pass accessibility checks in light and dark themes at desktop and mobile widths."}
+      failure: {id: PLK-022-F, description: "Keyboard, focus, contrast, and responsive layout issues are caught by the browser gate."}
+    deployments: *all
+    status: implementing
+    proof_gap: "PLK-022-B and PLK-022-F are PLK-3 browser accessibility evidence across themes and viewport sizes; this server lane cannot prove them."
+    depends_on: []
+    evidence: []
+
+  - id: PLK-023
+    kind: security
+    behavior: "The installation administrator inventory reports legacy links and secret-link invitations without exposing secret material, and secret revocation checks its generation."
+    owner: authorization
+    source: {file: single-application-administration-spec.md, anchor: public-links}
+    acceptance:
+      behavior: {id: "PLK-023-B", description: "Inventory reports legacy or secret kind, permission, generation, secret-link creation and update times, and archived live-link rows without secret material."}
+      failure: {id: "PLK-023-F", description: "Non-admins cannot list or revoke links; deleted artifacts and revoked secret links are omitted; stale-generation revocation leaves the rotated invitation active."}
+    deployments: *external_storage
+    status: implementing
+    proof_gap: "SQLite HTTP coverage proves secret-link inventory metadata, non-admin refusal, deleted and revoked item omission, and stale-generation revocation. Another installation's links and hosted Postgres execution evidence remain unproved and require hosted verification."
+    depends_on: []
     evidence: []
