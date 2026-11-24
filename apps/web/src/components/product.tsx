@@ -15,10 +15,29 @@ export function OrganizationSwitcher() {
   useEffect(() => {
     setPathname(window.location.pathname);
     void api.platformOrganizations().then(setOrganizations).catch(() => setOrganizations([]));
-    const selector = window.location.pathname.includes("/review/settings")
-      ? ".as-settings__nav"
-      : ".as-catalog__header-actions";
-    setDestination(document.querySelector<HTMLElement>(selector));
+    const resolveDestination = (): HTMLElement | null => {
+      const selector = window.location.pathname.includes("/review/settings")
+        ? ".as-settings__nav"
+        : ".as-catalog__header-actions";
+      return document.querySelector<HTMLElement>(selector);
+    };
+    let observer: MutationObserver | null = null;
+    const disconnectObserver = (): void => {
+      observer?.disconnect();
+      observer = null;
+    };
+    const attachWhenReady = (): boolean => {
+      const nextDestination = resolveDestination();
+      if (nextDestination === null || !nextDestination.isConnected) return false;
+      setDestination(nextDestination);
+      disconnectObserver();
+      return true;
+    };
+    if (!attachWhenReady()) {
+      observer = new MutationObserver(attachWhenReady);
+      observer.observe(document.body, {childList: true, subtree: true});
+    }
+    return disconnectObserver;
   }, []);
   if (destination === null) return null;
   return createPortal(
@@ -33,7 +52,8 @@ export function OrganizationSwitcherView({organizations, pathname}: {
   readonly pathname: string;
 }) {
   if (organizations.length === 0) return null;
-  const selected = organizations.find(({slug}) => pathname.startsWith(`/o/${slug}/`))?.slug ?? "";
+  const selected = organizations.find(({slug}) => pathname.startsWith(`/o/${slug}/`))?.slug
+    ?? (pathname.startsWith("/o/") ? "" : organizations.find(({slug}) => slug === "orvex")?.slug ?? "");
   const active = organizations.find(({slug}) => slug === selected);
   const initials = active?.displayName.split(/\s+/).slice(0, 2).map((part) => part.charAt(0)).join("").toLocaleUpperCase("en-US") ?? "O";
   return (

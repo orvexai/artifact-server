@@ -1630,7 +1630,6 @@ test.describe("Houston Artifacts frontend MVP", () => {
         hasText: "Cross-project public link",
       });
       await otherRow.getByRole("button", {name: "Revoke"}).click();
-      await fixture.page.getByRole("button", {name: "Make private", exact: true}).last().click();
       await expect(otherRow).toHaveCount(0);
 
       await fixture.page.getByRole("checkbox", {name: "Select First public link"}).click();

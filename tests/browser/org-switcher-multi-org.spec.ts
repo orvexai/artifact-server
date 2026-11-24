@@ -60,6 +60,16 @@ test("PLK-020-F Multi-organization navigation stays accessible and fits both vie
         status: 200,
       });
     });
+    await fixture.page.route("**/api/v1/platform/session/last-org", async (route) => {
+      await route.fulfill({status: 204});
+    });
+    await fixture.page.route("**/o/research/", async (route) => {
+      await route.fulfill({
+        body: "<!doctype html><html><head><title>Research</title></head><body>Research</body></html>",
+        contentType: "text/html",
+        status: 200,
+      });
+    });
     await localLogin(fixture);
     const switcher = fixture.page.locator(".as-organization-switcher");
     await expect(switcher.getByRole("combobox", {name: "Organization"})).toHaveValue("orvex");

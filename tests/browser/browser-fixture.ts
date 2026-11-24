@@ -59,6 +59,7 @@ export async function createPublicLinkAsHuman(
       data: {permission},
       headers: {
         Origin: fixture.server.baseUrl,
+        "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
         "X-CSRF-Token": csrf,
       },

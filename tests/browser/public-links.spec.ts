@@ -17,6 +17,17 @@ async function issuePublicLink(fixture: Awaited<ReturnType<typeof startBrowserFi
 test("PLK-001-B Public links open at root and under an organization prefix", async ({browser}) => {
   const fixture = await startBrowserFixture(browser);
   try {
+    // This route simulates the /o/orvex prefix in the test harness; it is not hosted proof of organization routing.
+    await fixture.page.route("**/o/orvex/**", async (route) => {
+      const requested = new URL(route.request().url());
+      const upstreamUrl = new URL(`${requested.pathname.replace(/^\/o\/orvex/u, "")}${requested.search}`, fixture.server.baseUrl);
+      const response = await route.fetch({url: upstreamUrl.toString()});
+      const body = (await response.text()).replace(
+        "</head>",
+        '<meta name="as-organization-base" content="/o/orvex"></head>',
+      );
+      await route.fulfill({response, body});
+    });
     const published = await publishNew(fixture.server, fixture.installation, {
       accessSetting: "account_required",
       content: "<!doctype html><title>Public preview</title><h1>Public preview</h1>",
@@ -91,11 +102,14 @@ test("Unknown public links show a neutral failure without sign-in controls", asy
       name: "Public preview",
     });
     const link = await issuePublicLink(fixture, published.body.artifact.id);
-    const revoke = await fixture.page.request.delete(
+    const revoke = await fetch(
       `${fixture.server.baseUrl}/api/v1/artifacts/${encodeURIComponent(published.body.artifact.id)}/public-link?projectId=prj_default`,
-      {headers: Object.fromEntries(apiHeaders(fixture.installation, `revoke-public-link-${crypto.randomUUID()}`).entries())},
+      {
+        headers: apiHeaders(fixture.installation, `revoke-public-link-${crypto.randomUUID()}`),
+        method: "DELETE",
+      },
     );
-    expect(revoke.status()).toBe(204);
+    expect(revoke.status).toBe(204);
     await fixture.page.goto(link);
     await expect(fixture.page.getByRole("heading", {name: "Link unavailable"})).toBeVisible();
     await expect(fixture.page.getByRole("link", {name: /sign in/i})).toHaveCount(0);
@@ -200,11 +214,17 @@ test("PLK-022-B Share and public pages pass accessibility checks in both themes 
       await fixture.page.setViewportSize({height: 844, width});
       await fixture.page.goto(reviewUrl);
       const toggleName = theme === "dark" ? "Use dark theme" : "Use light theme";
+      if (!await fixture.page.getByRole("button", {name: toggleName}).isVisible()) {
+        await fixture.page.getByRole("button", {name: "Open artifact catalog"}).click();
+      }
       await expect(fixture.page.getByRole("button", {name: toggleName})).toBeVisible();
       await fixture.page.getByRole("button", {name: toggleName}).click();
       await expect(fixture.page.getByRole("button", {
         name: theme === "dark" ? "Use light theme" : "Use dark theme",
       })).toBeVisible();
+      if (width === 390) {
+        await fixture.page.getByRole("button", {name: "Collapse artifact catalog"}).click();
+      }
       await expect(fixture.page.getByRole("heading", {name: "Accessible preview"})).toBeVisible();
       const shareAccessibility = await new AxeBuilder({page: fixture.page})
         .withTags(["wcag2a", "wcag2aa"])
@@ -214,9 +234,14 @@ test("PLK-022-B Share and public pages pass accessibility checks in both themes 
       const shareButton = fixture.page.getByRole("button", {name: "Share"});
       await shareButton.focus();
       await fixture.page.keyboard.press("Enter");
-      await expect(fixture.page.getByRole("heading", {name: "Share artifact"})).toBeVisible();
-      await fixture.page.getByRole("button", {name: "Manage access"}).click();
+      await expect(fixture.page.getByRole("dialog", {name: "Share artifact"})).toBeVisible();
       await expect(fixture.page.getByRole("region", {name: "General access"})).toBeVisible();
+      const overviewAccessibility = await new AxeBuilder({page: fixture.page})
+        .withTags(["wcag2a", "wcag2aa"])
+        .analyze();
+      expect(overviewAccessibility.violations).toEqual([]);
+      await fixture.page.getByRole("button", {name: "Manage access"}).click();
+      await expect(fixture.page.getByRole("heading", {name: "Artifact access"})).toBeVisible();
       const accessAccessibility = await new AxeBuilder({page: fixture.page})
         .withTags(["wcag2a", "wcag2aa"])
         .analyze();
@@ -261,9 +286,9 @@ test("PLK-022-F Keyboard access and responsive layout are checked on public shar
     const share = fixture.page.getByRole("button", {name: "Share"});
     await share.focus();
     await fixture.page.keyboard.press("Enter");
-    await expect(fixture.page.getByRole("heading", {name: "Share artifact"})).toBeVisible();
+    await expect(fixture.page.getByRole("dialog", {name: "Share artifact"})).toBeVisible();
     await fixture.page.keyboard.press("Escape");
-    await expect(fixture.page.getByRole("heading", {name: "Share artifact"})).toHaveCount(0);
+    await expect(fixture.page.getByRole("dialog", {name: "Share artifact"})).toHaveCount(0);
 
     await fixture.page.goto(link);
     await expect(fixture.page.getByRole("heading", {name: "Keyboard preview"})).toBeVisible();
