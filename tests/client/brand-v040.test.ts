@@ -56,6 +56,58 @@ function parseHex(value: string): readonly number[] {
   return [0, 2, 4].map((start) => Number.parseInt(hex.slice(start, start + 2), 16) / 255);
 }
 
+function cssDeclaration(css: string, selector: string, name: string): string {
+  const source = css.replace(/\/\*[\s\S]*?\*\//gu, "");
+  for (const match of source.matchAll(/([^{}]+)\{([^{}]*)\}/gu)) {
+    const header = match[1];
+    const body = match[2];
+    if (header === undefined || body === undefined) continue;
+    if (!header.split(",").some((entry) => entry.trim() === selector)) continue;
+    const declaration = body.match(new RegExp(`(?:^|;)\\s*${name}:\\s*([^;]+);`, "u"))?.[1];
+    if (declaration !== undefined) {
+      return declaration.replace(/\s+/gu, " ").replace(/\( /gu, "(").replace(/ \)/gu, ")").trim();
+    }
+  }
+  throw new Error(`Missing ${name} in ${selector}`);
+}
+
+function themeColor(name: string, theme: "dark" | "light"): readonly number[] {
+  const source = name === "--destructive"
+    ? text("apps/web/src/theme-tokens.css")
+    : text("apps/web/src/brand/houston/variables.css");
+  const selector = name === "--destructive"
+    ? theme === "light" ? ":root" : ".dark"
+    : `[data-theme="${theme}"]`;
+  const value = cssDeclaration(source, selector, name);
+  const reference = value.match(/^var\((--[\w-]+)\)$/u)?.[1];
+  if (reference !== undefined) return themeColor(reference, theme);
+  if (value.startsWith("#")) return parseHex(value);
+  const oklch = value.match(/^oklch\(([\d.]+)\s+([\d.]+)\s+([\d.]+)\)$/u);
+  if (oklch === null) throw new Error(`Unsupported CSS color for ${name}: ${value}`);
+  return oklchToRgb(Number(oklch[1]), Number(oklch[2]), Number(oklch[3]));
+}
+
+function accentTextStrongColor(theme: "dark" | "light"): readonly number[] {
+  const selector = theme === "light" ? ":root" : '[data-theme="dark"]';
+  const value = cssDeclaration(
+    text("apps/web/src/brand/houston/contrast.css"),
+    selector,
+    "--ox-color-accent-text-strong",
+  );
+  const reference = value.match(/^var\((--[\w-]+)\)$/u)?.[1];
+  if (reference !== undefined) return themeColor(reference, theme);
+  const mix = value.match(/^color-mix\(in oklch, var\((--[\w-]+)\) ([\d.]+)%, black\)$/u);
+  if (mix === null) throw new Error(`Unsupported accent text mix: ${value}`);
+  const base = rgbToOklch(themeColor(mix[1] ?? "", theme));
+  const proportion = Number(mix[2]) / 100;
+  return oklchToRgb(base.lightness * proportion, base.chroma * proportion, base.hue);
+}
+
+function composite(foreground: readonly number[], background: readonly number[], alpha: number): readonly number[] {
+  return foreground.map((channel, index) =>
+    channel * alpha + (background[index] ?? 0) * (1 - alpha));
+}
+
 function contrastRatio(foreground: readonly number[], background: readonly number[]): number {
   const foregroundLuminance = luminance(foreground);
   const backgroundLuminance = luminance(background);
@@ -127,29 +179,30 @@ describe("Houston Brand and Design System v0.4.0", () => {
       expect(actual).toBeCloseTo(pair.ratio, 3);
     }
 
-    const light = [248, 250, 252].map((value) => value / 255);
-    const dark = [12, 16, 23].map((value) => value / 255);
-    const accentTextOklch = rgbToOklch(parseHex("#0e7490"));
-    const lightAccentStrong = oklchToRgb(
-      accentTextOklch.lightness * 0.9,
-      accentTextOklch.chroma * 0.9,
-      accentTextOklch.hue,
-    );
-    const darkAccentStrong = parseHex("#36d2eb");
-    expect(contrastRatio(lightAccentStrong, light)).toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio(darkAccentStrong, dark)).toBeGreaterThanOrEqual(4.5);
+    const contrastCss = text("apps/web/src/brand/houston/contrast.css");
+    const lightHover = cssDeclaration(contrastCss, ":root", "--ox-color-danger-hover");
+    const darkHover = cssDeclaration(contrastCss, '[data-theme="dark"]', "--ox-color-danger-hover");
+    expect(lightHover).toBe("color-mix(in srgb, var(--destructive) 20%, transparent)");
+    expect(darkHover).toBe("color-mix(in srgb, var(--destructive) 14%, transparent)");
 
-    const destructiveByTheme = [
-      {background: light, color: oklchToRgb(0.42, 0.14, 27.325)},
-      {background: dark, color: oklchToRgb(0.704, 0.191, 22.216)},
-    ];
-    for (const {background, color} of destructiveByTheme) {
-      expect(contrastRatio(color, background)).toBeGreaterThanOrEqual(3);
+    for (const theme of ["light", "dark"] as const) {
+      const background = themeColor("--ox-color-bg", theme);
+      const surface = themeColor("--ox-color-surface-1", theme);
+      const accentTextStrong = accentTextStrongColor(theme);
+      const destructive = themeColor("--destructive", theme);
+      expect(contrastRatio(accentTextStrong, background), `${theme} accent-text-strong`).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio(destructive, background), `${theme} destructive`).toBeGreaterThanOrEqual(4.5);
+
+      const hover = theme === "light" ? lightHover : darkHover;
+      const opacity = Number(hover.match(/ ([\d.]+)%,/u)?.[1]) / 100;
+      for (const [surfaceName, base] of [["background", background], ["surface", surface]] as const) {
+        const hoverWash = composite(destructive, base, opacity);
+        expect(
+          contrastRatio(destructive, hoverWash),
+          `${theme} destructive text over danger-hover on ${surfaceName}`,
+        ).toBeGreaterThanOrEqual(4.5);
+      }
     }
-    expect(text("apps/web/src/brand/houston/contrast.css"))
-      .toContain("--ox-color-danger-hover: color-mix(in srgb, var(--destructive) 20%, transparent)");
-    expect(text("apps/web/src/brand/houston/contrast.css"))
-      .toContain("--ox-color-danger-hover: color-mix(in srgb, var(--destructive) 14%, transparent)");
   });
 
   test("BRD-003-B Mark D geometry replaces the radar mark and public icons match the pack", () => {
