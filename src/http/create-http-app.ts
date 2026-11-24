@@ -3269,6 +3269,7 @@ export function createHttpApp(
   });
 
   app.patch("/api/v1/artifacts/:artifactId/public-link", boundedJsonBody, async (context) => {
+    context.header("Cache-Control", "no-store");
     const body = publicLinkPermissionSchema.parse(await context.req.json());
     const result = await runHttpApplicationEffect(context, dependencies,
       GuestReviewService.use((guests) => guests.setPermission({
@@ -3282,6 +3283,7 @@ export function createHttpApp(
   });
 
   app.delete("/api/v1/artifacts/:artifactId/public-link", async (context) => {
+    context.header("Cache-Control", "no-store");
     const artifactId = context.req.param("artifactId");
     const principal = context.get("principal");
     const projectId = requestedProjectId(context);
@@ -3304,6 +3306,7 @@ export function createHttpApp(
   });
 
   app.get("/api/v1/artifacts/:artifactId/public-link/sessions", async (context) => {
+    context.header("Cache-Control", "no-store");
     const sessions = await runHttpApplicationEffect(context, dependencies,
       GuestReviewService.use((guests) => guests.listSessions({
         artifactId: context.req.param("artifactId"), principal: context.get("principal"), projectId: requestedProjectId(context),
@@ -3312,6 +3315,7 @@ export function createHttpApp(
   });
 
   app.delete("/api/v1/artifacts/:artifactId/public-link/sessions/:guestId", async (context) => {
+    context.header("Cache-Control", "no-store");
     await runHttpApplicationEffect(context, dependencies,
       GuestReviewService.use((guests) => guests.revokeSession({
         artifactId: context.req.param("artifactId"), guestId: context.req.param("guestId"),
@@ -3326,10 +3330,14 @@ export function createHttpApp(
         artifactId: context.req.param("artifactId"),
         principal: context.get("principal"), projectId: requestedProjectId(context),
       })));
-    return context.json(status);
+    context.header("Cache-Control", "no-store");
+    return context.json({activeSessionCount: status.activeSessionCount, createdAt: status.createdAt,
+      enabled: status.enabled, legacy: status.legacy, limitHitRecently: status.limitHitRecently,
+      permission: status.permission, updatedAt: status.updatedAt});
   });
 
   app.get("/api/v1/artifacts/:artifactId/guest-invitation/sessions", async (context) => {
+    context.header("Cache-Control", "no-store");
     const sessions = await runHttpApplicationEffect(context, dependencies,
       GuestReviewService.use((guests) => guests.listSessions({
         artifactId: context.req.param("artifactId"),
@@ -3339,6 +3347,7 @@ export function createHttpApp(
   });
 
   app.delete("/api/v1/artifacts/:artifactId/guest-invitation/sessions/:guestId", async (context) => {
+    context.header("Cache-Control", "no-store");
     await runHttpApplicationEffect(context, dependencies,
       GuestReviewService.use((guests) => guests.revokeSession({
         artifactId: context.req.param("artifactId"), guestId: context.req.param("guestId"),
@@ -3348,6 +3357,7 @@ export function createHttpApp(
   });
 
   app.post("/api/v1/artifacts/:artifactId/guest-invitation", async (context) => {
+    context.header("Cache-Control", "no-store");
     const issued = await runHttpApplicationEffect(context, dependencies,
       GuestReviewService.use((guests) => guests.enable({
         artifactId: context.req.param("artifactId"),
@@ -3362,6 +3372,7 @@ export function createHttpApp(
   });
 
   app.delete("/api/v1/artifacts/:artifactId/guest-invitation", async (context) => {
+    context.header("Cache-Control", "no-store");
     await runHttpApplicationEffect(context, dependencies,
       GuestReviewService.use((guests) => guests.revoke({
         artifactId: context.req.param("artifactId"),
@@ -4281,7 +4292,7 @@ async function requireGuestReviewer(
   return {
     artifactId: session.artifactId,
     displayName: session.displayName ?? "Visitor",
-    nameRequired: session.displayName === null && (session.permission === "comment" || session.paused),
+    nameRequired: session.displayName === null && session.permission === "comment" && !session.paused,
     guestId: session.guestId,
     invitationCreatorPrincipalId: session.invitationCreatorPrincipalId,
     permission: session.permission,

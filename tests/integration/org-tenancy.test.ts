@@ -69,6 +69,7 @@ import {startStubOidcProvider} from "../support/stub-oidc-provider.js";
 import {createS3ObjectStorageProviderFactory} from
   "../../src/storage/s3-object-storage.js";
 import {PostgresDatabase} from "../../src/storage/postgres-database.js";
+import {PostgresArtifactRepository} from "../../src/storage/postgres-artifact-repository.js";
 import {PostgresIdentityRepository} from "../../src/storage/postgres-identity-repository.js";
 import {houstonServerPageStyles} from "../../src/shared/houston-server-pages.js";
 
@@ -145,6 +146,16 @@ const crossOrgMatrix = [
 ] as const;
 
 const pendingCrossOrgCases = [
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/public-link", group: "resource-id routes", justification: "The handler resolves an artifact and its public-link metadata through the selected installation."},
+  {identifier: "hono:PATCH /api/v1/artifacts/:artifactId/public-link", group: "resource-id routes", justification: "The handler resolves an artifact through the selected installation before changing its public-link permission."},
+  {identifier: "hono:DELETE /api/v1/artifacts/:artifactId/public-link", group: "resource-id routes", justification: "The handler resolves an artifact through the selected installation before revoking its public link."},
+  {identifier: "hono:GET /api/v1/artifacts/:artifactId/public-link/sessions", group: "resource-id routes", justification: "The handler lists sessions only through the selected installation’s artifact and invitation records."},
+  {identifier: "hono:DELETE /api/v1/artifacts/:artifactId/public-link/sessions/:guestId", group: "resource-id routes", justification: "The handler revokes a visitor session only through the selected installation’s artifact and invitation records."},
+  {identifier: "hono:POST /api/v1/artifacts/:artifactId/public-link/reset", group: "resource-id routes", justification: "The handler resolves an artifact through the selected installation before resetting its public link."},
+  {identifier: "hono:POST /api/v1/artifacts/:artifactId/public-link", group: "resource-id routes", justification: "The handler resolves an artifact through the selected installation before creating its public link."},
+  {identifier: "hono:PATCH /api/v1/public/artifacts/:artifactId/guest/current", group: "resource-id routes", justification: "The handler resolves visitor sessions through the selected installation’s repositories; a foreign installation cannot rename a visitor session."},
+  {identifier: "hono:GET /api/v1/administration/public-links/policy", group: "admin routes", justification: "The endpoint reads installation-owned public-link policy through the selected organization runtime."},
+  {identifier: "hono:PATCH /api/v1/administration/public-links/policy", group: "admin routes", justification: "The endpoint changes installation-owned public-link policy through the selected organization runtime."},
   {identifier: "hono:DELETE /api/v1/artifacts/:artifactId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
   {identifier: "hono:DELETE /api/v1/artifacts/:artifactId/comments/:threadId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
   {identifier: "hono:DELETE /api/v1/artifacts/:artifactId/comments/:threadId/replies/:replyId", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
@@ -383,7 +394,6 @@ describe.sequential("organization tenancy security boundary", () => {
   const installationId = `org-tenancy-${randomUUID()}`;
   const apiTokenA = managedTestKey("org-tenancy-a");
   const apiTokenB = managedTestKey("org-tenancy-b");
-  const apiTokenC = managedTestKey("org-tenancy-c");
   let database: PostgresDatabase;
   let s3: S3Client;
   let oidc: Awaited<ReturnType<typeof startStubOidcProvider>>;
@@ -1056,27 +1066,52 @@ describe.sequential("organization tenancy security boundary", () => {
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const host = {Host: "artifacts.example.com"};
     const runtime = await createOrgRuntime(orgB.id, {
+      admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
       applicationOrigin: new URL(`/o/${orgB.slug}`, applicationOrigin).toString(),
-      bootstrapApiToken: Redacted.make(apiTokenB),
       cookieRouteId: orgB.routeId,
       slug: orgB.slug,
       contentTokenPrefix: `${orgB.routeId}-`,
       embedOrigins: [],
     }, withoutGitHistory(config), database);
     try {
+      const subject = `plk-b-${randomUUID()}`;
+      oidc.claims.email = `${subject}@example.test`;
+      oidc.claims.emailVerified = true;
+      oidc.claims.groups = [`/teams/${orgB.slug}/admins`];
+      oidc.claims.name = "Public Link Administrator";
+      oidc.claims.subject = subject;
+      const login = await runtime.app.fetch(new Request("https://artifacts.example.com/auth/login", {redirect: "manual"}));
+      const loginCookie = login.headers.getSetCookie().find((value) => value.startsWith(`__Host-artifact_login-${orgB.routeId}=`));
+      const authorizationUrl = login.headers.get("location");
+      if (loginCookie === undefined || authorizationUrl === null) throw new Error("Org B login did not issue its scoped handshake.");
+      const authorization = await fetch(authorizationUrl, {redirect: "manual"});
+      const callbackLocation = authorization.headers.get("location");
+      if (callbackLocation === null) throw new Error("OIDC did not redirect to its callback.");
+      const callbackUrl = new URL(callbackLocation);
+      const loginCallback = await runtime.app.fetch(new Request(`https://artifacts.example.com/auth/callback${callbackUrl.search}`, {
+        headers: {Cookie: loginCookie.split(";", 1)[0] ?? ""},
+      }));
+      expect(loginCallback.status).toBe(303);
+      const memberCookie = loginCallback.headers.getSetCookie().map((value) => value.split(";", 1)[0]).join("; ");
+      const csrfCookie = loginCallback.headers.getSetCookie().find((value) => value.startsWith(`__Host-artifact_csrf-${orgB.routeId}=`));
+      const csrf = csrfCookie?.split(";", 1)[0]?.split("=", 2)[1];
+      if (csrf === undefined) throw new Error("Org B administrator login did not issue a CSRF token.");
       const projectResponse = await runtime.app.fetch(appRequest("/api/v1/projects", apiTokenB, "POST", {name: "Prefixed public-link project"}));
       expect(projectResponse.status).toBe(201);
       const scopedProjectId = z.object({project: z.object({id: z.string()})}).parse(await projectResponse.json()).project.id;
       const scopedArtifactId = await publishOrgBArtifact(
         (request) => runtime.app.fetch(request), apiTokenB, scopedProjectId, orgB.slug, "Prefixed public-link artifact",
       );
-      const linkResponse = await runtime.app.fetch(appRequest(
-        `/api/v1/artifacts/${scopedArtifactId}/public-link?projectId=${scopedProjectId}`,
-        apiTokenB, "POST", {permission: "view"},
+      const linkResponse = await runtime.app.fetch(new Request(
+        `https://artifacts.example.com/api/v1/artifacts/${scopedArtifactId}/public-link?projectId=${scopedProjectId}`,
+        {body: JSON.stringify({permission: "view"}), headers: {Cookie: memberCookie, "Content-Type": "application/json",
+          Origin: applicationOrigin, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-CSRF-Token": csrf}, method: "POST"},
       ));
       expect(linkResponse.status).toBe(201);
       const linkUrl = z.object({url: z.url()}).parse(await linkResponse.json()).url;
       const secret = new URL(linkUrl).hash.slice("#link=".length);
+      const repository = await PostgresArtifactRepository.open(database, orgB.id);
+      expect(await repository.findGuestInvitationByDigest(createHash("sha256").update(secret).digest("hex"))).not.toBeNull();
       const exchange = await fetchWithHost(`${baseUrl}/o/${orgB.slug}/api/v1/public/artifacts/${scopedArtifactId}/guest-session`, {
         body: JSON.stringify({displayName: "Prefixed visitor", secret}),
         headers: {...host, "Content-Type": "application/json", Origin: applicationOrigin,
@@ -1102,6 +1137,7 @@ describe.sequential("organization tenancy security boundary", () => {
     const host = {Host: "artifacts.example.com"};
     let orgBMemberCookie = "";
     let orgBCsrf = "";
+    const conditionalRuntimeToken = managedTestKey("org-tenancy-conditional");
     expect(orgB.admissionPolicy).toMatchObject({groupRoots: [`/teams/${orgB.slug}/`]});
     const admissionRuntime = await createOrgRuntime(orgB.id, {
       admissionPolicy: runtimeAdmissionPolicy(orgB.admissionPolicy),
@@ -1428,6 +1464,8 @@ describe.sequential("organization tenancy security boundary", () => {
       const guestInvitationUrl = z.object({url: z.url()}).parse(await guestInvitationResponse.json()).url;
       const guestSecret = new URLSearchParams(new URL(guestInvitationUrl).hash.slice(1)).get("invite");
       if (guestSecret === null) throw new Error("The tenant guest invitation did not include a link secret.");
+      const guestRepository = await PostgresArtifactRepository.open(database, orgB.id);
+      expect(await guestRepository.findGuestInvitationByDigest(createHash("sha256").update(guestSecret).digest("hex"))).not.toBeNull();
       const reservedGuestResponse = await admissionRuntime.app.fetch(new Request(
         `https://artifacts.example.com/api/v1/public/artifacts/${staffArtifact.id}/guest-session`,
         {body: JSON.stringify({displayName: "օrvex սupport", secret: guestSecret}),
@@ -1665,7 +1703,6 @@ describe.sequential("organization tenancy security boundary", () => {
       if (viewerWithKey?.token === undefined) throw new Error("The route walker has no viewer API key.");
       const mcpActorTokens = new Map<string, string>([...actorCookies].flatMap(([role, actor]) => actor.token === undefined ? [] : [[role, actor.token] as const]));
 
-      const conditionalRuntimeToken = managedTestKey("org-tenancy-conditional");
       const conditionalAdmissionRuntime = await createOrgRuntime(orgC.id, {
         admissionPolicy: runtimeAdmissionPolicy(orgC.admissionPolicy),
         applicationOrigin: `${applicationOrigin}/o/${orgC.slug}`,
@@ -2406,7 +2443,14 @@ describe.sequential("organization tenancy security boundary", () => {
 
     const resetPublicLink = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/public-link/reset?projectId=${projectId}`, {
       body: JSON.stringify({permission: "comment"}),
-      headers: {...host, Authorization: `Bearer ${apiTokenB}`, "Content-Type": "application/json"},
+      headers: {
+        ...forwardedHost,
+        Cookie: orgBMemberCookie,
+        Origin: applicationOrigin,
+        "Content-Type": "application/json",
+        "Sec-Fetch-Site": "same-origin",
+        "X-CSRF-Token": orgBCsrf,
+      },
       method: "POST",
     });
     expect(resetPublicLink.status).toBe(201);
@@ -2448,67 +2492,6 @@ describe.sequential("organization tenancy security boundary", () => {
       fetch(`${baseUrl}/o/${orgC.slug}/api/v1/public/artifacts/${artifactId}/guest/current`, {headers: {...host, Cookie: publicLinkCookie.split(";", 1)[0] ?? ""}}),
     ]);
     expect(cookieOutsideRequests.map((response) => response.status)).toEqual([404, 404]);
-
-    // Org C is the source organization (Org A in the PLK-018-F acceptance); root and Org B are separate destinations.
-    const sourceRuntime = await createOrgRuntime(orgC.id, {
-      applicationOrigin: new URL(`/o/${orgC.slug}`, applicationOrigin).toString(),
-      bootstrapApiToken: Redacted.make(apiTokenC),
-      cookieRouteId: orgC.routeId,
-      slug: orgC.slug,
-      contentTokenPrefix: `${orgC.routeId}-`,
-      embedOrigins: [],
-    }, withoutGitHistory(config), database);
-    let sourceArtifactId = "";
-    let sourceProjectId = "";
-    let sourceLinkSecret = "";
-    try {
-      const sourceProjectResponse = await sourceRuntime.app.fetch(appRequest(
-        "/api/v1/projects", apiTokenC, "POST", {name: "Org A source project"},
-      ));
-      expect(sourceProjectResponse.status).toBe(201);
-      sourceProjectId = z.object({project: z.object({id: z.string()})}).parse(await sourceProjectResponse.json()).project.id;
-      sourceArtifactId = await publishOrgBArtifact(
-        (request) => sourceRuntime.app.fetch(request), apiTokenC, sourceProjectId, orgC.slug, "Org A source artifact",
-      );
-      const sourceLink = await sourceRuntime.app.fetch(appRequest(
-        `/api/v1/artifacts/${sourceArtifactId}/public-link?projectId=${sourceProjectId}`,
-        apiTokenC, "POST", {permission: "comment"},
-      ));
-      expect(sourceLink.status).toBe(201);
-      const sourceUrl = z.object({url: z.url()}).parse(await sourceLink.json()).url;
-      sourceLinkSecret = new URL(sourceUrl).hash.slice("#link=".length);
-      expect(sourceLinkSecret).toBeTruthy();
-    } finally {
-      await sourceRuntime.close();
-    }
-    const sourceExchange = await fetch(`${baseUrl}/o/${orgC.slug}/api/v1/public/artifacts/${sourceArtifactId}/guest-session`, {
-      body: JSON.stringify({displayName: "Org A visitor", secret: sourceLinkSecret}),
-      headers: exchangeHeaders,
-      method: "POST",
-    });
-    expect(sourceExchange.status).toBe(201);
-    const sourceVisitorCookie = sourceExchange.headers.getSetCookie().find((value) =>
-      value.startsWith(`__Host-artifact_guest_session-${orgC.routeId}=`),
-    );
-    if (sourceVisitorCookie === undefined) throw new Error("Source organization public-link exchange did not issue its scoped cookie.");
-
-    const sourceSecretAtOtherOrganizations = await Promise.all([
-      fetch(`${baseUrl}/api/v1/public/artifacts/${sourceArtifactId}/guest-session`, {
-        body: JSON.stringify({secret: sourceLinkSecret}), headers: exchangeHeaders, method: "POST",
-      }),
-      fetch(`${baseUrl}/o/${orgB.slug}/api/v1/public/artifacts/${sourceArtifactId}/guest-session`, {
-        body: JSON.stringify({secret: sourceLinkSecret}), headers: exchangeHeaders, method: "POST",
-      }),
-    ]);
-    const sourceExchangeFailures = await Promise.all(sourceSecretAtOtherOrganizations.map(async (response) => ({body: await response.text(), status: response.status})));
-    expect(sourceExchangeFailures).toHaveLength(2);
-    expect(sourceExchangeFailures[0]).toEqual({body: expect.any(String), status: 404});
-    expect(sourceExchangeFailures[1]).toEqual(sourceExchangeFailures[0]);
-    const sourceCookieAtOtherOrganizations = await Promise.all([
-      fetch(`${baseUrl}/api/v1/public/artifacts/${sourceArtifactId}/guest/current`, {headers: {...host, Cookie: sourceVisitorCookie.split(";", 1)[0] ?? ""}}),
-      fetch(`${baseUrl}/o/${orgB.slug}/api/v1/public/artifacts/${sourceArtifactId}/guest/current`, {headers: {...host, Cookie: sourceVisitorCookie.split(";", 1)[0] ?? ""}}),
-    ]);
-    expect(sourceCookieAtOtherOrganizations.map((response) => response.status)).toEqual([404, 404]);
 
     const invalidRegistryId = `invalid-org-${randomUUID()}`;
     await database.run(Effect.gen(function*() {

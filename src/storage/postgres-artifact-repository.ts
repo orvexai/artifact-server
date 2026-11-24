@@ -346,6 +346,7 @@ const contentRecordRowSchema = z.object({
 const guestInvitationRecordSchema = z.object({
   artifactId: z.string(), createdAt: z.string(), createdByPrincipalId: z.string(),
   generation: z.number(), permission: z.enum(["view", "comment"]), sealedSecret: z.string().nullable(),
+  paused: z.boolean().default(false),
   sealKeyFingerprint: z.string().nullable(), updatedAt: z.string().nullable(), updatedByPrincipalId: z.string().nullable(),
   id: z.string(), projectId: z.string(), revokedAt: z.string().nullable(),
   tokenDigest: z.string(),
@@ -2219,7 +2220,7 @@ export class PostgresArtifactRepository implements
       const rows = yield* sql.unsafe<object>(`SELECT i.id, i.project_id AS "projectId",
         i.artifact_id AS "artifactId", i.token_digest AS "tokenDigest",
         i.created_by_principal_id AS "createdByPrincipalId", i.created_at AS "createdAt",
-        i.revoked_at AS "revokedAt", CASE WHEN p.archived_at IS NULL THEN i.permission ELSE 'view' END AS permission, i.sealed_secret AS "sealedSecret",
+        i.revoked_at AS "revokedAt", i.permission, (p.archived_at IS NOT NULL AND i.permission = 'comment') AS paused, i.sealed_secret AS "sealedSecret",
         i.seal_key_fingerprint AS "sealKeyFingerprint", i.generation,
         i.updated_at AS "updatedAt", i.updated_by_principal_id AS "updatedByPrincipalId" FROM guest_review_invitations i
         JOIN artifacts a ON a.installation_id = i.installation_id

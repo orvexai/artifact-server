@@ -716,8 +716,9 @@ describe("invited guest review", () => {
       expect.objectContaining({paused: false, permission: "view"}),
     ]));
     expect(currentVisitorSignals.slice(2)).toEqual(expect.arrayContaining([
-      expect.objectContaining({paused: true, permission: "comment"}),
+      expect.objectContaining({nameRequired: false, paused: true, permission: "comment"}),
     ]));
+    expect(currentVisitorSignals.slice(2).every((signal) => signal.nameRequired === false)).toBe(true);
     const paused = await Promise.all(visitors.slice(2).map((visitor, index) => guestRequest(
       visitor, "POST", `/api/v1/public/artifacts/${otherArtifactId}/guest/comments`,
       JSON.stringify({body: `Archived comment ${index}`, versionId: otherCurrentVersionId}), true,
@@ -832,6 +833,7 @@ describe("invited guest review", () => {
       createdByPrincipalId: existing?.createdByPrincipalId ?? "unreachable",
       generation: 1,
       id: randomUUID(),
+      paused: false,
       permission: "view" as const,
       projectId,
       revokedAt: null,
@@ -865,13 +867,42 @@ describe("invited guest review", () => {
     expect(await current.json()).toMatchObject({displayName: "Renamed Visitor"});
   });
 
-  test("PLK-021-F: visitor session exchange responses are not cacheable", async () => {
+  test("PLK-021-F: secret-bearing link and visitor session responses are not cacheable", async () => {
+    await server.stop();
+    server = await startServerWithLinkKeys(Buffer.alloc(32, 31).toString("base64url"));
+    await loginOwner();
     const created = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "view"}));
     expect(created.status).toBe(201);
+    expect(created.headers.get("cache-control")).toMatch(/no-store/iu);
     const url = z.object({url: z.url()}).parse(await created.json()).url;
     const secret = new URLSearchParams(new URL(url).hash.slice(1)).get("link");
     expect(secret).toBeTruthy();
-    const response = await exchangeResponse(artifactId, secret ?? "");
+    const currentStatus = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`);
+    expect(currentStatus.headers.get("cache-control")).toMatch(/no-store/iu);
+    const permission = await ownerRequest("PATCH", `/api/v1/artifacts/${artifactId}/public-link?projectId=${projectId}`, JSON.stringify({permission: "comment"}));
+    expect(permission.headers.get("cache-control")).toMatch(/no-store/iu);
+    const reset = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/public-link/reset?projectId=${projectId}`, JSON.stringify({permission: "view"}));
+    expect(reset.headers.get("cache-control")).toMatch(/no-store/iu);
+    const compatibilityStatus = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`);
+    const compatibilityText = await compatibilityStatus.text();
+    const compatibilityJson = z.object({linkSecret: z.unknown().optional(), sealedSecret: z.unknown().optional(), url: z.unknown().optional()})
+      .passthrough().parse(JSON.parse(compatibilityText));
+    expect(compatibilityStatus.headers.get("cache-control")).toMatch(/no-store/iu);
+    expect(compatibilityText).not.toContain(secret ?? "");
+    expect(compatibilityJson).not.toHaveProperty("linkSecret");
+    expect(compatibilityJson).not.toHaveProperty("sealedSecret");
+    expect(compatibilityJson).not.toHaveProperty("url");
+    const enabledAlias = await ownerRequest("POST", `/api/v1/artifacts/${artifactId}/guest-invitation?projectId=${projectId}`, "{}");
+    expect(enabledAlias.status).toBe(201);
+    expect(enabledAlias.headers.get("cache-control")).toMatch(/no-store/iu);
+    const invitationUrl = invitationSchema.parse(await enabledAlias.json()).url;
+    const invitationSecret = new URLSearchParams(new URL(invitationUrl).hash.slice(1)).get("invite");
+    expect(invitationSecret).toBeTruthy();
+    const invitationSessions = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/guest-invitation/sessions?projectId=${projectId}`);
+    expect(invitationSessions.headers.get("cache-control")).toMatch(/no-store/iu);
+    const publicLinkSessions = await ownerRequest("GET", `/api/v1/artifacts/${artifactId}/public-link/sessions?projectId=${projectId}`);
+    expect(publicLinkSessions.headers.get("cache-control")).toMatch(/no-store/iu);
+    const response = await exchangeResponse(artifactId, invitationSecret ?? "");
     expect(response.status).toBe(201);
     expect(response.headers.get("cache-control")).toMatch(/no-store/iu);
   });

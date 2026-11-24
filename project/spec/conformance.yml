@@ -5319,7 +5319,7 @@ requirements:
       failure: {id: PLK-018-F, description: "A link from one organization never resolves at root or in another organization."}
     deployments: *external_storage
     status: implementing
-    proof_gap: "PLK-018-B and PLK-018-F have tenancy integration coverage for organization-prefixed exchange, scoped cookies, and cross-organization refusal; hosted External Storage Runtime execution evidence is pending."
+    proof_gap: "PLK-018-B and PLK-018-F pass live Postgres in tests/integration/org-tenancy.test.ts (reserved-organization exchange, member label, tenant session list, root and other-organization refusal, /artifacts/ 308); hosted External Storage Runtime execution evidence is pending."
     depends_on: []
     evidence: []
 

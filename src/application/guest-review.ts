@@ -209,7 +209,7 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
           generation: (result.invitation?.generation ?? 0) + 1,
           secret: Redacted.value(issued.token),
         });
-        const invitation: GuestReviewInvitation = {artifactId: command.artifactId, createdAt: now, createdByPrincipalId: command.principal.id, generation: (result.invitation?.generation ?? 0) + 1, id, permission: command.permission ?? "comment", projectId: result.projectId, revokedAt: null, sealedSecret: sealed?.sealed ?? null, sealKeyFingerprint: sealed?.fingerprint ?? null, tokenDigest: issued.digest, updatedAt: now, updatedByPrincipalId: command.principal.id};
+        const invitation: GuestReviewInvitation = {artifactId: command.artifactId, createdAt: now, createdByPrincipalId: command.principal.id, generation: (result.invitation?.generation ?? 0) + 1, id, permission: command.permission ?? "comment", paused: false, projectId: result.projectId, revokedAt: null, sealedSecret: sealed?.sealed ?? null, sealKeyFingerprint: sealed?.fingerprint ?? null, tokenDigest: issued.digest, updatedAt: now, updatedByPrincipalId: command.principal.id};
         const reset = yield* dependencies.repository.resetGuestInvitation(invitation);
         if (reset === "disabled") return yield* new AuthorizationDenied({message: "An administrator has disabled public links."});
         if (reset === "missing") return yield* new ArtifactNotFound({message: "The artifact does not exist."});
@@ -231,6 +231,7 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
           artifactId: command.artifactId, createdAt: now,
           createdByPrincipalId: command.principal.id, generation, id,
           permission: command.permission ?? "view", projectId: result.projectId,
+          paused: false,
           revokedAt: null, sealedSecret: sealed?.sealed ?? null,
           sealKeyFingerprint: sealed?.fingerprint ?? null, tokenDigest: issued.digest,
           updatedAt: now, updatedByPrincipalId: command.principal.id,
@@ -267,7 +268,7 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
           )) ? {existing, csrfToken: command.existingCsrfToken, sessionToken: command.existingSessionToken} : null;
         if (reusable !== null && reusable.existing.artifactId === invitation.artifactId && reusable.existing.invitationId === invitation.id) {
           return {csrfToken: reusable.csrfToken, expiresAt: reusable.existing.absoluteExpiresAt,
-            reviewer: {artifactId: reusable.existing.artifactId, displayName: reusable.existing.displayName ?? "Visitor", nameRequired: reusable.existing.displayName === null && (reusable.existing.permission === "comment" || reusable.existing.paused), guestId: reusable.existing.guestId,
+            reviewer: {artifactId: reusable.existing.artifactId, displayName: reusable.existing.displayName ?? "Visitor", nameRequired: reusable.existing.displayName === null && reusable.existing.permission === "comment" && !reusable.existing.paused, guestId: reusable.existing.guestId,
               invitationCreatorPrincipalId: reusable.existing.invitationCreatorPrincipalId, permission: reusable.existing.permission, paused: reusable.existing.paused, projectId: reusable.existing.projectId},
             sessionToken: Redacted.make(reusable.sessionToken, {label: "guest-session"})};
         }
@@ -294,7 +295,8 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
         const created = yield* dependencies.repository.createGuestSession({absoluteExpiresAt, artifactId: invitation.artifactId, createdAt: nowIso, csrfDigest, displayName, expiresAt: idleExpiresAt, guestId, invitationCreatorPrincipalId: invitation.createdByPrincipalId, invitationId: invitation.id, lastUsedAt: nowIso, permission: invitation.permission, paused: false, projectId: invitation.projectId, tokenDigest: sessionDigest});
         if (created === "rate_limited") return yield* new GuestRateLimitExceeded({message: "This invitation has reached its exchange limit. Try again later."});
         if (created === "invalid") return yield* new ArtifactNotFound({message: "The requested route does not exist."});
-        return {csrfToken: Redacted.value(csrfToken), expiresAt: absoluteExpiresAt, reviewer: {artifactId: invitation.artifactId, displayName: displayName ?? "Visitor", nameRequired: displayName === null && invitation.permission === "comment", guestId, invitationCreatorPrincipalId: invitation.createdByPrincipalId, permission: invitation.permission, paused: false, projectId: invitation.projectId}, sessionToken: sessionSecret};
+        const paused = invitation.paused;
+        return {csrfToken: Redacted.value(csrfToken), expiresAt: absoluteExpiresAt, reviewer: {artifactId: invitation.artifactId, displayName: displayName ?? "Visitor", nameRequired: displayName === null && invitation.permission === "comment" && !paused, guestId, invitationCreatorPrincipalId: invitation.createdByPrincipalId, permission: invitation.permission, paused, projectId: invitation.projectId}, sessionToken: sessionSecret};
       });
       let lastGuestContentSweepAt = 0;
       const authenticate = (token: Redacted.Redacted, artifactId: string, requestTime: string) => Effect.gen(function*() {

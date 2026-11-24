@@ -287,6 +287,7 @@ export interface GuestReviewInvitation {
   readonly generation: number;
   readonly id: string;
   readonly permission: "view" | "comment";
+  readonly paused: boolean;
   readonly projectId: string;
   readonly revokedAt: string | null;
   readonly sealedSecret: string | null;

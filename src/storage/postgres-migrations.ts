@@ -1058,7 +1058,7 @@ const addPublicLinkPermissions = Effect.gen(function*() {
     ADD COLUMN sealed_secret TEXT,
     ADD COLUMN seal_key_fingerprint TEXT,
     ADD COLUMN generation INTEGER NOT NULL DEFAULT 1,
-    ADD COLUMN updated_at TIMESTAMPTZ,
+    ADD COLUMN updated_at TEXT,
     ADD COLUMN updated_by_principal_id TEXT`);
   yield* sql.unsafe(`ALTER TABLE guest_review_sessions ALTER COLUMN display_name DROP NOT NULL`);
   yield* sql.unsafe(`ALTER TABLE guest_review_sessions DROP CONSTRAINT guest_review_sessions_installation_id_token_digest_key`);
