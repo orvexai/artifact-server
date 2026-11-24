@@ -198,7 +198,7 @@ function dormantHooks(): OpencodeBridgeHooks {
         execute: () =>
           Promise.reject(
             new Error(
-              "Artifact Server is not configured; the bridge is dormant.",
+              "Houston Artifacts is not configured; the bridge is dormant.",
             ),
           ),
       },
@@ -207,7 +207,7 @@ function dormantHooks(): OpencodeBridgeHooks {
 }
 
 const artifactCommentsDescription =
-  "Read, reply to, and resolve Artifact Server comment threads that were " +
+  "Read, reply to, and resolve Houston Artifacts comment threads that were " +
   "sent to this agent. Use get_bundle to read threads, reply to record " +
   "what you did on a thread, and resolve to close it when done.";
 
@@ -270,7 +270,7 @@ export async function ArtifactServerBridge(
       }
     } catch (error) {
       notify(
-        "Artifact Server: delivering the annotation bundle to the " +
+        "Houston Artifacts: delivering the annotation bundle to the " +
           "OpenCode session failed.",
         "warning",
       );
@@ -357,7 +357,7 @@ export async function ArtifactServerBridge(
         async execute(args) {
           if (comments === null) {
             throw new Error(
-              "Artifact Server is not configured; the bridge is dormant.",
+              "Houston Artifacts is not configured; the bridge is dormant.",
             );
           }
           if (args.operation === "get_bundle") {

@@ -278,7 +278,7 @@ async function authenticateToken(
     ) {
       throw new OAuthError(
         OAuthErrorCode.InsufficientScope,
-        "Service principals cannot use Artifact Server MCP.",
+        "Service principals cannot use Houston Artifacts MCP.",
       );
     }
     return {
@@ -300,7 +300,7 @@ async function authenticateToken(
     ) {
       throw new OAuthError(
         OAuthErrorCode.InsufficientScope,
-        "The bearer credential does not grant Artifact Server MCP access.",
+        "The bearer credential does not grant Houston Artifacts MCP access.",
       );
     }
     if (
@@ -326,12 +326,12 @@ async function authenticateToken(
       );
       throw new OAuthError(
         OAuthErrorCode.ServerError,
-        "Artifact Server could not verify the bearer credential.",
+        "Houston Artifacts could not verify the bearer credential.",
       );
     }
     throw new OAuthError(
       OAuthErrorCode.InvalidToken,
-      "The Artifact Server bearer credential is invalid or no longer active.",
+      "The Houston Artifacts bearer credential is invalid or no longer active.",
     );
   }
 }
@@ -366,7 +366,7 @@ function rejectedEdge(message: string): Response {
 function methodNotAllowed(): Response {
   return Response.json(
     {
-      error: {code: -32_600, message: "Artifact Server MCP accepts POST only."},
+      error: {code: -32_600, message: "Houston Artifacts MCP accepts POST only."},
       id: null,
       jsonrpc: "2.0",
     },

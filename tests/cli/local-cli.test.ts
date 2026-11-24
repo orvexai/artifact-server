@@ -78,7 +78,7 @@ describe("local Artifact Server CLI", () => {
       );
       expect(result.exitCode).toBe(0);
       expect(result.output).toContain(
-        "Opened the local Artifact Server application:",
+        "Opened the local Houston Artifacts application:",
       );
       const browserCredential = (await readFile(
         path.join(dataDirectory, "local-browser-token"),
@@ -121,7 +121,7 @@ describe("local Artifact Server CLI", () => {
       const firstPort = await availablePort();
       const first = startCli(dataDirectory, firstPort);
       const firstReady = await waitForReady(first, firstPort);
-      expect(firstReady).toContain(`Artifact Server: http://localhost:${firstPort}`);
+      expect(firstReady).toContain(`Houston Artifacts: http://localhost:${firstPort}`);
       expect(await fetch(`http://127.0.0.1:${firstPort}/health`).then((response) =>
         response.json()
       )).toEqual({status: "ok"});
@@ -413,10 +413,10 @@ async function waitForReady(
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     let output = "";
-    const readyText = `Artifact Server: http://localhost:${port}`;
+    const readyText = `Houston Artifacts: http://localhost:${port}`;
     const timeout = setTimeout(() => {
       cleanup();
-      reject(new Error(`Artifact Server did not become ready: ${redactToken(output)}`));
+      reject(new Error(`Houston Artifacts did not become ready: ${redactToken(output)}`));
     }, 30_000);
     const receive = (chunk: Buffer) => {
       output += chunk.toString("utf8");
@@ -426,7 +426,7 @@ async function waitForReady(
     };
     const exit = () => {
       cleanup();
-      reject(new Error(`Artifact Server exited before becoming ready: ${redactToken(output)}`));
+      reject(new Error(`Houston Artifacts exited before becoming ready: ${redactToken(output)}`));
     };
     const cleanup = () => {
       clearTimeout(timeout);

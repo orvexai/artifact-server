@@ -129,5 +129,5 @@ export function artifactServerFailureResponse(failure: ArtifactServerFailure) {
 }
 
 function casesHandled(value: never): never {
-  throw new Error(`Unhandled Artifact Server failure: ${String(value)}`);
+  throw new Error(`Unhandled Houston Artifacts failure: ${String(value)}`);
 }

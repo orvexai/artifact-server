@@ -112,10 +112,19 @@ export function isReservedTenantIdentityName(value: string): boolean {
   const folded = tenantIdentityNameFold(value);
   const tokens = folded.split(/[\p{P}\p{S}\p{Z}]+/u).filter(Boolean);
   const wholeName = folded.replace(/[\p{P}\p{S}\p{Z}]/gu, "");
+  const joinedTokens = tokens.join("");
   // OrvexHelp is intentionally allowed: the reserved prefix is the exact
   // OrvexSupport brand token, rather than any name beginning with "Orvex".
-  return tokens.some((token) => token === "orvex" || token.startsWith("orvexsupport")) ||
+  const reservedOrvex = tokens.some((token) => token === "orvex" || token.startsWith("orvexsupport")) ||
     editDistanceAtMostOne(wholeName, "orvexsupport");
+  const reservedHoustonSupport = joinedTokens.includes("houstonsupport") ||
+    [13, 14, 15].some((windowLength) => {
+      const starts = Math.max(0, joinedTokens.length - windowLength + 1);
+      return Array.from({length: starts}, (_, start) =>
+        joinedTokens.slice(start, start + windowLength)
+      ).some((window) => editDistanceAtMostOne(window, "houstonsupport"));
+    });
+  return reservedOrvex || reservedHoustonSupport;
 }
 
 function tenantIdentityNameFold(value: string): string {
@@ -173,7 +182,7 @@ export function tenantIdentityPresentation(
 ) {
   const isStaff = identity.staff === true || principal !== undefined && isTenantStaffIdentity(principal, identity.principalId);
   return {
-    displayName: isStaff ? "Orvex Support" : isReservedTenantIdentityName(identity.displayName) ? "Orvex Support (member)" : identity.displayName,
+    displayName: isStaff ? "Houston Support" : isReservedTenantIdentityName(identity.displayName) ? "Houston Support (member)" : identity.displayName,
     email: isStaff || identity.email === undefined ? null : identity.email,
     isStaff,
     subject: isStaff ? null : identity.principalId,

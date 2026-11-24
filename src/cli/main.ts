@@ -65,7 +65,7 @@ const productBuild = {
 
 const program = new Command()
   .name("artifactserver")
-  .description("Run Artifact Server.")
+  .description("Run Houston Artifacts.")
   .version(packageMetadata.version)
   // Root options apply only before the subcommand, so a subcommand's own
   // `--version <id>` (comments list) is not taken as the CLI version flag.
@@ -116,7 +116,7 @@ try {
 function configureDirectLocalStart(programToConfigure: Command): void {
   programToConfigure
     .command("start")
-    .description("Start one direct local Artifact Server process.")
+    .description("Start one direct local Houston Artifacts process.")
     .addOption(
       new Option("--data <directory>", "persistent data directory")
         .default(".artifact-server"),
@@ -196,7 +196,7 @@ function configureDirectLocalStart(programToConfigure: Command): void {
             startedAt: new Date().toISOString(),
           });
         }
-        console.log(`Artifact Server: ${origin}`);
+        console.log(`Houston Artifacts: ${origin}`);
         console.log(`Data directory: ${dataDirectory}`);
         await waitForProcessSignal(close);
       } catch (error) {
@@ -231,10 +231,10 @@ function parsePort(value: string, allowAutomatic: boolean): number {
 
 function renderCliFailure(cause: unknown): string {
   if (cause instanceof z.ZodError) {
-    return "Artifact Server: The command input or environment does not match the required format.";
+    return "Houston Artifacts: The command input or environment does not match the required format.";
   }
   if (cause instanceof Error && cause.message.trim().length > 0) {
-    return `Artifact Server: ${cause.message}`;
+    return `Houston Artifacts: ${cause.message}`;
   }
-  return "Artifact Server: The command failed.";
+  return "Houston Artifacts: The command failed.";
 }

@@ -1,0 +1,19 @@
+{
+  "exceptions": [
+    {
+      "file": "src/cli/lifecycle-commands.ts",
+      "contains": "Orvex members are governed",
+      "reason": "Orvex remains the issuer-governed organization identity."
+    },
+    {
+      "file": "src/cli/lifecycle-commands.ts",
+      "contains": "Orvex is governed",
+      "reason": "Orvex remains the issuer-governed organization identity."
+    },
+    {
+      "file": "src/mcp/dispatch-bundle-message.ts",
+      "contains": "Artifact Server:",
+      "reason": "The established annotation message prefix is a protocol value."
+    }
+  ]
+}

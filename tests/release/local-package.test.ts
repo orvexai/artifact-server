@@ -401,7 +401,7 @@ async function waitForReady(
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     let output = "";
-    const readyText = `Artifact Server: http://localhost:${port}`;
+    const readyText = `Houston Artifacts: http://localhost:${port}`;
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error(`Packaged server did not become ready: ${redactTokens(output)}`));

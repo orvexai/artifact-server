@@ -27,13 +27,13 @@ describe("tenant identity projection", () => {
   test("staff identity is masked by principal id and leaves same-name non-staff untouched", () => {
     expect(tenantIdentityPresentation(principal, {
       displayName: "Private staff name", email: "staff@example.test", principalId: "staff-id",
-    })).toEqual({displayName: "Orvex Support", email: null, isStaff: true, subject: null});
+    })).toEqual({displayName: "Houston Support", email: null, isStaff: true, subject: null});
     expect(tenantIdentityPresentation(principal, {
       displayName: "Private staff name", email: "member@example.test", principalId: "member-id",
     })).toEqual({displayName: "Private staff name", email: "member@example.test", isStaff: false, subject: "member-id"});
     expect(tenantIdentityPresentation(principal, {
       displayName: "  ORVEX   SUPPORT ", email: "member@example.test", principalId: "member-id",
-    })).toEqual({displayName: "Orvex Support (member)", email: "member@example.test", isStaff: false, subject: "member-id"});
+    })).toEqual({displayName: "Houston Support (member)", email: "member@example.test", isStaff: false, subject: "member-id"});
   });
 
   test("reserved tenant identity folding catches invisible characters and common confusables", () => {
@@ -59,13 +59,41 @@ describe("tenant identity projection", () => {
     ]) {
       expect(isReservedTenantIdentityName(value), `reserved identity: ${value}`).toBe(true);
       expect(tenantIdentityPresentation(principal, {displayName: value, principalId: "member-id"}).displayName)
-        .toBe("Orvex Support (member)");
+        .toBe("Houston Support (member)");
+    }
+    for (const value of [
+      "Houston Support",
+      "  HOUSTON   SUPPORT ",
+      "HoustonSupport",
+      "Houston Support (member)",
+      "Houston Support Team",
+      "Acme Houston Support",
+      "Acme Houston Suport",
+      "AcmeHoustonSupport",
+      "Houston Suport",
+      "Houston Supportt",
+      "h\u043eustonsupport",
+      "Orvex Support (member)",
+    ]) {
+      expect(isReservedTenantIdentityName(value), `reserved identity: ${value}`).toBe(true);
+      expect(tenantIdentityPresentation(principal, {displayName: value, principalId: "member-id"}).displayName)
+        .toBe("Houston Support (member)");
     }
     for (const value of ["Orvex 5upport", "Orv3x", "0rv3x 5upp0r7", "or\u2c9fvexsupport", "orvex suppo\u2ca3t"]) {
       expect(isReservedTenantIdentityName(value), `reserved identity: ${value}`).toBe(true);
     }
-    for (const value of ["田中 Taro", "Иван Ivanov"]) {
+    for (const value of [
+      "Houston",
+      "Houston Rockets fan",
+      "Houston Smith",
+      "Houston Supper Club",
+      "Houston Sports",
+      "田中 Taro",
+      "Иван Ivanov",
+    ]) {
       expect(isReservedTenantIdentityName(value), `ordinary name: ${value}`).toBe(false);
+      expect(tenantIdentityPresentation(principal, {displayName: value, principalId: "member-id"}).displayName)
+        .toBe(value);
     }
   });
 
@@ -220,12 +248,12 @@ describe("tenant identity projection", () => {
       expect(artifactResponseProjection(otherMemberResponse, false, reader, true).authorEmail).toBe("support@example.test");
     }
     const viewerResponse = projectHttpTenantResponse(response, staffViewer);
-    expect(viewerResponse).toMatchObject({authorDisplayName: "Orvex Support", authorEmail: null, data: {answer: "unchanged"}});
+    expect(viewerResponse).toMatchObject({authorDisplayName: "Houston Support", authorEmail: null, data: {answer: "unchanged"}});
     expect(JSON.parse(JSON.stringify(viewerResponse))).not.toHaveProperty("authorSubject");
     expect(projectHttpTenantResponse(response, {...principal, tenantStaffPrincipalIds: undefined})).toEqual(response);
     const guest = {...staffViewer, membershipRole: "guest" as const};
     const guestTenantResponse = projectHttpTenantResponse(response, guest);
-    expect(guestTenantResponse).toMatchObject({authorDisplayName: "Orvex Support", authorEmail: null});
+    expect(guestTenantResponse).toMatchObject({authorDisplayName: "Houston Support", authorEmail: null});
     expect(JSON.parse(JSON.stringify(guestTenantResponse))).not.toHaveProperty("authorSubject");
   });
 

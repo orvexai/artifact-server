@@ -444,7 +444,7 @@ async function authenticatedFetch(
 
 function requireSuccessfulResponse(response: Response): void {
   if (!response.ok) {
-    throw new Error(`Artifact Server returned HTTP ${response.status}.`);
+    throw new Error(`Houston Artifacts returned HTTP ${response.status}.`);
   }
 }
 
@@ -489,24 +489,24 @@ function parseConcurrency(value: string): number {
 }
 
 function serverOption(): Option {
-  return new Option("--server <origin>", "Artifact Server origin")
+  return new Option("--server <origin>", "Houston Artifacts origin")
     .env("ARTIFACT_SERVER_URL");
 }
 
 function dataOption(): Option {
-  return new Option("--data <directory>", "local Artifact Server data directory")
+  return new Option("--data <directory>", "local Houston Artifacts data directory")
     .default(".artifact-server");
 }
 
 function tokenFileOption(): Option {
   return new Option(
     "--token-file <path>",
-    "file containing an Artifact Server API token",
+    "file containing a Houston Artifacts API token",
   );
 }
 
 function profileOption(): Option {
-  return new Option("--profile <name>", "saved Artifact Server profile");
+  return new Option("--profile <name>", "saved Houston Artifacts profile");
 }
 
 function profileDataOption(defaultDirectory: string): Option {

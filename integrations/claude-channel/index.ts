@@ -94,7 +94,7 @@ async function runArtifactComments(
   parameters: ArtifactCommentsArguments,
 ) {
   if (operations === null) {
-    throw new Error("Artifact Server is not configured; the bridge is dormant.");
+    throw new Error("Houston Artifacts is not configured; the bridge is dormant.");
   }
   if (parameters.operation === "get_bundle") {
     const threadIds = parameters.threadIds ?? [];
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
         tools: {},
       },
       instructions:
-        "Artifact Server review bundles arrive as " +
+        "Houston Artifacts review bundles arrive as " +
         '<channel source="artifact-server"> events listing comment threads ' +
         "with their ids. Do the work each thread asks for, then use the " +
         "artifact_comments tool: reply on each thread with what you did, " +
@@ -147,7 +147,7 @@ async function main(): Promise<void> {
   mcp.setRequestHandler(ListToolsRequestSchema, () => ({
     tools: [{
       description:
-        "Read, reply to, and resolve Artifact Server comment threads that " +
+        "Read, reply to, and resolve Houston Artifacts comment threads that " +
         "were sent to this session. Use get_bundle to read threads, reply " +
         "to record what you did on a thread, and resolve to close it when " +
         "done.",

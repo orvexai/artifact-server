@@ -41,7 +41,7 @@ export function startLocalMcpStdioBridge(
       legacy: "serve",
       maxSubscriptions: 0,
       onerror: () => {
-        console.error("Artifact Server MCP bridge error.");
+        console.error("Houston Artifacts MCP bridge error.");
       },
     },
   );
@@ -54,7 +54,7 @@ async function createForwardingServer(
   if (profile !== null) {
     return createRemoteForwardingServer(options, profile);
   }
-  console.error("Artifact Server MCP bridge is connected to a local installation because no remote CLI profile is configured.");
+  console.error("Houston Artifacts MCP bridge is connected to a local installation because no remote CLI profile is configured.");
   const service = await ensureManagedLocalService(
     options.dataDirectory,
     options.invocation,

@@ -1391,7 +1391,7 @@ export function createHttpApp(
       const parsed = bearerSchema.safeParse(authorization);
       if (!parsed.success) {
         throw new AuthenticationRequired({
-          message: "A valid Artifact Server API key is required.",
+          message: "A valid Houston Artifacts API key is required.",
         });
       }
       const undiscovered = await oauthDiscoveryGate(dependencies, parsed.data);
@@ -1830,7 +1830,7 @@ export function createHttpApp(
         return context.json({members: [...projectedMembers, ...staffMembers.map(maskedTenantStaffMember)]});
       }
       return context.json({members: members.map(({id, displayName}) => ({
-        displayName: isReservedTenantIdentityName(displayName) ? "Orvex Support (member)" : displayName,
+        displayName: isReservedTenantIdentityName(displayName) ? "Houston Support (member)" : displayName,
         id,
       }))});
     }
@@ -3197,7 +3197,7 @@ export function createHttpApp(
           state,
         ),
         warning: body.accessSetting === accessSettings.accountRequired
-          ? "New public requests are blocked. Copies already downloaded or cached outside Artifact Server cannot be recalled."
+          ? "New public requests are blocked. Copies already downloaded or cached outside Houston Artifacts cannot be recalled."
           : null,
       });
     },
@@ -3942,7 +3942,7 @@ function projectHttpTenantResponses<T extends {readonly items: readonly Artifact
  * fixed name and status. The web member schema treats the rest as optional.
  */
 export function maskedTenantStaffMember(member: {readonly id: string; readonly status: InstallationMember["status"]}) {
-  return {displayName: "Orvex Support", id: member.id, staff: true, status: member.status};
+  return {displayName: "Houston Support", id: member.id, staff: true, status: member.status};
 }
 
 /**
@@ -3951,7 +3951,7 @@ export function maskedTenantStaffMember(member: {readonly id: string; readonly s
  */
 export function tenantMemberMutationResponse(member: InstallationMember) {
   if (member.staff === true) return maskedTenantStaffMember(member);
-  const displayName = isReservedTenantIdentityName(member.displayName) ? "Orvex Support (member)" : member.displayName;
+  const displayName = isReservedTenantIdentityName(member.displayName) ? "Houston Support (member)" : member.displayName;
   return {displayName, id: member.id, status: member.status};
 }
 
@@ -3967,7 +3967,7 @@ export function projectTenantMembers(
 ): readonly (InstallationMember | TenantMemberDirectoryEntry)[] {
   if (role === membershipRoles.guest) return [];
   return members.filter((member) => !("staff" in member && member.staff)).map((member) => {
-    const displayName = isReservedTenantIdentityName(member.displayName) ? "Orvex Support (member)" : member.displayName;
+    const displayName = isReservedTenantIdentityName(member.displayName) ? "Houston Support (member)" : member.displayName;
     if (role === membershipRoles.owner || role === membershipRoles.administrator) {
       if ("staff" in member) {
         const {staff: _staff, ...visible} = member;
@@ -3996,7 +3996,7 @@ const apiProtectedResourceMetadataPath = "/.well-known/oauth-protected-resource/
 const authorizationServerMetadataPath = "/.well-known/oauth-authorization-server";
 const managedApiKeyPrefix = "as_key_";
 const oauthDiscoveringMessage =
-  "Artifact Server has not discovered its OIDC issuer yet, so OAuth is temporarily unavailable. API keys keep working; retry OAuth after the Retry-After delay.";
+  "Houston Artifacts has not discovered its OIDC issuer yet, so OAuth is temporarily unavailable. API keys keep working; retry OAuth after the Retry-After delay.";
 
 /** The API OAuth resource in force right now, static or discovered. */
 function currentApiOAuthResource(
@@ -4023,7 +4023,7 @@ function currentMcpOAuthResource(
 function mcpMetadataOptions(resource: McpOAuthResourceConfiguration) {
   return {
     oauthMetadata: resource.authorizationServerMetadata,
-    resourceName: "Artifact Server MCP",
+    resourceName: "Houston Artifacts MCP",
     resourceServerUrl: new URL(resource.resource),
   };
 }
@@ -4239,7 +4239,7 @@ function requireBrowserMutationSecurity(
     (fetchMode !== "cors" && fetchMode !== "same-origin" && fetchMode !== "navigate")
   ) {
     throw new AuthorizationDenied({
-      message: "Browser mutations must come from the Artifact Server application origin.",
+      message: "Browser mutations must come from the Houston Artifacts application origin.",
     });
   }
 
@@ -4672,7 +4672,7 @@ function publicLinkMutationResponse(
       requested: projected.length,
       succeeded,
     },
-    warning: "New public requests are blocked for successful items. Copies already downloaded or cached outside Artifact Server cannot be recalled.",
+    warning: "New public requests are blocked for successful items. Copies already downloaded or cached outside Houston Artifacts cannot be recalled.",
   };
 }
 
@@ -4686,7 +4686,7 @@ export function registeredAgentResponse(agent: RegisteredAgentRecord, principal?
     capabilities: agent.capabilities,
     connectionKey: hideStaffAgentDetails ? null : agent.connectionKey,
     createdAt: agent.createdAt,
-    displayName: hideStaffAgentDetails ? "Orvex Support" : principal?.tenantStaffPrincipalIds === undefined || !isReservedTenantIdentityName(agent.displayName) ? agent.displayName : "Orvex Support (member)",
+    displayName: hideStaffAgentDetails ? "Houston Support" : principal?.tenantStaffPrincipalIds === undefined || !isReservedTenantIdentityName(agent.displayName) ? agent.displayName : "Houston Support (member)",
     id: agent.id,
     kind: agent.kind,
     lastSeenAt: agent.lastSeenAt,
@@ -4727,7 +4727,7 @@ export function agentDispatchResponse(dispatch: AgentDispatchRecord, principal?:
     sender: publicSender,
     addressedAt: dispatch.addressedAt,
     agentDisplayName: isTenant && isReservedTenantIdentityName(dispatch.agentDisplayName)
-      ? "Orvex Support (member)" : dispatch.agentDisplayName,
+      ? "Houston Support (member)" : dispatch.agentDisplayName,
     agentId: dispatch.agentId,
     canceledAt: dispatch.canceledAt,
     claimedAt: dispatch.claimedAt,
@@ -4846,7 +4846,7 @@ function commentAuthorResponse(author: CommentAuthor, isGuest: boolean, principa
     const {principalId: _principalId, staff: _staff, ...visible} = author;
     const staff = principal?.tenantStaffPrincipalIds !== undefined && (author.staff === true || principal.tenantStaffPrincipalIds.includes(author.principalId));
     const displayName = principal?.tenantStaffPrincipalIds === undefined ? visible.displayName : tenantIdentityPresentation(principal, author).displayName;
-    const projected = {...visible, displayName: staff ? "Orvex Support" : displayName.includes("@") ? "Team member" : displayName};
+    const projected = {...visible, displayName: staff ? "Houston Support" : displayName.includes("@") ? "Team member" : displayName};
     if (staff) Object.assign(projected, {authorizedByPrincipalId: null});
     else if (principal?.tenantStaffPrincipalIds !== undefined && author.authorizedByPrincipalId !== null) {
       Object.assign(projected, {authorizedByPrincipalId: tenantVisiblePrincipalId(principal, author.authorizedByPrincipalId)});
@@ -4877,7 +4877,7 @@ function guestAuthorResponse(author: CommentAuthor, guest: GuestReviewer, tenant
   const isYou = author.principalId === `guest_${guest.guestId}`;
   const publicName = tenant ? tenantIdentityPresentation(undefined, author).displayName : author.displayName;
   if (isYou) return {displayName: publicName, isYou};
-  if (tenant && (author.staff === true || staffIds?.has(author.principalId) === true)) return {displayName: "Orvex Support", isYou: false};
+  if (tenant && (author.staff === true || staffIds?.has(author.principalId) === true)) return {displayName: "Houston Support", isYou: false};
   const principalLike = /^(?:service|guest|human|member|principal|user|key)[_:-]/iu.test(author.displayName) || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(author.displayName) || author.displayName === author.principalId;
   return {displayName: principalLike || publicName.includes("@") ? "Team member" : publicName, isYou: false};
 }

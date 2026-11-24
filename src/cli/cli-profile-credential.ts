@@ -148,7 +148,7 @@ export function apiKeyCredential(apiKey: string): StoredApiKeyCredential {
     schemaVersion: 1,
   });
   if (parsed.kind !== "api_key") {
-    throw new Error("Artifact Server rejected an invalid API-key credential.");
+    throw new Error("Houston Artifacts rejected an invalid API-key credential.");
   }
   return parsed;
 }
@@ -169,7 +169,7 @@ export function oauthCredential(input: {
     tokensSavedAt: input.tokensSavedAt ?? new Date().toISOString(),
   });
   if (parsed.kind !== "oauth") {
-    throw new Error("Artifact Server rejected an invalid OAuth credential.");
+    throw new Error("Houston Artifacts rejected an invalid OAuth credential.");
   }
   return {
     clientInformation: normalizeClientInformation(parsed.clientInformation),
@@ -211,7 +211,7 @@ export function decodeStoredCliCredential(
         });
     },
     catch: () => new CliAuthenticationError({
-      message: "The saved Artifact Server CLI credential is invalid.",
+      message: "The saved Houston Artifacts CLI credential is invalid.",
       reason: "credential_invalid",
     }),
   });
@@ -251,19 +251,19 @@ export const verifyCliCredential = Effect.fn("CliAuthentication.verifyCredential
     const request = HttpClientRequest.get(sessionUrl).pipe(HttpClientRequest.bearerToken(bearer));
     const response = yield* HttpClient.execute(request).pipe(
       Effect.mapError(() => new CliAuthenticationError({
-        message: `Artifact Server at ${sessionUrl} could not be reached (HTTP status unavailable).`,
+        message: `Houston Artifacts at ${sessionUrl} could not be reached (HTTP status unavailable).`,
         reason: "server_unavailable",
       })),
     );
     if (response.status === 401 || response.status === 403) {
       return yield* new CliAuthenticationError({
-        message: `The saved Artifact Server credential is invalid or no longer active (HTTP ${response.status} at ${sessionUrl}).`,
+        message: `The saved Houston Artifacts credential is invalid or no longer active (HTTP ${response.status} at ${sessionUrl}).`,
         reason: "credential_revoked",
       });
     }
     if (response.status < 200 || response.status >= 300) {
       return yield* new CliAuthenticationError({
-        message: `Artifact Server credential inspection at ${sessionUrl} returned HTTP ${response.status}.`,
+        message: `Houston Artifacts credential inspection at ${sessionUrl} returned HTTP ${response.status}.`,
         reason: "server_unavailable",
       });
     }
@@ -271,7 +271,7 @@ export const verifyCliCredential = Effect.fn("CliAuthentication.verifyCredential
       sessionResponseSchema,
     )(response).pipe(
       Effect.mapError(() => new CliAuthenticationError({
-        message: "Artifact Server returned an invalid credential-inspection response.",
+        message: "Houston Artifacts returned an invalid credential-inspection response.",
         reason: "invalid_metadata",
       })),
     );

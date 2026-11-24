@@ -558,7 +558,7 @@ function makeAgentDispatchService(
         const connected = connectedAgent(presence, readMilliseconds);
         return dependencies.organizationDirectoryVisibility === true &&
             command.principal.tenantStaffPrincipalIds?.includes(connected.agent.principalId) === true
-          ? Object.assign({}, connected, {agent: Object.assign({}, connected.agent, {displayName: "Orvex Support"})})
+          ? Object.assign({}, connected, {agent: Object.assign({}, connected.agent, {displayName: "Houston Support"})})
           : connected;
       });
     },
@@ -613,7 +613,7 @@ function makeAgentDispatchService(
         // make a staff-owned agent attributable later.
         agentDisplayName: dependencies.organizationDirectoryVisibility === true &&
             command.principal.tenantStaffPrincipalIds?.includes(agent.principalId) === true
-          ? "Orvex Support"
+          ? "Houston Support"
           : agent.displayName,
         agentId: agent.id,
         createdAt: yield* now(),
@@ -723,7 +723,7 @@ function makeAgentDispatchService(
         command.principal.tenantStaffPrincipalIds?.includes(principalId) === true,
       ).map(({id}) => id));
       const items = page.items.map((dispatch) => staffAgentIds.has(dispatch.agentId)
-        ? {...dispatch, agentDisplayName: "Orvex Support"}
+        ? {...dispatch, agentDisplayName: "Houston Support"}
         : dispatch);
       return {...page, items};
     },
@@ -747,7 +747,7 @@ function makeAgentDispatchService(
       if (dependencies.organizationDirectoryVisibility !== true) return dispatch;
       const agent = yield* dependencies.repository.findAgent(dependencies.installationId, dispatch.agentId);
       return agent !== null && command.principal.tenantStaffPrincipalIds?.includes(agent.principalId) === true
-        ? {...dispatch, agentDisplayName: "Orvex Support"}
+        ? {...dispatch, agentDisplayName: "Houston Support"}
         : dispatch;
     },
   );
@@ -811,7 +811,7 @@ function dispatchSender(principal: Principal, tenant: boolean): CommentAuthor {
       ? null
       : {clientId: principal.actorClientId, kind: "mcp-client"},
     authorizedByPrincipalId: isStaff ? null : principal.authorizedByPrincipalId,
-    displayName: isStaff ? "Orvex Support" : principal.displayName,
+    displayName: isStaff ? "Houston Support" : principal.displayName,
     principalId: principal.id,
     principalKind: principal.kind,
   };

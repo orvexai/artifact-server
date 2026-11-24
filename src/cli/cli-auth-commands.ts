@@ -74,11 +74,11 @@ export function configureCliAuthCommands(
   options: CliAuthCommandOptions,
 ): void {
   const authCommand = program.command("auth")
-    .description("Manage authenticated Artifact Server CLI profiles.");
+    .description("Manage authenticated Houston Artifacts CLI profiles.");
   authCommand
     .command("login")
-    .description("Sign the CLI in to one exact Artifact Server origin.")
-    .argument("<server>", "Artifact Server origin")
+    .description("Sign the CLI in to one exact Houston Artifacts origin.")
+    .argument("<server>", "Houston Artifacts origin")
     .addOption(new Option("--name <profile>", "saved profile name"))
     .addOption(new Option("--org <slug>", "select one organization for a root sign-in"))
     .addOption(new Option("--headless", "sign in from another computer: open the printed link there, then paste back the 127.0.0.1 address the browser ends on").default(false))
@@ -104,7 +104,7 @@ export function configureCliAuthCommands(
   authCommand
     .command("status [profile]")
     .description("Verify saved CLI profiles without printing credentials.")
-    .addOption(new Option("--server <origin>", "exact Artifact Server origin"))
+    .addOption(new Option("--server <origin>", "exact Houston Artifacts origin"))
     .addOption(profileDataOption(options.defaultProfileDirectory))
     .action(async (
       profileName: string | undefined,
@@ -135,7 +135,7 @@ export function configureCliAuthCommands(
   authCommand
     .command("logout [profile]")
     .description("Remove one saved CLI credential and profile.")
-    .addOption(new Option("--server <origin>", "exact Artifact Server origin"))
+    .addOption(new Option("--server <origin>", "exact Houston Artifacts origin"))
     .addOption(profileDataOption(options.defaultProfileDirectory))
     .action(async (
       profileName: string | undefined,
@@ -218,7 +218,7 @@ export const resolveVerifiedProfileCredential = Effect.fn(
   ) {
     return yield* new CliAuthenticationError({
       message:
-        "The saved credential belongs to a different Artifact Server account or installation.",
+        "The saved credential belongs to a different Houston Artifacts account or installation.",
       reason: "credential_invalid",
     });
   }
@@ -384,14 +384,14 @@ function readApiKeyFromStandardInput(): Effect.Effect<
       }
       const credential = Buffer.concat(chunks).toString("utf8").trim();
       if (credential.length < 32) {
-        throw new Error("Standard input did not contain a valid Artifact Server API key.");
+        throw new Error("Standard input did not contain a valid Houston Artifacts API key.");
       }
       return credential;
     },
     catch: (cause) => new CliAuthenticationError({
       message: cause instanceof Error
         ? cause.message
-        : "The Artifact Server API key could not be read from standard input.",
+        : "The Houston Artifacts API key could not be read from standard input.",
       reason: "credential_invalid",
     }),
   });

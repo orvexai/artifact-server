@@ -225,14 +225,14 @@ export default function artifactServerBridge(pi: PiExtensionApi): void {
 
   pi.registerTool({
     description:
-      "Read, reply to, and resolve Artifact Server comment threads that were " +
+      "Read, reply to, and resolve Houston Artifacts comment threads that were " +
       "sent to this agent. Use get_bundle to read threads, reply to record " +
       "what you did on a thread, and resolve to close it when done.",
     async execute(_toolCallId, params) {
       const operations = comments;
       if (operations === null) {
         throw new Error(
-          "Artifact Server is not configured; the bridge is dormant.",
+          "Houston Artifacts is not configured; the bridge is dormant.",
         );
       }
       if (params.operation === "get_bundle") {

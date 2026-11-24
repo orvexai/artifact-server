@@ -61,7 +61,7 @@ export async function startLocalMcpHttpRelay(
   let reportedLocalMode = false;
   const localFallback = async (): Promise<{origin: string; token: string}> => {
     if (!reportedLocalMode) {
-      console.error("Artifact Server MCP relay is using a local installation because no remote CLI profile is configured.");
+      console.error("Houston Artifacts MCP relay is using a local installation because no remote CLI profile is configured.");
       reportedLocalMode = true;
     }
     localServicePromise ??= ensureManagedLocalService(profileDirectory, invocation);
@@ -88,7 +88,7 @@ export async function startLocalMcpHttpRelay(
       if (!response.headersSent) {
         response.writeHead(502, {"content-type": "application/json"});
       }
-      response.end('{"error":"Artifact Server MCP relay failed."}');
+      response.end('{"error":"Houston Artifacts MCP relay failed."}');
     });
   });
   let port = requestedPort;
@@ -152,7 +152,7 @@ function activePort(server: ReturnType<typeof createServer>): number {
   const address = z.object({port: z.number().int().min(1).max(65_535)})
     .passthrough()
     .safeParse(server.address());
-  if (!address.success) throw new Error("Artifact Server MCP relay did not bind a TCP port.");
+  if (!address.success) throw new Error("Houston Artifacts MCP relay did not bind a TCP port.");
   return address.data.port;
 }
 
@@ -221,7 +221,7 @@ async function handleRequest(
   });
   proxy.on("error", () => {
     if (!response.headersSent) response.writeHead(502, {"content-type": "application/json"});
-    response.end('{"error":"Artifact Server MCP upstream is unavailable."}');
+    response.end('{"error":"Houston Artifacts MCP upstream is unavailable."}');
   });
   request.pipe(proxy);
 }
@@ -237,15 +237,15 @@ function isAllowedLoopbackRequest(request: IncomingMessage, port: number): boole
 function writeLocalServiceUnavailable(response: ServerResponse): void {
   response.writeHead(503, {"content-type": "application/json"});
   response.end(JSON.stringify({
-    error: "Artifact Server MCP service is unavailable.",
-    message: "Check the local Artifact Server service and retry the MCP request.",
+    error: "Houston Artifacts MCP service is unavailable.",
+    message: "Check the local Houston Artifacts service and retry the MCP request.",
   }));
 }
 
 function writeRemoteProfileUnavailable(response: ServerResponse): void {
   response.writeHead(502, {"content-type": "application/json"});
   response.end(JSON.stringify({
-    error: "Configured remote Artifact Server profile is unavailable.",
+    error: "Configured remote Houston Artifacts profile is unavailable.",
     message: "The remote profile could not be authenticated. No local fallback was attempted.",
   }));
 }

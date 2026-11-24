@@ -59,7 +59,7 @@ function configureMcpCommand(
 ): void {
   const mcp = program
     .command("mcp")
-    .description("Run Artifact Server MCP transports.")
+    .description("Run Houston Artifacts MCP transports.")
     .addOption(dataOption(options.defaultDataDirectory))
     .action((commandOptions: DataOptions) => {
       startLocalMcpStdioBridge({
@@ -109,7 +109,7 @@ function configureConnectCommand(
 ): void {
   program
     .command("connect [client]")
-    .description("Connect Artifact Server to an installed AI client.")
+    .description("Connect Houston Artifacts to an installed AI client.")
     .addOption(dataOption(options.defaultDataDirectory))
     .action(async (clientName: string | undefined, commandOptions: DataOptions) => {
       const dataDirectory = path.resolve(commandOptions.data);
@@ -139,7 +139,7 @@ function configureDisconnectCommand(
 ): void {
   program
     .command("disconnect [client]")
-    .description("Remove Artifact Server from one AI client.")
+    .description("Remove Houston Artifacts from one AI client.")
     .addOption(dataOption(options.defaultDataDirectory))
     .action(async (clientName: string | undefined, commandOptions: DataOptions) => {
       const dataDirectory = path.resolve(commandOptions.data);
@@ -226,7 +226,7 @@ function configureDoctorCommand(
         ? {protocol: "streamable-http", status: "healthy" as const}
         : {reason: isHttpClient || requestedClient === null
           ? "The local HTTP auth relay is not reachable."
-          : "The local Artifact Server service is not reachable.", status: "unhealthy" as const};
+          : "The local Houston Artifacts service is not reachable.", status: "unhealthy" as const};
       const clientHealthy = reportedClients.every((client) => {
         if (!client.installed) return true;
         if (client.client === "claude" || client.client === "codex") {
@@ -373,6 +373,6 @@ async function tcpPortIsReachable(port: number): Promise<void> {
 }
 
 function dataOption(defaultDataDirectory: string): Option {
-  return new Option("--data <directory>", "per-user Artifact Server data directory")
+  return new Option("--data <directory>", "per-user Houston Artifacts data directory")
     .default(defaultDataDirectory);
 }

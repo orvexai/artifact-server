@@ -183,7 +183,7 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
         const sessions = yield* dependencies.repository.listGuestSessions(result.projectId, command.artifactId, DateTime.formatIso(yield* dependencies.clock.now));
         return dependencies.organizationDirectoryVisibility === true
           ? sessions.map((session) => ({...session,
-            displayName: session.displayName === null ? "Visitor" : isReservedTenantIdentityName(session.displayName) ? "Orvex Support (member)" : session.displayName,
+            displayName: session.displayName === null ? "Visitor" : isReservedTenantIdentityName(session.displayName) ? "Houston Support (member)" : session.displayName,
           }))
           : sessions;
       });
@@ -198,7 +198,7 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
         const requestedDisplayName = command.displayName.trim();
         if (requestedDisplayName.length < 1 || requestedDisplayName.length > 80) return yield* new AuthorizationDenied({message: "The display name must contain 1 to 80 characters."});
         const displayName = dependencies.organizationDirectoryVisibility === true && isReservedTenantIdentityName(requestedDisplayName)
-          ? "Orvex Support (member)"
+          ? "Houston Support (member)"
           : requestedDisplayName;
         const updated = yield* dependencies.repository.updateGuestSessionDisplayName(command.guest.projectId, command.artifactId, command.guest.guestId, displayName);
         if (!updated) return yield* new ArtifactNotFound({message: "The requested route does not exist."});
@@ -265,7 +265,7 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
         const requestedDisplayName = command.displayName?.trim() ?? "";
         if (command.displayName !== undefined && (requestedDisplayName.length < 1 || requestedDisplayName.length > 80)) return yield* new AuthorizationDenied({message: "The display name must contain 1 to 80 characters."});
         const displayName = requestedDisplayName.length === 0 ? null : dependencies.organizationDirectoryVisibility === true && isReservedTenantIdentityName(requestedDisplayName)
-          ? "Orvex Support (member)"
+          ? "Houston Support (member)"
           : requestedDisplayName;
         const existing = command.existingSessionToken === undefined || command.existingCsrfToken === undefined
           ? null

@@ -1135,7 +1135,7 @@ function makeInstallationAccessService(
     const now = dependencies.clock.now().toISOString();
     if (assignments.length === 0) {
       return yield* Effect.fail(new IdentityAdmissionDenied({
-        message: "No group has been given a role in the Artifact Server yet.",
+        message: "No group has been given a role in Houston Artifacts yet.",
       }));
     }
     const effectiveAssignments = dependencies.orvexTenantGroupProtection === true
@@ -1167,7 +1167,7 @@ function makeInstallationAccessService(
         clearAuthenticationCaches();
       }
       return yield* Effect.fail(new IdentityAdmissionDenied({
-        message: "This person is not in a group admitted to the Artifact Server.",
+        message: "This person is not in a group admitted to Houston Artifacts.",
       }));
     }
     if (member !== null) {
@@ -1403,7 +1403,7 @@ function makeInstallationAccessService(
         email !== bootstrapAdministratorEmail
       ) {
         return yield* Effect.fail(new IdentityAdmissionDenied({
-          message: "This person has not been admitted to the Artifact Server.",
+          message: "This person has not been admitted to Houston Artifacts.",
         }));
       }
       member = yield* dependencies.repository.admitMember({
@@ -1417,7 +1417,7 @@ function makeInstallationAccessService(
     }
     if (member === null) {
       return yield* Effect.fail(new IdentityAdmissionDenied({
-        message: "This person has not been admitted to the Artifact Server.",
+        message: "This person has not been admitted to Houston Artifacts.",
       }));
     }
     const binding = {
@@ -1481,7 +1481,7 @@ function makeInstallationAccessService(
         : groupMembershipRole(assignments, identity.groups, groupRolePolicy.groupRoots);
       if (role === null) {
         return yield* new IdentityAdmissionDenied({
-          message: "This service account is not in a group admitted to the Artifact Server.",
+          message: "This service account is not in a group admitted to Houston Artifacts.",
         });
       }
       const storedGroups = yield* dependencies.repository.listDirectoryGroups(
@@ -1696,7 +1696,7 @@ function makeInstallationAccessService(
   const listStaffOnlyMembers = Effect.fn("InstallationAccessService.listStaffOnlyMembers")(function*() {
     if (dependencies.organizationDirectoryVisibility !== true) return [];
     const members = yield* dependencies.repository.listMembers(dependencies.installationId);
-    return members.filter(({staff}) => staff === true).map(({id, status}) => ({id: createStaffMemberHandle(id), displayName: "Orvex Support", email: "", status}));
+    return members.filter(({staff}) => staff === true).map(({id, status}) => ({id: createStaffMemberHandle(id), displayName: "Houston Support", email: "", status}));
   });
 
   const memberIdKey = () => {
@@ -1707,7 +1707,7 @@ function makeInstallationAccessService(
   const createStaffMemberHandle = (memberId: string) => staffMemberOpaqueId(dependencies.installationId, memberIdKey(), memberId);
   const projectMemberMutation = (member: InstallationMember, wasStaff: boolean): InstallationMember =>
     dependencies.organizationDirectoryVisibility === true && (wasStaff || member.staff === true)
-      ? {...member, id: createStaffMemberHandle(member.id), displayName: "Orvex Support", email: "", staff: true}
+      ? {...member, id: createStaffMemberHandle(member.id), displayName: "Houston Support", email: "", staff: true}
       : member;
 
   const deactivateMember = Effect.fn(
@@ -2025,13 +2025,13 @@ function requireAdministrator(
       isHumanAdministrator(principal)
     ? Effect.void
     : Effect.fail(new AuthorizationDenied({
-      message: "An Artifact Server administrator is required.",
+      message: "A Houston Artifacts administrator is required.",
     }));
 }
 
 function invalidApiKey(): Effect.Effect<never, AuthenticationRequired> {
   return Effect.fail(new AuthenticationRequired({
-    message: "A valid Artifact Server API key is required.",
+    message: "A valid Houston Artifacts API key is required.",
   }));
 }
 

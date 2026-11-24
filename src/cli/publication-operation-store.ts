@@ -50,7 +50,7 @@ export async function resumePublicationOperation(
       || existing.operationDigest !== operationDigest
     ) {
       throw new Error(
-        "The publication input changed while an earlier attempt is still pending. Restore the original input and retry so Artifact Server can reconcile it without creating a duplicate version.",
+        "The publication input changed while an earlier attempt is still pending. Restore the original input and retry so Houston Artifacts can reconcile it without creating a duplicate version.",
       );
     }
     return operation(existing.idempotencyKey, operationPath);
