@@ -139,6 +139,69 @@ Compact Compose uses one SQLite database and one file volume. Run only one appli
 
 External-storage deployments use PostgreSQL and object storage. These deployments support replaceable application processes and horizontal scaling.
 
+## Public-link copy key
+
+Public links work without a configured key, but the server cannot show an
+existing link again. Share and Settings then offer the Reset flow; resetting
+revokes the old URL and creates a new one that can be copied once. Configure a
+stable key to let artifact managers copy active links again after leaving the
+page.
+
+Set `ARTIFACT_SERVER_PUBLIC_LINK_KEY` directly or use
+`ARTIFACT_SERVER_PUBLIC_LINK_KEY_FILE` to point to a mounted secret file. The
+key must be base64url text representing at least 32 decoded bytes. The server
+accepts 43 to 512 URL-safe base64 characters (`A-Z`, `a-z`, `0-9`, `_` and
+`-`); a freshly generated 32-byte key is 43 characters without padding. Keep
+the same key on every replica and preserve it with the installation's backup
+set. Generate one with a trusted secret manager or, for example:
+
+```sh
+node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))' \
+  > /secure/artifact-server/public-link-key
+```
+
+This key is installation-scoped because link sealing binds it to the
+installation ID. Give every installation its own key; never reuse a key across
+installations.
+
+For Kubernetes, add the key to the existing chart Secret in the same namespace
+as the release. The chart reads both current and previous keys from that Secret
+using `secret.keys`:
+
+```sh
+kubectl --namespace artifact-server create secret generic artifact-server-runtime \
+  --from-file=api-token=/secure/artifact-server/api-token \
+  --from-file=database-url=/secure/artifact-server/database-url \
+  --from-file=public-link-key=/secure/artifact-server/public-link-key
+```
+
+Set `secret.keys.publicLinkKey: public-link-key` in the Helm values. For
+rotation, add the old key as `public-link-key-previous` in the same Secret and
+set `secret.keys.publicLinkKeyPrevious` to that key name. When you update the
+Secret, change `secret.rolloutChecksum` to a new non-secret version so the
+server pods restart and load the new values.
+
+The optional `ARTIFACT_SERVER_PUBLIC_LINK_KEY_PREVIOUS` and
+`ARTIFACT_SERVER_PUBLIC_LINK_KEY_PREVIOUS_FILE` settings accept one prior key
+during rotation. Set the new current key and the old key as previous for the
+transition. Resealing is demand-driven: open Settings for every active public
+link so its status is read and its secret is resealed with the current key
+before removing the previous key. A link that has not been revisited cannot be
+copied after the previous key is removed and must be Reset. Do not replace or
+discard the only key that can open existing links unless you are prepared to
+Reset them.
+
+For Compose, pass either direct variable or its `_FILE` variant through the
+service environment. The chart uses the existing `secret.name` Secret and does
+not generate or look up key values. Leave `secret.keys.publicLinkKey` and
+`secret.keys.publicLinkKeyPrevious` empty when public-link copying does not
+need persistence.
+
+| Setting | Helm value | Meaning |
+| --- | --- | --- |
+| `ARTIFACT_SERVER_PUBLIC_LINK_KEY` or `_FILE` | `secret.keys.publicLinkKey` | Current installation-scoped key in the existing chart Secret. |
+| `ARTIFACT_SERVER_PUBLIC_LINK_KEY_PREVIOUS` or `_FILE` | `secret.keys.publicLinkKeyPrevious` | Optional prior key used during demand-driven rotation. |
+
 ## Configure authentication
 
 Local-owner access works only on an exact loopback origin. Do not use it for remote access.

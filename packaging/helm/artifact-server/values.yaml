@@ -48,6 +48,8 @@ secret:
     apiToken: api-token
     embedBindingSecret: ""
     embedBindingSecretPrevious: ""
+    publicLinkKey: ""
+    publicLinkKeyPrevious: ""
     databaseUrl: database-url
     s3AccessKeyId: ""
     s3SecretAccessKey: ""

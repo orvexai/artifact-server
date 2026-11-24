@@ -30,6 +30,15 @@ If an external secret manager changes the Secret, update
 `secret.rolloutChecksum` to its non-secret version or checksum so the Deployment
 restarts in a controlled rollout.
 
+Public-link copy keys use this same Secret. Set
+`secret.keys.publicLinkKey` to the Secret key containing the current
+installation-scoped key. During rotation, set
+`secret.keys.publicLinkKeyPrevious` to a second Secret key containing the prior
+key. Open Settings for every active public link so it can be resealed with the
+current key before removing the previous key; rotation is demand-driven. The
+chart only mounts keys from the existing Secret and never generates or looks up
+their values. Update `secret.rolloutChecksum` when changing the Secret.
+
 The `api-token` Secret value is the installation bootstrap service key. Generate
 it in `as_key_key_<id>_<secret>` form. Artifact Server persists it as an
 ordinary visible, revocable managed key on first startup and refuses a new key

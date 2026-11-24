@@ -141,7 +141,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{- define "artifact-server.configurationChecksum" -}}
-{{- dict "configuration" .Values.configuration "identity" .Values.identity "secretKeys" .Values.secret.keys | toJson | sha256sum -}}
+{{- $checksum := dict "configuration" .Values.configuration "identity" .Values.identity "secretKeys" (omit .Values.secret.keys "publicLinkKey" "publicLinkKeyPrevious") -}}
+{{- if or .Values.secret.keys.publicLinkKey .Values.secret.keys.publicLinkKeyPrevious -}}
+{{- $_ := set $checksum "publicLinkKeys" (dict "current" .Values.secret.keys.publicLinkKey "previous" .Values.secret.keys.publicLinkKeyPrevious) -}}
+{{- end -}}
+{{- $checksum | toJson | sha256sum -}}
 {{- end -}}
 
 {{- define "artifact-server.secretItems" -}}
@@ -175,6 +179,14 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 - key: {{ .Values.secret.keys.embedBindingSecretPrevious | quote }}
   path: embed-binding-secret-previous
 {{- end }}
+{{- if .Values.secret.keys.publicLinkKey }}
+- key: {{ .Values.secret.keys.publicLinkKey | quote }}
+  path: public-link-key
+{{- end }}
+{{- if .Values.secret.keys.publicLinkKeyPrevious }}
+- key: {{ .Values.secret.keys.publicLinkKeyPrevious | quote }}
+  path: public-link-key-previous
+{{- end }}
 {{- end -}}
 
 {{/* Non-empty when the Keycloak directory sync CronJob should exist. */}}
@@ -192,6 +204,14 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- if .Values.secret.keys.embedBindingSecretPrevious }}
 - name: ARTIFACT_SERVER_EMBED_BINDING_SECRET_PREVIOUS_FILE
   value: /run/secrets/artifact-server/embed-binding-secret-previous
+{{- end }}
+{{- if .Values.secret.keys.publicLinkKey }}
+- name: ARTIFACT_SERVER_PUBLIC_LINK_KEY_FILE
+  value: /run/secrets/artifact-server/public-link-key
+{{- end }}
+{{- if .Values.secret.keys.publicLinkKeyPrevious }}
+- name: ARTIFACT_SERVER_PUBLIC_LINK_KEY_PREVIOUS_FILE
+  value: /run/secrets/artifact-server/public-link-key-previous
 {{- end }}
 - name: ARTIFACT_SERVER_BOOTSTRAP_ADMIN_EMAIL
   value: {{ .Values.configuration.bootstrapAdministratorEmail | quote }}
