@@ -132,6 +132,15 @@
         }
       }
     },
+    "publicLinks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingSecret", "secretKey"],
+      "properties": {
+        "existingSecret": {"type": "string"},
+        "secretKey": {"type": "string"}
+      }
+    },
     "identity": {
       "type": "object",
       "additionalProperties": false,

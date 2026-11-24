@@ -55,6 +55,10 @@ secret:
     oidcClientSecret: ""
     # oidcDirectoryClientSecret: oidc-directory-client-secret
 
+publicLinks:
+  existingSecret: ""
+  secretKey: ""
+
 identity:
   workosClientId: ""
   workosIssuer: ""
