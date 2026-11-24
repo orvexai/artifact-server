@@ -57,9 +57,21 @@ test("PLK-001-F Public link browsing stays on the installation without identity-
       name: "Public preview",
     });
     const link = await issuePublicLink(fixture, published.body.artifact.id, "comment");
+    const applicationUrl = new URL(fixture.server.baseUrl);
+    const publishedVersionUrl = new URL(published.body.links.version);
+    const contentDomainPrefix = `${published.body.version.contentToken}.`;
+    expect(publishedVersionUrl.hostname.startsWith(contentDomainPrefix)).toBe(true);
+    const contentDomain = publishedVersionUrl.hostname.slice(contentDomainPrefix.length);
     const externalRequests: string[] = [];
     fixture.page.on("request", (request) => {
-      if (new URL(request.url()).origin !== fixture.server.baseUrl) externalRequests.push(request.url());
+      const requestUrl = new URL(request.url());
+      const isContentSubdomain =
+        requestUrl.protocol === applicationUrl.protocol &&
+        requestUrl.port === applicationUrl.port &&
+        requestUrl.hostname.endsWith(`.${contentDomain}`);
+      if (requestUrl.origin !== applicationUrl.origin && !isContentSubdomain) {
+        externalRequests.push(request.url());
+      }
     });
     await fixture.page.goto(link);
     await expect(fixture.page.getByRole("heading", {name: "Public preview"})).toBeVisible();
@@ -113,7 +125,9 @@ test("Unknown public links show a neutral failure without sign-in controls", asy
     await fixture.page.goto(link);
     await expect(fixture.page.getByRole("heading", {name: "Link unavailable"})).toBeVisible();
     await expect(fixture.page.getByRole("link", {name: /sign in/i})).toHaveCount(0);
-    await expect(fixture.page.getByText(/unavailable/i)).toBeVisible();
+    const unavailableMessage = fixture.page.getByText("This shared artifact is unavailable.", {exact: true});
+    await expect(unavailableMessage).toHaveCount(1);
+    await expect(unavailableMessage).toBeVisible();
   } finally {
     await stopBrowserFixture(fixture);
   }
