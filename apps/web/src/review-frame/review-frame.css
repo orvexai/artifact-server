@@ -8,6 +8,15 @@
  */
 @import "@plannotator/ui/styles.css";
 
+html {
+  --houston-ink: var(--foreground);
+  --houston-accent: #23b5d1;
+}
+
+html.light {
+  --houston-accent: #0891b2;
+}
+
 html,
 body,
 #review-root {

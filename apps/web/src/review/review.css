@@ -898,8 +898,8 @@ select:focus-visible {
 }
 
 .as-send-to-agent houston-loader {
-  height: 16px;
-  width: 16px;
+  height: 24px;
+  width: 24px;
 }
 
 .as-settings__content .ox-loading houston-loader {
@@ -3666,11 +3666,6 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
 .as-settings__mark {
   height: 1.5rem;
   width: 1.5rem;
-}
-
-.as-gate__mark {
-  height: 64px;
-  width: 64px;
 }
 
 .as-gate__mark-icon {

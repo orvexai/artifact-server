@@ -2558,7 +2558,7 @@ function ActivityInspector({
     <div className="as-inspector-stack">
       <InspectorSection count={actions.length} title="Artifact activity">
         {error === null ? null : <p className="as-inspector-error" role="alert">{error.message}</p>}
-        {actions.length === 0 && loading ? <p className="as-inspector-empty"><houston-loader label="Loading activity" variant="orbit" /> Loading activity…</p> : null}
+        {actions.length === 0 && loading ? <p className="as-inspector-empty"><houston-loader aria-hidden="true" label="Loading activity" variant="orbit" /> Loading activity…</p> : null}
         {actions.length === 0 && !loading ? <p className="as-inspector-empty">No activity recorded.</p> : null}
         <ol className="as-activity-list">
           {actions.map((action) => (
@@ -3101,7 +3101,7 @@ function ReviewGate({
     <main className="as-gate">
       <section>
         {title.startsWith("Loading")
-          ? <houston-loader className="as-gate__mark" label={title} variant="arrival" />
+          ? <houston-loader className="as-gate__mark" label={title} variant="orbit" />
           : <div className="as-gate__mark"><ArtifactMark className="as-gate__mark-icon" /></div>}
         <p>Houston Artifacts</p>
         <h1>{title}</h1>

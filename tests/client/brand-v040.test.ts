@@ -1,6 +1,6 @@
 import {createHash} from "node:crypto";
-import {readFileSync} from "node:fs";
-import {relative, resolve} from "node:path";
+import {readdirSync, readFileSync} from "node:fs";
+import {join, relative, resolve} from "node:path";
 
 import {z} from "zod";
 import {describe, expect, test} from "vitest";
@@ -163,6 +163,177 @@ function cssVar(css: string, name: string, selector: string): string {
   return value;
 }
 
+function stripComments(source: string): string {
+  const characters = source.split("");
+  let quote: "'" | '"' | "`" | null = null;
+  let escaped = false;
+  for (let index = 0; index < characters.length; index += 1) {
+    const character = characters[index];
+    const next = characters[index + 1];
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === "/" && next === "/") {
+      while (index < characters.length && characters[index] !== "\n" && characters[index] !== "\r") {
+        characters[index] = " ";
+        index += 1;
+      }
+      index -= 1;
+    } else if (character === "/" && next === "*") {
+      characters[index] = " ";
+      characters[index + 1] = " ";
+      index += 2;
+      while (index < characters.length && !(characters[index] === "*" && characters[index + 1] === "/")) {
+        if (characters[index] !== "\n" && characters[index] !== "\r") characters[index] = " ";
+        index += 1;
+      }
+      if (index < characters.length) {
+        characters[index] = " ";
+        characters[index + 1] = " ";
+        index += 1;
+      }
+    }
+  }
+  return characters.join("");
+}
+
+function scanHoustonLoaderUsages(source: string): string[] {
+  return [...stripComments(source).matchAll(/<houston-loader\b([^>]*)>/gu)]
+    .map((match) => match[1] ?? "");
+}
+
+function isNumericLoaderExpression(expression: string): boolean {
+  const tokenPattern = /\s*(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|[A-Za-z_$][\w$]*|\?\.|\*\*|\+\+|--|[+*/%().,\x5b\x5d-])/uy;
+  const tokens: string[] = [];
+  let offset = 0;
+  while (offset < expression.length) {
+    if (expression.slice(offset).trim() === "") break;
+    tokenPattern.lastIndex = offset;
+    const match = tokenPattern.exec(expression);
+    if (match === null) return false;
+    tokens.push(match[0].trim());
+    offset = tokenPattern.lastIndex;
+  }
+
+  let cursor = 0;
+  const peek = (): string | undefined => tokens[cursor];
+  const consume = (expected?: string): string | undefined => {
+    const token = peek();
+    if (token === undefined || (expected !== undefined && token !== expected)) return undefined;
+    cursor += 1;
+    return token;
+  };
+
+  // Accepted grammar: numeric literals; identifiers and dot/optional-dot members;
+  // parentheses, unary +/- and + - * / % ** arithmetic; Number(...) and Math.*(...).
+  // Calls accept only numeric expressions as arguments; strings, templates, booleans,
+  // nullish values, empty expressions, and arbitrary calls are rejected.
+  const parseExpression = (): boolean => {
+    if (!parseProduct()) return false;
+    while (peek() === "+" || peek() === "-") {
+      consume();
+      if (!parseProduct()) return false;
+    }
+    return true;
+  };
+  const parseProduct = (): boolean => {
+    if (!parsePower()) return false;
+    while (peek() === "*" || peek() === "/" || peek() === "%") {
+      consume();
+      if (!parsePower()) return false;
+    }
+    return true;
+  };
+  const parsePower = (): boolean => {
+    if (!parseUnary()) return false;
+    if (consume("**") !== undefined) return parsePower();
+    return true;
+  };
+  const parseUnary = (): boolean => {
+    if (peek() === "++" || peek() === "--") return false;
+    if (peek() === "+" || peek() === "-") {
+      consume();
+      return parseUnary();
+    }
+    return parsePrimary();
+  };
+  const parsePrimary = (): boolean => {
+    const token = peek();
+    if (token === undefined) return false;
+    if (/^(?:\d|\.\d)/u.test(token)) {
+      consume();
+      return true;
+    }
+    if (consume("(") !== undefined) {
+      if (!parseExpression() || consume(")") === undefined) return false;
+      return true;
+    }
+    if (!/^[A-Za-z_$][\w$]*$/u.test(token)) return false;
+    if (["true", "false", "null", "undefined"].includes(token)) return false;
+    const rootIdentifier = consume();
+    if (rootIdentifier === undefined) return false;
+    const members: Array<{computed: boolean; name: string}> = [];
+    while (peek() === "." || peek() === "?." || peek() === "[") {
+      const access = consume();
+      if (access === "[") {
+        if (!parseExpression() || consume("]") === undefined) return false;
+        members.push({computed: true, name: ""});
+        continue;
+      }
+      if (access === "?." && consume("[") !== undefined) {
+        if (!parseExpression() || consume("]") === undefined) return false;
+        members.push({computed: true, name: ""});
+        continue;
+      }
+      const member = peek();
+      if (member === undefined || !/^[A-Za-z_$][\w$]*$/u.test(member)) return false;
+      members.push({computed: false, name: member});
+      consume();
+    }
+    if (consume("(") === undefined) return true;
+    const allowedCall = (rootIdentifier === "Number" && members.length === 0)
+      || (rootIdentifier === "Math" && members.length === 1 && members[0]?.computed === false);
+    if (!allowedCall) return false;
+    if (consume(")") !== undefined) return true;
+    if (!parseExpression()) return false;
+    while (consume(",") !== undefined) {
+      if (!parseExpression()) return false;
+    }
+    return consume(")") !== undefined;
+  };
+
+  return tokens.length > 0 && parseExpression() && cursor === tokens.length;
+}
+
+function isValidHoustonLoaderAttributes(attributes: string): boolean {
+  const label = attributes.match(/(?:^|\s)label\s*=\s*(?:"([^"]*)"|'([^']*)'|\{([^}]*)\})/u);
+  if (label === null || (label[1] ?? label[2] ?? label[3] ?? "").trim() === "") return false;
+  if (/(?:^|\s)(?:role|aria-valuenow|aria-valuemin|aria-valuemax)\s*=/u.test(attributes)) return false;
+
+  if (!/(?:^|\s)value(?:\s|=|$)/u.test(attributes)) return true;
+  const value = attributes.match(/(?:^|\s)value\s*=\s*(?:"([^"]*)"|'([^']*)'|\{([^}]*)\})/u);
+  if (value === null || value[1] !== undefined || value[2] !== undefined || value[3] === undefined) return false;
+  return isNumericLoaderExpression(value[3]);
+}
+
+function webSourceFiles(directory: string): string[] {
+  return readdirSync(directory, {withFileTypes: true}).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (path === resolve(root, "apps/web/src/brand/houston")) return [];
+      return webSourceFiles(path);
+    }
+    return /\.(?:js|jsx|ts|tsx)$/u.test(entry.name) ? [path] : [];
+  });
+}
+
 describe("Houston Brand and Design System v0.4.0", () => {
   test("BRD-001-B vendored tokens, contrast data, fonts and copied files match commit 524b0137", () => {
     for (const [path, expectedHash] of Object.entries(designSystemSha256)) {
@@ -220,16 +391,31 @@ describe("Houston Brand and Design System v0.4.0", () => {
     const serverMark = houstonServerPageMark();
     const cliOAuthSource = text("src/cli/cli-oauth-client.ts");
     const favicon = text("apps/web/public/favicon.svg");
-    const allMarks = `${serverMark}\n${favicon}`;
-    expect(allMarks).toContain('viewBox="-13 -13 74 74"');
-    expect(component).toContain('viewBox="0 0 48 48"');
-    expect(allMarks).toContain('x="2.25"');
-    expect(allMarks).toContain('width="43.5"');
-    expect(allMarks).toContain('rx="10.75"');
-    expect(allMarks).toContain('r="12.75"');
-    expect(allMarks).toContain('cx="15" cy="33" r="6"');
-    expect(allMarks).not.toContain('stroke-width="6.8"');
-    expect(allMarks).not.toContain("M24 24 33.192 14.808");
+    const expectedGeometry = [
+      'x="2.25"',
+      'y="2.25"',
+      'width="43.5"',
+      'height="43.5"',
+      'rx="10.75"',
+      'r="12.75"',
+      'cx="15" cy="33" r="6"',
+    ];
+    for (const [source, viewBox] of [
+      [component, 'viewBox="0 0 48 48"'],
+      [serverMark, 'viewBox="-13 -13 74 74"'],
+      [favicon, 'viewBox="0 0 48.0000 48.0000"'],
+    ] as const) {
+      expect(source).toContain(viewBox);
+      for (const geometry of expectedGeometry) expect(source).toContain(geometry);
+      expect(source).not.toContain("M24 24 33.192 14.808");
+    }
+    expect(component).toContain('strokeWidth="4.5"');
+    expect(component).not.toContain('strokeWidth="6.8"');
+    expect(component).not.toContain('stroke-width="6.8"');
+    expect(serverMark).toContain('stroke-width="4.5"');
+    expect(serverMark).not.toContain('stroke-width="6.8"');
+    expect(favicon).toContain('stroke-width="4.5"');
+    expect(favicon).not.toContain('stroke-width="6.8"');
     expect(component).toContain('stroke="var(--ox-color-text)"');
     expect(component).toContain('fill="var(--ox-color-accent)"');
     expect(serverMark).toContain("var(--page-text,var(--text))");
@@ -268,6 +454,43 @@ describe("Houston Brand and Design System v0.4.0", () => {
       expect(page).toContain('href="./favicon.ico"');
       expect(page).toContain('href="./apple-touch-icon-180.png"');
       expect(page).toContain('href="./site.webmanifest"');
+    }
+  });
+
+  test("BRD-005-B every Houston loader usage has component-owned accessible state", () => {
+    const usages = webSourceFiles(resolve(root, "apps/web/src")).flatMap((path) => {
+      const source = readFileSync(path, "utf8");
+      return scanHoustonLoaderUsages(source).map((attributes) => ({
+        attributes,
+        path: relative(root, path),
+      }));
+    });
+    expect(usages.length).toBeGreaterThan(0);
+    for (const {attributes, path} of usages) {
+      expect({path, valid: isValidHoustonLoaderAttributes(attributes)}).toEqual({path, valid: true});
+    }
+
+    const fixtures = [
+      {source: '<houston-loader label="Upload" value={42} />', valid: true},
+      {source: '<houston-loader label="Upload" value={progress.current + Number(offset)} />', valid: true},
+      {source: '<houston-loader label="Upload" value={task?.progress} />', valid: true},
+      {source: '<houston-loader label="Upload" value={progress[key]} />', valid: true},
+      {source: '<houston-loader label="Upload" value={Math.max(progress, 1)} />', valid: true},
+      {source: '<houston-loader label="Upload" value="42" />', valid: false},
+      {source: '<houston-loader label="Upload" value={"not a number"} />', valid: false},
+      {source: "<houston-loader label=\"Upload\" value={'not a number'} />", valid: false},
+      {source: '<houston-loader label="Upload" value={`42`} />', valid: false},
+      {source: '<houston-loader label="Upload" value={true} />', valid: false},
+      {source: '<houston-loader label="Upload" value={false} />', valid: false},
+      {source: '<houston-loader label="Upload" value={null} />', valid: false},
+      {source: '<houston-loader label="Upload" value={undefined} />', valid: false},
+      {source: '<houston-loader label="Upload" value={} />', valid: false},
+      {source: '<houston-loader label="Upload" value={getProgress()} />', valid: false},
+      {source: '<houston-loader aria-label="Upload" value={42} />', valid: false},
+    ];
+    for (const fixture of fixtures) {
+      const [attributes] = scanHoustonLoaderUsages(fixture.source);
+      expect(attributes !== undefined && isValidHoustonLoaderAttributes(attributes)).toBe(fixture.valid);
     }
   });
 

@@ -570,7 +570,7 @@ export function PublicLinksScreen() {
                 type="button"
                 variant="outline"
               >
-                {loading ? <><houston-loader label="Loading the next page of public links" variant="orbit" /> Loading…</> : "Next"}
+                {loading ? <><houston-loader aria-hidden="true" label="Loading the next page of public links" variant="orbit" /> Loading…</> : "Next"}
               </Button>
             </nav>
           </>

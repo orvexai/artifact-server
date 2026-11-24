@@ -5459,7 +5459,7 @@ requirements:
       failure: {id: BRD-005-F, description: "A loader without an accessible name or role, or that rotates under reduced motion, or a CSP change, fails."}
     deployments: *all
     status: implementing
-    proof_gap: "The BRD-005-F browser spec checks visible loader names and roles, reduced-motion rest behavior, and CSP violations while catalog loading is held; browser evidence is pending a recorded browser run."
+    proof_gap: "The BRD-005-B static usage check and BRD-005-F valued-progressbar case are implemented; browser evidence is pending a recorded browser run."
     depends_on: [BRD-001]
     evidence: []
 

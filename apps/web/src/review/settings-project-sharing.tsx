@@ -90,7 +90,7 @@ export function ProjectSharingSection({
         </div>
         <StatusBadge tone={restricted ? "primary" : "neutral"}>
           {sharing === null
-            ? <><houston-loader label="Loading project sharing settings" variant="orbit" /> Loading</>
+            ? <><houston-loader aria-hidden="true" label="Loading project sharing settings" variant="orbit" /> Loading</>
             : restricted ? "Restricted" : "Every member"}
         </StatusBadge>
       </div>
