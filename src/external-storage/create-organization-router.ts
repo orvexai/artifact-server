@@ -655,7 +655,7 @@ function normalizeHostName(hostname: string): string {
 
 
 function legacyOrganizationPath(pathname: string): string | null {
-  return /^\/(?:api(?:\/|$)|mcp(?:\/|$)|review(?:\/|$))/u.test(pathname)
+  return /^\/(?:api(?:\/|$)|mcp(?:\/|$)|review(?:\/|$)|artifacts(?:\/|$))/u.test(pathname)
     ? pathname
     : null;
 }

@@ -383,6 +383,7 @@ describe.sequential("organization tenancy security boundary", () => {
   const installationId = `org-tenancy-${randomUUID()}`;
   const apiTokenA = managedTestKey("org-tenancy-a");
   const apiTokenB = managedTestKey("org-tenancy-b");
+  const apiTokenC = managedTestKey("org-tenancy-c");
   let database: PostgresDatabase;
   let s3: S3Client;
   let oidc: Awaited<ReturnType<typeof startStubOidcProvider>>;
@@ -1051,7 +1052,52 @@ describe.sequential("organization tenancy security boundary", () => {
     }
   });
 
-  test("isolates resources and runs the explicit route/tool completeness guard", async () => {
+  test("PLK-018-B: prefixed public-link exchange issues an organization-scoped visitor cookie", async () => {
+    const baseUrl = `http://${router.hostname}:${router.port}`;
+    const host = {Host: "artifacts.example.com"};
+    const runtime = await createOrgRuntime(orgB.id, {
+      applicationOrigin: new URL(`/o/${orgB.slug}`, applicationOrigin).toString(),
+      bootstrapApiToken: Redacted.make(apiTokenB),
+      cookieRouteId: orgB.routeId,
+      slug: orgB.slug,
+      contentTokenPrefix: `${orgB.routeId}-`,
+      embedOrigins: [],
+    }, withoutGitHistory(config), database);
+    try {
+      const projectResponse = await runtime.app.fetch(appRequest("/api/v1/projects", apiTokenB, "POST", {name: "Prefixed public-link project"}));
+      expect(projectResponse.status).toBe(201);
+      const scopedProjectId = z.object({project: z.object({id: z.string()})}).parse(await projectResponse.json()).project.id;
+      const scopedArtifactId = await publishOrgBArtifact(
+        (request) => runtime.app.fetch(request), apiTokenB, scopedProjectId, orgB.slug, "Prefixed public-link artifact",
+      );
+      const linkResponse = await runtime.app.fetch(appRequest(
+        `/api/v1/artifacts/${scopedArtifactId}/public-link?projectId=${scopedProjectId}`,
+        apiTokenB, "POST", {permission: "view"},
+      ));
+      expect(linkResponse.status).toBe(201);
+      const linkUrl = z.object({url: z.url()}).parse(await linkResponse.json()).url;
+      const secret = new URL(linkUrl).hash.slice("#link=".length);
+      const exchange = await fetchWithHost(`${baseUrl}/o/${orgB.slug}/api/v1/public/artifacts/${scopedArtifactId}/guest-session`, {
+        body: JSON.stringify({displayName: "Prefixed visitor", secret}),
+        headers: {...host, "Content-Type": "application/json", Origin: applicationOrigin,
+          "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin"},
+        method: "POST",
+      }, router.hostname, router.port);
+      expect(exchange.status).toBe(201);
+      const visitorCookie = exchange.headers.getSetCookie().find((cookie) =>
+        cookie.startsWith(`__Host-artifact_guest_session-${orgB.routeId}=`),
+      );
+      if (visitorCookie === undefined) throw new Error("Prefixed public-link exchange did not issue the organization-scoped visitor cookie.");
+      const current = await fetchWithHost(`${baseUrl}/o/${orgB.slug}/api/v1/public/artifacts/${scopedArtifactId}/guest/current`, {
+        headers: {...host, Cookie: visitorCookie.split(";", 1)[0] ?? ""},
+      }, router.hostname, router.port);
+      expect(current.status).toBe(201);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  test("PLK-018-F: isolates public links and visitor cookies to their organization", async () => {
     const baseUrl = `http://${router.hostname}:${router.port}`;
     const host = {Host: "artifacts.example.com"};
     let orgBMemberCookie = "";
@@ -2358,6 +2404,112 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(ownGuestCurrent.status).toBe(201);
     expect(foreignGuestCurrent.status).toBe(404);
 
+    const resetPublicLink = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/artifacts/${artifactId}/public-link/reset?projectId=${projectId}`, {
+      body: JSON.stringify({permission: "comment"}),
+      headers: {...host, Authorization: `Bearer ${apiTokenB}`, "Content-Type": "application/json"},
+      method: "POST",
+    });
+    expect(resetPublicLink.status).toBe(201);
+    const publicLinkUrl = z.object({url: z.url()}).parse(await resetPublicLink.json()).url;
+    const publicLinkSecret = new URL(publicLinkUrl).hash.slice("#link=".length);
+    expect(publicLinkSecret).toBeTruthy();
+    const exchangeHeaders = {
+      ...host,
+      "Content-Type": "application/json",
+      Origin: applicationOrigin,
+      "Sec-Fetch-Mode": "cors",
+      "Sec-Fetch-Site": "same-origin",
+    };
+    const publicLinkExchange = await fetch(`${baseUrl}/o/${orgB.slug}/api/v1/public/artifacts/${artifactId}/guest-session`, {
+      body: JSON.stringify({displayName: "Org B link visitor", secret: publicLinkSecret}),
+      headers: exchangeHeaders,
+      method: "POST",
+    });
+    expect(publicLinkExchange.status).toBe(201);
+    const publicLinkCookie = publicLinkExchange.headers.getSetCookie().find((value) =>
+      value.startsWith(`__Host-artifact_guest_session-${orgB.routeId}=`),
+    );
+    if (publicLinkCookie === undefined) throw new Error("Org B public-link exchange did not issue its scoped cookie.");
+
+    const outsideExchanges = await Promise.all([
+      fetch(`${baseUrl}/api/v1/public/artifacts/${artifactId}/guest-session`, {
+        body: JSON.stringify({secret: publicLinkSecret}), headers: exchangeHeaders, method: "POST",
+      }),
+      fetch(`${baseUrl}/o/${orgC.slug}/api/v1/public/artifacts/${artifactId}/guest-session`, {
+        body: JSON.stringify({secret: publicLinkSecret}), headers: exchangeHeaders, method: "POST",
+      }),
+    ]);
+    const outsideExchangeResults = await Promise.all(outsideExchanges.map(async (response) => ({body: await response.text(), status: response.status})));
+    expect(outsideExchangeResults).toHaveLength(2);
+    expect(outsideExchangeResults[0]).toEqual({body: expect.any(String), status: 404});
+    expect(outsideExchangeResults[1]).toEqual(outsideExchangeResults[0]);
+    const cookieOutsideRequests = await Promise.all([
+      fetch(`${baseUrl}/api/v1/public/artifacts/${artifactId}/guest/current`, {headers: {...host, Cookie: publicLinkCookie.split(";", 1)[0] ?? ""}}),
+      fetch(`${baseUrl}/o/${orgC.slug}/api/v1/public/artifacts/${artifactId}/guest/current`, {headers: {...host, Cookie: publicLinkCookie.split(";", 1)[0] ?? ""}}),
+    ]);
+    expect(cookieOutsideRequests.map((response) => response.status)).toEqual([404, 404]);
+
+    // Org C is the source organization (Org A in the PLK-018-F acceptance); root and Org B are separate destinations.
+    const sourceRuntime = await createOrgRuntime(orgC.id, {
+      applicationOrigin: new URL(`/o/${orgC.slug}`, applicationOrigin).toString(),
+      bootstrapApiToken: Redacted.make(apiTokenC),
+      cookieRouteId: orgC.routeId,
+      slug: orgC.slug,
+      contentTokenPrefix: `${orgC.routeId}-`,
+      embedOrigins: [],
+    }, withoutGitHistory(config), database);
+    let sourceArtifactId = "";
+    let sourceProjectId = "";
+    let sourceLinkSecret = "";
+    try {
+      const sourceProjectResponse = await sourceRuntime.app.fetch(appRequest(
+        "/api/v1/projects", apiTokenC, "POST", {name: "Org A source project"},
+      ));
+      expect(sourceProjectResponse.status).toBe(201);
+      sourceProjectId = z.object({project: z.object({id: z.string()})}).parse(await sourceProjectResponse.json()).project.id;
+      sourceArtifactId = await publishOrgBArtifact(
+        (request) => sourceRuntime.app.fetch(request), apiTokenC, sourceProjectId, orgC.slug, "Org A source artifact",
+      );
+      const sourceLink = await sourceRuntime.app.fetch(appRequest(
+        `/api/v1/artifacts/${sourceArtifactId}/public-link?projectId=${sourceProjectId}`,
+        apiTokenC, "POST", {permission: "comment"},
+      ));
+      expect(sourceLink.status).toBe(201);
+      const sourceUrl = z.object({url: z.url()}).parse(await sourceLink.json()).url;
+      sourceLinkSecret = new URL(sourceUrl).hash.slice("#link=".length);
+      expect(sourceLinkSecret).toBeTruthy();
+    } finally {
+      await sourceRuntime.close();
+    }
+    const sourceExchange = await fetch(`${baseUrl}/o/${orgC.slug}/api/v1/public/artifacts/${sourceArtifactId}/guest-session`, {
+      body: JSON.stringify({displayName: "Org A visitor", secret: sourceLinkSecret}),
+      headers: exchangeHeaders,
+      method: "POST",
+    });
+    expect(sourceExchange.status).toBe(201);
+    const sourceVisitorCookie = sourceExchange.headers.getSetCookie().find((value) =>
+      value.startsWith(`__Host-artifact_guest_session-${orgC.routeId}=`),
+    );
+    if (sourceVisitorCookie === undefined) throw new Error("Source organization public-link exchange did not issue its scoped cookie.");
+
+    const sourceSecretAtOtherOrganizations = await Promise.all([
+      fetch(`${baseUrl}/api/v1/public/artifacts/${sourceArtifactId}/guest-session`, {
+        body: JSON.stringify({secret: sourceLinkSecret}), headers: exchangeHeaders, method: "POST",
+      }),
+      fetch(`${baseUrl}/o/${orgB.slug}/api/v1/public/artifacts/${sourceArtifactId}/guest-session`, {
+        body: JSON.stringify({secret: sourceLinkSecret}), headers: exchangeHeaders, method: "POST",
+      }),
+    ]);
+    const sourceExchangeFailures = await Promise.all(sourceSecretAtOtherOrganizations.map(async (response) => ({body: await response.text(), status: response.status})));
+    expect(sourceExchangeFailures).toHaveLength(2);
+    expect(sourceExchangeFailures[0]).toEqual({body: expect.any(String), status: 404});
+    expect(sourceExchangeFailures[1]).toEqual(sourceExchangeFailures[0]);
+    const sourceCookieAtOtherOrganizations = await Promise.all([
+      fetch(`${baseUrl}/api/v1/public/artifacts/${sourceArtifactId}/guest/current`, {headers: {...host, Cookie: sourceVisitorCookie.split(";", 1)[0] ?? ""}}),
+      fetch(`${baseUrl}/o/${orgB.slug}/api/v1/public/artifacts/${sourceArtifactId}/guest/current`, {headers: {...host, Cookie: sourceVisitorCookie.split(";", 1)[0] ?? ""}}),
+    ]);
+    expect(sourceCookieAtOtherOrganizations.map((response) => response.status)).toEqual([404, 404]);
+
     const invalidRegistryId = `invalid-org-${randomUUID()}`;
     await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
@@ -2761,6 +2913,13 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(await suspendedResponse.text()).toBe(await unknownResponse.text());
     expect(suspendedMcp.status).toBe(404);
     expect(suspendedReview.status).toBe(404);
+    const legacyArtifactPath = "/artifacts/art_00000000-0000-4000-8000-000000000000";
+    const legacyArtifactRedirect = await fetch(`${baseUrl}${legacyArtifactPath}`, {
+      headers: host,
+      redirect: "manual",
+    });
+    expect(legacyArtifactRedirect.status).toBe(308);
+    expect(legacyArtifactRedirect.headers.get("location")).toBe(`/o/orvex${legacyArtifactPath}`);
     await Promise.all(["/api/v1/session", "/mcp", "/review"].map(async (legacyPath) => {
       const redirect = await fetch(`${baseUrl}${legacyPath}`, {
         headers: host,
@@ -3695,6 +3854,7 @@ async function publishOrgBArtifact(
   token: string,
   projectId: string,
   orgSlug: string,
+  name = "Org B artifact",
 ): Promise<string> {
   const digest = createHash("sha256").update(bytes).digest("hex");
   const uploadResponse = await appFetch(appRequest("/api/v1/uploads", token, "POST", {
@@ -3722,7 +3882,7 @@ async function publishOrgBArtifact(
     `${appPath(commitUrl)}${commitUrl.search}`,
     token,
     "POST",
-    {target: {accessSetting: "account_required", kind: "new_artifact", name: "Org B artifact"}},
+    {target: {accessSetting: "account_required", kind: "new_artifact", name}},
     {"Idempotency-Key": `org-tenancy-${orgSlug}-artifact`},
   ));
   expect(commit.status).toBe(201);

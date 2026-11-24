@@ -284,10 +284,16 @@ export interface GuestReviewInvitation {
   readonly artifactId: string;
   readonly createdAt: string;
   readonly createdByPrincipalId: string;
+  readonly generation: number;
   readonly id: string;
+  readonly permission: "view" | "comment";
   readonly projectId: string;
   readonly revokedAt: string | null;
+  readonly sealedSecret: string | null;
+  readonly sealKeyFingerprint: string | null;
   readonly tokenDigest: string;
+  readonly updatedAt: string | null;
+  readonly updatedByPrincipalId: string | null;
 }
 
 /** A guest browser session bound to one invitation and artifact. */
@@ -296,12 +302,13 @@ export interface GuestReviewSession {
   readonly artifactId: string;
   readonly createdAt: string;
   readonly csrfDigest: string;
-  readonly displayName: string;
+  readonly displayName: string | null;
   readonly expiresAt: string;
   readonly guestId: string;
   readonly invitationCreatorPrincipalId: string;
   readonly invitationId: string;
   readonly lastUsedAt: string;
+  readonly permission: "view" | "comment";
   readonly projectId: string;
   readonly tokenDigest: string;
 }

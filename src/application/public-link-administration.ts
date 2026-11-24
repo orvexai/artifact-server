@@ -47,6 +47,8 @@ export interface ListPublicLinks {
 
 /** Persistence required by installation-level public-link administration. */
 export interface PublicLinkAdministrationRepository {
+  readonly getPublicLinksEnabled: () => Effect.Effect<boolean, ArtifactRepositoryFailure>;
+  readonly setPublicLinksEnabled: (enabled: boolean) => Effect.Effect<void, ArtifactRepositoryFailure>;
   readonly listPublicLinks: (
     command: ListPublicLinks,
   ) => Effect.Effect<PublicLinkInventoryPage, ArtifactRepositoryFailure>;
@@ -92,6 +94,8 @@ export type PublicLinkAdministrationFailure =
   | InvalidPagination;
 
 interface PublicLinkAdministrationOperations {
+  readonly getPolicy: (principal: Principal) => Effect.Effect<{enabled: boolean}, PublicLinkAdministrationFailure>;
+  readonly setPolicy: (principal: Principal, enabled: boolean) => Effect.Effect<{enabled: boolean}, PublicLinkAdministrationFailure>;
   readonly listPublicLinks: (
     command: ListPublicLinksCommand,
   ) => Effect.Effect<PublicLinkInventoryPage, PublicLinkAdministrationFailure>;
@@ -167,6 +171,17 @@ function makePublicLinkAdministrationService(
     }))});
   });
 
+  const getPolicy = Effect.fn("PublicLinkAdministrationService.getPolicy")(function*(principal: Principal) {
+    yield* authorization.requireInstallationAdministration(principal);
+    return {enabled: yield* repository.getPublicLinksEnabled()};
+  });
+
+  const setPolicy = Effect.fn("PublicLinkAdministrationService.setPolicy")(function*(principal: Principal, enabled: boolean) {
+    yield* authorization.requireInstallationAdministration(principal);
+    yield* repository.setPublicLinksEnabled(enabled);
+    return {enabled};
+  });
+
   const makePrivate = Effect.fn(
     "PublicLinkAdministrationService.makePrivate",
   )(function*(command: MakePublicLinksPrivateCommand) {
@@ -202,7 +217,9 @@ function makePublicLinkAdministrationService(
   });
 
   return PublicLinkAdministrationService.of({
+    getPolicy,
     listPublicLinks,
     makePrivate,
+    setPolicy,
   });
 }

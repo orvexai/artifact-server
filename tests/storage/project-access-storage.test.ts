@@ -177,7 +177,7 @@ describe("project access storage (SQLite)", () => {
     repository = new SqliteIdentityRepository(databasePath);
     expect(readOnly((database) =>
       database.prepare("PRAGMA user_version").get()
-    )).toEqual({user_version: 27});
+    )).toEqual({user_version: 28});
     expect(await repository.findProjectAccess(installationId, defaultProject, "nobody"))
       .toMatchObject({accessMode: "installation"});
     await groups([group("g-a", [["user-ada", "ada"]])]);
@@ -223,7 +223,7 @@ describe("project access storage (SQLite)", () => {
     repository = new SqliteIdentityRepository(databasePath);
     expect(readOnly((database) =>
       database.prepare("PRAGMA user_version").get()
-    )).toEqual({user_version: 27});
+    )).toEqual({user_version: 28});
     expect(readOnly((database) => database.prepare("PRAGMA foreign_key_check").all()))
       .toEqual([]);
     expect(await repository.findActiveMemberByExternalIdentity(
