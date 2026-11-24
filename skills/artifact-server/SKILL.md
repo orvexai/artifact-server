@@ -32,6 +32,11 @@ steps separate and state which installation is affected before changing it.
 
 - Use the installed `artifactserver` CLI for files on the user's machine. Use
   the connected Artifact Server MCP for work that needs only server data.
+- Manage public sharing through MCP `artifact_public_link_*` tools or the CLI
+  `artifactserver public-link` commands. The CLI supports `get`, `create`,
+  `set`, `reset`, `revoke`, `sessions`, and `revoke-session`. Treat returned
+  manager URLs as secrets; create a link only when the user explicitly
+  requests public sharing.
 - Never replace a real file with inline HTML, base64, invented bytes, or a local
   path sent to a remote MCP server.
 - Never read, print, request in chat, or write bearer tokens, API keys, cookies,

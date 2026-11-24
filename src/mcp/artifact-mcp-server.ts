@@ -1705,7 +1705,7 @@ export function createArtifactMcpServer(
     {
       title: "Change artifact visibility",
       description:
-        "Change an artifact between account-required and public-link access without changing its saved files. Public copies already downloaded outside Artifact Server cannot be recalled.",
+        "Change an artifact between account-required and public-link access without changing its saved files. Use artifact_public_link_get/create/set_permission/reset/revoke to manage the public link. Public copies already downloaded outside Artifact Server cannot be recalled.",
       inputSchema: z.object({
         accessSetting: accessSettingSchema,
         artifactId: artifactIdSchema,
@@ -1745,26 +1745,136 @@ export function createArtifactMcpServer(
     }),
   );
 
+  const publicLinkUrl = (artifactId: string, projectId: string | null, secret: string): string => {
+    const url = applicationPathUrl(applicationUrl, "/review");
+    url.searchParams.set("artifact", artifactId);
+    if (projectId !== null) url.searchParams.set("project", projectId);
+    url.hash = `link=${encodeURIComponent(secret)}`;
+    return url.toString();
+  };
+
+  registerNudgedTool("artifact_public_link_get", {
+    title: "Get public-link settings",
+    description: "Read public-link status, permission, active sessions, and the manager URL when its secret is available.",
+    inputSchema: z.object({artifactId: artifactIdSchema, projectId: optionalProjectIdSchema}).strict(),
+    outputSchema: z.object({activeSessionCount: z.number().int(), copyAvailable: z.boolean(), createdAt: z.string().nullable(), enabled: z.boolean(), legacy: z.boolean(), limitHitRecently: z.boolean(), permission: z.enum(["view", "comment"]), updatedAt: z.string().nullable(), url: z.url().nullable()}).strict(),
+    annotations: readOnlyAnnotations,
+  }, async ({artifactId, projectId}) => toolResult(async () => {
+    const status = await runMcpApplicationEffect(dependencies,
+      GuestReviewService.use((guests) => guests.status({artifactId, principal: identity.principal, projectId})));
+    const url = status.legacy
+      ? artifactBrowserUrl(applicationUrl, artifactId)
+      : status.linkSecret === null ? null : publicLinkUrl(artifactId, projectId, status.linkSecret);
+    return {activeSessionCount: status.activeSessionCount, copyAvailable: url !== null, createdAt: status.createdAt,
+      enabled: status.enabled, legacy: status.legacy, limitHitRecently: status.limitHitRecently,
+      permission: status.permission, updatedAt: status.updatedAt, url};
+  }));
+
+  registerNudgedTool("artifact_public_link_create", {
+    title: "Create a public link",
+    description: "Create a public link only when none exists. Returns its secret URL to the manager; use reset to rotate an existing link.",
+    inputSchema: z.object({artifactId: artifactIdSchema, permission: z.enum(["view", "comment"]).default("view"), projectId: optionalProjectIdSchema}).strict(),
+    outputSchema: z.object({createdAt: z.string(), permission: z.enum(["view", "comment"]), url: z.url()}).strict(),
+    annotations: additiveWriteAnnotations,
+  }, async ({artifactId, permission, projectId}) => toolResult(async () => {
+    const issued = await runMcpApplicationEffect(dependencies,
+      GuestReviewService.use((guests) => guests.create({artifactId, permission, principal: identity.principal, projectId})));
+    if (issued === "exists") throw publicLinkToolFailure("PUBLIC_LINK_EXISTS", "Reset the existing public link to rotate its address.");
+    if (issued === "disabled") throw publicLinkToolFailure("PUBLIC_LINKS_DISABLED", "An administrator has disabled public links.");
+    return {createdAt: issued.createdAt, permission, url: publicLinkUrl(artifactId, projectId, issued.linkSecret)};
+  }));
+
+  registerNudgedTool("artifact_public_link_set_permission", {
+    title: "Set public-link permission",
+    description: "Set whether public-link reviewers can view or comment.",
+    inputSchema: z.object({artifactId: artifactIdSchema, permission: z.enum(["view", "comment"]), projectId: optionalProjectIdSchema}).strict(),
+    outputSchema: z.object({permission: z.enum(["view", "comment"])}).strict(),
+    annotations: idempotentWriteAnnotations,
+  }, async ({artifactId, permission, projectId}) => toolResult(async () => {
+    const result = await runMcpApplicationEffect(dependencies,
+      GuestReviewService.use((guests) => guests.setPermission({artifactId, permission, principal: identity.principal, projectId})));
+    if (result === "legacy") throw publicLinkToolFailure("PUBLIC_LINK_LEGACY", "Reset this legacy public link to enable commenting.");
+    return {permission};
+  }));
+
+  registerNudgedTool("artifact_public_link_reset", {
+    title: "Reset a public link",
+    description: "Rotate the public-link secret and revoke its existing sessions. Returns the new secret URL to the manager.",
+    inputSchema: z.object({artifactId: artifactIdSchema, permission: z.enum(["view", "comment"]).default("view"), projectId: optionalProjectIdSchema}).strict(),
+    outputSchema: z.object({createdAt: z.string(), permission: z.enum(["view", "comment"]), url: z.url()}).strict(),
+    annotations: additiveWriteAnnotations,
+  }, async ({artifactId, permission, projectId}) => toolResult(async () => {
+    const issued = await runMcpApplicationEffect(dependencies,
+      GuestReviewService.use((guests) => guests.enable({artifactId, permission, principal: identity.principal, projectId})));
+    return {createdAt: issued.createdAt, permission, url: publicLinkUrl(artifactId, projectId, issued.linkSecret)};
+  }));
+
+  registerNudgedTool("artifact_public_link_revoke", {
+    title: "Revoke a public link",
+    description: "Revoke the public link and end every session created through it.",
+    inputSchema: z.object({artifactId: artifactIdSchema, projectId: optionalProjectIdSchema}).strict(),
+    outputSchema: z.object({revoked: z.literal(true)}).strict(),
+    annotations: idempotentWriteAnnotations,
+  }, async ({artifactId, projectId}) => toolResult(async () => {
+    const principal = identity.principal;
+    const status = await runMcpApplicationEffect(dependencies,
+      GuestReviewService.use((guests) => guests.status({artifactId, principal, projectId})));
+    if (status.legacy) {
+      const details = await runMcpApplicationEffect(dependencies,
+        ArtifactManagementService.use((management) => management.getArtifact({artifactId, principal, projectId})));
+      await runMcpApplicationEffect(dependencies,
+        ArtifactManagementService.use((management) => management.changeAccess({accessSetting: accessSettings.accountRequired,
+          artifactId, expectedCurrentVersionId: details.current.version.id, idempotencyKey: `public-link-revoke-${crypto.randomUUID()}`,
+          principal, projectId})));
+    }
+    await runMcpApplicationEffect(dependencies,
+      GuestReviewService.use((guests) => guests.revoke({artifactId, principal, projectId})));
+    return {revoked: true as const};
+  }));
+
+  registerNudgedTool("artifact_public_link_sessions", {
+    title: "List public-link sessions",
+    description: "List live sessions created through the artifact's current public link.",
+    inputSchema: z.object({artifactId: artifactIdSchema, projectId: optionalProjectIdSchema}).strict(),
+    outputSchema: z.object({sessions: z.array(z.object({createdAt: z.string(), displayName: z.string(), guestId: z.string(), lastUsedAt: z.string()}))}).strict(),
+    annotations: readOnlyAnnotations,
+  }, async ({artifactId, projectId}) => toolResult(async () => ({sessions: await runMcpApplicationEffect(dependencies,
+    GuestReviewService.use((guests) => guests.listSessions({artifactId, principal: identity.principal, projectId})))})));
+
+  registerNudgedTool("artifact_public_link_revoke_session", {
+    title: "Revoke a public-link session",
+    description: "End one public-link browser session and delete its content bootstrap and session rows.",
+    inputSchema: z.object({artifactId: artifactIdSchema, guestId: z.string().min(1), projectId: optionalProjectIdSchema}).strict(),
+    outputSchema: z.object({revoked: z.literal(true)}).strict(),
+    annotations: idempotentWriteAnnotations,
+  }, async ({artifactId, guestId, projectId}) => toolResult(async () => {
+    await runMcpApplicationEffect(dependencies,
+      GuestReviewService.use((guests) => guests.revokeSession({artifactId, guestId, principal: identity.principal, projectId})));
+    return {revoked: true as const};
+  }));
+
   registerNudgedTool(
     "artifact_guest_invitation_status",
     {
-      title: "Get guest review invitation status",
-      description: "Return whether invited guest review is enabled for one artifact and when its current invitation was created. Never returns the invitation secret.",
+      title: "Get guest review invitation status (deprecated)",
+      description: "Deprecated alias for artifact_public_link_get. Return whether guest review is enabled and when its invitation was created. Never returns the invitation secret.",
       inputSchema: z.object({artifactId: artifactIdSchema, projectId: optionalProjectIdSchema}).strict(),
       outputSchema: z.object({activeSessionCount: z.number().int(), createdAt: z.string().nullable(), enabled: z.boolean(), limitHitRecently: z.boolean()}).strict(),
       annotations: readOnlyAnnotations,
     },
-    async ({artifactId, projectId}) => toolResult(async () => runMcpApplicationEffect(
-      dependencies,
-      GuestReviewService.use((guests) => guests.status({artifactId, principal: identity.principal, projectId})),
-    )),
+    async ({artifactId, projectId}) => toolResult(async () => {
+      const status = await runMcpApplicationEffect(dependencies,
+        GuestReviewService.use((guests) => guests.status({artifactId, principal: identity.principal, projectId})));
+      return {activeSessionCount: status.activeSessionCount, createdAt: status.createdAt,
+        enabled: status.enabled, limitHitRecently: status.limitHitRecently};
+    }),
   );
 
   registerNudgedTool(
     "artifact_guest_invitation_sessions",
     {
-      title: "List invited guest sessions",
-      description: "List live sessions created through the artifact's current guest review invitation.",
+      title: "List invited guest sessions (deprecated)",
+      description: "Deprecated alias for artifact_public_link_sessions. List live sessions created through the artifact's current invitation.",
       inputSchema: z.object({artifactId: artifactIdSchema, projectId: optionalProjectIdSchema}).strict(),
       outputSchema: z.object({sessions: z.array(z.object({createdAt: z.string(), displayName: z.string(), guestId: z.string(), lastUsedAt: z.string()}))}).strict(),
       annotations: readOnlyAnnotations,
@@ -1778,8 +1888,8 @@ export function createArtifactMcpServer(
   registerNudgedTool(
     "artifact_revoke_guest_session",
     {
-      title: "Revoke an invited guest session",
-      description: "End one guest browser session and delete its content bootstrap and session rows.",
+      title: "Revoke an invited guest session (deprecated)",
+      description: "Deprecated alias for artifact_public_link_revoke_session. End one guest browser session and delete its content bootstrap and session rows.",
       inputSchema: z.object({artifactId: artifactIdSchema, guestId: z.string().min(1), projectId: optionalProjectIdSchema}).strict(),
       outputSchema: z.object({revoked: z.literal(true)}).strict(),
       annotations: idempotentWriteAnnotations,
@@ -1794,8 +1904,8 @@ export function createArtifactMcpServer(
   registerNudgedTool(
     "artifact_enable_guest_invitation",
     {
-      title: "Enable invited guest review",
-      description: "Regenerate the artifact's invited guest review link. The returned URL contains a one-time secret in its fragment; share it only with invited reviewers.",
+      title: "Enable invited guest review (deprecated)",
+      description: "Deprecated alias for artifact_public_link_reset. Resets or creates the artifact's public link with comment permission. The returned URL contains a one-time secret in its fragment; share it only with invited reviewers.",
       inputSchema: z.object({artifactId: artifactIdSchema, projectId: optionalProjectIdSchema}).strict(),
       outputSchema: z.object({createdAt: z.string(), enabled: z.literal(true), url: z.url()}).strict(),
       annotations: additiveWriteAnnotations,
@@ -1814,8 +1924,8 @@ export function createArtifactMcpServer(
   registerNudgedTool(
     "artifact_revoke_guest_invitation",
     {
-      title: "Revoke invited guest review",
-      description: "Revoke the artifact's invited guest link and end every session created through it.",
+      title: "Revoke invited guest review (deprecated)",
+      description: "Deprecated alias for artifact_public_link_revoke. Revoke the artifact's invited guest link and end every session created through it.",
       inputSchema: z.object({artifactId: artifactIdSchema, projectId: optionalProjectIdSchema}).strict(),
       outputSchema: z.object({revoked: z.literal(true)}).strict(),
       annotations: idempotentWriteAnnotations,
@@ -3477,7 +3587,18 @@ function failureResult(cause: unknown) {
   };
 }
 
+class PublicLinkToolFailure extends Error {
+  readonly code: "PUBLIC_LINK_EXISTS" | "PUBLIC_LINKS_DISABLED" | "PUBLIC_LINK_LEGACY";
+
+  constructor(code: "PUBLIC_LINK_EXISTS" | "PUBLIC_LINKS_DISABLED" | "PUBLIC_LINK_LEGACY", message: string) {
+    super(message);
+    this.code = code;
+    this.name = "PublicLinkToolFailure";
+  }
+}
+
 function errorProjection(cause: unknown) {
+  if (cause instanceof PublicLinkToolFailure) return {code: cause.code, message: cause.message};
   if (cause instanceof Error && isArtifactServerFailure(cause)) {
     switch (cause._tag) {
       case "ArtifactRepositoryFailure":
@@ -3498,6 +3619,10 @@ function errorProjection(cause: unknown) {
     code: "INTERNAL_ERROR",
     message: "The server could not complete the request.",
   };
+}
+
+function publicLinkToolFailure(code: "PUBLIC_LINK_EXISTS" | "PUBLIC_LINKS_DISABLED" | "PUBLIC_LINK_LEGACY", message: string): Error {
+  return new PublicLinkToolFailure(code, message);
 }
 
 function encodePageCursor(cursor: {readonly createdAt: string; readonly id: string} | null): string | null {
