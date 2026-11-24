@@ -48,16 +48,14 @@ secret:
     apiToken: api-token
     embedBindingSecret: ""
     embedBindingSecretPrevious: ""
+    publicLinkKey: ""
+    publicLinkKeyPrevious: ""
     databaseUrl: database-url
     s3AccessKeyId: ""
     s3SecretAccessKey: ""
     workosApiKey: ""
     oidcClientSecret: ""
     # oidcDirectoryClientSecret: oidc-directory-client-secret
-
-publicLinks:
-  existingSecret: ""
-  secretKey: ""
 
 identity:
   workosClientId: ""

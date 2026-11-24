@@ -79,13 +79,6 @@ spec:
             - "8787"
           env:
             {{- include "artifact-server.runtimeEnvironment" . | nindent 12 }}
-            {{- if or .Values.publicLinks.existingSecret .Values.publicLinks.secretKey }}
-            {{- if or (not .Values.publicLinks.existingSecret) (not .Values.publicLinks.secretKey) }}
-            {{- fail "publicLinks.existingSecret and publicLinks.secretKey must be set together" }}
-            {{- end }}
-            - name: ARTIFACT_SERVER_PUBLIC_LINK_KEY_FILE
-              value: /run/secrets/public-link/key
-            {{- end }}
           ports:
             - name: http
               containerPort: 8787
@@ -119,11 +112,6 @@ spec:
             - name: runtime-secrets
               mountPath: /run/secrets/artifact-server
               readOnly: true
-            {{- if .Values.publicLinks.existingSecret }}
-            - name: public-link-key
-              mountPath: /run/secrets/public-link
-              readOnly: true
-            {{- end }}
             - name: temporary
               mountPath: /tmp
       volumes:
@@ -133,15 +121,6 @@ spec:
             defaultMode: 288
             items:
               {{- include "artifact-server.secretItems" . | nindent 14 }}
-        {{- if .Values.publicLinks.existingSecret }}
-        - name: public-link-key
-          secret:
-            secretName: {{ .Values.publicLinks.existingSecret | quote }}
-            defaultMode: 288
-            items:
-              - key: {{ .Values.publicLinks.secretKey | quote }}
-                path: key
-        {{- end }}
         - name: temporary
           emptyDir:
             medium: Memory

@@ -164,18 +164,22 @@ This key is installation-scoped because link sealing binds it to the
 installation ID. Give every installation its own key; never reuse a key across
 installations.
 
-For Kubernetes, save that output to a protected file and create a Secret in the
-same namespace as the release:
+For Kubernetes, add the key to the existing chart Secret in the same namespace
+as the release. The chart reads both current and previous keys from that Secret
+using `secret.keys`:
 
 ```sh
-kubectl --namespace artifact-server create secret generic artifact-server-public-link \
+kubectl --namespace artifact-server create secret generic artifact-server-runtime \
+  --from-file=api-token=/secure/artifact-server/api-token \
+  --from-file=database-url=/secure/artifact-server/database-url \
   --from-file=public-link-key=/secure/artifact-server/public-link-key
 ```
 
-Set `publicLinks.existingSecret: artifact-server-public-link` and
-`publicLinks.secretKey: public-link-key` in the Helm values. When you update
-the Secret, change `secret.rolloutChecksum` to a new non-secret version so the
-server pods restart and load the new value.
+Set `secret.keys.publicLinkKey: public-link-key` in the Helm values. For
+rotation, add the old key as `public-link-key-previous` in the same Secret and
+set `secret.keys.publicLinkKeyPrevious` to that key name. When you update the
+Secret, change `secret.rolloutChecksum` to a new non-secret version so the
+server pods restart and load the new values.
 
 The optional `ARTIFACT_SERVER_PUBLIC_LINK_KEY_PREVIOUS` and
 `ARTIFACT_SERVER_PUBLIC_LINK_KEY_PREVIOUS_FILE` settings accept one prior key
@@ -188,13 +192,15 @@ discard the only key that can open existing links unless you are prepared to
 Reset them.
 
 For Compose, pass either direct variable or its `_FILE` variant through the
-service environment. For Helm, create and manage the Kubernetes Secret outside
-the chart; the chart deliberately does not generate a secret. Helm's `lookup`
-returns no Secret during ArgoCD rendering, which would make a chart-generated
-key unstable across syncs. Set both `publicLinks.existingSecret` and
-`publicLinks.secretKey` to mount the named Secret key at
-`/run/secrets/public-link/key`. Leave both empty when public-link copying does
-not need persistence.
+service environment. The chart uses the existing `secret.name` Secret and does
+not generate or look up key values. Leave `secret.keys.publicLinkKey` and
+`secret.keys.publicLinkKeyPrevious` empty when public-link copying does not
+need persistence.
+
+| Setting | Helm value | Meaning |
+| --- | --- | --- |
+| `ARTIFACT_SERVER_PUBLIC_LINK_KEY` or `_FILE` | `secret.keys.publicLinkKey` | Current installation-scoped key in the existing chart Secret. |
+| `ARTIFACT_SERVER_PUBLIC_LINK_KEY_PREVIOUS` or `_FILE` | `secret.keys.publicLinkKeyPrevious` | Optional prior key used during demand-driven rotation. |
 
 ## Configure authentication
 

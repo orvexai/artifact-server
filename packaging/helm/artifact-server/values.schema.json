@@ -122,6 +122,8 @@
             "apiToken": {"type": "string", "minLength": 1},
             "embedBindingSecret": {"type": "string"},
             "embedBindingSecretPrevious": {"type": "string"},
+            "publicLinkKey": {"type": "string"},
+            "publicLinkKeyPrevious": {"type": "string"},
             "databaseUrl": {"type": "string", "minLength": 1},
             "s3AccessKeyId": {"type": "string"},
             "s3SecretAccessKey": {"type": "string"},
@@ -130,15 +132,6 @@
             "oidcDirectoryClientSecret": {"type": "string"}
           }
         }
-      }
-    },
-    "publicLinks": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["existingSecret", "secretKey"],
-      "properties": {
-        "existingSecret": {"type": "string"},
-        "secretKey": {"type": "string"}
       }
     },
     "identity": {
