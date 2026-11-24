@@ -13,3 +13,23 @@ Every product mark surface uses Mark D, and the favicon and app-icon files are b
 # brand-mark-theme
 
 Wherever Mark D renders, its dot uses the theme accent (`#0891b2` in light theme and `#23b5d1` in dark theme), while its frame and ring use the theme text colour.
+
+# brand-loader
+
+Every loader has an accessible name and the right role, shows no rotation under reduced motion, and needs no content security policy change.
+
+# brand-naming
+
+No user-visible Artifact Server or Orvex product string appears in the scanned surfaces outside brand-naming-allowlist.json; Orvex as an organization name is allowlisted.
+
+# brand-compat
+
+The CLI binary, environment names, MCP server and tool names, and cookie names retain their established compatibility names.
+
+# brand-identity
+
+The MCP serverInfo title, OAuth resource_name and DCR client_name read Houston Artifacts; the client id, server name and scope are unchanged.
+
+# brand-assets
+
+Shipped assets under apps/web/public and apps/web/src/brand contain no violet or indigo values.

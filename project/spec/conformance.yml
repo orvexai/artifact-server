@@ -5413,7 +5413,7 @@ requirements:
     owner: web-application
     source: {file: houston-brand-spec.md, anchor: brand-contrast}
     acceptance:
-      behavior: {id: BRD-002-B, description: "All 62 design-system pairs plus accent-text-strong, danger-hover and destructive reach 4.5 to 1 for text and 3 to 1 for non-text in both themes."}
+      behavior: {id: BRD-002-B, description: "All 62 design-system pairs plus accent-text-strong and destructive reach 4.5 to 1 for text and 3 to 1 for non-text in both themes; danger-hover is judged as a background under destructive text at 4.5 to 1."}
       failure: {id: BRD-002-F, description: "A token change that drops any listed pair below its threshold fails, naming the pair and theme."}
     deployments: *all
     status: implementing
@@ -5447,4 +5447,69 @@ requirements:
     status: implementing
     proof_gap: "Unit assertions verify token mapping and Mark D source colors, but browser-computed rendering is not exercised; browser evidence follows in R2."
     depends_on: [BRD-003]
+    evidence: []
+
+  - id: BRD-005
+    kind: behavior
+    behavior: Every loader has an accessible name and the right role (status, or progressbar with a value), shows no rotation under reduced motion, and needs no content security policy change.
+    owner: web-application
+    source: {file: houston-brand-spec.md, anchor: brand-loader}
+    acceptance:
+      behavior: {id: BRD-005-B, description: "Every loader exposes an accessible name and a status role, or a progressbar role with a value, and shows no rotation when reduced motion is requested."}
+      failure: {id: BRD-005-F, description: "A loader without an accessible name or role, or that rotates under reduced motion, or a CSP change, fails."}
+    deployments: *all
+    status: specified
+    depends_on: [BRD-001]
+    evidence: []
+
+  - id: BRD-006
+    kind: constraint
+    behavior: No user-visible Artifact Server or Orvex product string appears in the web UI, server pages and HTTP copy, CLI, MCP or integration entry points outside brand-naming-allowlist.json.
+    owner: product-core
+    source: {file: houston-brand-spec.md, anchor: brand-naming}
+    acceptance:
+      behavior: {id: BRD-006-B, description: "A scan of apps/web/src, src/http, src/shared, src/cli, src/mcp and integrations/*/index.ts finds no user-visible Artifact Server or Orvex product string outside brand-naming-allowlist.json."}
+      failure: {id: BRD-006-F, description: "A new user-visible Artifact Server or Orvex product string outside the allowlist fails, naming file and line."}
+    deployments: *all
+    status: specified
+    depends_on: []
+    evidence: []
+
+  - id: BRD-007
+    kind: constraint
+    behavior: The CLI binary, environment names, MCP server and tool names, and cookie names remain compatible with their established names.
+    owner: product-core
+    source: {file: houston-brand-spec.md, anchor: brand-compat}
+    acceptance:
+      behavior: {id: BRD-007-B, description: "The compatibility snapshot preserves the established binary, environment, MCP, tool, and cookie names."}
+      failure: {id: BRD-007-F, description: "Any change to the bin, env name set, MCP server or tool names, or cookie names fails the snapshot."}
+    deployments: *all
+    status: specified
+    depends_on: []
+    evidence: []
+
+  - id: BRD-008
+    kind: constraint
+    behavior: The MCP serverInfo title, the OAuth resource_name and the DCR client_name read Houston Artifacts, while the client id, server name and scope are unchanged.
+    owner: mcp
+    source: {file: houston-brand-spec.md, anchor: brand-identity}
+    acceptance:
+      behavior: {id: BRD-008-B, description: "The serverInfo title, resource_name and client_name read Houston Artifacts, and the client id, server name and scope equal their established values."}
+      failure: {id: BRD-008-F, description: "A renamed client id, server name or scope, or a display name still reading Artifact Server, fails."}
+    deployments: *all
+    status: specified
+    depends_on: [BRD-007]
+    evidence: []
+
+  - id: BRD-009
+    kind: constraint
+    behavior: No violet or indigo value appears in any shipped asset under apps/web/public or apps/web/src/brand.
+    owner: web-application
+    source: {file: houston-brand-spec.md, anchor: brand-assets}
+    acceptance:
+      behavior: {id: BRD-009-B, description: "Assets under apps/web/public and apps/web/src/brand contain no violet or indigo value."}
+      failure: {id: BRD-009-F, description: "A violet or indigo value in a shipped asset fails, naming the file."}
+    deployments: *all
+    status: specified
+    depends_on: [BRD-001]
     evidence: []
