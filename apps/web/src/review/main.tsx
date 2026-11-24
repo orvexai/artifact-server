@@ -1,3 +1,5 @@
+import "../lib/zod-csp.ts";
+
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
