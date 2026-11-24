@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.32
+
+- Share artifacts with public links that visitors can open without signing in, and switch organizations from the catalog and Settings.
+- Public links keep working without a copy key, but the Copy link action for an existing link is unavailable until you configure `ARTIFACT_SERVER_PUBLIC_LINK_KEY` or `_FILE`; resetting a link lets you copy it once. Helm uses `secret.keys.publicLinkKey` and `secret.keys.publicLinkKeyPrevious` for rotation. See `docs/deployment.md`.
+- Review now uses @plannotator/ui 0.64.0.
+- Refreshed the Houston Artifacts look and feel across the product.
+
 ## 0.1.31
 
 - Pages open in Review can post a comment thread through `window.artifactServer.comments.create` only after the viewer confirms; the prompt now states the full length when it shows only the first 500 characters, unknown bridge operations are refused, and the page bridge is documented in `docs/page-bridge.md`.
