@@ -171,6 +171,16 @@ describe("Houston Brand and Design System v0.4.0", () => {
   });
 
   test("BRD-002-B all pack contrast pairs and local text tokens meet their WCAG minimums", () => {
+    const appIndexCss = text("apps/web/src/index.css");
+    for (const importLine of [
+      '@import "./brand/houston/variables.css";',
+      '@import "./brand/houston/contrast.css";',
+      '@import "./theme-tokens.css";',
+    ]) {
+      expect(appIndexCss).toContain(importLine);
+    }
+    expect(appIndexCss).toContain("--color-destructive-hover: var(--ox-color-danger-hover);");
+
     const pack = contrastPackSchema.parse(JSON.parse(text("apps/web/src/brand/houston/contrast.json")));
     expect(pack.pairs).toHaveLength(62);
     for (const pair of pack.pairs) {
