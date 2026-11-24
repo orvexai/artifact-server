@@ -505,10 +505,20 @@ function NativeMediaPreview({
 }) {
   const [status, setStatus] = useState<"error" | "loading" | "ready">("loading");
   const [retry, setRetry] = useState(0);
+  const [comet, setComet] = useState(false);
   const mountedRef = useRef(true);
   const probeInFlightRef = useRef(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const accessibleName = `${artifactName} — ${entry.path}`;
+
+  useEffect(() => {
+    if (status !== "loading") {
+      setComet(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setComet(true), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [retry, status]);
 
   useEffect(() => () => {
     mountedRef.current = false;
@@ -576,8 +586,8 @@ function NativeMediaPreview({
         />
       )}
       {status === "loading" ? (
-        <div className="as-media-preview__loading" role="status">
-          <span aria-hidden="true" className="as-preview-state__mark" />
+        <div className="as-media-preview__loading">
+          <houston-loader label="Loading preview" variant={comet ? "comet" : "orbit"} />
           <strong>Loading preview</strong>
           <small>{entry.path}</small>
         </div>
@@ -621,7 +631,17 @@ function PdfPreview({
   const [source, setSource] = useState<string | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "stalled">("loading");
+  const [comet, setComet] = useState(false);
   const accessibleName = `${artifactName} — ${entry.path}`;
+
+  useEffect(() => {
+    if (status !== "loading") {
+      setComet(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setComet(true), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [attempt, status]);
 
   useEffect(() => {
     let current = true;
@@ -685,8 +705,8 @@ function PdfPreview({
         />
       )}
       {status === "loading" ? (
-        <div className="as-media-preview__loading" role="status">
-          <span aria-hidden="true" className="as-preview-state__mark" />
+        <div className="as-media-preview__loading">
+          <houston-loader label="Loading preview" variant={comet ? "comet" : "orbit"} />
           <strong>Loading preview</strong>
           <small>{entry.path}</small>
         </div>
@@ -810,8 +830,8 @@ function PreviewState({
   readonly title: string;
 }) {
   return (
-    <div className="as-preview-state" role="status">
-      <span aria-hidden="true" className="as-preview-state__mark" />
+    <div className="as-preview-state">
+      <houston-loader label={title} variant="orbit" />
       <h3>{title}</h3>
       <p>{description}</p>
     </div>

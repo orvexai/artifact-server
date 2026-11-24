@@ -303,6 +303,7 @@ export function PublicLinksScreen() {
     return (
       <StatePanel
         description="Loading active public links across every project."
+        loading
         title="Loading public links"
       />
     );
@@ -569,7 +570,7 @@ export function PublicLinksScreen() {
                 type="button"
                 variant="outline"
               >
-                {loading ? "Loading…" : "Next"}
+                {loading ? <><houston-loader label="Loading the next page of public links" variant="orbit" /> Loading…</> : "Next"}
               </Button>
             </nav>
           </>

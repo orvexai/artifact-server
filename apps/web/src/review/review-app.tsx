@@ -71,7 +71,6 @@ import {
   sourceDriftDescription,
   sourceFreshnessLabel,
 } from "@/lib/presentation";
-import artifactServerAnimationUrl from "./assets/artifact-server.svg";
 import {ArtifactMark} from "./artifact-mark.tsx";
 import {markdownPreviewByteLimit, previewKindOf} from "./preview-kind.ts";
 import {ComparedFileLines} from "./review-comparison.tsx";
@@ -1459,12 +1458,7 @@ function ArtifactReview({
               <HugeiconsIcon aria-hidden="true" icon={Cancel01Icon} strokeWidth={1.8} />
             </Dialog.Close>
             <div className="as-home-overlay__content">
-            <img
-              alt=""
-              aria-hidden="true"
-                className="as-home-overlay__animation"
-              src={artifactServerAnimationUrl}
-            />
+              <houston-loader className="as-home-overlay__animation" label="Opening Houston Artifacts" variant="arrival" />
               <nav aria-label="Houston Artifacts resources" className="as-home-resources">
                 <a
                   className="as-home-resources__link"
@@ -1649,7 +1643,7 @@ function ArtifactReview({
             <InlineState description={listError.message} title="Catalog unavailable" tone="error" />
           )}
           {listLoading && items.length === 0 ? (
-            <InlineState description="Reading this project." title="Loading artifacts" />
+            <InlineState description="Reading this project." loading title="Loading artifacts" />
           ) : null}
           {!listLoading && listError === null && catalogItems.length === 0 ? (
             <InlineState
@@ -1714,12 +1708,14 @@ function ArtifactReview({
             title="Refresh artifacts published by agents, the CLI, or other sessions"
             type="button"
           >
-            <HugeiconsIcon
-              aria-hidden="true"
-              className="as-catalog-refresh__icon"
-              icon={catalogRefreshState === "complete" ? Tick02Icon : RefreshIcon}
-              strokeWidth={1.8}
-            />
+            {catalogRefreshState === "loading"
+              ? <houston-loader label="Refreshing artifacts" variant="orbit" />
+              : <HugeiconsIcon
+                aria-hidden="true"
+                className="as-catalog-refresh__icon"
+                icon={catalogRefreshState === "complete" ? Tick02Icon : RefreshIcon}
+                strokeWidth={1.8}
+              />}
             <span>
               {catalogRefreshState === "loading"
                 ? "Refreshing…"
@@ -1981,7 +1977,7 @@ function ArtifactReview({
             {selectedArtifactId === null ? (
               <PreviewWelcome />
             ) : detailLoading && details === null ? (
-              <PreviewWelcome description="Loading artifact metadata and immutable history." title="Reading artifact" />
+              <PreviewWelcome description="Loading artifact metadata and immutable history." loading title="Reading artifact" />
             ) : detailError !== null && selectedVersion === null ? (
               <PreviewWelcome
                 description="The project, artifact, or version named by this Review URL is unavailable."
@@ -2562,7 +2558,7 @@ function ActivityInspector({
     <div className="as-inspector-stack">
       <InspectorSection count={actions.length} title="Artifact activity">
         {error === null ? null : <p className="as-inspector-error" role="alert">{error.message}</p>}
-        {actions.length === 0 && loading ? <p className="as-inspector-empty">Loading activity…</p> : null}
+        {actions.length === 0 && loading ? <p className="as-inspector-empty"><houston-loader label="Loading activity" variant="orbit" /> Loading activity…</p> : null}
         {actions.length === 0 && !loading ? <p className="as-inspector-empty">No activity recorded.</p> : null}
         <ol className="as-activity-list">
           {actions.map((action) => (
@@ -2851,14 +2847,18 @@ function AccessPill({access}: {readonly access: ArtifactDetails["artifact"]["acc
 
 function PreviewWelcome({
   description = "Choose an artifact from the catalog to inspect its current immutable version.",
+  loading = false,
   title = "Select an artifact",
 }: {
   readonly description?: string;
+  readonly loading?: boolean;
   readonly title?: string;
 }) {
   return (
     <div className="as-preview-welcome">
-      <span aria-hidden="true"><HugeiconsIcon icon={Link01Icon} strokeWidth={1.4} /></span>
+      {loading
+        ? <houston-loader label={title} variant="orbit" />
+        : <span aria-hidden="true"><HugeiconsIcon icon={Link01Icon} strokeWidth={1.4} /></span>}
       <p>Immutable artifact workspace</p>
       <h2>{title}</h2>
       <small>{description}</small>
@@ -2868,15 +2868,18 @@ function PreviewWelcome({
 
 function InlineState({
   description,
+  loading = false,
   title,
   tone = "neutral",
 }: {
   readonly description: string;
+  readonly loading?: boolean;
   readonly title: string;
   readonly tone?: "error" | "neutral";
 }) {
   return (
-    <div className="as-inline-state" data-tone={tone} role="status">
+    <div className="as-inline-state" data-tone={tone} role={loading ? undefined : "status"}>
+      {loading ? <houston-loader label={title} variant="orbit" /> : null}
       <strong>{title}</strong>
       <p>{description}</p>
     </div>
@@ -3097,7 +3100,9 @@ function ReviewGate({
   return (
     <main className="as-gate">
       <section>
-        <span aria-hidden="true" className="as-gate__mark">A</span>
+        {title.startsWith("Loading")
+          ? <houston-loader className="as-gate__mark" label={title} variant="arrival" />
+          : <div className="as-gate__mark"><ArtifactMark className="as-gate__mark-icon" /></div>}
         <p>Houston Artifacts</p>
         <h1>{title}</h1>
         <small>{description}</small>

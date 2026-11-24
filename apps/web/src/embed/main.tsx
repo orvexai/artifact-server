@@ -2,6 +2,8 @@ import {createRoot} from "react-dom/client";
 import {useEffect, useRef, useState} from "react";
 import {z} from "zod";
 
+import "../brand/houston/motion/houston-loader.js";
+import "../brand/houston/loader.css";
 import {api, organizationLoginHref, organizationPath, organizationPathname, type ArtifactVersion} from "@/api/client";
 import {documentBaseUrl} from "@/review/content-host-url";
 import {frameMessageSchema, reviewProtocolVersion, type ReviewInit} from "@/review-frame/protocol";
@@ -162,7 +164,7 @@ function EmbedApp(): React.ReactNode {
       if (popup === null) setMessage("Your browser blocked the sign-in popup. Allow popups for this site, then try again.");
     }} type="button">Sign in to view</button></main>;
   }
-  if (loaded === null) return <main className="as-embed-loading" aria-busy="true">Loading artifact…</main>;
+  if (loaded === null) return <main className="as-embed-loading ox-loading" aria-busy="true"><houston-loader label="Loading artifact" variant="orbit" />Loading artifact…</main>;
   if (loaded.publicView) {
     const publicUrl = new URL(loaded.version.links.version);
     publicUrl.pathname = "/" + loaded.entryPath.split("/").map(encodeURIComponent).join("/");

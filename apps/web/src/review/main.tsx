@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { installDraftGuard } from "@/components/comments/comment-drafts";
 
 import { ReviewApp } from "./review-app.tsx";
+import "../brand/houston/motion/houston-loader.js";
 import "../index.css";
 import "./review.css";
 

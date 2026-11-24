@@ -459,9 +459,9 @@ select:focus-visible {
 
 .as-catalog__brand {
   align-items: center;
-  background: var(--as-action);
+  background: transparent;
   border-radius: var(--as-radius);
-  color: var(--as-on-action);
+  color: inherit;
   display: inline-flex;
   flex: 0 0 auto;
   height: 2rem;
@@ -471,8 +471,8 @@ select:focus-visible {
 }
 
 .as-catalog__brand-mark {
-  height: 1.15rem;
-  width: 1.15rem;
+  height: 1.5rem;
+  width: 1.5rem;
 }
 
 .as-project-trigger {
@@ -886,8 +886,25 @@ select:focus-visible {
   opacity: 1;
 }
 
-.as-catalog-refresh[data-state="loading"] .as-catalog-refresh__icon {
-  animation: as-catalog-refresh-spin 480ms linear infinite;
+.as-catalog-refresh houston-loader {
+  height: 16px;
+  width: 16px;
+}
+
+.as-inline-state houston-loader,
+.as-inspector-empty houston-loader {
+  height: 24px;
+  width: 24px;
+}
+
+.as-send-to-agent houston-loader {
+  height: 16px;
+  width: 16px;
+}
+
+.as-settings__content .ox-loading houston-loader {
+  height: 48px;
+  width: 48px;
 }
 
 .as-catalog-refresh__icon {
@@ -3483,16 +3500,9 @@ select:focus-visible {
 }
 
 .as-gate__mark {
-  align-items: center;
-  background: var(--as-action);
-  border-radius: var(--as-radius);
-  color: var(--as-on-action);
-  display: flex;
-  font-family: var(--ox-font-code);
-  font-weight: 600;
-  height: 2.5rem;
-  justify-content: center;
-  width: 2.5rem;
+  display: inline-block;
+  height: 64px;
+  width: 64px;
 }
 
 .as-gate p {
@@ -3647,8 +3657,6 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
 
 .as-settings__brand-mark {
   align-items: center;
-  background: var(--as-action);
-  color: var(--as-on-action);
   display: inline-flex;
   height: 2rem;
   justify-content: center;
@@ -3656,8 +3664,24 @@ body:has(.as-settings) [data-slot="dialog-trigger"]:active:not(:disabled) {
 }
 
 .as-settings__mark {
-  height: 1.15rem;
-  width: 1.15rem;
+  height: 1.5rem;
+  width: 1.5rem;
+}
+
+.as-gate__mark {
+  height: 64px;
+  width: 64px;
+}
+
+.as-gate__mark-icon {
+  height: 64px;
+  width: 64px;
+}
+
+.as-home-overlay__animation {
+  height: 64px;
+  max-height: none;
+  width: 64px;
 }
 
 .as-settings__header-actions {
