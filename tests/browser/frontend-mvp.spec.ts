@@ -1584,6 +1584,7 @@ test.describe("Houston Artifacts frontend MVP", () => {
 
       await localLogin(fixture);
       await fixture.page.goto(`${fixture.server.baseUrl}/review/settings/public-links`);
+      fixture.page.on("dialog", (dialog) => dialog.accept());
       await expect(fixture.page.getByRole("heading", {name: "Public links"})).toBeVisible();
       const firstRow = fixture.page.getByRole("row").filter({hasText: "First public link"});
       await expect(firstRow.getByText("Default", {exact: true})).toBeVisible();
@@ -1623,12 +1624,12 @@ test.describe("Houston Artifacts frontend MVP", () => {
       expect(await inventory.evaluate((element) => element.scrollWidth - element.clientWidth))
         .toBe(0);
       await expect(firstRow.getByRole("link", {name: "Open"})).toBeVisible();
-      await expect(firstRow.getByRole("button", {name: "Make private"})).toBeVisible();
+      await expect(firstRow.getByRole("button", {name: "Revoke"})).toBeVisible();
 
       const otherRow = fixture.page.getByRole("row").filter({
         hasText: "Cross-project public link",
       });
-      await otherRow.getByRole("button", {name: "Make private"}).click();
+      await otherRow.getByRole("button", {name: "Revoke"}).click();
       await fixture.page.getByRole("button", {name: "Make private", exact: true}).last().click();
       await expect(otherRow).toHaveCount(0);
 

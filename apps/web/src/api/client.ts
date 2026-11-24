@@ -246,10 +246,19 @@ export type Manifest = z.infer<typeof manifestSchema>;
 export type ArtifactVersion = z.infer<typeof artifactVersionSchema>;
 export type ArtifactState = z.infer<typeof artifactStateSchema>;
 
+const publicLinkKindSchema = z.enum(["legacy", "secret"]);
 const publicLinkItemSchema = z.object({
   artifact: artifactSchema,
   currentVersion: versionSchema,
   links: z.object({ public: z.url() }),
+  kind: publicLinkKindSchema,
+  secretLink: z.object({
+    createdAt: z.string(),
+    generation: z.number().int().positive(),
+    invitationId: z.string(),
+    permission: z.enum(["view", "comment"]),
+    updatedAt: z.string(),
+  }).nullable(),
   project: projectSchema,
 });
 
@@ -259,9 +268,17 @@ const publicLinkPageSchema = z.object({
 });
 
 const makePublicLinkPrivateItemSchema = z.object({
+  kind: z.literal("legacy").optional(),
   artifactId: z.string(),
   expectedCurrentVersionId: z.string(),
   idempotencyKey: z.string(),
+  projectId: z.string(),
+});
+
+const makeSecretPublicLinkPrivateItemSchema = z.object({
+  artifactId: z.string(),
+  generation: z.number().int().positive(),
+  kind: z.literal("secret"),
   projectId: z.string(),
 });
 
@@ -292,12 +309,55 @@ const publicLinkMutationResponseSchema = z.object({
   }),
   warning: z.string(),
 });
+const adminPublicLinkRevokeResponseSchema = z.object({
+  results: z.array(z.object({
+    artifactId: z.string(),
+    error: z.object({code: z.string(), message: z.string()}).optional(),
+    kind: publicLinkKindSchema.optional(),
+    projectId: z.string(),
+    status: z.enum(["made_private", "revoked", "stale_generation", "failed"]),
+  })),
+});
+export type AdminPublicLinkRevokeResponse = z.infer<typeof adminPublicLinkRevokeResponseSchema>;
+
+export function adminPublicLinkRevokeFeedback(status: "made_private" | "revoked" | "stale_generation", artifactName: string) {
+  if (status === "stale_generation") {
+    return {kind: "warning", message: "This link was reset after the list loaded and is still active. Review it and revoke again."} as const;
+  }
+  return {kind: "success", message: `Public link revoked for ${artifactName}.`} as const;
+}
 
 export type PublicLinkItem = z.infer<typeof publicLinkItemSchema>;
+/** Validate the tagged inventory row returned by the public-link administration API. */
+export function mapPublicLinkInventoryRow(value: z.input<typeof publicLinkItemSchema>): PublicLinkItem {
+  return publicLinkItemSchema.parse(value);
+}
+/** Build the generation-checked administrator revoke command for one row. */
+export type AdminPublicLinkRevokeItem = LegacyMakePublicLinkPrivateItem | z.infer<
+  typeof makeSecretPublicLinkPrivateItemSchema
+>;
+export function buildPublicLinkRevokeItem(item: PublicLinkItem): AdminPublicLinkRevokeItem {
+  if (item.kind === "secret") {
+    if (item.secretLink === null) throw new Error("A secret public-link row is missing its generation.");
+    return {
+      artifactId: item.artifact.id,
+      generation: item.secretLink.generation,
+      kind: "secret",
+      projectId: item.project.id,
+    };
+  }
+  return {
+    artifactId: item.artifact.id,
+    expectedCurrentVersionId: item.artifact.currentVersionId,
+    idempotencyKey: crypto.randomUUID(),
+    projectId: item.project.id,
+  };
+}
 export type PublicLinkPage = z.infer<typeof publicLinkPageSchema>;
-export type MakePublicLinkPrivateItem = z.infer<
+type LegacyMakePublicLinkPrivateItem = z.infer<
   typeof makePublicLinkPrivateItemSchema
 >;
+export type MakePublicLinkPrivateItem = LegacyMakePublicLinkPrivateItem;
 export type PublicLinkMutationResult = z.infer<
   typeof publicLinkMutationResultSchema
 >;
@@ -1065,7 +1125,40 @@ export type PublicArtifact = z.infer<typeof publicArtifactSchema>;
 const guestInvitationStatusSchema = z.object({activeSessionCount: z.number().int(), createdAt: z.string().nullable(), enabled: z.boolean(), limitHitRecently: z.boolean()});
 const guestInvitationSessionsSchema = z.object({sessions: z.array(z.object({createdAt: z.string(), displayName: z.string(), guestId: z.string(), lastUsedAt: z.string()}))});
 const guestSessionSchema = z.object({displayName: z.string(), expiresAt: z.string()});
-const guestCurrentSchema = z.object({artifactName: z.string(), bootstrapUrl: z.url(), createdAt: z.string(), displayName: z.string(), number: z.number().int(), versionId: z.string()});
+const guestCurrentSchema = z.object({
+  artifactName: z.string(),
+  bootstrapUrl: z.url(),
+  createdAt: z.string(),
+  displayName: z.string(),
+  nameRequired: z.boolean(),
+  number: z.number().int(),
+  paused: z.boolean(),
+  permission: z.enum(["view", "comment"]),
+  versionId: z.string(),
+});
+const publicLinkAdminStatusSchema = z.object({
+  activeSessionCount: z.number().int(),
+  copyAvailable: z.boolean(),
+  createdAt: z.string().nullable(),
+  enabled: z.boolean(),
+  legacy: z.boolean(),
+  limitHitRecently: z.boolean(),
+  permission: z.enum(["view", "comment"]).nullable(),
+  updatedAt: z.string().nullable(),
+  url: z.url().nullable().optional(),
+});
+const publicLinkAdminSessionsSchema = z.object({
+  sessions: z.array(z.object({
+    createdAt: z.string(),
+    displayName: z.string(),
+    guestId: z.string(),
+    lastUsedAt: z.string(),
+  })),
+});
+export type PublicLinkAdminStatus = z.infer<typeof publicLinkAdminStatusSchema>;
+export type PublicLinkAdminSession = z.infer<typeof publicLinkAdminSessionsSchema>["sessions"][number];
+const publicVisitorSchema = guestCurrentSchema;
+export type PublicVisitor = z.infer<typeof publicVisitorSchema>;
 const guestCommentAuthorSchema = z.object({displayName: z.string(), isYou: z.boolean()});
 const guestCommentThreadSchema = commentThreadSchema.extend({author: guestCommentAuthorSchema, resolvedBy: guestCommentAuthorSchema.nullable()});
 const guestCommentReplySchema = commentReplySchema.extend({author: guestCommentAuthorSchema});
@@ -1126,14 +1219,61 @@ export const api = {
     `/api/v1/artifacts/${encodeURIComponent(artifactId)}/guest-invitation/sessions/${encodeURIComponent(guestId)}?${projectQuery(projectId)}`,
     {headers: mutationHeaders(), method: "DELETE"},
   ),
-  exchangeGuestSession: (artifactId: string, secret: string, displayName: string) => request(
+  publicLinkStatus: (projectId: string, artifactId: string) => request(
+    publicLinkAdminStatusSchema,
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/public-link?${projectQuery(projectId)}`,
+  ),
+  createPublicLink: (projectId: string, artifactId: string, permission: "view" | "comment") => request(
+    z.object({createdAt: z.string(), permission: z.enum(["view", "comment"]), url: z.url()}),
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/public-link?${projectQuery(projectId)}`,
+    {body: JSON.stringify({permission}), headers: mutationHeaders(), method: "POST"},
+  ),
+  updatePublicLink: (projectId: string, artifactId: string, permission: "view" | "comment") => request(
+    z.object({permission: z.enum(["view", "comment"])}),
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/public-link?${projectQuery(projectId)}`,
+    {body: JSON.stringify({permission}), headers: mutationHeaders(), method: "PATCH"},
+  ),
+  resetPublicLink: (projectId: string, artifactId: string, permission: "view" | "comment") => request(
+    z.object({createdAt: z.string(), permission: z.enum(["view", "comment"]), url: z.url()}),
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/public-link/reset?${projectQuery(projectId)}`,
+    {body: JSON.stringify({permission}), headers: mutationHeaders(), method: "POST"},
+  ),
+  revokePublicLink: (projectId: string, artifactId: string) => requestNoContent(
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/public-link?${projectQuery(projectId)}`,
+    {headers: mutationHeaders(), method: "DELETE"},
+  ),
+  publicLinkSessions: (projectId: string, artifactId: string) => request(
+    publicLinkAdminSessionsSchema,
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/public-link/sessions?${projectQuery(projectId)}`,
+  ),
+  revokePublicLinkSession: (projectId: string, artifactId: string, guestId: string) => requestNoContent(
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/public-link/sessions/${encodeURIComponent(guestId)}?${projectQuery(projectId)}`,
+    {headers: mutationHeaders(), method: "DELETE"},
+  ),
+  publicLinksPolicy: () => request(z.object({enabled: z.boolean()}), "/api/v1/administration/public-links/policy"),
+  setPublicLinksPolicy: (enabled: boolean) => request(
+    z.object({enabled: z.boolean()}),
+    "/api/v1/administration/public-links/policy",
+    {body: JSON.stringify({enabled}), headers: mutationHeaders(), method: "PATCH"},
+  ),
+  exchangeGuestSession: (artifactId: string, secret: string, displayName?: string) => request(
     guestSessionSchema,
     `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest-session`,
-    {body: JSON.stringify({displayName, secret}), headers: new Headers({"Content-Type": "application/json"}), method: "POST"},
+    {body: JSON.stringify(displayName === undefined ? {secret} : {displayName, secret}), headers: new Headers({"Content-Type": "application/json"}), method: "POST"},
   ),
-  guestCurrent: (artifactId: string) => request(
-    guestCurrentSchema,
+  /** Exchange an optional public-link secret, then read the visitor's authorized current state. */
+  publicVisitor: async (artifactId: string, secret?: string): Promise<PublicVisitor> => {
+    if (secret !== undefined) await api.exchangeGuestSession(artifactId, secret);
+    const response = await request(
+      guestCurrentSchema,
+      `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/current`,
+    );
+    return publicVisitorSchema.parse(response);
+  },
+  updateGuestName: (artifactId: string, displayName: string) => request(
+    z.object({displayName: z.string()}),
     `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/current`,
+    {body: JSON.stringify({displayName}), headers: guestMutationHeaders(), method: "PATCH"},
   ),
   guestHeartbeat: (artifactId: string) => requestNoContent(
     `/api/v1/public/artifacts/${encodeURIComponent(artifactId)}/guest/heartbeat`,
@@ -1188,16 +1328,17 @@ export const api = {
     // Drafts and other departing-principal state listen for this.
     window.dispatchEvent(new Event("artifact-session-logout"));
   },
-  publicLinks: (cursor: string | null) => {
+  publicLinks: async (cursor: string | null) => {
     const query = new URLSearchParams({ limit: "25" });
     if (cursor !== null) query.set("cursor", cursor);
-    return request(
+    const page = await request(
       publicLinkPageSchema,
       `/api/v1/administration/public-links?${query}`,
     );
+    return {...page, publicLinks: page.publicLinks.map(mapPublicLinkInventoryRow)};
   },
   makePublicLinksPrivate: (
-    items: readonly MakePublicLinkPrivateItem[],
+    items: readonly LegacyMakePublicLinkPrivateItem[],
   ) => request(
     publicLinkMutationResponseSchema,
     "/api/v1/administration/public-links/make-private",
@@ -1206,6 +1347,11 @@ export const api = {
       headers: mutationHeaders(),
       method: "POST",
     },
+  ),
+  revokeAdminPublicLinks: (items: readonly AdminPublicLinkRevokeItem[]) => request(
+    adminPublicLinkRevokeResponseSchema,
+    "/api/v1/administration/public-links/make-private",
+    {body: JSON.stringify({items}), headers: mutationHeaders(), method: "POST"},
   ),
   projects: () => request(
     z.object({ projects: z.array(projectSchema) }),

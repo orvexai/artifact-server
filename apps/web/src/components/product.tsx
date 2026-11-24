@@ -1,4 +1,5 @@
 import {useEffect, useState, type ReactNode} from "react";
+import {createPortal} from "react-dom";
 
 import {api, ApiError, type PlatformOrganization} from "@/api/client";
 import { Badge } from "@/components/ui/badge";
@@ -10,12 +11,20 @@ import { errorMessage } from "@/lib/presentation";
 export function OrganizationSwitcher() {
   const [organizations, setOrganizations] = useState<readonly PlatformOrganization[]>([]);
   const [pathname, setPathname] = useState("");
+  const [destination, setDestination] = useState<HTMLElement | null>(null);
   useEffect(() => {
-    if (document.querySelector('meta[name="as-organization-base"]') === null) return;
     setPathname(window.location.pathname);
     void api.platformOrganizations().then(setOrganizations).catch(() => setOrganizations([]));
+    const selector = window.location.pathname.includes("/review/settings")
+      ? ".as-settings__nav"
+      : ".as-catalog__header-actions";
+    setDestination(document.querySelector<HTMLElement>(selector));
   }, []);
-  return <OrganizationSwitcherView organizations={organizations} pathname={pathname} />;
+  if (destination === null) return null;
+  return createPortal(
+    <OrganizationSwitcherView organizations={organizations} pathname={pathname} />,
+    destination,
+  );
 }
 
 /** Render the organization switcher for the supplied verified memberships. */
@@ -23,19 +32,29 @@ export function OrganizationSwitcherView({organizations, pathname}: {
   readonly organizations: readonly PlatformOrganization[];
   readonly pathname: string;
 }) {
-  if (organizations.length < 2) return null;
+  if (organizations.length === 0) return null;
   const selected = organizations.find(({slug}) => pathname.startsWith(`/o/${slug}/`))?.slug ?? "";
+  const active = organizations.find(({slug}) => slug === selected);
+  const initials = active?.displayName.split(/\s+/).slice(0, 2).map((part) => part.charAt(0)).join("").toLocaleUpperCase("en-US") ?? "O";
   return (
-    <label className="as-organization-switcher">
-      <span className="sr-only">Organization</span>
-      <select aria-label="Organization" onChange={(event) => {
-        const slug = event.currentTarget.value;
-        if (slug.length === 0) return;
-        void api.setLastOrganization(slug).finally(() => window.location.assign(`/o/${slug}/`));
-      }} value={selected}>
-        {organizations.map(({displayName, slug}) => <option key={slug} value={slug}>{displayName}</option>)}
-      </select>
-    </label>
+    <div className="as-organization-switcher">
+      <span aria-hidden="true" className="as-organization-switcher__avatar">{initials}</span>
+      {organizations.length === 1
+        ? <span className="as-organization-switcher__name">{active?.displayName}</span>
+        : (
+          <label>
+            <span className="sr-only">Organization</span>
+            <select aria-label="Organization" onChange={(event) => {
+              const slug = event.currentTarget.value;
+              if (slug.length === 0) return;
+              void api.setLastOrganization(slug).finally(() => window.location.assign(`/o/${slug}/`));
+            }} value={selected}>
+              {organizations.map(({displayName, slug}) => <option key={slug} value={slug}>{displayName}</option>)}
+            </select>
+          </label>
+        )}
+      {active === undefined ? null : <span className="as-organization-switcher__role">{active.role}</span>}
+    </div>
   );
 }
 

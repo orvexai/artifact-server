@@ -497,15 +497,18 @@ export function ReviewApp() {
   if (!isOrganizationPathname(window.location.pathname)) {
     return <ReviewGate description="This path is outside the current organization." title="Page not found" />;
   }
+  const publicArtifactId = readReviewLocation().artifactId;
+  const hasPublicLinkFragment = /^#(?:link|invite)=/.test(window.location.hash);
+  if (publicArtifactId !== null && publicArtifactId !== "" && (
+    sessionState === "unauthenticated" || hasPublicLinkFragment
+  )) {
+    return <PublicArtifactReview artifactId={publicArtifactId} />;
+  }
   if (sessionState === "loading") {
     return <ReviewGate description="Opening the local artifact catalog." title="Loading Houston Artifacts" />;
   }
   if (sessionState === "unauthenticated") {
     const returnTo = `${window.location.pathname}${window.location.search}`;
-    const publicArtifactId = readReviewLocation().artifactId;
-    if (publicArtifactId !== null && publicArtifactId !== "") {
-      return <PublicArtifactReview artifactId={publicArtifactId} returnTo={returnTo} />;
-    }
     return (
       <ReviewGate
         action={(
@@ -2885,55 +2888,57 @@ function InlineState({
  * artifact: its current version full screen, and a sign-in to comment. Any
  * other artifact shows the same sign-in gate as before.
  */
-function PublicArtifactReview({
-  artifactId,
-  returnTo,
-}: {
-  readonly artifactId: string;
-  readonly returnTo: string;
-}) {
-  const [inviteSecret] = useState(() => {
-    const match = /^#invite=(.*)$/.exec(window.location.hash);
-    if (match === null) return null;
-    const secret = new URLSearchParams(match[0].slice(1)).get("invite");
-    window.history.replaceState(window.history.state, "", organizationPath(`${window.location.pathname}${window.location.search}`));
-    return secret;
-  });
+function PublicArtifactReview({artifactId}: {readonly artifactId: string}) {
   const [state, setState] = useState<
     | {readonly kind: "loading"}
-    | {readonly kind: "missing"}
-    | {readonly kind: "invite"}
+    | {readonly kind: "unavailable"}
     | {readonly kind: "ready"; readonly artifact: PublicArtifact}
-    | {readonly kind: "guest"; readonly guest: Awaited<ReturnType<typeof api.guestCurrent>>}
+    | {readonly kind: "guest"; readonly guest: Awaited<ReturnType<typeof api.publicVisitor>>}
   >({kind: "loading"});
-  const [guestName, setGuestName] = useState("");
-  const [guestMessage, setGuestMessage] = useState<string | null>(null);
   const [threads, setThreads] = useState<readonly GuestCommentThread[]>([]);
   const [newComment, setNewComment] = useState("");
+  const [namePrompt, setNamePrompt] = useState(false);
+  const [guestName, setGuestName] = useState("");
+  const [pendingWrite, setPendingWrite] = useState<{readonly kind: "comment" | "reply"; readonly body: string; readonly threadId?: string} | null>(null);
+  const [guestMessage, setGuestMessage] = useState<string | null>(null);
   const guestFrameRef = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      try {
+      const fragment = new URLSearchParams(window.location.hash.slice(1));
+      const secret = fragment.get("link") ?? fragment.get("invite");
+      if (secret !== null) {
         try {
-          const guest = await api.guestCurrent(artifactId);
+          const guest = await api.publicVisitor(artifactId, secret);
           if (!cancelled) setState({kind: "guest", guest});
+          if (guest.permission === "comment" && !guest.paused) {
+            const page = await api.guestComments(artifactId);
+            if (!cancelled) setThreads(page.items);
+          }
+        } catch {
+          if (!cancelled) setState({kind: "unavailable"});
+        }
+        return;
+      }
+      try {
+        const guest = await api.publicVisitor(artifactId);
+        if (!cancelled) setState({kind: "guest", guest});
+        if (guest.permission === "comment" && !guest.paused) {
           const page = await api.guestComments(artifactId);
           if (!cancelled) setThreads(page.items);
-          return;
-        } catch { /* No active guest cookie; continue with the invite or public view. */ }
-        if (inviteSecret !== null) { if (!cancelled) setState({kind: "invite"}); return; }
-        const artifact = await api.publicArtifact(artifactId);
-        if (!cancelled) setState({artifact, kind: "ready"});
+        }
       } catch {
-        if (!cancelled) setState({kind: "missing"});
+        try {
+          const artifact = await api.publicArtifact(artifactId);
+          if (!cancelled) setState({artifact, kind: "ready"});
+        } catch {
+          if (!cancelled) setState({kind: "unavailable"});
+        }
       }
     };
     void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [artifactId, inviteSecret]);
+    return () => { cancelled = true; };
+  }, [artifactId]);
   useEffect(() => {
     if (state.kind !== "guest") return undefined;
     const heartbeat = (): void => {
@@ -2970,81 +2975,116 @@ function PublicArtifactReview({
     window.addEventListener("message", onBridgeRequest);
     return () => window.removeEventListener("message", onBridgeRequest);
   }, [artifactId, state]);
-  const joinAsGuest = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault();
-    if (inviteSecret === null) return;
+
+  const publishPendingWrite = async (visitor: Awaited<ReturnType<typeof api.publicVisitor>>, write: NonNullable<typeof pendingWrite>): Promise<void> => {
+    if (write.kind === "comment") {
+      await api.guestCreateComment(artifactId, visitor.versionId, write.body, crypto.randomUUID());
+    } else if (write.threadId !== undefined) {
+      await api.guestCreateReply(artifactId, write.threadId, write.body, crypto.randomUUID());
+    }
+    setPendingWrite(null);
+    setNamePrompt(false);
+    setNewComment("");
+    setThreads((await api.guestComments(artifactId)).items);
+  };
+  const requestGuestWrite = async (write: NonNullable<typeof pendingWrite>): Promise<void> => {
+    if (state.kind !== "guest" || state.guest.permission !== "comment" || state.guest.paused) return;
+    setGuestMessage(null);
+    if (state.guest.nameRequired) {
+      setPendingWrite(write); setNamePrompt(true); return;
+    }
     try {
-      await api.exchangeGuestSession(artifactId, inviteSecret, guestName);
-      const guest = await api.guestCurrent(artifactId);
-      setState({kind: "guest", guest});
-      setGuestMessage(null);
-      const page = await api.guestComments(artifactId);
-      setThreads(page.items);
-    } catch (error) { setGuestMessage(error instanceof Error ? error.message : "This invitation could not be used."); }
+      await publishPendingWrite(state.guest, write);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "PUBLIC_LINK_NAME_REQUIRED") {
+        setPendingWrite(write); setNamePrompt(true); return;
+      }
+      setGuestMessage(error instanceof Error ? error.message : "Comment could not be added.");
+    }
   };
   const submitGuestComment = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    if (state.kind !== "guest" || newComment.trim() === "") return;
-    try {
-      await api.guestCreateComment(artifactId, state.guest.versionId, newComment, crypto.randomUUID());
-      setNewComment("");
-      setThreads((await api.guestComments(artifactId)).items);
-    } catch (error) { setGuestMessage(error instanceof Error ? error.message : "Comment could not be added."); }
+    if (newComment.trim() === "") return;
+    await requestGuestWrite({kind: "comment", body: newComment.trim()});
   };
-  const signIn = (
-    <a className="as-button as-button--primary" href={organizationLoginHref(returnTo)}>
-      Sign in to comment
-    </a>
-  );
-  if (state.kind === "loading") {
-    return <ReviewGate description="Opening the shared artifact." title="Loading Houston Artifacts" />;
+  const submitGuestName = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (state.kind !== "guest" || pendingWrite === null) return;
+    const name = guestName.trim();
+    if (name.length < 1 || name.length > 80) return;
+    try {
+      await api.updateGuestName(artifactId, name);
+      const guest = {...state.guest, displayName: name, nameRequired: false};
+      setState({kind: "guest", guest});
+      await publishPendingWrite(guest, pendingWrite);
+      setGuestName(""); setGuestMessage(null);
+    } catch (error) {
+      setGuestMessage(error instanceof Error ? error.message : "Your name could not be saved.");
+    }
+  };
+
+  if (state.kind === "loading") return <ReviewGate description="Opening the shared artifact." title="Loading Houston Artifacts" />;
+  if (state.kind === "unavailable") {
+    return <main className="as-public-review as-public-review--unavailable"><h1>Link unavailable</h1><p>This shared artifact is unavailable.</p></main>;
   }
-  if (state.kind === "invite") {
-    return <main className="as-gate"><form onSubmit={(event) => void joinAsGuest(event)}><h1>Join artifact review</h1><label>Your name<input autoComplete="name" maxLength={80} minLength={1} onChange={(event) => setGuestName(event.target.value)} required value={guestName} /></label><button className="as-button as-button--primary" type="submit">Continue</button>{guestMessage === null ? null : <p role="alert">{guestMessage}</p>}</form></main>;
-  }
-  if (state.kind === "guest") {
-    return <main className="as-public-review"><header className="as-public-review__bar"><h1>{state.guest.artifactName}</h1><small>Version {state.guest.number} · commenting as {state.guest.displayName}</small></header><iframe className="as-public-review__frame" ref={guestFrameRef} referrerPolicy="no-referrer" src={organizationPath(state.guest.bootstrapUrl)} title={state.guest.artifactName} /><aside aria-label="Comments"><h2>Comments</h2><form onSubmit={(event) => void submitGuestComment(event)}><label>Add a comment<textarea onChange={(event) => setNewComment(event.target.value)} value={newComment} /></label><button className="as-button as-button--primary" type="submit">Comment</button></form>{threads.map((thread) => <article key={thread.id}><strong>{thread.author.displayName}</strong><p>{thread.body}</p><GuestReplyForm artifactId={artifactId} threadId={thread.id} onReply={async () => setThreads((await api.guestComments(artifactId)).items)} />{thread.replyCount > 0 ? <button className="as-button" onClick={async () => { const details = await api.guestComment(artifactId, thread.id); setGuestMessage(details.replies.map((reply) => `${reply.author.displayName}: ${reply.body}`).join("\n")); }} type="button">Read {thread.replyCount} replies</button> : null}</article>)}{guestMessage === null ? null : <p role="status">{guestMessage}</p>}</aside></main>;
-  }
-  if (state.kind === "missing") {
-    return (
-      <ReviewGate
-        action={signIn}
-        description="This installation requires an authenticated browser session."
-        title="Sign in required"
-      />
-    );
-  }
-  const {artifact, links, version} = state.artifact;
+  const guest = state.kind === "guest" ? state.guest : null;
+  const artifactName = guest?.artifactName ?? (state.kind === "ready" ? state.artifact.artifact.name : "Shared artifact");
+  const canComment = guest?.permission === "comment" && !guest.paused;
+  const frameUrl = guest === null
+    ? (state.kind === "ready" ? organizationPath(state.artifact.links.version) : "")
+    : organizationPath(guest.bootstrapUrl);
   return (
     <main className="as-public-review">
       <header className="as-public-review__bar">
         <span aria-hidden="true" className="as-gate__mark">A</span>
-        <h1>{artifact.name}</h1>
-        <small>Version {version.number} · read only</small>
-        {signIn}
+        <h1>{artifactName}</h1>
+        <small>{guest === null ? `Version ${state.kind === "ready" ? state.artifact.version.number : ""} · read only` : `Version ${guest.number} · shared link`}</small>
       </header>
-      <iframe
-        className="as-public-review__frame"
-        referrerPolicy="no-referrer"
-        src={organizationPath(links.version)}
-        title={artifact.name}
-      />
+      <iframe className="as-public-review__frame" ref={guestFrameRef} referrerPolicy="no-referrer" src={frameUrl} title={artifactName} />
+      {guest === null || guest.permission === "view" ? null : (
+        <aside aria-label="Comments" className="as-public-review__comments">
+          {guest.paused ? <p role="status">Comments are paused for this link</p> : (
+            <>
+              <h2>Comments</h2>
+              {namePrompt ? <form onSubmit={(event) => void submitGuestName(event)}>
+                <label>Your name<input autoComplete="name" maxLength={80} minLength={1} onChange={(event) => setGuestName(event.target.value)} required value={guestName} /></label>
+                <button className="as-button as-button--primary" type="submit">Save name and continue</button>
+              </form> : <form onSubmit={(event) => void submitGuestComment(event)}>
+                <label>Add a comment<textarea onChange={(event) => setNewComment(event.target.value)} value={newComment} /></label>
+                <button className="as-button as-button--primary" type="submit">Comment</button>
+              </form>}
+              {threads.map((thread) => <article key={thread.id}>
+                <strong>{thread.author.displayName}</strong><p>{thread.body}</p>
+                <GuestReplyForm artifactId={artifactId} threadId={thread.id} onNameRequired={(body) => { setPendingWrite({body, kind: "reply", threadId: thread.id}); setNamePrompt(true); }} onReply={async () => setThreads((await api.guestComments(artifactId)).items)} />
+                {thread.replyCount > 0 ? <button className="as-button" onClick={async () => { const details = await api.guestComment(artifactId, thread.id); setGuestMessage(details.replies.map((reply) => `${reply.author.displayName}: ${reply.body}`).join("\n")); }} type="button">Read {thread.replyCount} replies</button> : null}
+              </article>)}
+            </>
+          )}
+          {guestMessage === null ? null : <p role="status">{guestMessage}</p>}
+        </aside>
+      )}
+      {!canComment && guestMessage !== null ? <p role="status">{guestMessage}</p> : null}
     </main>
   );
 }
 
-function GuestReplyForm({artifactId, threadId, onReply}: {readonly artifactId: string; readonly threadId: string; readonly onReply: () => Promise<void>}) {
+function GuestReplyForm({artifactId, threadId, onNameRequired, onReply}: {readonly artifactId: string; readonly threadId: string; readonly onNameRequired: (body: string) => void; readonly onReply: () => Promise<void>}) {
   const [body, setBody] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const submit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    if (body.trim() === "") return;
-    await api.guestCreateReply(artifactId, threadId, body, crypto.randomUUID());
-    setBody("");
-    await onReply();
+    const trimmed = body.trim();
+    if (trimmed === "") return;
+    try {
+      await api.guestCreateReply(artifactId, threadId, trimmed, crypto.randomUUID());
+      setBody(""); setError(null); await onReply();
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.code === "PUBLIC_LINK_NAME_REQUIRED") { onNameRequired(trimmed); return; }
+      setError(cause instanceof Error ? cause.message : "Reply could not be added.");
+    }
   };
-  return <form onSubmit={(event) => void submit(event)}><label>Reply<textarea onChange={(event) => setBody(event.target.value)} value={body} /></label><button className="as-button" type="submit">Reply</button></form>;
+  return <form onSubmit={(event) => void submit(event)}><label>Reply<textarea onChange={(event) => setBody(event.target.value)} value={body} /></label><button className="as-button" type="submit">Reply</button>{error === null ? null : <p role="alert">{error}</p>}</form>;
 }
-
 function ReviewGate({
   action,
   description,

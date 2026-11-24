@@ -42,6 +42,10 @@ type CopiedTarget =
 
 const copiedResetMilliseconds = 1_600;
 
+function isPublicAccessChoice(value: string): value is "private" | "view" | "comment" {
+  return value === "private" || value === "view" || value === "comment";
+}
+
 interface ReviewShareControlProps {
   readonly details: ArtifactDetails | null;
   readonly onArtifactChanged: (artifact: ArtifactDetails["artifact"]) => void;
@@ -67,8 +71,10 @@ export function ReviewShareControl({
   const [copiedTarget, setCopiedTarget] = useState<CopiedTarget | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [guestInvite, setGuestInvite] = useState<{activeSessionCount: number; createdAt: string | null; enabled: boolean; limitHitRecently: boolean; url: string | null}>({activeSessionCount: 0, createdAt: null, enabled: false, limitHitRecently: false, url: null});
-  const [guestSessions, setGuestSessions] = useState<readonly {createdAt: string; displayName: string; guestId: string; lastUsedAt: string}[]>([]);
+  const [publicLink, setPublicLink] = useState<Awaited<ReturnType<typeof api.publicLinkStatus>> | null>(null);
+  const [publicLinkUrl, setPublicLinkUrl] = useState<string | null>(null);
+  const [guestSessions, setGuestSessions] = useState<Awaited<ReturnType<typeof api.publicLinkSessions>>["sessions"]>([]);
+  const [selectedPermission, setSelectedPermission] = useState<"view" | "comment">("comment");
   const copiedResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => () => {
@@ -145,39 +151,111 @@ export function ReviewShareControl({
     if (open && details !== null) {
       void (async () => {
         try {
-          const status = await api.guestInvitationStatus(details.artifact.projectId, details.artifact.id);
+          const status = await api.publicLinkStatus(details.artifact.projectId, details.artifact.id);
+          const sessions = status.enabled
+            ? (await api.publicLinkSessions(details.artifact.projectId, details.artifact.id)).sessions
+            : [];
           if (!cancelled) {
-            setGuestInvite({...status, url: null});
-            setGuestSessions(status.enabled ? (await api.guestInvitationSessions(details.artifact.projectId, details.artifact.id)).sessions : []);
+            setPublicLink(status);
+            setPublicLinkUrl(status.url ?? null);
+            setSelectedPermission(status.permission ?? "comment");
+            setGuestSessions(sessions);
           }
-        } catch { /* Explicit Share actions surface their own errors. */ }
+        } catch (caught) {
+          if (!cancelled) setFailure(caught instanceof Error ? caught.message : "Public link details could not be loaded.");
+        }
       })();
     }
     return () => { cancelled = true; };
   }, [details?.artifact.id, details?.artifact.projectId, open]);
 
-  const enableGuestInvite = async (): Promise<void> => {
+  const createPublicLink = async (): Promise<void> => {
     if (details === null) return;
     setPending(true); setFailure(null);
     try {
-      const issued = await api.enableGuestInvitation(details.artifact.projectId, details.artifact.id);
-      const status = await api.guestInvitationStatus(details.artifact.projectId, details.artifact.id);
-      setGuestInvite({...status, createdAt: issued.createdAt, enabled: true, url: issued.url});
-      setGuestSessions((await api.guestInvitationSessions(details.artifact.projectId, details.artifact.id)).sessions);
-      setNotice("Guest review link created. Copy it now; it is shown only once.");
-    } catch (caught) { setFailure(caught instanceof Error ? caught.message : "Guest review link could not be created."); }
+      const issued = await api.createPublicLink(details.artifact.projectId, details.artifact.id, selectedPermission);
+      const status = await api.publicLinkStatus(details.artifact.projectId, details.artifact.id);
+      setPublicLink({...status, enabled: true, permission: selectedPermission, url: issued.url});
+      setPublicLinkUrl(issued.url);
+      setGuestSessions((await api.publicLinkSessions(details.artifact.projectId, details.artifact.id)).sessions);
+      setNotice("Public link created. Copy it now; the secret cannot be shown again.");
+    } catch (caught) {
+      setFailure(caught instanceof Error ? caught.message : "Public link could not be created.");
+    }
     finally { setPending(false); }
   };
 
-  const revokeGuestInvite = async (): Promise<void> => {
-    if (details === null) return;
+  const resetPublicLink = async (): Promise<void> => {
+    if (details === null || !window.confirm("Reset this public link? Existing visitor sessions will be revoked.")) return;
     setPending(true); setFailure(null);
     try {
-      await api.revokeGuestInvitation(details.artifact.projectId, details.artifact.id);
-      setGuestInvite({...guestInvite, activeSessionCount: 0, enabled: false, limitHitRecently: false, url: null});
-      setGuestSessions([]);
-      setNotice("Guest review link revoked.");
-    } catch (caught) { setFailure(caught instanceof Error ? caught.message : "Guest review link could not be revoked."); }
+      const issued = await api.resetPublicLink(details.artifact.projectId, details.artifact.id, selectedPermission);
+      const status = await api.publicLinkStatus(details.artifact.projectId, details.artifact.id);
+      setPublicLink({...status, enabled: true, permission: selectedPermission, url: issued.url});
+      setPublicLinkUrl(issued.url);
+      setGuestSessions((await api.publicLinkSessions(details.artifact.projectId, details.artifact.id)).sessions);
+      setNotice("Public link reset. Copy the new secret now.");
+    } catch (caught) {
+      setFailure(caught instanceof Error ? caught.message : "Public link could not be reset.");
+    }
+    finally { setPending(false); }
+  };
+
+  const revokePublicLink = async (): Promise<void> => {
+    if (details === null || !window.confirm("Revoke this public link and all visitor sessions?")) return;
+    setPending(true); setFailure(null);
+    try {
+      await api.revokePublicLink(details.artifact.projectId, details.artifact.id);
+      setPublicLink(null); setPublicLinkUrl(null); setGuestSessions([]);
+      setNotice("Public link revoked.");
+    } catch (caught) { setFailure(caught instanceof Error ? caught.message : "Public link could not be revoked."); }
+    finally { setPending(false); }
+  };
+
+  const updatePublicPermission = async (value: "private" | "view" | "comment"): Promise<void> => {
+    if (details === null) return;
+    if (value === "private") {
+      if (publicLink?.legacy) {
+        setPending(true); setFailure(null);
+        try {
+          const changed = await api.changeAccess(
+            details.artifact.projectId,
+            details.artifact.id,
+            details.artifact.currentVersionId,
+            "account_required",
+            crypto.randomUUID(),
+          );
+          onArtifactChanged(changed.artifact);
+          setPublicLink(null); setPublicLinkUrl(null); setGuestSessions([]);
+          setNotice(changed.warning ?? "This artifact now requires an admitted account.");
+        } catch (caught) {
+          setFailure(caught instanceof Error ? caught.message : "Artifact access could not be changed.");
+        } finally {
+          setPending(false);
+        }
+      } else if (publicLink?.enabled) {
+        await revokePublicLink();
+      }
+      return;
+    }
+    const permission = value;
+    setSelectedPermission(permission);
+    setPending(true); setFailure(null);
+    try {
+      let issuedUrl: string | null = null;
+      if (publicLink?.legacy) {
+        issuedUrl = (await api.resetPublicLink(details.artifact.projectId, details.artifact.id, permission)).url;
+      } else if (publicLink?.enabled) {
+        await api.updatePublicLink(details.artifact.projectId, details.artifact.id, permission);
+      } else {
+        issuedUrl = (await api.createPublicLink(details.artifact.projectId, details.artifact.id, permission)).url;
+      }
+      const refreshed = await api.publicLinkStatus(details.artifact.projectId, details.artifact.id);
+      setPublicLink({...refreshed, enabled: true, permission});
+      setPublicLinkUrl(issuedUrl ?? refreshed.url ?? null);
+      setGuestSessions((await api.publicLinkSessions(details.artifact.projectId, details.artifact.id)).sessions);
+      setNotice("Public-link permission updated.");
+    } catch (caught) { setFailure(caught instanceof Error ? caught.message : "Permission could not be updated."); }
     finally { setPending(false); }
   };
 
@@ -185,11 +263,10 @@ export function ReviewShareControl({
     if (details === null) return;
     setPending(true); setFailure(null);
     try {
-      await api.revokeGuestSession(details.artifact.projectId, details.artifact.id, guestId);
-      setGuestSessions((await api.guestInvitationSessions(details.artifact.projectId, details.artifact.id)).sessions);
-      const status = await api.guestInvitationStatus(details.artifact.projectId, details.artifact.id);
-      setGuestInvite({...status, url: guestInvite.url});
-    } catch (caught) { setFailure(caught instanceof Error ? caught.message : "Guest session could not be revoked."); }
+      await api.revokePublicLinkSession(details.artifact.projectId, details.artifact.id, guestId);
+      setGuestSessions((await api.publicLinkSessions(details.artifact.projectId, details.artifact.id)).sessions);
+      setPublicLink(await api.publicLinkStatus(details.artifact.projectId, details.artifact.id));
+    } catch (caught) { setFailure(caught instanceof Error ? caught.message : "Visitor session could not be revoked."); }
     finally { setPending(false); }
   };
 
@@ -319,18 +396,46 @@ export function ReviewShareControl({
                   </div>
                 </section>
 
-                <section aria-label="Invited guest review" className="as-share-link">
-                  <h3>Invited guest review</h3>
-                  <p>Anyone with this link can view this artifact and comment.</p>
-                  <p>{guestInvite.activeSessionCount} active guest sessions{guestInvite.limitHitRecently ? " · A guest session or exchange limit was hit in the last 24 hours." : ""}</p>
-                  {guestInvite.url === null ? null : <button className="as-button as-button--primary" onClick={() => void copyText(guestInvite.url ?? "", "review-link", "The guest review link could not be copied.")} type="button">{copiedTarget === "review-link" ? "Copied" : "Copy invite link"}</button>}
-                  {guestInvite.enabled && guestInvite.url === null ? <p>Enabled · link secret is not available again. Regenerate to issue a new link.</p> : null}
-                  <button className="as-button" disabled={pending} onClick={() => void enableGuestInvite()} type="button">{guestInvite.enabled ? "Regenerate link" : "Enable guest review"}</button>
-                  {guestInvite.enabled ? <button className="as-button" disabled={pending} onClick={() => void revokeGuestInvite()} type="button">Revoke link</button> : null}
-                  {guestSessions.map((session) => <div key={session.guestId}>
-                    <span>{session.displayName} · created {new Date(session.createdAt).toLocaleString()} · last used {new Date(session.lastUsedAt).toLocaleString()}</span>
-                    <button className="as-button" disabled={pending} onClick={() => void revokeGuestSession(session.guestId)} type="button">Revoke session</button>
-                  </div>)}
+                <section aria-label="General access" className="as-share-link">
+                  <h3>General access</h3>
+                  <label className="as-share-permission">
+                    <span>Access</span>
+                    <select
+                      aria-label="General access"
+                      onChange={(event) => {
+                        const value = event.currentTarget.value;
+                        if (isPublicAccessChoice(value)) void updatePublicPermission(value);
+                      }}
+                      value={publicLink?.enabled || publicLink?.legacy ? (publicLink.legacy ? "view" : (publicLink.permission ?? "view")) : "private"}
+                    >
+                      <option value="private">Private</option>
+                      <option value="view">Public link · Can view</option>
+                      <option value="comment">Public link · Can comment</option>
+                    </select>
+                  </label>
+                  {publicLink?.enabled ? <p>{publicLink.activeSessionCount} active sessions</p> : null}
+                  {publicLink?.enabled && publicLinkUrl !== null ? (
+                    <button className="as-button as-button--primary" disabled={pending} onClick={() => void copyText(publicLinkUrl, "review-link", "The public link could not be copied.")} type="button">
+                      {copiedTarget === "review-link" ? "Copied" : "Copy link"}
+                    </button>
+                  ) : null}
+                  {publicLink?.enabled ? (
+                    <>
+                      <button className="as-button" disabled={pending} onClick={() => void resetPublicLink()} type="button">Reset</button>
+                      <button className="as-button" disabled={pending} onClick={() => void revokePublicLink()} type="button">Revoke</button>
+                    </>
+                  ) : publicLink?.legacy ? (
+                    <button className="as-button" disabled={pending} onClick={() => void resetPublicLink()} type="button">Reset to create a secure link</button>
+                  ) : (
+                    <button className="as-button" disabled={pending} onClick={() => void createPublicLink()} type="button">Create public link</button>
+                  )}
+                  {guestSessions.length === 0 ? null : <div aria-label="Visitor sessions">
+                    <h4>Sessions</h4>
+                    {guestSessions.map((session) => <div key={session.guestId}>
+                      <span>{session.displayName} · last used {new Date(session.lastUsedAt).toLocaleString()}</span>
+                      <button className="as-button" disabled={pending} onClick={() => void revokeGuestSession(session.guestId)} type="button">Revoke session</button>
+                    </div>)}
+                  </div>}
                 </section>
 
                 <div className="as-share-access-summary">

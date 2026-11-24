@@ -2,6 +2,8 @@ import {useEffect, useMemo, useState} from "react";
 
 import {
   api,
+  adminPublicLinkRevokeFeedback,
+  buildPublicLinkRevokeItem,
   organizationPath,
   type MakePublicLinkPrivateItem,
   type PublicLinkItem,
@@ -51,6 +53,7 @@ export function PublicLinksScreen() {
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
+  const [policyEnabled, setPolicyEnabled] = useState<boolean | null>(null);
 
   const loadedItems = useMemo(
     () => pages.flatMap((page) => page.publicLinks),
@@ -59,7 +62,7 @@ export function PublicLinksScreen() {
   const currentPage = pages[pageIndex] ?? null;
   const visibleItems = currentPage?.publicLinks ?? [];
   const selectedItems = loadedItems.filter((item) =>
-    selectedKeys.has(selectionKey(item))
+    item.kind === "legacy" && selectedKeys.has(selectionKey(item))
   );
   const fullyLoaded = pages.length > 0 && pages.at(-1)?.nextCursor === null;
   const allVisibleSelected = visibleItems.length > 0 && visibleItems.every((item) =>
@@ -84,7 +87,56 @@ export function PublicLinksScreen() {
 
   useEffect(() => {
     void loadFirstPage();
+    void (async () => {
+      try {
+        const {enabled} = await api.publicLinksPolicy();
+        setPolicyEnabled(enabled);
+      } catch (caught) {
+        setError(caught instanceof Error ? caught : new Error("Public-link policy could not be loaded."));
+      }
+    })();
   }, []);
+
+  const updatePolicy = async (enabled: boolean): Promise<void> => {
+    setPending(true);
+    setError(null);
+    try {
+      const policy = await api.setPublicLinksPolicy(enabled);
+      setPolicyEnabled(policy.enabled);
+      setNotice(policy.enabled ? "Public links are enabled for this installation." : "New public-link use is disabled for this installation.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught : new Error("Public-link policy could not be updated."));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const revokeInventoryItem = async (item: PublicLinkItem): Promise<void> => {
+    if (!window.confirm("Revoke the public link for " + item.artifact.name + "?")) return;
+    setPending(true);
+    setError(null);
+    try {
+      const result = await api.revokeAdminPublicLinks([buildPublicLinkRevokeItem(item)]);
+      const outcome = result.results.find(({artifactId, projectId}) =>
+        artifactId === item.artifact.id && projectId === item.project.id
+      );
+      if (outcome?.status === "stale_generation") {
+        await loadFirstPage();
+        setNotice(adminPublicLinkRevokeFeedback(outcome.status, item.artifact.name).message);
+        return;
+      }
+      if (outcome === undefined || outcome.status === "failed") {
+        setError(new Error(outcome?.error?.message ?? "The server could not revoke this public link."));
+        return;
+      }
+      await loadFirstPage();
+      setNotice(adminPublicLinkRevokeFeedback(outcome.status, item.artifact.name).message);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught : new Error("Public link could not be revoked."));
+    } finally {
+      setPending(false);
+    }
+  };
 
   const showNextPage = async () => {
     const cached = pages[pageIndex + 1];
@@ -111,6 +163,7 @@ export function PublicLinksScreen() {
     setSelectedKeys((current) => {
       const next = new Set(current);
       for (const item of items) {
+        if (item.kind === "secret") continue;
         const key = selectionKey(item);
         if (!checked) {
           next.delete(key);
@@ -262,11 +315,21 @@ export function PublicLinksScreen() {
     <div className="flex flex-col gap-8">
       <PageHeader
         actions={(
-          <Button onClick={() => void loadFirstPage()} type="button" variant="outline">
-            Reload
-          </Button>
+          <>
+            <label className="as-public-links-policy">
+              <input
+                aria-label="Allow public links"
+                checked={policyEnabled ?? false}
+                disabled={pending || policyEnabled === null}
+                onChange={(event) => void updatePolicy(event.currentTarget.checked)}
+                type="checkbox"
+              />
+              <span>Allow public links</span>
+            </label>
+            <Button onClick={() => void loadFirstPage()} type="button" variant="outline">Reload</Button>
+          </>
         )}
-        description="See every active artifact that currently allows public-link access, then make individual links or a bounded selection private."
+        description="Manage public links across this installation, including legacy access and visitor-link permissions."
         eyebrow="Administration"
         title="Public links"
       />
@@ -414,12 +477,15 @@ export function PublicLinksScreen() {
                     )
                     : visibleItems.map((item) => {
                     const selected = selectedKeys.has(selectionKey(item));
+                    const permission = item.kind === "legacy" ? "Can view" : item.secretLink?.permission === "comment" ? "Can comment" : "Can view";
+                    const paused = item.kind === "secret" && item.project.archivedAt !== null;
                     return (
                       <tr className="as-public-links-table__row" key={selectionKey(item)} role="row">
                         <td className="as-public-links-table__select-cell" role="cell">
                           <Checkbox
                             aria-label={`Select ${item.artifact.name}`}
                             checked={selected}
+                            disabled={item.kind === "secret"}
                             onCheckedChange={(checked) => selectItems([item], checked)}
                           />
                         </td>
@@ -437,6 +503,8 @@ export function PublicLinksScreen() {
                             {item.project.archivedAt === null
                               ? null
                               : <StatusBadge>Archived</StatusBadge>}
+                            <StatusBadge>{item.kind === "legacy" ? "Legacy · Can view" : permission}</StatusBadge>
+                            {paused ? <StatusBadge>Paused</StatusBadge> : null}
                           </div>
                           <p className="as-public-links-table__meta">{item.project.name}</p>
                         </td>
@@ -469,12 +537,12 @@ export function PublicLinksScreen() {
                             </ButtonLink>
                             <Button
                               disabled={pending}
-                              onClick={() => setConfirmation([item])}
+                              onClick={() => void revokeInventoryItem(item)}
                               size="xs"
                               type="button"
                               variant="ghost"
                             >
-                              Make private
+                              Revoke
                             </Button>
                           </div>
                         </td>

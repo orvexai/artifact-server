@@ -5081,7 +5081,7 @@ requirements:
       failure: {id: PLK-001-F, description: "Opening, refreshing, exchanging, reading comments, or requesting preview content makes zero identity-provider requests and returns zero login redirects, including after visitor-session expiry."}
     deployments: *all
     status: implementing
-    proof_gap: "PLK-1 server routes are unauthenticated, but PLK-001-B and PLK-001-F require PLK-3 browser network evidence across page load, refresh, exchange, comments, preview, and expired-session renewal; keep implementing until that proof lands."
+    proof_gap: "Playwright cases for PLK-001-B and PLK-001-F are present in tests/browser/public-links.spec.ts, but no browser run or network-trace evidence is recorded yet; page load, refresh, exchange, comments, preview, and expired-session renewal remain unproved."
     depends_on: []
     evidence: []
 
@@ -5095,7 +5095,7 @@ requirements:
       failure: {id: PLK-002-F, description: "Unknown, revoked, expired-session, and disabled-link states contain no Sign in control."}
     deployments: *all
     status: implementing
-    proof_gap: "PLK-002-B and PLK-002-F require PLK-3 UI/browser evidence for public, unknown, revoked, and expired-session states; keep implementing until that proof lands."
+    proof_gap: "The PLK-002-B public-page case and an untagged unknown-link case are present in tests/browser/public-links.spec.ts, but no browser run is recorded; PLK-002-F coverage for revoked, expired-session, and disabled-link states is still incomplete."
     depends_on: []
     evidence: []
 
@@ -5109,7 +5109,7 @@ requirements:
       failure: {id: PLK-003-F, description: "Reload does not strand the visitor, and the legacy #invite fragment remains accepted."}
     deployments: *all
     status: implementing
-    proof_gap: "PLK-003-B and PLK-003-F require PLK-3 browser evidence that the SPA preserves and reuses #link after reload and accepts legacy #invite fragments; keep implementing until that proof lands."
+    proof_gap: "Playwright cases for PLK-003-B and PLK-003-F are present in tests/browser/public-links.spec.ts, but no browser run or evidence is recorded to prove #link reuse after reload/expiry or the legacy #invite alias."
     depends_on: []
     evidence: []
 
@@ -5347,7 +5347,7 @@ requirements:
       failure: {id: PLK-020-F, description: "At two viewport sizes and in both themes the shell has no overflow and accessibility checks pass."}
     deployments: *all
     status: implementing
-    proof_gap: "PLK-020-B and PLK-020-F are PLK-3 browser UI and responsive accessibility evidence; this server lane cannot prove them."
+    proof_gap: "Playwright cases for PLK-020-B and PLK-020-F are present in tests/browser/org-switcher-multi-org.spec.ts, but no browser run or responsive accessibility evidence is recorded yet."
     depends_on: []
     evidence: []
 
@@ -5375,7 +5375,7 @@ requirements:
       failure: {id: PLK-022-F, description: "Keyboard, focus, contrast, and responsive layout issues are caught by the browser gate."}
     deployments: *all
     status: implementing
-    proof_gap: "PLK-022-B and PLK-022-F are PLK-3 browser accessibility evidence across themes and viewport sizes; this server lane cannot prove them."
+    proof_gap: "Playwright cases for PLK-022-B and PLK-022-F are present in tests/browser/public-links.spec.ts, but no browser run or accessibility evidence is recorded across themes and viewport sizes."
     depends_on: []
     evidence: []
 

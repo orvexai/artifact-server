@@ -1,4 +1,4 @@
-import {expect, type Browser, type BrowserContext, type Page} from "@playwright/test";
+import {expect, type APIResponse, type Browser, type BrowserContext, type Page} from "@playwright/test";
 
 import {
   createTestInstallation,
@@ -42,6 +42,28 @@ export async function localLogin(
     await expect(fixture.page.getByRole("link", {name: "Houston Artifacts"})).toBeVisible();
     await expect(fixture.page).toHaveURL(/\/review\?project=prj_default/u);
   }
+}
+
+/** Create a public link through the signed-in human browser session. */
+export async function createPublicLinkAsHuman(
+  fixture: BrowserFixture,
+  artifactId: string,
+  permission: "view" | "comment" = "view",
+): Promise<APIResponse> {
+  await localLogin(fixture);
+  const csrf = (await fixture.context.cookies()).find(({name}) => name === "artifact_csrf")?.value;
+  if (csrf === undefined) throw new Error("Signed-in browser did not receive its CSRF cookie.");
+  return fixture.page.request.post(
+    `${fixture.server.baseUrl}/api/v1/artifacts/${encodeURIComponent(artifactId)}/public-link?projectId=prj_default`,
+    {
+      data: {permission},
+      headers: {
+        Origin: fixture.server.baseUrl,
+        "Sec-Fetch-Site": "same-origin",
+        "X-CSRF-Token": csrf,
+      },
+    },
+  );
 }
 
 export async function closeTopDialog(page: Page): Promise<void> {
