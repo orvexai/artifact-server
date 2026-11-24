@@ -2935,8 +2935,9 @@ function PublicArtifactReview({artifactId}: {readonly artifactId: string}) {
         try {
           const artifact = await api.publicArtifact(artifactId);
           if (!cancelled) setState({artifact, kind: "ready"});
-        } catch {
-          if (!cancelled) setState({kind: "missing"});
+        } catch (cause) {
+          const isMissing = cause instanceof ApiError && [401, 403, 404].includes(cause.status);
+          if (!cancelled) setState({kind: isMissing ? "missing" : "unavailable"});
         }
       }
     };
