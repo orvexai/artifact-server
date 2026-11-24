@@ -5330,10 +5330,10 @@ requirements:
     source: {file: single-application-administration-spec.md, anchor: public-links}
     acceptance:
       behavior: {id: PLK-019-B, description: "Get, create, change permission, reset, revoke, and session management agree across supported interfaces and SQLite and Postgres."}
-      failure: {id: PLK-019-F, description: "No interface bypasses permission, tenant, or policy checks."}
+      failure: {id: PLK-019-F, description: "No interface bypasses permission, tenant, or policy checks, and create, reset and enable refuse a creator whose links could not be exchanged."}
     deployments: *external_storage
     status: implementing
-    proof_gap: "PLK-019-B and PLK-019-F require MCP/CLI coverage assigned to PLK-2 plus the complete SQLite/Postgres parity matrix; PLK-1 HTTP tests cannot prove the cross-interface acceptance and Docker-backed Postgres suite is hosted."
+    proof_gap: "PLK-019-B and PLK-019-F have local SQLite coverage from PLK-2; hosted Postgres behavior and the cross-organization route matrix remain pending."
     depends_on: []
     evidence: []
 

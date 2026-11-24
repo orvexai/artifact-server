@@ -11,6 +11,7 @@ export const errorCodes = {
   commentNotFound: "COMMENT_NOT_FOUND",
   commentResolved: "COMMENT_RESOLVED",
   publicLinkNameRequired: "PUBLIC_LINK_NAME_REQUIRED",
+  publicLinkHumanCreatorRequired: "PUBLIC_LINK_HUMAN_CREATOR_REQUIRED",
   dispatchNotFound: "DISPATCH_NOT_FOUND",
   dispatchStateConflict: "DISPATCH_STATE_CONFLICT",
   contentBootstrapRejected: "CONTENT_BOOTSTRAP_REJECTED",
@@ -191,7 +192,7 @@ export class DispatchStateConflict extends Schema.TaggedError<DispatchStateConfl
 /** The authenticated principal is not permitted to perform the operation. */
 export class AuthorizationDenied extends Schema.TaggedError<AuthorizationDenied>()(
   "AuthorizationDenied",
-  messageField,
+  {...messageField, code: Schema.optional(Schema.String)},
 ) {}
 
 /** A private-content bootstrap cannot be exchanged. */

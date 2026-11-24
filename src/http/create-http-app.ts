@@ -3204,6 +3204,7 @@ export function createHttpApp(
   );
 
   const createPublicLink = async (context: Context<HttpEnvironment>) => {
+    context.header("Cache-Control", "no-store");
     const body = publicLinkCreateSchema.parse(await context.req.json());
     const artifactId = context.req.param("artifactId");
     if (artifactId === undefined) return context.notFound();
@@ -3229,6 +3230,7 @@ export function createHttpApp(
 
   app.post("/api/v1/artifacts/:artifactId/public-link", boundedJsonBody, createPublicLink);
   app.post("/api/v1/artifacts/:artifactId/public-link/reset", boundedJsonBody, async (context) => {
+    context.header("Cache-Control", "no-store");
     const body = publicLinkCreateSchema.parse(await context.req.json());
     const artifactId = context.req.param("artifactId");
     if (artifactId === undefined) return context.notFound();
@@ -3806,6 +3808,9 @@ export function createHttpApp(
       const headers = new Headers();
       if (response.status === 401) {
         headers.set("Cache-Control", "private, no-store");
+      }
+      if (response.code === errorCodes.publicLinkHumanCreatorRequired) {
+        headers.set("Cache-Control", "no-store");
       }
       if (error._tag === "AuthenticationRequired") {
         headers.set(

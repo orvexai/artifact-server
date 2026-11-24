@@ -35,7 +35,7 @@ export function artifactServerFailureResponse(failure: ArtifactServerFailure) {
     case "LoginAttemptRejected":
       return {code: errorCodes.authenticationRequired, message: failure.message, status: 401};
     case "AuthorizationDenied":
-      return {code: errorCodes.authorizationDenied, message: failure.message, status: 403};
+      return {code: failure.code ?? errorCodes.authorizationDenied, message: failure.message, status: 403};
     case "CommentNotFound":
       return {code: errorCodes.commentNotFound, message: failure.message, status: 404};
     case "CommentResolved":

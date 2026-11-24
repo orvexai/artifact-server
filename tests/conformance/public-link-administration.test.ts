@@ -24,6 +24,8 @@ import {
 } from "../support/publishing.js";
 
 const administratorToken = "trusted-installation-administrator";
+const creatorToken = "trusted-public-link-human-creator";
+let creatorVerifierMemberId: string | null = null;
 const publicLinkItemSchema = z.object({
   artifact: z.object({
     accessSetting: z.enum(["public_link", "account_required"]),
@@ -98,11 +100,18 @@ describe("public-link administration", () => {
     server = await startTestServer(installation, {
       externalApiBearerVerifier: administratorVerifier,
     });
+    const admitted = await administratorFetch("/api/v1/members", {
+      body: JSON.stringify({displayName: "Public link creator", email: `public-link-creator-${crypto.randomUUID()}@example.test`, role: "member"}),
+      method: "POST",
+    });
+    if (admitted.status !== 201) throw new Error(`Could not admit the public-link creator (${admitted.status}).`);
+    creatorVerifierMemberId = z.object({member: z.object({id: z.string()})}).parse(await admitted.json()).member.id;
   });
 
   afterEach(async () => {
     await server.stop();
     await removeTestInstallation(installation);
+    creatorVerifierMemberId = null;
   });
 
   test("installation administrators can turn public links off and back on", async () => {
@@ -315,7 +324,8 @@ describe("public-link administration", () => {
   test("PLK-023-B: inventory exposes secret-link metadata without secret material", async () => {
     const legacy = await publicArtifact("Legacy inventory", "public-admin-legacy-inventory");
     const published = await privateArtifact("Secret inventory", "public-admin-secret-inventory");
-    const created = await administratorFetch(
+    await openProjectToMembers(server, installation, published.artifact.projectId);
+    const created = await creatorFetch(
       `/api/v1/artifacts/${published.artifact.id}/public-link?projectId=${published.artifact.projectId}`,
       {body: JSON.stringify({permission: "view"}), method: "POST"},
     );
@@ -344,7 +354,8 @@ describe("public-link administration", () => {
 
   test("PLK-023-F: inventory refuses non-admins and omits deleted or revoked secret links", async () => {
     const published = await privateArtifact("Rotating inventory", "public-admin-secret-stale");
-    const created = await administratorFetch(
+    await openProjectToMembers(server, installation, published.artifact.projectId);
+    const created = await creatorFetch(
       `/api/v1/artifacts/${published.artifact.id}/public-link?projectId=${published.artifact.projectId}`,
       {body: JSON.stringify({permission: "comment"}), method: "POST"},
     );
@@ -362,7 +373,7 @@ describe("public-link administration", () => {
       method: "POST",
     });
     expect(deniedSecretRevoke.status).toBe(403);
-    const reset = await administratorFetch(
+    const reset = await creatorFetch(
       `/api/v1/artifacts/${published.artifact.id}/public-link/reset?projectId=${published.artifact.projectId}`,
       {body: JSON.stringify({permission: "view"}), method: "POST"},
     );
@@ -393,7 +404,8 @@ describe("public-link administration", () => {
     expect(afterRevoke.some(({artifact}) => artifact.id === published.artifact.id)).toBe(false);
 
     const deleted = await privateArtifact("Deleted inventory", "public-admin-secret-deleted");
-    const deletedInvitation = await administratorFetch(
+    await openProjectToMembers(server, installation, deleted.artifact.projectId);
+    const deletedInvitation = await creatorFetch(
       `/api/v1/artifacts/${deleted.artifact.id}/public-link?projectId=${deleted.artifact.projectId}`,
       {body: JSON.stringify({permission: "view"}), method: "POST"},
     );
@@ -497,6 +509,17 @@ describe("public-link administration", () => {
     });
   }
 
+  async function creatorFetch(path: string, init: RequestInit = {}): Promise<Response> {
+    return fetch(`${server.baseUrl}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${creatorToken}`,
+        "Content-Type": "application/json",
+        ...Object.fromEntries(new Headers(init.headers)),
+      },
+    });
+  }
+
   async function expectNoPublicBytes(published: PublishResponse): Promise<void> {
     const stable = await fetch(published.links.artifact, {redirect: "manual"});
     expect(stable.status).toBe(401);
@@ -506,8 +529,19 @@ describe("public-link administration", () => {
 });
 
 const administratorVerifier: BearerCredentialVerifier = {
-  verify: (credential) =>
-    Redacted.value(credential) === administratorToken
+  verify: (credential) => {
+    if (Redacted.value(credential) === creatorToken && creatorVerifierMemberId !== null) {
+      return Effect.succeed({
+        authorizedByPrincipalId: null,
+        capabilities: [],
+        displayName: "Public link creator",
+        id: creatorVerifierMemberId,
+        installationId: "local",
+        kind: "human",
+        membershipRole: "member",
+      });
+    }
+    return Redacted.value(credential) === administratorToken
       ? Effect.succeed({
         authorizedByPrincipalId: null,
         capabilities: [],
@@ -519,7 +553,8 @@ const administratorVerifier: BearerCredentialVerifier = {
       })
       : Effect.fail(new AuthenticationRequired({
         message: "The external administrator credential is invalid.",
-      })),
+      }));
+  },
 };
 
 function privateCommand(

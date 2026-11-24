@@ -5,6 +5,7 @@ description: Publish, review, organize, and share work with Artifact Server, or 
 
 # Artifact Server
 
+
 The web interface is branded **Houston Artifacts**. The `artifact-server` skill, CLI, and MCP identifiers retain their Artifact Server names.
 
 Use one skill for Artifact Server work. Route the request before loading detailed
@@ -32,6 +33,11 @@ steps separate and state which installation is affected before changing it.
 
 - Use the installed `artifactserver` CLI for files on the user's machine. Use
   the connected Artifact Server MCP for work that needs only server data.
+- Manage public sharing through MCP `artifact_public_link_*` tools or the CLI
+  `artifactserver public-link` commands. The CLI supports `get`, `create`,
+  `set`, `reset`, `revoke`, `sessions`, and `revoke-session`. Treat returned
+  manager URLs as secrets; create a link only when the user explicitly
+  requests public sharing.
 - Never replace a real file with inline HTML, base64, invented bytes, or a local
   path sent to a remote MCP server.
 - Never read, print, request in chat, or write bearer tokens, API keys, cookies,
@@ -46,3 +52,4 @@ After publication, give the full-screen review-and-comment link first. Give the
 raw immutable artifact link second when it is useful. Include the server,
 project ID, artifact ID, and exact version ID in technical details rather than
 making the user reconstruct them.
+Creating, resetting, or enabling a public link requires a signed-in person or a person's own key; service tokens cannot create links.

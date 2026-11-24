@@ -44,6 +44,30 @@ artifactserver publish ./dist \
 
 The expected version prevents an old client from replacing a newer current pointer.
 
+## Manage a public link
+
+Creating, resetting, or enabling a public link requires a signed-in person or a person's own key; service tokens cannot create links.
+
+Manage an artifact's public-link access with the dedicated command (the `link`
+command is reserved for linked files):
+
+```sh
+artifactserver public-link get art_example --server https://artifacts.example.com
+artifactserver public-link create art_example --permission view --server https://artifacts.example.com
+artifactserver public-link set art_example --permission comment --server https://artifacts.example.com
+artifactserver public-link reset art_example --permission comment --server https://artifacts.example.com
+artifactserver public-link revoke art_example --server https://artifacts.example.com
+artifactserver public-link sessions art_example --server https://artifacts.example.com
+artifactserver public-link revoke-session art_example guest_example --server https://artifacts.example.com
+```
+
+`get`, `create`, and `reset` print the manager URL when available. Treat that URL
+as a secret and share it only with the intended reviewers. `create` fails when
+a link already exists; use `reset` to rotate its secret and end existing guest
+sessions. `revoke` blocks new public requests and ends active sessions.
+`sessions` lists active guest sessions, and `revoke-session` ends one selected
+session.
+
 ## Read comments
 
 List comments for an artifact (all pages, newest activity first):

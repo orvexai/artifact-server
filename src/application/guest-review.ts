@@ -124,6 +124,15 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
         if (artifact === null) return yield* new ArtifactNotFound({message: "The artifact does not exist."});
         return {artifact, projectId: project.id, invitation};
       });
+      const requireHumanCreator = Effect.fn("GuestReviewService.requireHumanCreator")(function*(projectId: string, creatorId: string) {
+        if (!(yield* creatorMayStillManage(projectId, creatorId))) {
+          return yield* new AuthorizationDenied({
+            code: "PUBLIC_LINK_HUMAN_CREATOR_REQUIRED",
+            message: "Sign in as a person or use a person's own key to create, reset, or enable a public link.",
+          });
+        }
+        return undefined;
+      });
       const status = Effect.fn("GuestReviewService.status")(function*(command: {artifactId: string; principal: Principal; projectId: string | null}) {
         const result = yield* resolveManageableArtifact(command);
         const now = DateTime.formatIso(yield* dependencies.clock.now);
@@ -199,6 +208,7 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
       const enable = Effect.fn("GuestReviewService.enable")(function*(command: {artifactId: string; permission?: "view" | "comment"; principal: Principal; projectId: string | null}) {
         if (!(yield* dependencies.repository.getPublicLinksEnabled())) return yield* new AuthorizationDenied({message: "An administrator has disabled public links."});
         const result = yield* resolveManageableArtifact(command);
+        yield* requireHumanCreator(result.projectId, command.principal.id);
         const now = DateTime.formatIso(yield* dependencies.clock.now);
         const issued = dependencies.secrets.issue();
         const id = dependencies.ids.guestInvitationId();
@@ -218,6 +228,7 @@ export class GuestReviewService extends Context.Service<GuestReviewService, Gues
       const create = Effect.fn("GuestReviewService.create")(function*(command: {artifactId: string; permission?: "view" | "comment"; principal: Principal; projectId: string | null}) {
         if (!(yield* dependencies.repository.getPublicLinksEnabled())) return "disabled" as const;
         const result = yield* resolveManageableArtifact(command);
+        yield* requireHumanCreator(result.projectId, command.principal.id);
         if (result.invitation !== null && result.invitation.revokedAt === null) return "exists" as const;
         const now = DateTime.formatIso(yield* dependencies.clock.now);
         const issued = dependencies.secrets.issue();

@@ -32,6 +32,7 @@ import {configureLinkCommand} from "./link-command.js";
 import {configureMcpOnboardingCommands} from "./mcp-onboarding-commands.js";
 import {configurePublishCommand} from "./publish-command.js";
 import {configureCommentsCommand} from "./comments-command.js";
+import {configurePublicLinkCommand} from "./public-link-command.js";
 import {loadEmbedOrigins} from "./embed-configuration.js";
 import {configureArtifactStateCommand} from "./artifact-state-command.js";
 import {configureDownloadCommand} from "./download-command.js";
@@ -80,6 +81,9 @@ configurePublishCommand(program, {
   defaultProfileDirectory: defaultUserDataDirectory,
 });
 configureCommentsCommand(program, {
+  defaultProfileDirectory: defaultUserDataDirectory,
+});
+configurePublicLinkCommand(program, {
   defaultProfileDirectory: defaultUserDataDirectory,
 });
 configureArtifactStateCommand(program, {
