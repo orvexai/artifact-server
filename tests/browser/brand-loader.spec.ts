@@ -4,8 +4,21 @@ import {localLogin, startBrowserFixture, stopBrowserFixture} from "./browser-fix
 
 declare global {
   interface Window {
-    __asCspViolationCount?: number;
+    asCspViolationCount?: number;
+    asCspViolationRecords?: CspViolationRecord[];
   }
+}
+
+interface CspViolationRecord {
+  readonly blockedURI: string;
+  readonly effectiveDirective: string;
+  readonly violatedDirective: string;
+  readonly disposition: string;
+  readonly sourceFile: string;
+  readonly lineNumber: number;
+  readonly columnNumber: number;
+  readonly sample: string;
+  readonly documentUrl: string;
 }
 
 test("BRD-004-F mark stays visible in the catalog and settings headers in both themes", async ({browser}) => {
@@ -76,9 +89,23 @@ test("BRD-005-F visible loaders stay named, status-bearing, reduced-motion safe,
   try {
     await fixture.page.emulateMedia({reducedMotion: "reduce"});
     await fixture.page.addInitScript(() => {
-      Reflect.set(window, "__asCspViolationCount", 0);
-      window.addEventListener("securitypolicyviolation", () => {
-        window["__asCspViolationCount"] = (window["__asCspViolationCount"] ?? 0) + 1;
+      window.asCspViolationCount = 0;
+      window.asCspViolationRecords = [];
+      window.addEventListener("securitypolicyviolation", (event) => {
+        window.asCspViolationCount = (window.asCspViolationCount ?? 0) + 1;
+        const records = window.asCspViolationRecords ?? [];
+        records.push({
+          blockedURI: event.blockedURI,
+          effectiveDirective: event.effectiveDirective,
+          violatedDirective: event.violatedDirective,
+          disposition: event.disposition,
+          sourceFile: event.sourceFile,
+          lineNumber: event.lineNumber,
+          columnNumber: event.columnNumber,
+          sample: event.sample.trim().slice(0, 120),
+          documentUrl: document.URL,
+        });
+        window.asCspViolationRecords = records;
       });
     });
     await fixture.page.route(/\/api\/v1\/artifacts\?.*/u, async (route) => {
@@ -144,22 +171,27 @@ test("BRD-005-F visible loaders stay named, status-bearing, reduced-motion safe,
     const allFrames = fixture.page.frames();
     // Exclude only exact about:blank frames because the init script may not run in them.
     const checkedFrames = allFrames.filter((frame) => frame.url() !== "about:blank");
-    const violationReports = await Promise.all(checkedFrames.map(async (frame) => ({
-      count: await frame.evaluate(() => window["__asCspViolationCount"]),
-      frame,
-    })));
+    const violationReports = await Promise.all(checkedFrames.map((frame) =>
+      frame.evaluate(() => ({
+        url: document.URL,
+        count: window.asCspViolationCount,
+        records: window.asCspViolationRecords,
+      }))
+    ));
     expect(violationReports.length).toBeGreaterThan(0);
-    for (const report of violationReports) {
-      expect(report.count).toBe(0);
-    }
+    expect(violationReports).toEqual(violationReports.map((report) => ({
+      url: report.url,
+      count: 0,
+      records: [],
+    })));
     expect(violationReports.some((report) =>
-      report.frame === fixture.page.mainFrame() && report.count === 0
+      report.url === fixture.page.mainFrame().url() && report.count === 0
     )).toBe(true);
     const reviewProbeSrc = await fixture.page.locator('iframe[data-loader-probe="true"]').getAttribute("src");
     expect(reviewProbeSrc).toBe("/review-frame");
     const reviewProbeUrl = new URL("/review-frame", fixture.server.baseUrl).href;
     expect(violationReports.some((report) =>
-      report.frame.url() === reviewProbeUrl && report.count === 0
+      report.url === reviewProbeUrl && report.count === 0
     )).toBe(true);
 
     releaseCatalog();

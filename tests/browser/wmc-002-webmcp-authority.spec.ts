@@ -67,7 +67,7 @@ test.describe("WMC-002 WebMCP authority", () => {
       expect(descriptions).toHaveLength(expectedToolNames.length);
       for (const description of descriptions) {
         expect(description.length).toBeLessThanOrEqual(maximumDescriptionCharacters);
-        expect(description).toContain("Artifact Server");
+        expect(description).toContain("Houston Artifacts");
         expect(description).not.toContain(untrustedBody);
       }
       const view = z.object({
