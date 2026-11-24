@@ -2,7 +2,7 @@ import {createRoot} from "react-dom/client";
 import {useEffect, useRef, useState} from "react";
 import {z} from "zod";
 
-import "../brand/houston/motion/houston-loader.js";
+import "../brand/houston/houston-loader-define.ts";
 import "../brand/houston/loader.css";
 import {api, organizationLoginHref, organizationPath, organizationPathname, type ArtifactVersion} from "@/api/client";
 import {documentBaseUrl} from "@/review/content-host-url";

@@ -6,6 +6,7 @@ import {z} from "zod";
 import {describe, expect, test} from "vitest";
 
 import {houstonServerPageMark, houstonServerPageStyles} from "../../src/shared/houston-server-pages.js";
+import {addObservedAttributePropertySetters} from "../../apps/web/src/brand/houston/houston-loader-define.ts";
 
 const root = process.cwd();
 const read = (path: string) => readFileSync(resolve(root, path));
@@ -492,6 +493,49 @@ describe("Houston Brand and Design System v0.4.0", () => {
       const [attributes] = scanHoustonLoaderUsages(fixture.source);
       expect(attributes !== undefined && isValidHoustonLoaderAttributes(attributes)).toBe(fixture.valid);
     }
+  });
+
+  test("Houston loader observed getter attributes accept property writes without bypassing accessors", () => {
+    class GetterOnlyElement {
+      static observedAttributes = ["label"];
+      #label = "original";
+      static writes: string[] = [];
+      static removals: string[] = [];
+      get label(): string { return this.#label; }
+      setAttribute(name: string, value: string): void { GetterOnlyElement.writes.push(`${name}=${value}`); }
+      removeAttribute(name: string): void { GetterOnlyElement.removals.push(name); }
+    }
+    const element = new GetterOnlyElement();
+    const valueBefore = element.label;
+    addObservedAttributePropertySetters(GetterOnlyElement);
+    const patchedDescriptor = Object.getOwnPropertyDescriptor(GetterOnlyElement.prototype, "label");
+    expect(element.label).toBe(valueBefore);
+    Reflect.set(element, "label", "Loading");
+    Reflect.set(element, "label", null);
+    expect(GetterOnlyElement.writes).toEqual(["label=Loading"]);
+    expect(GetterOnlyElement.removals).toEqual(["label"]);
+    expect(element.label).toBe(valueBefore);
+
+    class ExistingSetterElement {
+      static observedAttributes = ["label"];
+      #label = "before";
+      get label(): string { return this.#label; }
+      set label(value: string) { this.#label = value; }
+    }
+    const setterDescriptor = Object.getOwnPropertyDescriptor(ExistingSetterElement.prototype, "label");
+    addObservedAttributePropertySetters(ExistingSetterElement);
+    expect(Object.getOwnPropertyDescriptor(ExistingSetterElement.prototype, "label")).toEqual(setterDescriptor);
+    addObservedAttributePropertySetters(GetterOnlyElement);
+    expect(Object.getOwnPropertyDescriptor(GetterOnlyElement.prototype, "label")).toEqual(patchedDescriptor);
+
+    const imports = webSourceFiles(resolve(root, "apps/web/src"))
+      .filter((path) => relative(root, path) !== "apps/web/src/brand/houston/houston-loader-define.ts")
+      .flatMap((path) => {
+        const source = readFileSync(path, "utf8");
+        return [...source.matchAll(/(?:from\s*|import\s*)["'][^"']*motion\/houston-loader\.js["']/gu)]
+          .map(() => relative(root, path));
+      });
+    expect(imports).toEqual([]);
   });
 
   test("BRD-004-B mark accent and server-page colour hex values track both theme token sets", () => {

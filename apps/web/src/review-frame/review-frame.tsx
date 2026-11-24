@@ -5,7 +5,7 @@ import {
 } from "@plannotator/ui/components/html-viewer";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import "../brand/houston/motion/houston-loader.js";
+import "../brand/houston/houston-loader-define.ts";
 import "../brand/houston/loader.css";
 import { withBaseHref } from "./base-href.ts";
 import {

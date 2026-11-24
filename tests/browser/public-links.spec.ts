@@ -104,6 +104,45 @@ test("PLK-002-B Valid public-link pages render without a Sign in control", async
   }
 });
 
+test("Private artifacts without a public link show the signed-out sign-in gate", async ({browser}) => {
+  const fixture = await startBrowserFixture(browser);
+  try {
+    const published = await publishNew(fixture.server, fixture.installation, {
+      accessSetting: "account_required",
+      content: "<!doctype html><title>Private preview</title><h1>Private preview</h1>",
+      idempotencyKey: `private-artifact-fixture-${crypto.randomUUID()}`,
+      name: "Private preview",
+    });
+    let localOwnerSessionRequestCount = 0;
+    await fixture.page.route("**/auth/local-owner", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      localOwnerSessionRequestCount += 1;
+      await route.fulfill({
+        body: JSON.stringify({error: {code: "AUTHENTICATION_REQUIRED", message: "Authentication is required."}}),
+        contentType: "application/json",
+        status: 401,
+      });
+    });
+    const publicArtifactRequest = fixture.page.waitForResponse((response) =>
+      response.request().method() === "GET"
+      && response.url().endsWith(`/api/v1/public/artifacts/${encodeURIComponent(published.body.artifact.id)}`)
+    );
+    await fixture.page.goto(
+      `${fixture.server.baseUrl}/review?project=prj_default&artifact=${encodeURIComponent(published.body.artifact.id)}`,
+    );
+    await publicArtifactRequest;
+    await expect(fixture.page.getByRole("heading", {name: "Sign in required"})).toBeVisible();
+    expect(localOwnerSessionRequestCount).toBeGreaterThanOrEqual(1);
+    const signIn = fixture.page.getByRole("link", {name: "Sign in"});
+    const href = await signIn.getAttribute("href");
+    expect(href).not.toBeNull();
+    expect(href).not.toContain("#");
+    expect(href).toContain(published.body.artifact.id);
+  } finally {
+    await stopBrowserFixture(fixture);
+  }
+});
+
 test("Unknown public links show a neutral failure without sign-in controls", async ({browser}) => {
   const fixture = await startBrowserFixture(browser);
   try {

@@ -2895,6 +2895,7 @@ function PublicArtifactReview({artifactId}: {readonly artifactId: string}) {
   const [state, setState] = useState<
     | {readonly kind: "loading"}
     | {readonly kind: "unavailable"}
+    | {readonly kind: "missing"}
     | {readonly kind: "ready"; readonly artifact: PublicArtifact}
     | {readonly kind: "guest"; readonly guest: Awaited<ReturnType<typeof api.publicVisitor>>}
   >({kind: "loading"});
@@ -2935,7 +2936,7 @@ function PublicArtifactReview({artifactId}: {readonly artifactId: string}) {
           const artifact = await api.publicArtifact(artifactId);
           if (!cancelled) setState({artifact, kind: "ready"});
         } catch {
-          if (!cancelled) setState({kind: "unavailable"});
+          if (!cancelled) setState({kind: "missing"});
         }
       }
     };
@@ -3029,6 +3030,20 @@ function PublicArtifactReview({artifactId}: {readonly artifactId: string}) {
   if (state.kind === "loading") return <ReviewGate description="Opening the shared artifact." title="Loading Houston Artifacts" />;
   if (state.kind === "unavailable") {
     return <main className="as-public-review as-public-review--unavailable"><h1>Link unavailable</h1><p>This shared artifact is unavailable.</p></main>;
+  }
+  if (state.kind === "missing") {
+    const returnTo = `${window.location.pathname}${window.location.search}`;
+    return (
+      <ReviewGate
+        action={(
+          <a className="as-button as-button--primary" href={organizationLoginHref(returnTo)}>
+            Sign in
+          </a>
+        )}
+        description="This installation requires an authenticated browser session."
+        title="Sign in required"
+      />
+    );
   }
   const guest = state.kind === "guest" ? state.guest : null;
   const artifactName = guest?.artifactName ?? (state.kind === "ready" ? state.artifact.artifact.name : "Shared artifact");

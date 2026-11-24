@@ -1,7 +1,7 @@
 import {useEffect, useState, type ReactNode} from "react";
 import {createPortal} from "react-dom";
 
-import "@/brand/houston/motion/houston-loader.js";
+import "@/brand/houston/houston-loader-define";
 import {api, ApiError, type PlatformOrganization} from "@/api/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
