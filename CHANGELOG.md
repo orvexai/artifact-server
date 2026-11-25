@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.33
+
+- Fixed: after signing in at the root, a user who belongs to exactly one organization is now taken into that organization without a second Sign in click.
+
 ## 0.1.32
 
 - Share artifacts with public links that visitors can open without signing in, and switch organizations from the catalog and Settings.
