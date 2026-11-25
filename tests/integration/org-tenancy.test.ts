@@ -741,7 +741,7 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(await memberOrgs.json()).toEqual([{displayName: "Org B", role: "viewer", slug: orgB.slug}]);
     const memberLanding = await fetch(`${baseUrl}/`, {headers: {Cookie: cookie}, redirect: "manual"});
     expect(memberLanding.status).toBe(302);
-    expect(memberLanding.headers.get("location")).toBe(`/o/${orgB.slug}/`);
+    expect(memberLanding.headers.get("location")).toBe(`/o/${encodeURIComponent(orgB.slug)}/auth/login?returnTo=${encodeURIComponent(`/o/${encodeURIComponent(orgB.slug)}/`)}`);
     const unknown = await fetch(`${baseUrl}/api/v1/platform/me/orgs`);
     expect(unknown.status).toBe(404);
     const lastOrg = await fetch(`${baseUrl}/api/v1/platform/session/last-org`, {
@@ -802,7 +802,7 @@ describe.sequential("organization tenancy security boundary", () => {
       [{displayName: orgB.displayName, role: "viewer", slug: orgB.slug}],
     );
     expect(singleTenantLanding.status).toBe(302);
-    expect(singleTenantLanding.headers.get("location")).toBe(`/o/${orgB.slug}/`);
+    expect(singleTenantLanding.headers.get("location")).toBe(`/o/${encodeURIComponent(orgB.slug)}/auth/login?returnTo=${encodeURIComponent(`/o/${encodeURIComponent(orgB.slug)}/`)}`);
     const tenantRootRows = await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`SELECT id, email, role, status, updated_at AS "updatedAt", manual_deactivation AS "manualDeactivation"
@@ -831,7 +831,7 @@ describe.sequential("organization tenancy security boundary", () => {
       [{displayName: "Orvex", role: "administrator", slug: "orvex"}],
     );
     expect(staffLanding.status).toBe(302);
-    expect(staffLanding.headers.get("location")).toBe("/o/orvex/");
+    expect(staffLanding.headers.get("location")).toBe("/o/orvex/auth/login?returnTo=%2Fo%2Forvex%2F");
 
     const noTenantLanding = await completePlatformLogin(
       [`/teams/${orgB.slug}/viewers`],

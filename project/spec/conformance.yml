@@ -1739,6 +1739,20 @@ requirements:
     depends_on: [AUTH-021, AUTH-025, MCP-013, OPS-001]
     evidence: []
 
+  - id: AUTH-030
+    kind: behavior
+    behavior: A successful root sign-in into an organization the identity can enter continues into that organization's login without a second sign-in click, while an organization admission refusal remains a terminal styled denial.
+    owner: authorization
+    source: {file: local-owner-and-private-team-access-spec.md, anchor: conformance-requirements}
+    acceptance:
+      behavior: {id: AUTH-030-B, description: "With a platform session for an identity whose only listed organization is a tenant, whose root member is inactive, whose tenant member is active, and which has no admin group, GET / redirects to that organization's login with returnTo set to its same-origin organization root; with multiple listed organizations, chooser cards link to each organization's login, and root installation_members rows are unchanged."}
+      failure: {id: AUTH-030-F, description: "For the same tenant-only state, GET / never redirects to a bare organization root; a refused organization callback for a browser request renders the styled denied page with 403 and no-store, without redirecting or looping."}
+    deployments: [single_server, kubernetes]
+    status: implementing
+    proof_gap: "AUTH-030-B and AUTH-030-F are unit-level on organizationRootRedirect and renderOrganizationChooser. Not asserted here are the HTTP-level GET / redirect with a live platform session, the unchanged installation_members rows, and the refused organization callback returning 403 no-store without a redirect. That callback path is unchanged by this fix, and its refusal is exercised only by the hosted Keycloak integration test for the root Orvex callback. The hosted Keycloak SSO round trip is pending."
+    depends_on: []
+    evidence: []
+
   - id: GUEST-001
     kind: security
     behavior: A guest has viewer-level access only to explicitly shared restricted projects, may read artifacts and comments and write comments, and cannot create or manage artifacts or projects.

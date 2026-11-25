@@ -28,6 +28,12 @@ const organizationEvictionIntervalMilliseconds = 30_000;
 const legacyInstallationlessBindingExpiresAt = Math.floor(Date.now() / 1_000) + 60 * 60;
 const notFound = () => new Response("Not Found", {status: 404});
 
+function organizationLoginTarget(slug: string): string {
+  const encodedSlug = encodeURIComponent(slug);
+  const returnTo = encodeURIComponent(`/o/${encodedSlug}/`);
+  return `/o/${encodedSlug}/auth/login?returnTo=${returnTo}`;
+}
+
 const organizationChooserStyles = houstonServerPageStyles();
 
 export function renderNoOrganizationPage(): string {
@@ -40,7 +46,7 @@ export function renderOrganizationChooser(
   const choices = organizations.map(({displayName, slug}) => {
     const initials = displayName.trim().split(/\s+/u).slice(0, 2).map((word) => word[0] ?? "")
       .join("").toLocaleUpperCase();
-    return `<a class="org-card" href="/o/${encodeURIComponent(slug)}/"><span class="avatar" aria-hidden="true">${escapeHtml(initials)}</span><span class="org-name">${escapeHtml(displayName)}</span><span class="org-action" aria-hidden="true">&#8594;</span></a>`;
+    return `<a class="org-card" href="${organizationLoginTarget(slug)}"><span class="avatar" aria-hidden="true">${escapeHtml(initials)}</span><span class="org-name">${escapeHtml(displayName)}</span><span class="org-action" aria-hidden="true">&#8594;</span></a>`;
   }).join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>Houston Artifacts — Choose an organization</title><style>${organizationChooserStyles}</style></head><body><main class="shell"><div class="top">${houstonServerPageMark()}<span class="brand">Houston Artifacts</span></div><h1>Choose an organization</h1><p class="intro">Select the organization you want to continue to.</p><nav class="org-list" aria-label="Organizations">${choices}</nav><footer class="footer"><form method="post" action="/api/v1/platform/session/logout"><button class="signout" type="submit">Sign out</button></form></footer></main></body></html>`;
 }
@@ -51,10 +57,10 @@ export function organizationRootRedirect(
 ): string | null {
   if (organizations.length === 1) {
     const only = organizations[0];
-    if (only !== undefined) return `/o/${encodeURIComponent(only.slug)}/`;
+    if (only !== undefined) return organizationLoginTarget(only.slug);
   }
   const last = organizations.find(({slug}) => slug === lastOrg);
-  return last === undefined ? null : `/o/${encodeURIComponent(last.slug)}/`;
+  return last === undefined ? null : organizationLoginTarget(last.slug);
 }
 
 export interface OrganizationRouterOptions {
