@@ -64,7 +64,7 @@ describe("organization chooser", () => {
     expect(html).not.toContain('href="/o/tenant-two/"');
   });
 
-  test("AUTH-030-F: organization continuation never targets the bare organization root", () => {
+  test("organization continuation never targets the bare organization root", () => {
     const single = organizationRootRedirect([{slug: "tenant"}], null);
     const lastOrg = organizationRootRedirect([{slug: "tenant"}, {slug: "other"}], "tenant");
     expect(single).toBe("/o/tenant/auth/login?returnTo=%2Fo%2Ftenant%2F");

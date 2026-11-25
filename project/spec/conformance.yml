@@ -1749,7 +1749,7 @@ requirements:
       failure: {id: AUTH-030-F, description: "For the same tenant-only state, GET / never redirects to a bare organization root; a refused organization callback for a browser request renders the styled denied page with 403 and no-store, without redirecting or looping."}
     deployments: [single_server, kubernetes]
     status: implementing
-    proof_gap: "AUTH-030-B and AUTH-030-F are unit-level on organizationRootRedirect and renderOrganizationChooser. Not asserted here are the HTTP-level GET / redirect with a live platform session, the unchanged installation_members rows, and the refused organization callback returning 403 no-store without a redirect. That callback path is unchanged by this fix, and its refusal is exercised only by the hosted Keycloak integration test for the root Orvex callback. The hosted Keycloak SSO round trip is pending."
+    proof_gap: "The hosted Keycloak SSO round trip is pending. AUTH-030-B is unit-level on organizationRootRedirect and renderOrganizationChooser, and the HTTP-level GET / redirects and unchanged installation_members rows are asserted in tests/integration/org-tenancy.test.ts on hosted CI only. AUTH-030-F drives the refused organization callback through createHttpApp with a stubbed login service, not a real identity provider."
     depends_on: []
     evidence: []
 
