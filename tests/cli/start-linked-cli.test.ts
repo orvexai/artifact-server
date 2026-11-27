@@ -16,6 +16,7 @@ const cliEntrypoint = path.join(repositoryRoot, "src/cli/main.ts");
 
 const sessionSchema = z.object({
   capabilities: z.object({
+    directoryGroups: z.boolean(),
     gitHistory: z.object({
       limits: z.object({
         fileCopyBytes: z.number().int().nonnegative(),

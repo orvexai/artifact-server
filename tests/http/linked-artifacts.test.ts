@@ -168,6 +168,7 @@ describe("linked artifacts over the local HTTP boundary", () => {
     });
     const sessionBody = z.object({
       capabilities: z.object({
+        directoryGroups: z.boolean(),
         gitHistory: z.unknown(),
         linkedArtifacts: z.boolean(),
       }).strict(),

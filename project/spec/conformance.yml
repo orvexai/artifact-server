@@ -1767,6 +1767,34 @@ requirements:
     depends_on: []
     evidence: []
 
+  - id: AUTH-032
+    kind: behavior
+    behavior: A Keycloak-managed tenant organization neither syncs, stores, lists nor shares against directory groups, and an Orvex installation that hosts tenants never stores, lists, roles or shares tenant workspace or guest groups other than the configured Orvex staff groups.
+    owner: authorization
+    source: {file: local-owner-and-private-team-access-spec.md, anchor: conformance-requirements}
+    acceptance:
+      behavior: {id: AUTH-032-B, description: "With a registry holding Orvex and a Keycloak-managed tenant, directory group sync for Orvex stores only non-tenant paths and configured staff groups, never reads members of /Guests or /TenantWorkspaces groups that it does not already store, and removes any it does store after deactivating members admitted only by them; a tenant with admission groupRoots stores only groups beneath its roots; migration 0036 removes out-of-scope groups with their grants, roles and members while retaining configured Orvex staff groups and their roles, and leaves in-scope rows and projects unchanged."}
+      failure: {id: AUTH-032-F, description: "In a Keycloak-managed tenant, directory group sync is refused before any directory call, GET /api/v1/groups and MCP group_list return empty, and PUT group role, MCP group_set_role, project_create with shareWith, HTTP group share and MCP project_share fail with 409 and the identity-provider message whether or not the group exists, creating no project and no grant; the session reports directoryGroups false."}
+    deployments: [single_server, kubernetes]
+    status: implementing
+    proof_gap: "Postgres migration and multi-organization sync are proved on hosted CI Postgres; the hosted Keycloak directory round trip is pending."
+    depends_on: []
+    evidence: []
+
+  - id: AUTH-033
+    kind: behavior
+    behavior: Only members and above may enumerate directory groups.
+    owner: authorization
+    source: {file: local-owner-and-private-team-access-spec.md, anchor: conformance-requirements}
+    acceptance:
+      behavior: {id: AUTH-033-B, description: "An Orvex member and an administrator list the in-scope directory groups over HTTP and MCP, and a member creates a project shared with a listed group."}
+      failure: {id: AUTH-033-F, description: "An Orvex viewer, a guest, and a viewer's personal API key list no directory groups over HTTP or MCP while an administrator in the same installation lists them, and a viewer may still share a project they created by full group path."}
+    deployments: [single_server, kubernetes]
+    status: implementing
+    proof_gap: "Postgres migration and multi-organization sync are proved on hosted CI Postgres; the hosted Keycloak directory round trip is pending."
+    depends_on: []
+    evidence: []
+
   - id: GUEST-001
     kind: security
     behavior: A guest has viewer-level access only to explicitly shared restricted projects, may read artifacts and comments and write comments, and cannot create or manage artifacts or projects.

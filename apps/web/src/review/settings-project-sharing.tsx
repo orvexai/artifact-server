@@ -20,9 +20,11 @@ const roleLabels = {
 /** Who may see one project; its managers can restrict, open and share it. */
 export function ProjectSharingSection({
   administrator,
+  directoryGroups,
   projectId,
 }: {
   readonly administrator: boolean;
+  readonly directoryGroups: boolean;
   readonly projectId: string;
 }) {
   const [sharing, setSharing] = useState<ProjectSharing | null>(null);
@@ -36,10 +38,7 @@ export function ProjectSharingSection({
     let current = true;
     void (async (): Promise<void> => {
       try {
-        const [loaded, directory] = await Promise.all([
-          api.projectSharing(projectId),
-          api.groups(),
-        ]);
+        const [loaded, directory] = await loadProjectSharing(projectId, directoryGroups);
         if (!current) return;
         setSharing(loaded);
         setGroups(directory);
@@ -52,7 +51,7 @@ export function ProjectSharingSection({
     return () => {
       current = false;
     };
-  }, [projectId]);
+  }, [directoryGroups, projectId]);
 
   const change = async (run: () => Promise<ProjectSharing>, failure: string) => {
     setPending(true);
@@ -96,6 +95,9 @@ export function ProjectSharingSection({
       </div>
 
       {error === null ? null : <p className="text-sm text-destructive" role="alert">{error}</p>}
+      {!directoryGroups ? (
+        <p className="text-sm text-muted-foreground">Project sharing with groups is managed by your identity provider.</p>
+      ) : null}
 
       {sharing === null ? null : (
         <>
@@ -140,7 +142,7 @@ export function ProjectSharingSection({
             </ul>
           )}
 
-          {canManage ? (
+          {directoryGroups && canManage ? (
             <div className="grid max-w-2xl gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
               <div className="grid gap-2">
                 <Label htmlFor="project-share-group">Group</Label>
@@ -186,6 +188,15 @@ export function ProjectSharingSection({
       )}
     </section>
   );
+}
+
+export async function loadProjectSharing(
+  projectId: string,
+  directoryGroups: boolean,
+): Promise<readonly [ProjectSharing, readonly DirectoryGroup[]]> {
+  const loaded = api.projectSharing(projectId);
+  const directory = directoryGroups ? api.groups() : Promise.resolve([]);
+  return Promise.all([loaded, directory]);
 }
 
 function projectGrantRole(value: string): ProjectGrantRole {

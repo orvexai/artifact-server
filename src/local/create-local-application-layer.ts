@@ -1,5 +1,6 @@
 import {createHash, randomUUID, timingSafeEqual} from "node:crypto";
 import {emptyTenantStaffDefinition, type TenantStaffDefinition} from "../core/tenant-staff.js";
+import type {DirectoryGroupScope} from "../core/directory-group-scope.js";
 
 import { DateTime, Effect, Layer, Redacted } from "effect";
 
@@ -175,6 +176,7 @@ export interface ApplicationAdapters {
   readonly identityRepository: IdentityRepository;
   readonly installationId: string;
   readonly organizationDirectoryVisibility?: boolean | undefined;
+  readonly directoryGroupScope?: DirectoryGroupScope | undefined;
   /** Orvex is inside org tenancy; tenant root groups are hidden from role and sharing tools. */
   readonly orvexTenantGroupProtection?: boolean | undefined;
   readonly organizationStaffGroups?: readonly string[] | undefined;
@@ -247,6 +249,15 @@ export function createApplicationLayer(
   | PublicLinkAdministrationService
   | StagedUploadService
 > {
+  const directoryGroupScope: DirectoryGroupScope = adapters.directoryGroupScope ?? (
+    adapters.orvexTenantGroupProtection === true
+      ? {
+        kind: "orvex",
+        excludeTenantPaths: true,
+        organizationStaffGroups: adapters.organizationStaffGroups ?? [],
+      }
+      : {kind: "all"}
+  );
   const clock = {
     now: Effect.sync(() => DateTime.makeUnsafe(adapters.clock.now())),
   };
@@ -430,6 +441,7 @@ export function createApplicationLayer(
     clock,
     ids: adapters.ids,
     installationId: adapters.installationId,
+    directoryGroupScope,
     orvexTenantGroupProtection: adapters.orvexTenantGroupProtection === true,
     repository: {
       createProject: (command) => Effect.tryPromise({
@@ -873,6 +885,7 @@ export function createApplicationLayer(
     },
     installationId: adapters.installationId,
     staffHandleSecret: adapters.staffHandleSecret ?? Redacted.make(""),
+    directoryGroupScope,
     organizationDirectoryVisibility: adapters.organizationDirectoryVisibility,
     orvexTenantGroupProtection: adapters.orvexTenantGroupProtection,
     organizationStaffGroups: adapters.organizationStaffGroups,

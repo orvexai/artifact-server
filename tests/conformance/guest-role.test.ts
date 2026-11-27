@@ -789,6 +789,75 @@ describe("guest installation role", () => {
       .toBe("guest");
   });
 
+  test("AUTH-033-B: members and owners can list groups through HTTP and MCP", async () => {
+    const memberResponse = await authenticatedFetch("/api/v1/groups", "member-conformance", {});
+    const memberGroups = z.object({groups: z.array(z.unknown())}).parse(await memberResponse.json()).groups;
+    const ownerGroups = z.object({groups: z.array(z.unknown())})
+      .parse(await (await ownerFetch("/api/v1/groups")).json()).groups;
+    expect(memberGroups.length).toBeGreaterThan(0);
+    expect(ownerGroups.length).toBeGreaterThan(0);
+    expect((await principalMcpTool("member-conformance")).groups.length).toBeGreaterThan(0);
+    expect((await principalMcpTool("owner-conformance")).groups.length).toBeGreaterThan(0);
+    const created = await authenticatedFetch("/api/v1/projects", "member-conformance", {
+      body: JSON.stringify({name: "Member shared project", shareWith: [{group: "/Guests", role: "viewer"}]}),
+      method: "POST",
+    });
+    expect(created.status).toBe(201);
+    expect(z.object({project: z.object({id: z.string()})}).parse(await created.json()).project.id)
+      .toBeTruthy();
+  });
+
+  test("AUTH-033-F: viewers and guests receive empty group lists through HTTP and MCP", async () => {
+    const ownerGroups = z.object({groups: z.array(z.unknown())})
+      .parse(await (await ownerFetch("/api/v1/groups")).json()).groups;
+    expect(ownerGroups.length).toBeGreaterThan(0);
+    await Promise.all(["viewer-conformance", "guest-conformance"].map(async (token) => {
+      const response = await authenticatedFetch("/api/v1/groups", token, {});
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({groups: []});
+      expect(await principalMcpTool(token)).toEqual({groups: []});
+    }));
+    const database = new DatabaseSync(nodePath.join(installation.dataDirectory, "artifact-server.db"));
+    try {
+      const installationId = z.object({installationId: z.string()})
+        .parse(database.prepare("SELECT installation_id AS installationId FROM directory_groups WHERE id = 'group-Guests'").get()).installationId;
+      const now = new Date().toISOString();
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'viewer', 'active', ?, ?)`)
+        .run("member_viewer_conformance", installationId, "viewer@example.test", "Viewer", now, now);
+    } finally {
+      database.close();
+    }
+    const viewerApiKey = z.object({token: z.string()}).parse(await (await ownerFetch("/api/v1/api-keys", {
+      body: JSON.stringify({
+        capabilities: ["artifact:read"], expiresAt: "2099-01-01T00:00:00.000Z",
+        memberId: "member_viewer_conformance", name: "Viewer personal directory key",
+      }),
+      method: "POST",
+    })).json()).token;
+    const viewerKeyGroups = await fetch(`${server.baseUrl}/api/v1/groups`, {
+      headers: {Authorization: `Bearer ${viewerApiKey}`},
+    });
+    expect(viewerKeyGroups.status).toBe(200);
+    expect(await viewerKeyGroups.json()).toEqual({groups: []});
+    const viewerProject = await authenticatedFetch("/api/v1/projects", "viewer-conformance", {
+      body: JSON.stringify({name: "Viewer created project"}),
+      method: "POST",
+    });
+    expect(viewerProject.status).toBe(201);
+    const projectId = z.object({project: z.object({id: z.string()})})
+      .parse(await viewerProject.json()).project.id;
+    const shareByPath = await authenticatedFetch(
+      `/api/v1/projects/${projectId}/groups/${encodeURIComponent("/Guests")}`,
+      "viewer-conformance",
+      {body: JSON.stringify({role: "viewer"}), method: "PUT"},
+    );
+    expect(shareByPath.status).toBe(200);
+    expect(z.object({sharing: z.object({groups: z.array(z.object({path: z.string()}).passthrough())})})
+      .parse(await shareByPath.json()).sharing.groups.map(({path: groupPath}) => groupPath)).toContain("/Guests");
+  });
+
   test("GUEST-003-B: guests receive empty directory and sharing lists and cannot list members or create projects", async () => {
     expect.hasAssertions();
     const existingProjects = z.object({projects: z.array(z.object({id: z.string()}))})
@@ -1486,6 +1555,38 @@ describe("guest installation role", () => {
     return guestMcpResultSchema.parse(result.result.structuredContent);
   }
 
+  async function principalMcpTool(token: string): Promise<{readonly groups: readonly unknown[]}> {
+    const response = await fetch(`${server.baseUrl}/mcp`, {
+      body: JSON.stringify({
+        id: crypto.randomUUID(),
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          _meta: {
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+            [CLIENT_INFO_META_KEY]: {name: "directory-group-scope", version: "1"},
+            [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+          },
+          arguments: {},
+          name: "group_list",
+        },
+      }),
+      // The MCP HTTP transport negotiates the protocol and route explicitly.
+      headers: {
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "group_list",
+      },
+      method: "POST",
+    });
+    const body = z.object({result: z.object({structuredContent: z.unknown()}).loose()})
+      .parse(await response.json());
+    return z.object({groups: z.array(z.unknown())}).parse(body.result.structuredContent);
+  }
+
   async function guestMcpCall(
     name: string,
     args: Readonly<Record<string, string | number | boolean | null | undefined>>,
@@ -1529,6 +1630,12 @@ const conformanceBearerVerifier: BearerCredentialVerifier = {
     }
     if (value === "owner-conformance") {
       return Effect.succeed({...humanPrincipal("member_owner_conformance", membershipRoles.owner), displayName: "owner@example.test", installationId: "local"});
+    }
+    if (value === "member-conformance") {
+      return Effect.succeed({...humanPrincipal("member_member_conformance", membershipRoles.member), installationId: "local"});
+    }
+    if (value === "viewer-conformance") {
+      return Effect.succeed({...humanPrincipal("member_viewer_conformance", membershipRoles.viewer), installationId: "local"});
     }
     if (value === "service-conformance") {
       return Effect.succeed({

@@ -12,6 +12,11 @@ import type {
   DirectoryGroupSnapshot,
   StoredDirectoryGroup,
 } from "../core/directory-groups.js";
+import {
+  directoryGroupInScope,
+  filterDirectoryGroups,
+  type DirectoryGroupScope,
+} from "../core/directory-group-scope.js";
 import { Context, Effect, Layer, Redacted } from "effect";
 
 import type { AuthenticatedApplicationSession } from "./authentication.js";
@@ -323,6 +328,7 @@ export interface InstallationAccessDependencies {
   /** The Orvex installation is served through org tenancy; tenant group paths are not Orvex roles. */
   readonly orvexTenantGroupProtection?: boolean | undefined;
   readonly organizationStaffGroups?: readonly string[] | undefined;
+  readonly directoryGroupScope: DirectoryGroupScope;
   /**
    * This tenant's Orvex staff definition: platform staff groups ({slug}
    * expanded) plus the org's own staff selectors.
@@ -496,6 +502,12 @@ export interface InstallationAccessOperations {
   readonly applyDirectoryGroups: (
     snapshot: DirectoryGroupSnapshot,
   ) => Effect.Effect<DirectoryGroupApplyResult, IdentityRepositoryFailure>;
+  readonly directoryGroupScope: () => DirectoryGroupScope;
+  /** Stored groups outside the Orvex directory scope, for safe legacy cleanup. */
+  readonly listStoredOutOfScopeGroups: () => Effect.Effect<
+    readonly StoredDirectoryGroup[],
+    IdentityRepositoryFailure
+  >;
   /** Every stored directory group, ordered by path. */
   readonly listDirectoryGroups: () => Effect.Effect<
     readonly StoredDirectoryGroup[],
@@ -776,47 +788,87 @@ function makeInstallationAccessService(
   const applyDirectoryGroups = Effect.fn(
     "InstallationAccessService.applyDirectoryGroups",
   )(function*(snapshot: DirectoryGroupSnapshot) {
-    const excludedRoleGroupIds = dependencies.orvexTenantGroupProtection === true
-      ? snapshot.groups.filter((group) => isOrvexTenantGroupPath(group.path) &&
-        !organizationStaffPathMatches(group.path, dependencies.organizationStaffGroups ?? []))
-        .map(({id}) => id)
-      : [];
-    const result = yield* dependencies.repository.applyDirectoryGroups(
+    const scopedGroups = filterDirectoryGroups(dependencies.directoryGroupScope, snapshot.groups);
+    const scopedIds = new Set(scopedGroups.map(({id}) => id));
+    const storedOutOfScopeGroups = yield* listStoredOutOfScopeGroups();
+    const outOfScopeGroups = storedOutOfScopeGroups
+      .filter(({id}) => !scopedIds.has(id))
+      .map((stored) => snapshot.groups.find(({id}) => id === stored.id) ?? {
+        id: stored.id,
+        name: stored.name,
+        path: stored.path,
+        members: null,
+      });
+    const excludedRoleGroupIds = outOfScopeGroups.map(({id}) => id);
+    const firstResult = yield* dependencies.repository.applyDirectoryGroups(
       dependencies.installationId,
-      {...snapshot, excludedRoleGroupIds, guestGroupPrefixes: dependencies.groupRolePolicy?.guestGroupPrefixes ?? []},
+      {
+        ...snapshot,
+        groups: [...scopedGroups, ...outOfScopeGroups],
+        excludedRoleGroupIds,
+        guestGroupPrefixes: dependencies.groupRolePolicy?.guestGroupPrefixes ?? [],
+      },
     );
     // Group membership will decide project access; never serve a stale grant.
     if (
-      result.deleted + result.membershipsReplaced + result.renamed > 0
+      firstResult.deleted + firstResult.membershipsReplaced + firstResult.renamed > 0
     ) {
       clearAuthenticationCaches();
     }
+    if (outOfScopeGroups.length === 0) return firstResult;
+
+    const secondResult = yield* dependencies.repository.applyDirectoryGroups(
+      dependencies.installationId,
+      {
+        ...snapshot,
+        groups: scopedGroups,
+        excludedRoleGroupIds,
+        guestGroupPrefixes: dependencies.groupRolePolicy?.guestGroupPrefixes ?? [],
+        recomputeRoles: false,
+      },
+    );
+    if (secondResult.deleted + secondResult.membershipsReplaced + secondResult.renamed > 0) {
+      clearAuthenticationCaches();
+    }
+    const result = {...firstResult, deleted: firstResult.deleted + secondResult.deleted};
     return result;
   });
 
   const listDirectoryGroups = Effect.fn(
     "InstallationAccessService.listDirectoryGroups",
   )(function*() {
-    const groups = yield* dependencies.repository.listDirectoryGroups(
-      dependencies.installationId,
+    if (dependencies.directoryGroupScope.kind === "none") return [];
+    const groups = filterDirectoryGroups(
+      dependencies.directoryGroupScope,
+      yield* dependencies.repository.listDirectoryGroups(dependencies.installationId),
     );
-    if (dependencies.orvexTenantGroupProtection === true) {
-      return groups.filter((group) => !isOrvexTenantGroupPath(group.path));
-    }
-    if (dependencies.organizationDirectoryVisibility !== true) return groups;
+    const scopedGroups = filterDirectoryGroups(dependencies.directoryGroupScope, groups);
+    const listedGroups = dependencies.orvexTenantGroupProtection === true
+      ? scopedGroups.filter((group) => !isOrvexTenantGroupPath(group.path) &&
+        group.path !== "/Guests" && group.path !== "/TenantWorkspaces")
+      : scopedGroups;
+    if (dependencies.organizationDirectoryVisibility !== true) return listedGroups;
     const tenantStaffGroups = dependencies.tenantStaff?.groups ?? [];
-    return groups.filter((group) => !tenantStaffGroups.some((path) => staffPathCovers(path, group.path)) &&
+    return listedGroups.filter((group) => !tenantStaffGroups.some((path) => staffPathCovers(path, group.path)) &&
       (groupRolePolicy === null || !groupRoleSeedMarksStaff(group, groupRolePolicy.seed)));
+  });
+
+  const listStoredOutOfScopeGroups = Effect.fn(
+    "InstallationAccessService.listStoredOutOfScopeGroups",
+  )(function*() {
+    if (dependencies.directoryGroupScope.kind !== "orvex") return [];
+    return (yield* dependencies.repository.listDirectoryGroups(dependencies.installationId))
+      .filter((group) => !directoryGroupInScope(dependencies.directoryGroupScope, group.path));
   });
 
   const listGroupRoles = Effect.fn(
     "InstallationAccessService.listGroupRoles",
   )(function*() {
+    if (dependencies.directoryGroupScope.kind === "none") return [];
     const roles = yield* dependencies.repository.listGroupRoles(dependencies.installationId);
-    const visibleRoles = dependencies.orvexTenantGroupProtection === true
-      ? roles.filter((group) => !isOrvexTenantGroupPath(group.path) ||
-        organizationStaffPathMatches(group.path, dependencies.organizationStaffGroups ?? []))
-      : roles;
+    const visibleRoles = roles.filter((group) =>
+      directoryGroupInScope(dependencies.directoryGroupScope, group.path)
+    );
     if (groupRolePolicy === null) return visibleRoles;
     return visibleRoles.map((group) => Object.assign({}, group, {staff: groupRoleSeedMarksStaff(group, groupRolePolicy.seed) ||
       dependencies.orvexTenantGroupProtection === true && organizationStaffPathMatches(group.path, dependencies.organizationStaffGroups ?? [])}));
@@ -831,6 +883,9 @@ function makeInstallationAccessService(
   const seedGroupRoles = Effect.fn(
     "InstallationAccessService.seedGroupRoles",
   )(function*(seed: readonly GroupRoleSeedEntry[]) {
+    if (dependencies.directoryGroupScope.kind === "none") {
+      return {seeded: false, unresolved: []};
+    }
     const groups = yield* dependencies.repository.listDirectoryGroups(
       dependencies.installationId,
     );
@@ -868,6 +923,9 @@ function makeInstallationAccessService(
     function*(principal: Principal, groupId: string, role: MembershipRole | null) {
       const directHuman = principal.kind === "human" && principal.authorizedByPrincipalId === null;
       const tenantOrganization = dependencies.organizationDirectoryVisibility === true;
+      if (dependencies.directoryGroupScope.kind === "none") {
+        return yield* new IdentityConflict({message: "Groups are managed by your identity provider."});
+      }
       if (tenantOrganization) {
         return yield* new AuthorizationDenied({message: "Group roles cannot be edited for tenant organizations."});
       }
@@ -877,8 +935,12 @@ function makeInstallationAccessService(
       const groups = yield* dependencies.repository.listDirectoryGroups(dependencies.installationId);
       const target = groups.find((group) => group.id === groupId);
       if (target === undefined) return yield* new IdentityNotFound({message: "The group does not exist."});
-      if (dependencies.orvexTenantGroupProtection === true && isOrvexTenantGroupPath(target.path)) {
+      if (dependencies.orvexTenantGroupProtection === true &&
+        (isOrvexTenantGroupPath(target.path) || target.path === "/Guests" || target.path === "/TenantWorkspaces")) {
         return yield* new AuthorizationDenied({message: "Tenant groups cannot receive Orvex roles."});
+      }
+      if (!directoryGroupInScope(dependencies.directoryGroupScope, target.path)) {
+        return yield* new IdentityNotFound({message: "The group does not exist."});
       }
       if (tenantOrganization && groupRolePolicy !== null && groupRoleSeedMarksStaff(target, groupRolePolicy.seed)) {
         return yield* new AuthorizationDenied({message: "Staff group roles cannot be edited."});
@@ -1116,6 +1178,20 @@ function makeInstallationAccessService(
     );
   });
 
+  const roleAssignmentInScope = (path: string): boolean => {
+    if (
+      dependencies.directoryGroupScope.kind === "orvex" &&
+      dependencies.directoryGroupScope.excludeTenantPaths
+    ) {
+      return directoryGroupInScope(dependencies.directoryGroupScope, path);
+    }
+    if (dependencies.orvexTenantGroupProtection === true) {
+      return !isOrvexTenantGroupPath(path) ||
+        organizationStaffPathMatches(path, dependencies.organizationStaffGroups ?? []);
+    }
+    return true;
+  };
+
   const applyGroupRole = Effect.fn(
     "InstallationAccessService.applyGroupRole",
   )(function*(
@@ -1138,10 +1214,9 @@ function makeInstallationAccessService(
         message: "No group has been given a role in Houston Artifacts yet.",
       }));
     }
-    const effectiveAssignments = dependencies.orvexTenantGroupProtection === true
-      ? assignments.filter((assignment) => !isOrvexTenantGroupPath(assignment.path) ||
-        organizationStaffPathMatches(assignment.path, dependencies.organizationStaffGroups ?? []))
-      : assignments;
+    const effectiveAssignments = assignments.filter((assignment) =>
+      roleAssignmentInScope(assignment.path)
+    );
     const role = policy.groupRoots === undefined
       ? groupMembershipRole(effectiveAssignments, identity.groups)
       : groupMembershipRole(effectiveAssignments, identity.groups, policy.groupRoots);
@@ -1472,10 +1547,9 @@ function makeInstallationAccessService(
         ))
         ? yield* dependencies.repository.listGroupRoles(dependencies.installationId)
         : configuredGroupRoleAssignments(groupRolePolicy.seed);
-      const assignments = dependencies.orvexTenantGroupProtection === true
-        ? baseAssignments.filter((assignment) => !isOrvexTenantGroupPath(assignment.path) ||
-          organizationStaffPathMatches(assignment.path, dependencies.organizationStaffGroups ?? []))
-        : baseAssignments;
+      const assignments = baseAssignments.filter((assignment) =>
+        roleAssignmentInScope(assignment.path)
+      );
       const role = groupRolePolicy.groupRoots === undefined
         ? groupMembershipRole(assignments, identity.groups)
         : groupMembershipRole(assignments, identity.groups, groupRolePolicy.groupRoots);
@@ -1972,6 +2046,8 @@ function makeInstallationAccessService(
     loginWithLocalBrowserToken,
     reconcileDirectoryMembers,
     applyDirectoryGroups,
+    directoryGroupScope: () => dependencies.directoryGroupScope,
+    listStoredOutOfScopeGroups,
     listDirectoryGroups,
     listGroupRoles,
     isGroupRoleSeedApplied,

@@ -37,6 +37,7 @@ const artifactListSchema = z.object({
 
 const sessionSchema = z.object({
   capabilities: z.object({
+    directoryGroups: z.boolean(),
     gitHistory: z.unknown(),
     linkedArtifacts: z.boolean(),
   }).strict(),

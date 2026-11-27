@@ -52,6 +52,7 @@ export function ReviewSettings({
   const reviewHref = readReturnToReview();
   const visiblePages = visibleSettingsPages({
     canManageProjects,
+    directoryGroups: session.capabilities.directoryGroups,
     directHuman,
     organizationKind,
     role: principal.membershipRole,
@@ -165,7 +166,7 @@ function SettingsContent({
   const directHuman = principal.kind === "human" && principal.authorizedByPrincipalId === null;
   const organizationBase = document.querySelector<HTMLMetaElement>('meta[name="as-organization-base"]')?.content ?? "";
   const tenantDirectory = organizationBase.startsWith("/o/") && organizationBase.replace(/\/+$/u, "") !== "/o/orvex";
-  if (route.kind === "notFound") {
+  if (route.kind === "notFound" || (route.kind === "groups" && !session.capabilities.directoryGroups)) {
     return (
       <StatePanel
         action={(
@@ -203,6 +204,7 @@ function SettingsContent({
       <SettingsProject
         administrator={administrator}
         canManage={canManageSelectedProject}
+        directoryGroups={session.capabilities.directoryGroups}
         gitHistory={session.capabilities.gitHistory}
         onProjectsChanged={onProjectsChanged}
         projectId={route.projectId}
@@ -291,11 +293,13 @@ type OrganizationKind = "installation" | "tenant";
 /** The client-visible settings surface mirrors authorization already known by the current session. */
 export function visibleSettingsPages({
   canManageProjects,
+  directoryGroups,
   directHuman,
   organizationKind,
   role,
 }: {
   readonly canManageProjects: boolean;
+  readonly directoryGroups: boolean;
   readonly directHuman: boolean;
   readonly organizationKind: OrganizationKind;
   readonly role: MembershipRole;
@@ -311,8 +315,8 @@ export function visibleSettingsPages({
     if (role !== "guest") {
       pages.add("mcp");
       pages.add("webmcp");
-      pages.add("groups");
     }
+    if (directoryGroups && (role === "member" || role === "owner" || role === "administrator")) pages.add("groups");
   }
   if (
     organizationKind === "tenant"

@@ -650,6 +650,7 @@ export interface HttpAppDependencies {
   readonly discoveredOAuth?: DiscoveredOAuthResources;
   /** Secret-free optional Git state exposed through authenticated discovery. */
   readonly gitHistory?: GitHistoryCapabilityReader;
+  readonly directoryGroups?: boolean;
   /**
    * Advertises the linked-artifact capability (local deployment with
    * `ARTIFACT_SERVER_LINKED_FILES=on`). The enabled application service is
@@ -1750,6 +1751,7 @@ export function createHttpApp(
     context.json({
       authenticationMethod: context.get("authenticationMethod"),
       capabilities: {
+        directoryGroups: dependencies.directoryGroups !== false,
         gitHistory: gitHistory.read(),
         linkedArtifacts: dependencies.linkedArtifacts === true,
       },
@@ -1784,6 +1786,7 @@ export function createHttpApp(
       dependencies,
       listDirectoryGroups(principal),
     );
+    if (groups.length === 0) return context.json({groups: []});
     const privilegedHuman = principal.kind === "human" && isAdministratorRole(principal.membershipRole);
     if (!privilegedHuman) {
       return context.json({groups: groups.map(({hasHigherRoleOverlap: _overlap, ...visible}) => visible)});

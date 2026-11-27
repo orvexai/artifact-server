@@ -94,6 +94,7 @@ import {
 } from "../git-history/git-history-mirror.js";
 import {CloudflareArtifactsGitHistoryProvider} from
   "../git-history/cloudflare-artifacts-git-history-provider.js";
+import type {DirectoryGroupScope} from "../core/directory-group-scope.js";
 
 export interface LocalRuntimeConfig {
   readonly apiToken: string;
@@ -110,6 +111,7 @@ export interface LocalRuntimeConfig {
   readonly publicLinkKeyPrevious?: Redacted.Redacted | undefined;
   readonly embedOrigins?: readonly string[];
   readonly dataDirectory: string;
+  readonly directoryGroupScope?: DirectoryGroupScope;
   /** Server-only credential shared with a co-launched development proxy. */
   readonly developmentProxyCredential?: string;
   /** OIDC OAuth that turns on when the issuer is discovered, instead of the static resources. */
@@ -268,6 +270,7 @@ export async function createLocalRuntime(
       "local-administrator@artifactserver.invalid",
     clock: runtimeClock,
     dispatches: repository,
+    directoryGroupScope: config.directoryGroupScope,
     externalApiBearerVerifier: config.externalApiBearerVerifier ?? null,
       externalApiOAuthVerifier: config.externalApiOAuthVerifier ?? null,
     externalMcpBearerVerifier: config.externalMcpBearerVerifier ?? null,

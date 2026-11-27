@@ -80,9 +80,11 @@ const gitHistoryCapabilitySchema = z.object({
  * default keeps every gated affordance hidden rather than guessed at.
  */
 const deploymentCapabilitiesSchema = z.object({
+  directoryGroups: z.boolean().default(true),
   gitHistory: gitHistoryCapabilitySchema.default(disabledGitHistoryCapability),
   linkedArtifacts: z.boolean(),
 }).default({
+  directoryGroups: true,
   gitHistory: disabledGitHistoryCapability,
   linkedArtifacts: false,
 });

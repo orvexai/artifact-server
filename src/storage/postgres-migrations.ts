@@ -1098,6 +1098,74 @@ const addPlatformSessions = Effect.gen(function*() {
     ON installation_member_staff_audit (installation_id, created_at DESC, id DESC)`);
 });
 
+const addDirectoryGroupScope = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  yield* sql.unsafe(`DO $$
+    DECLARE
+      deleted_grants BIGINT := 0;
+      deleted_roles BIGINT := 0;
+      deleted_members BIGINT := 0;
+      deleted_groups BIGINT := 0;
+      deleted_seeds BIGINT := 0;
+      deleted_backfills BIGINT := 0;
+    BEGIN
+      CREATE TEMP TABLE directory_group_scope_deletions ON COMMIT DROP AS
+      SELECT g.installation_id, g.id
+      FROM directory_groups g
+      JOIN artifact_installations i ON i.id = g.installation_id
+      WHERE
+        (i.slug IS NOT NULL AND i.slug <> 'orvex' AND i.admission_policy IS NULL)
+        OR (i.slug IS NOT NULL AND i.slug <> 'orvex' AND i.admission_policy IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM jsonb_array_elements_text(
+              COALESCE(i.admission_policy->'groupRoots', '[]'::jsonb)
+            ) AS root(path)
+            WHERE left(g.path, length(rtrim(root.path, '/')) + 1) = rtrim(root.path, '/') || '/'
+          ))
+        OR (i.slug = 'orvex'
+          AND EXISTS (SELECT 1 FROM artifact_installations tenant WHERE tenant.slug IS NOT NULL AND tenant.slug <> 'orvex')
+          AND (g.path = '/Guests' OR g.path LIKE '/Guests/%'
+            OR g.path = '/TenantWorkspaces' OR g.path LIKE '/TenantWorkspaces/%')
+          AND g.path !~ '^/TenantWorkspaces/([^/]+)/\\1-staff$');
+
+      DELETE FROM project_group_grants grant_row
+      USING directory_group_scope_deletions target
+      WHERE grant_row.installation_id = target.installation_id AND grant_row.group_id = target.id;
+      GET DIAGNOSTICS deleted_grants = ROW_COUNT;
+
+      DELETE FROM directory_group_roles role_row
+      USING directory_group_scope_deletions target
+      WHERE role_row.installation_id = target.installation_id AND role_row.group_id = target.id;
+      GET DIAGNOSTICS deleted_roles = ROW_COUNT;
+
+      DELETE FROM directory_group_members member_row
+      USING directory_group_scope_deletions target
+      WHERE member_row.installation_id = target.installation_id AND member_row.group_id = target.id;
+      GET DIAGNOSTICS deleted_members = ROW_COUNT;
+
+      DELETE FROM directory_groups group_row
+      USING directory_group_scope_deletions target
+      WHERE group_row.installation_id = target.installation_id AND group_row.id = target.id;
+      GET DIAGNOSTICS deleted_groups = ROW_COUNT;
+
+      DELETE FROM directory_group_role_seeds seed_row
+      USING artifact_installations i
+      WHERE seed_row.installation_id = i.id AND i.slug IS NOT NULL AND i.slug <> 'orvex'
+        AND i.admission_policy IS NULL;
+      GET DIAGNOSTICS deleted_seeds = ROW_COUNT;
+
+      DELETE FROM directory_group_role_rule_backfills backfill_row
+      USING artifact_installations i
+      WHERE backfill_row.installation_id = i.id AND i.slug IS NOT NULL AND i.slug <> 'orvex'
+        AND i.admission_policy IS NULL;
+      GET DIAGNOSTICS deleted_backfills = ROW_COUNT;
+
+      RAISE NOTICE 'directory_group_scope deleted counts groups=% roles=% grants=% members=% seeds=% backfills=%',
+        deleted_groups, deleted_roles, deleted_grants, deleted_members, deleted_seeds, deleted_backfills;
+    END
+    $$`);
+});
+
 const postgresMigrations = {
   "0001_initial_shared_schema": initialSchema,
   "0002_project_scoped_artifacts": addProjectScope,
@@ -1134,6 +1202,7 @@ const postgresMigrations = {
   "0033_platform_sessions": addPlatformSessions,
   "0034_organization_embed_origins": addOrganizationEmbedOrigins,
   "0035_public_link_permissions": addPublicLinkPermissions,
+  "0036_directory_group_scope": addDirectoryGroupScope,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);
