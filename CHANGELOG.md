@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.34
+
+- Fixed: signing in to the command line tool at the root address now lists every organization you belong to, so a member of a single organization no longer sees 'belongs to no active organizations'.
+
 ## 0.1.33
 
 - Fixed: after signing in at the root, a user who belongs to exactly one organization is now taken into that organization without a second Sign in click.
