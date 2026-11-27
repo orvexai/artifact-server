@@ -1080,7 +1080,7 @@ describe.sequential("organization tenancy security boundary", () => {
         .parse(ownerMcpGroups.structuredContent).groups.some(({id}) => id === orvexGroupId)).toBe(true);
 
       const ownerRoleResponse = await ownerApi.fetch(appRequest(
-        `/api/v1/groups/${orvexGroupId}/role`, orvexOwnerOAuthToken, "PUT", {role: "member"},
+        `/api/v1/groups/${orvexGroupId}/role`, orvexOwnerOAuthToken, "PUT", {role: "operator"},
       ));
       expect(ownerRoleResponse.status).toBe(204);
       const ownerRoleMcp = await mcpCall(ownerApi, orvexOwnerOAuthToken, "group_set_role", {
@@ -3927,38 +3927,6 @@ describe.sequential("organization tenancy security boundary", () => {
       {id: "scope-tenant-outside", installationId: orgB.id, path: "/Guests/acme"},
       {id: "scope-no-policy", installationId: orgC.id, path: "/teams/no-policy/viewers"},
     ];
-    const orvexTenantGroups = [
-      {id: "fixture-guests-root", path: "/Guests", installationId},
-      ...Array.from({length: 11}, (_, index) => ({
-        id: `fixture-guest-${index + 1}`,
-        path: `/Guests/fixture-${index + 1}`,
-        installationId,
-      })),
-      {id: "fixture-workspaces-root", path: "/TenantWorkspaces", installationId},
-      ...Array.from({length: 5}, (_, index) => ({
-        id: `fixture-staff-${index + 1}`,
-        path: `/TenantWorkspaces/staff-${index + 1}/staff-${index + 1}-staff`,
-        installationId,
-      })),
-      ...Array.from({length: 4}, (_, index) => ({
-        id: `fixture-workspace-guest-${index + 1}`,
-        path: `/TenantWorkspaces/workspace-${index + 1}/workspace-${index + 1}-guest`,
-        installationId,
-      })),
-    ];
-    const orvexNonTenantGroups = Array.from({length: 3}, (_, index) => ({
-      id: `fixture-internal-${index + 1}`,
-      installationId,
-      path: `/Internal/fixture-${index + 1}`,
-    }));
-    const orvexTenantRoleGroupIds = orvexTenantGroups
-      .filter(({id}) => id.startsWith("fixture-guest-") || id === "fixture-workspace-guest-1")
-      .map(({id}) => id);
-    const orvexTenantGrantGroupIds = [
-      "fixture-staff-1", "fixture-staff-2", "fixture-staff-3",
-      "fixture-guest-1", "fixture-guest-2", "fixture-workspace-guest-1", "fixture-workspace-guest-2",
-    ];
-    const orvexFixtureGroups = [...orvexTenantGroups, ...orvexNonTenantGroups];
     await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       yield* sql`INSERT INTO projects (installation_id, id, name, created_at, archived_at)
@@ -3975,20 +3943,6 @@ describe.sequential("organization tenancy security boundary", () => {
         yield* sql`INSERT INTO project_group_grants
           (installation_id, project_id, group_id, role, granted_at, granted_by_principal_id)
           VALUES (${group.installationId}, 'prj_default', ${group.id}, 'viewer', '2026-11-27T00:00:00.000Z', 'migration-test')`;
-      }
-      for (const group of orvexFixtureGroups) {
-        yield* sql`INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
-          VALUES (${group.installationId}, ${group.id}, ${group.id}, ${group.path}, '2026-11-27T00:00:00.000Z')`;
-        if (orvexTenantRoleGroupIds.includes(group.id) || group.id === "fixture-internal-1") {
-          yield* sql`INSERT INTO directory_group_roles
-            (installation_id, group_id, role, assigned_at, assigned_by_principal_id)
-            VALUES (${group.installationId}, ${group.id}, 'member', '2026-11-27T00:00:00.000Z', 'migration-test')`;
-        }
-        if (orvexTenantGrantGroupIds.includes(group.id) || group.id === "fixture-internal-1") {
-          yield* sql`INSERT INTO project_group_grants
-            (installation_id, project_id, group_id, role, granted_at, granted_by_principal_id)
-            VALUES (${group.installationId}, 'prj_default', ${group.id}, 'viewer', '2026-11-27T00:00:00.000Z', 'migration-test')`;
-        }
       }
       for (const id of [installationId, orgB.id, orgC.id, policyTenant.id]) {
         yield* sql`INSERT INTO directory_group_role_seeds (installation_id, seeded_at)
@@ -4024,13 +3978,7 @@ describe.sequential("organization tenancy security boundary", () => {
         WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id`;
       const projects = yield* sql`SELECT installation_id, id FROM projects
         WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id, id`;
-      const fixtureGroups = yield* sql`SELECT id, path FROM directory_groups WHERE id LIKE 'fixture-%' ORDER BY id`;
-      const fixtureRoles = yield* sql`SELECT group_id FROM directory_group_roles WHERE group_id LIKE 'fixture-%' ORDER BY group_id`;
-      const fixtureGrants = yield* sql`SELECT group_id FROM project_group_grants WHERE group_id LIKE 'fixture-%' ORDER BY group_id`;
-      const tenantGroups = yield* sql`SELECT id FROM directory_groups WHERE installation_id = ${installationId}
-        AND (path = '/Guests' OR path LIKE '/Guests/%' OR path = '/TenantWorkspaces' OR path LIKE '/TenantWorkspaces/%')
-        ORDER BY id`;
-      return {backfills, groups, grants, members, projects, roles, seeds, fixtureGroups, fixtureRoles, fixtureGrants, tenantGroups};
+      return {backfills, groups, grants, members, projects, roles, seeds};
     }));
     expect(afterFirstRun.groups).toEqual([
       expect.objectContaining({id: "scope-tenant-staff", path: "/TenantWorkspaces/acme/acme-staff"}),
@@ -4060,21 +4008,6 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(afterFirstRun.groups.some(({id}) => id === "scope-tenant-sibling")).toBe(false);
     expect(afterFirstRun.groups.some(({id}) => id === "scope-tenant-root-path")).toBe(false);
     expect(afterFirstRun.groups.some(({id}) => id === "scope-tenant-outside")).toBe(false);
-    const staffGroupIds = orvexTenantGroups.filter(({id}) => id.startsWith("fixture-staff-")).map(({id}) => id);
-    const nonTenantGroupIds = orvexNonTenantGroups.map(({id}) => id);
-    expect(orvexTenantGroups).toHaveLength(22);
-    expect(afterFirstRun.fixtureGroups).toHaveLength(8);
-    expect(afterFirstRun.tenantGroups.map(({id}) => id)).toEqual(staffGroupIds);
-    expect(afterFirstRun.fixtureGroups.map(({id}) => id)).toEqual([
-      ...nonTenantGroupIds,
-      ...staffGroupIds,
-    ].toSorted());
-    expect(orvexTenantRoleGroupIds).toHaveLength(12);
-    expect(afterFirstRun.fixtureRoles.map(({group_id}) => group_id)).toEqual(["fixture-internal-1"]);
-    expect(orvexTenantGrantGroupIds).toHaveLength(7);
-    expect(afterFirstRun.fixtureGrants.map(({group_id}) => group_id)).toEqual([
-      "fixture-internal-1", "fixture-staff-1", "fixture-staff-2", "fixture-staff-3",
-    ]);
     expect(afterFirstRun.groups.filter(({id}) => id === "scope-policy-contained-group")).toHaveLength(1);
 
     await database.run(Effect.gen(function*() {
@@ -4096,13 +4029,7 @@ describe.sequential("organization tenancy security boundary", () => {
         WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id`;
       const backfills = yield* sql`SELECT installation_id FROM directory_group_role_rule_backfills
         WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id`;
-      const fixtureGroups = yield* sql`SELECT id, path FROM directory_groups WHERE id LIKE 'fixture-%' ORDER BY id`;
-      const fixtureRoles = yield* sql`SELECT group_id FROM directory_group_roles WHERE group_id LIKE 'fixture-%' ORDER BY group_id`;
-      const fixtureGrants = yield* sql`SELECT group_id FROM project_group_grants WHERE group_id LIKE 'fixture-%' ORDER BY group_id`;
-      const tenantGroups = yield* sql`SELECT id FROM directory_groups WHERE installation_id = ${installationId}
-        AND (path = '/Guests' OR path LIKE '/Guests/%' OR path = '/TenantWorkspaces' OR path LIKE '/TenantWorkspaces/%')
-        ORDER BY id`;
-      return {backfills, groups, grants, members, roles, seeds, fixtureGroups, fixtureRoles, fixtureGrants, tenantGroups};
+      return {backfills, groups, grants, members, roles, seeds};
     }));
     expect(afterSecondRun).toEqual({
       backfills: afterFirstRun.backfills,
@@ -4111,11 +4038,107 @@ describe.sequential("organization tenancy security boundary", () => {
       members: afterFirstRun.members,
       roles: afterFirstRun.roles,
       seeds: afterFirstRun.seeds,
-      fixtureGroups: afterFirstRun.fixtureGroups,
-      fixtureRoles: afterFirstRun.fixtureRoles,
-      fixtureGrants: afterFirstRun.fixtureGrants,
-      tenantGroups: afterFirstRun.tenantGroups,
     });
+  }, 60_000);
+
+  test("migration 0036 removes the production-shaped Orvex tenant residue", async () => {
+    const rootGroups = await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`SELECT id, path FROM directory_groups
+        WHERE installation_id = ${installationId} AND path IN ('/Guests', '/TenantWorkspaces') ORDER BY path`;
+    }));
+    expect(rootGroups).toEqual([]);
+
+    const orvexTenantGroups = [
+      {id: "fixture-guests-root", path: "/Guests", installationId},
+      ...Array.from({length: 11}, (_, index) => ({
+        id: `fixture-guest-${index + 1}`,
+        path: `/Guests/fixture-${index + 1}`,
+        installationId,
+      })),
+      {id: "fixture-workspaces-root", path: "/TenantWorkspaces", installationId},
+      ...Array.from({length: 5}, (_, index) => ({
+        id: `fixture-staff-${index + 1}`,
+        path: `/TenantWorkspaces/staff-${index + 1}/staff-${index + 1}-staff`,
+        installationId,
+      })),
+      ...Array.from({length: 4}, (_, index) => ({
+        id: `fixture-workspace-guest-${index + 1}`,
+        path: `/TenantWorkspaces/workspace-${index + 1}/workspace-${index + 1}-guest`,
+        installationId,
+      })),
+    ];
+    const orvexNonTenantGroups = Array.from({length: 3}, (_, index) => ({
+      id: `fixture-internal-${index + 1}`,
+      installationId,
+      path: `/Internal/fixture-${index + 1}`,
+    }));
+    const orvexTenantRoleGroupIds = orvexTenantGroups
+      .filter(({id}) => id.startsWith("fixture-guest-") || id === "fixture-workspace-guest-1")
+      .map(({id}) => id);
+    const orvexTenantGrantGroupIds = [
+      "fixture-staff-1", "fixture-staff-2", "fixture-staff-3",
+      "fixture-guest-1", "fixture-guest-2", "fixture-workspace-guest-1", "fixture-workspace-guest-2",
+    ];
+    const orvexFixtureGroups = [...orvexTenantGroups, ...orvexNonTenantGroups];
+
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      for (const group of orvexFixtureGroups) {
+        yield* sql`INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
+          VALUES (${group.installationId}, ${group.id}, ${group.id}, ${group.path}, '2026-11-27T00:00:00.000Z')`;
+        if (orvexTenantRoleGroupIds.includes(group.id) || group.id === "fixture-internal-1") {
+          yield* sql`INSERT INTO directory_group_roles
+            (installation_id, group_id, role, assigned_at, assigned_by_principal_id)
+            VALUES (${group.installationId}, ${group.id}, 'member', '2026-11-27T00:00:00.000Z', 'migration-test')`;
+        }
+        if (orvexTenantGrantGroupIds.includes(group.id) || group.id === "fixture-internal-1") {
+          yield* sql`INSERT INTO project_group_grants
+            (installation_id, project_id, group_id, role, granted_at, granted_by_principal_id)
+            VALUES (${group.installationId}, 'prj_default', ${group.id}, 'viewer', '2026-11-27T00:00:00.000Z', 'migration-test')`;
+        }
+      }
+    }));
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      yield* sql`DELETE FROM artifact_server_postgres_migrations WHERE migration_id = 36`;
+    }));
+    await database.run(runPostgresMigrations);
+
+    const readFixtureRows = () => database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const groups = yield* sql`SELECT id, path FROM directory_groups WHERE id LIKE 'fixture-%' ORDER BY id`;
+      const roles = yield* sql`SELECT group_id FROM directory_group_roles WHERE group_id LIKE 'fixture-%' ORDER BY group_id`;
+      const grants = yield* sql`SELECT group_id FROM project_group_grants WHERE group_id LIKE 'fixture-%' ORDER BY group_id`;
+      const tenantGroups = yield* sql`SELECT id FROM directory_groups WHERE installation_id = ${installationId}
+        AND id LIKE 'fixture-%'
+        AND (path = '/Guests' OR path LIKE '/Guests/%' OR path = '/TenantWorkspaces' OR path LIKE '/TenantWorkspaces/%')
+        ORDER BY id`;
+      return {grants, groups, roles, tenantGroups};
+    }));
+    const afterFirstRun = await readFixtureRows();
+    const staffGroupIds = orvexTenantGroups.filter(({id}) => id.startsWith("fixture-staff-")).map(({id}) => id);
+    const nonTenantGroupIds = orvexNonTenantGroups.map(({id}) => id);
+    expect(orvexTenantGroups).toHaveLength(22);
+    expect(afterFirstRun.groups).toHaveLength(8);
+    expect(afterFirstRun.tenantGroups.map(({id}) => id)).toEqual(staffGroupIds);
+    expect(afterFirstRun.groups.map(({id}) => id)).toEqual([
+      ...nonTenantGroupIds,
+      ...staffGroupIds,
+    ].toSorted());
+    expect(orvexTenantRoleGroupIds).toHaveLength(12);
+    expect(afterFirstRun.roles.map(({group_id}) => group_id)).toEqual(["fixture-internal-1"]);
+    expect(orvexTenantGrantGroupIds).toHaveLength(7);
+    expect(afterFirstRun.grants.map(({group_id}) => group_id)).toEqual([
+      "fixture-internal-1", "fixture-staff-1", "fixture-staff-2", "fixture-staff-3",
+    ]);
+
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      yield* sql`DELETE FROM artifact_server_postgres_migrations WHERE migration_id = 36`;
+    }));
+    await database.run(runPostgresMigrations);
+    expect(await readFixtureRows()).toEqual(afterFirstRun);
   }, 60_000);
 });
 
