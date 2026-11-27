@@ -1017,7 +1017,7 @@ describe.sequential("organization tenancy security boundary", () => {
 
       const expectDirectoryGroupRefused = async (groupId: string) => {
         const roleResponse = await tenantRuntime.app.fetch(appRequest(
-          `/api/v1/groups/${groupId}/role`, tenantToken, "PUT", {role: "member"},
+          `/api/v1/groups/${groupId}/role`, tenantToken, "PUT", {role: "operator"},
         ));
         expect(roleResponse.status).toBe(409);
         expect(await messageForHttp(roleResponse)).toBe(identityProviderMessage);
@@ -3961,6 +3961,8 @@ describe.sequential("organization tenancy security boundary", () => {
     const orvexFixtureGroups = [...orvexTenantGroups, ...orvexNonTenantGroups];
     await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
+      yield* sql`INSERT INTO projects (installation_id, id, name, created_at, archived_at)
+        VALUES (${policyTenant.id}, 'prj_default', 'Default', '2026-11-27T00:00:00.000Z', NULL)`;
       for (const group of seededGroups) {
         yield* sql`INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
           VALUES (${group.installationId}, ${group.id}, ${group.id}, ${group.path}, '2026-11-27T00:00:00.000Z')`;
