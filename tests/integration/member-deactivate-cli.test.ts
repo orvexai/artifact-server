@@ -37,7 +37,7 @@ describe.sequential("P43 operator CLI member deactivate", () => {
     },
   });
 
-  const readRows = () => database.run(Effect.gen(function*() {
+  const readRows = () => database.runInInstallation(tenantInstallationId, Effect.gen(function*() {
     const sql = yield* SqlClient;
     const members = yield* sql`SELECT id, status, manual_deactivation AS "manualDeactivation"
       FROM installation_members WHERE installation_id = ${tenantInstallationId} ORDER BY id`;
@@ -61,7 +61,7 @@ describe.sequential("P43 operator CLI member deactivate", () => {
     const tenant = await registry.create(tenantSlug, "P43 Tenant");
     tenantInstallationId = tenant.id;
     const now = new Date().toISOString();
-    await database.run(Effect.gen(function*() {
+    await database.runInInstallation(tenantInstallationId, Effect.gen(function*() {
       const sql = yield* SqlClient;
       yield* sql`INSERT INTO installation_members (
         id, installation_id, email, display_name, role, status, created_at, updated_at
@@ -70,7 +70,7 @@ describe.sequential("P43 operator CLI member deactivate", () => {
         (${otherMemberId}, ${tenantInstallationId}, 'other@p43.test', 'Other', 'member', 'active', ${now}, ${now}),
         (${adminId}, ${tenantInstallationId}, 'admin@p43.test', 'Admin', 'administrator', 'active', ${now}, ${now})`;
     }));
-    const repository = new PostgresIdentityRepository(database, tenantInstallationId);
+    const repository = new PostgresIdentityRepository(database.forInstallation(tenantInstallationId));
     await Promise.all(sessionIds.map((sessionId, index) => repository.createApplicationSession({
         createdAt: now,
         csrfDigest: `csrf-${sessionId}`,
@@ -186,7 +186,7 @@ describe.sequential("P43 operator CLI member deactivate", () => {
   });
 
   test("P43-5 records manual deactivation for the tenant admission guard", async () => {
-    expect(await new PostgresIdentityRepository(database, tenantInstallationId)
+    expect(await new PostgresIdentityRepository(database.forInstallation(tenantInstallationId))
       .isMemberManuallyDeactivated(tenantInstallationId, "editor@p43.test")).toBe(true);
   });
 });

@@ -137,7 +137,7 @@ import {
   registeredAgentRetentionMilliseconds,
 } from "../core/publishing-limits.js";
 import {createManifest} from "../manifest/create-manifest.js";
-import type {PostgresDatabase} from "./postgres-database.js";
+import type {InstallationDatabase} from "./postgres-database.js";
 import type {
   ListPublicLinks,
   PublicLinkInventoryPage,
@@ -578,20 +578,20 @@ export class PostgresArtifactRepository implements
   ProjectRepository,
   StagedUploadRepository
 {
-  readonly #database: PostgresDatabase;
+  readonly #database: InstallationDatabase;
   readonly #installationId: string;
 
-  private constructor(database: PostgresDatabase, installationId: string) {
+  private constructor(database: InstallationDatabase, installationId: string) {
     this.#database = database;
     this.#installationId = installationId;
   }
 
   /** Create a ready repository scoped to one trusted installation. */
   static async open(
-    database: PostgresDatabase,
-    installationId: string,
+    database: InstallationDatabase,
   ): Promise<PostgresArtifactRepository> {
-    await database.run(Effect.gen({self: this}, function*() {
+    const installationId = database.installationId;
+    await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       yield* sql`INSERT INTO artifact_installations (id, created_at)
         VALUES (${installationId}, ${new Date().toISOString()})

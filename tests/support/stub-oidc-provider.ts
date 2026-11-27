@@ -105,6 +105,7 @@ export interface RunningStubOidcProvider {
 }
 
 export interface StubOidcProviderOptions {
+  readonly codeChallengeMethods?: readonly string[];
   readonly clientId?: string;
   readonly clientSecret?: string | null;
 }
@@ -226,7 +227,7 @@ export async function startStubOidcProvider(
         response.writeHead(defects.discoveryStatus).end();
         return;
       }
-      respondJson(response, 200, JSON.stringify({
+      const discoveryDocument = {
         authorization_endpoint: defects.authorizationEndpoint ??
           `${issuer}${authorizePath}`,
         id_token_signing_alg_values_supported: [signingAlgorithm],
@@ -235,7 +236,13 @@ export async function startStubOidcProvider(
         response_types_supported: ["code"],
         subject_types_supported: ["public"],
         token_endpoint: defects.tokenEndpoint ?? `${issuer}${tokenPath}`,
-      }));
+      };
+      if (options.codeChallengeMethods !== undefined) {
+        Object.assign(discoveryDocument, {
+          code_challenge_methods_supported: options.codeChallengeMethods,
+        });
+      }
+      respondJson(response, 200, JSON.stringify(discoveryDocument));
       return;
     }
     if (request.method === "GET" && url.pathname === jwksPath) {

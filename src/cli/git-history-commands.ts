@@ -269,14 +269,9 @@ async function openPurgeResources(options: PurgeOptions): Promise<PurgeResources
     url: configuration.databaseUrl,
   }, "validate");
   try {
-    const store = await PostgresArtifactRepository.open(
-      database,
-      configuration.installationId,
-    );
-    const identity = new PostgresGitHistoryProviderIdentityStore(
-      database,
-      configuration.installationId,
-    );
+    const scoped = database.forInstallation(configuration.installationId);
+    const store = await PostgresArtifactRepository.open(scoped);
+    const identity = new PostgresGitHistoryProviderIdentityStore(scoped);
     return {
       close: () => database.close(),
       identity,

@@ -18,8 +18,8 @@ describe("postgres migration history", () => {
     expect(expectedPostgresMigrationHistory.every((entry) => entry.name.length > 0))
       .toBe(true);
     expect(expectedPostgresMigrationHistory.at(-1)).toEqual({
-      migration_id: 36,
-      name: "directory_group_scope",
+      migration_id: 37,
+      name: "row_level_security",
     });
   });
 });

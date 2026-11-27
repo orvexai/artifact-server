@@ -8,7 +8,7 @@ import {
   type GitHistoryProviderIdentityActivation,
   type GitHistoryProviderIdentityStore,
 } from "../git-history/git-history-provider-identity.js";
-import type {PostgresDatabase} from "./postgres-database.js";
+import type {InstallationDatabase} from "./postgres-database.js";
 
 const identityRow = Schema.Struct({
   account_id: Schema.String,
@@ -20,12 +20,10 @@ interface IdentityRow extends Schema.Schema.Type<typeof identityRow> {}
 /** Postgres provider-identity adapter for stateless external-storage processes. */
 export class PostgresGitHistoryProviderIdentityStore implements
   GitHistoryProviderIdentityStore {
-  readonly #database: PostgresDatabase;
-  readonly #installationId: string;
+  readonly #database: InstallationDatabase;
 
-  constructor(database: PostgresDatabase, installationId: string) {
+  constructor(database: InstallationDatabase) {
     this.#database = database;
-    this.#installationId = installationId;
   }
 
   /** Atomically claim the checked location or report its existing owner/state. */
@@ -35,7 +33,7 @@ export class PostgresGitHistoryProviderIdentityStore implements
     GitHistoryProviderIdentityActivation,
     GitHistoryProviderIdentityStoreFailure
   > {
-    return activateIdentity(this.#database, this.#installationId, input);
+    return activateIdentity(this.#database, input);
   }
 
   /** Read the installation's persisted nonsecret provider location. */
@@ -43,18 +41,18 @@ export class PostgresGitHistoryProviderIdentityStore implements
     GitHistoryProviderIdentity | null,
     GitHistoryProviderIdentityStoreFailure
   > {
-    return readIdentity(this.#database, this.#installationId);
+    return readIdentity(this.#database);
   }
 }
 
 const readIdentity = Effect.fn("GitHistory.PostgresIdentityStore.read")(
   function*(
-    database: PostgresDatabase,
-    installationId: string,
+    database: InstallationDatabase,
   ): Effect.fn.Return<
     GitHistoryProviderIdentity | null,
     GitHistoryProviderIdentityStoreFailure
   > {
+    const installationId = database.installationId;
     return yield* Effect.tryPromise({
       try: () => database.run(Effect.gen(function*() {
         const sql = yield* SqlClient;
@@ -82,13 +80,13 @@ const readIdentity = Effect.fn("GitHistory.PostgresIdentityStore.read")(
 
 const activateIdentity = Effect.fn("GitHistory.PostgresIdentityStore.activate")(
   function*(
-    database: PostgresDatabase,
-    installationId: string,
+    database: InstallationDatabase,
     input: ActivateGitHistoryProviderIdentity,
   ): Effect.fn.Return<
     GitHistoryProviderIdentityActivation,
     GitHistoryProviderIdentityStoreFailure
   > {
+    const installationId = database.installationId;
     return yield* Effect.tryPromise({
       try: () => database.run(Effect.gen(function*() {
         const sql = yield* SqlClient;

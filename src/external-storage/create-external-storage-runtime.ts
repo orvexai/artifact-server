@@ -315,14 +315,9 @@ export async function createOrgRuntime(
       database.health(),
       connectedObjectStorage.readiness(AbortSignal.timeout(3_000)),
     ]);
-    const repository = await PostgresArtifactRepository.open(
-      database,
-      installationId,
-    );
-    const identityRepository = new PostgresIdentityRepository(
-      database,
-      installationId,
-    );
+    const scopedDatabase = database.forInstallation(installationId);
+    const repository = await PostgresArtifactRepository.open(scopedDatabase);
+    const identityRepository = new PostgresIdentityRepository(scopedDatabase);
     const configuredGitHistory = configuredNodeGitHistory(gitHistory);
     const gitHistoryProvider = configuredGitHistory === null
       ? null
@@ -332,10 +327,7 @@ export async function createOrgRuntime(
       });
     const gitHistoryIdentityStore = configuredGitHistory === null
       ? null
-      : new PostgresGitHistoryProviderIdentityStore(
-        database,
-        installationId,
-      );
+      : new PostgresGitHistoryProviderIdentityStore(scopedDatabase);
     if (orgConfig.bootstrapApiToken !== undefined) {
       await ensureBootstrapManagedApiKey({
         credential: orgConfig.bootstrapApiToken,

@@ -1777,7 +1777,7 @@ requirements:
       failure: {id: AUTH-032-F, description: "In a Keycloak-managed tenant, directory group sync is refused before any directory call, GET /api/v1/groups and MCP group_list return empty, and PUT group role, MCP group_set_role, project_create with shareWith, HTTP group share and MCP project_share fail with 409 and the identity-provider message whether or not the group exists, creating no project and no grant; the session reports directoryGroups false."}
     deployments: [single_server, kubernetes]
     status: implementing
-    proof_gap: "Postgres migration and multi-organization sync are proved on hosted CI Postgres; the hosted Keycloak directory round trip is pending."
+    proof_gap: "Postgres migration and multi-organization sync are proved by the external-storage provider gate run (scripts/with-external-storage-test-providers.sh); the hosted Keycloak directory round trip is pending."
     depends_on: []
     evidence: []
 
@@ -1791,8 +1791,36 @@ requirements:
       failure: {id: AUTH-033-F, description: "An Orvex viewer, a guest, and a viewer's personal API key list no directory groups over HTTP or MCP while an administrator in the same installation lists them, and a viewer may still share a project they created by full group path."}
     deployments: [single_server, kubernetes]
     status: implementing
-    proof_gap: "Postgres migration and multi-organization sync are proved on hosted CI Postgres; the hosted Keycloak directory round trip is pending."
+    proof_gap: "Postgres migration and multi-organization sync are proved by the external-storage provider gate run (scripts/with-external-storage-test-providers.sh); the hosted Keycloak directory round trip is pending."
     depends_on: []
+    evidence: []
+
+  - id: SEC-005
+    kind: security
+    behavior: Postgres enforces installation isolation on every tenant table and platform-only access to platform tables, independent of application WHERE clauses.
+    owner: database-adapters
+    source: {file: local-owner-and-private-team-access-spec.md, anchor: conformance-requirements}
+    acceptance:
+      behavior: {id: SEC-005-B, description: "For each of the 39 tenant tables, a transaction scoped to installation A reads, updates and deletes exactly A's seeded rows with raw SQL that has no WHERE clause, and inserts a row for A; platform mode reads and writes platform sessions and every registry row; a scoped transaction reads only its own artifact_installations row."}
+      failure: {id: SEC-005-F, description: "For each of the 39 tenant tables, a transaction scoped to A sees and changes none of B's or Orvex rows with raw SELECT, UPDATE and DELETE without WHERE, and an INSERT naming B fails with SQLSTATE 42501; a transaction with no context reads zero rows and every INSERT fails with 42501; tenant mode reads no platform session and no other registry row; platform mode alone reads no tenant-table row."}
+    deployments: [single_server, kubernetes]
+    status: implementing
+    proof_gap: "Postgres isolation cases are proved by the external-storage provider gate run (scripts/with-external-storage-test-providers.sh)."
+    depends_on: [AUTH-032]
+    evidence: []
+
+  - id: SEC-006
+    kind: security
+    behavior: Tenant context never outlives its transaction and the effective role never bypasses row security.
+    owner: database-adapters
+    source: {file: local-owner-and-private-team-access-spec.md, anchor: conformance-requirements}
+    acceptance:
+      behavior: {id: SEC-006-B, description: "Run as both a Docker superuser session demoted to artifact_server_tenant and a CNPG-like NOSUPERUSER owner role, the startup probe passes, current_user inside a scoped transaction has rolsuper and rolbypassrls false, a nested savepoint rollback keeps the scope, and 50 interleaved concurrent requests for two installations over a pool of 2 each read only their own rows."}
+      failure: {id: SEC-006-F, description: "After a scoped transaction that commits, fails or is rolled back, the next unscoped statement on the same pooled connection reads app.installation_id as empty and sees zero tenant rows; the server refuses to start when the effective role bypasses row security, when artifact_server_tenant is missing for a privileged session, or when any installation_id table lacks forced row security and its policy; runInInstallation rejects an empty id before any SQL."}
+    deployments: [single_server, kubernetes]
+    status: implementing
+    proof_gap: "Postgres isolation and role cases are proved by the external-storage provider gate run (scripts/with-external-storage-test-providers.sh)."
+    depends_on: [SEC-005]
     evidence: []
 
   - id: GUEST-001
