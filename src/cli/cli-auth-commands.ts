@@ -264,6 +264,7 @@ const loginProfile = Effect.fn("CliAuth.login")(
         });
         apiBasePath = `/o/${selected.slug}`;
         if (selected.slug !== "orvex") {
+          process.stderr.write(`Signing in to ${selected.displayName} (${selected.slug}) to finish setup.\n`);
           origin = `${new URL(origin).origin}${apiBasePath}`;
           const scoped = options.device
             ? yield* loginWithDeviceOAuth(origin, apiBasePath)
@@ -436,7 +437,7 @@ async function selectOrganization(
   organizations: z.infer<typeof organizationListSchema>,
   requestedSlug: string | undefined,
 ): Promise<z.infer<typeof organizationListSchema>[number]> {
-  if (organizations.length === 0) throw new Error("The signed-in account belongs to no active organizations.");
+  if (organizations.length === 0) throw new Error("The signed-in account belongs to no active organizations. Use an account with a verified email address that belongs to an organization, or ask an organization owner to add it.");
   if (requestedSlug !== undefined) {
     const selected = organizations.find(({slug}) => slug === requestedSlug);
     if (selected === undefined) {

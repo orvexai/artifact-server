@@ -18,6 +18,13 @@ export interface KeycloakOrganizationClaims {
   readonly organizations: readonly KeycloakOrganizationMembership[];
 }
 
+/** Convert parsed Keycloak memberships to the identity's alias-keyed record. */
+export function keycloakOrganizationsRecord(
+  organizations: readonly KeycloakOrganizationMembership[],
+): Readonly<Record<string, {readonly id: string; readonly groups: readonly string[]}>> {
+  return Object.fromEntries(organizations.map(({alias, groups, id}) => [alias, {groups, id}]));
+}
+
 export type OrganizationClaimParseResult =
   | {readonly ok: true; readonly value: KeycloakOrganizationClaims}
   | {readonly ok: false; readonly reason: string};

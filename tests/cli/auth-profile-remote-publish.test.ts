@@ -615,6 +615,7 @@ describe("authenticated CLI profiles and remote publication", () => {
         origin: `${oauth.origin}/o/acme`,
         status: "authenticated",
       });
+      expect(selected.stderr).toContain("Signing in to Acme (acme) to finish setup.");
       const reused = await fetch(`${oauth.origin}/o/orvex/api/v1/session`, {
         headers: {Authorization: "Bearer oauth-access-acme"},
       });
@@ -627,6 +628,9 @@ describe("authenticated CLI profiles and remote publication", () => {
         ], environment);
         expect(noOrganizations.exitCode).not.toBe(0);
         expect(noOrganizations.stderr).toContain("belongs to no active organizations");
+        expect(noOrganizations.stderr).toContain(
+          "Use an account with a verified email address that belongs to an organization, or ask an organization owner to add it.",
+        );
       } finally {
         await empty.stop();
       }

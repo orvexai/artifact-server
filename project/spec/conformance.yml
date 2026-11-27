@@ -1753,6 +1753,20 @@ requirements:
     depends_on: []
     evidence: []
 
+  - id: AUTH-031
+    kind: behavior
+    behavior: A root-installation OAuth access token lists, at GET /api/v1/platform/me/orgs, the same Keycloak-linked organizations a root browser sign-in by the same person lists, read only from the verified access-token organization claim.
+    owner: authorization
+    source: {file: local-owner-and-private-team-access-spec.md, anchor: conformance-requirements}
+    acceptance:
+      behavior: {id: AUTH-031-B, description: "A root bearer token whose verified organization claim names an active registered organization with a matching Keycloak id and a viewer, editor or owner group resolves an identity carrying that claim, from the email and the userinfo paths alike, and the membership resolver lists that organization with the mapped role."}
+      failure: {id: AUTH-031-F, description: "A root bearer token with no organization claim, a malformed organization claim, an organization whose Keycloak id does not match or that is not active, or no role group lists no tenant organization; a malformed claim does not reject the token; a service-account token lists none; the userinfo body never adds an organization."}
+    deployments: [single_server, kubernetes]
+    status: implementing
+    proof_gap: "AUTH-031-B and AUTH-031-F are proved against the real OidcMcpBearerVerifier and the real membership resolver with signed tokens from a fake issuer. The router-level GET /api/v1/platform/me/orgs with the real verifier and the hosted Keycloak CLI round trip are pending."
+    depends_on: []
+    evidence: []
+
   - id: GUEST-001
     kind: security
     behavior: A guest has viewer-level access only to explicitly shared restricted projects, may read artifacts and comments and write comments, and cannot create or manage artifacts or projects.

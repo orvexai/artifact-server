@@ -26,6 +26,10 @@ import {startOidcHostedAuthentication} from
   "../../src/identity/oidc-hosted-authentication.js";
 import {OidcMcpBearerVerifier} from
   "../../src/identity/oidc-mcp-bearer-verifier.js";
+import {createKeycloakOrganizationMembershipResolver} from
+  "../../src/external-storage/organization-memberships.js";
+import type {OrganizationRecord} from
+  "../../src/external-storage/organization-registry.js";
 import {loadOidcAuthorizationServer} from
   "../../src/identity/oidc-oauth-metadata.js";
 import type {ExternalMcpBearerVerifier} from
@@ -284,6 +288,141 @@ describe("generic OIDC MCP authorization", () => {
     await expect(resolve(removed)).rejects.toThrow("not admitted to this organization");
     const replacedOrganization = await tokenFor(["/owner"], crypto.randomUUID());
     await expect(resolve(replacedOrganization)).rejects.toThrow("not admitted to this organization");
+  });
+
+  test("AUTH-031-B: root bearer tokens carry verified organization memberships into the membership resolver", async () => {
+    const id = "1f91f545-13d4-448f-839c-485274165908";
+    const organization = {acme: {id, groups: ["/editor"]}};
+    const identityFrom = async (verifier: OidcMcpBearerVerifier, token: string) => {
+      const credential = Redacted.make(token);
+      const verified = await Effect.runPromise(verifier.verify(credential));
+      return Effect.runPromise(verifier.resolveIdentity(verified, credential));
+    };
+    const verifier = new OidcMcpBearerVerifier({
+      audience: resource,
+      issuer,
+      jwksUri: `${issuer}/protocol/openid-connect/certs`,
+      userInfoEndpoint: `${issuer}/protocol/openid-connect/userinfo`,
+    });
+    const record: OrganizationRecord = {
+      admissionPolicy: null,
+      displayName: "Acme",
+      embedOrigins: [],
+      id: "organization-record-id",
+      keycloakId: id,
+      registryVersion: "1",
+      routeId: "acme1234",
+      slug: "acme",
+      status: "active",
+    };
+    const resolver = createKeycloakOrganizationMembershipResolver(async (slug) =>
+      slug === "acme" ? record : null
+    );
+
+    const emailIdentity = await identityFrom(verifier, await issueToken({
+      extraClaims: {organization},
+    }));
+    expect(emailIdentity.organizations).toEqual(organization);
+    expect(await resolver.forIdentity(emailIdentity)).toEqual([
+      {displayName: "Acme", role: "member", slug: "acme"},
+    ]);
+
+    provider.setUserInfoOrganizations({forged: {id: crypto.randomUUID(), groups: ["/owner"]}});
+    const userInfoIdentity = await identityFrom(verifier, await issueToken({
+      extraClaims: {organization},
+      profile: false,
+    }));
+    expect(userInfoIdentity.organizations).toEqual(organization);
+    expect(userInfoIdentity.organizations).not.toHaveProperty("forged");
+  });
+
+  test("AUTH-031-F: root bearer tokens list no organization they are not verified members of", async () => {
+    const id = "1f91f545-13d4-448f-839c-485274165908";
+    const validOrganization = {acme: {id, groups: ["/editor"]}};
+    const identityFrom = async (verifier: OidcMcpBearerVerifier, token: string) => {
+      const credential = Redacted.make(token);
+      const verified = await Effect.runPromise(verifier.verify(credential));
+      return Effect.runPromise(verifier.resolveIdentity(verified, credential));
+    };
+    const verifier = new OidcMcpBearerVerifier({
+      audience: resource,
+      issuer,
+      jwksUri: `${issuer}/protocol/openid-connect/certs`,
+      serviceClients: ["tenant-cli"],
+    });
+    const record: OrganizationRecord = {
+      admissionPolicy: null,
+      displayName: "Acme",
+      embedOrigins: [],
+      id: "organization-record-id",
+      keycloakId: id,
+      registryVersion: "1",
+      routeId: "acme1234",
+      slug: "acme",
+      status: "active",
+    };
+    const resolver = createKeycloakOrganizationMembershipResolver(async (slug) =>
+      slug === "acme" ? record : null
+    );
+    const validIdentity = await identityFrom(verifier, await issueToken({
+      extraClaims: {organization: validOrganization},
+    }));
+    expect(await resolver.forIdentity(validIdentity)).toHaveLength(1);
+    expect(await resolver.forIdentity({...validIdentity, serviceAccount: true})).toEqual([]);
+
+    const noClaim = await identityFrom(verifier, await issueToken({}));
+    expect(noClaim.organizations).toEqual({});
+    expect(await resolver.forIdentity(noClaim)).toEqual([]);
+
+    const malformedClaim = await identityFrom(verifier, await issueToken({
+      extraClaims: {organization: "not-an-object"},
+    }));
+    expect(malformedClaim.organizations).toEqual({});
+    expect(await resolver.forIdentity(malformedClaim)).toEqual([]);
+
+    await Promise.all([
+      {acme: {id: crypto.randomUUID(), groups: ["/editor"]}},
+      {acme: {id, groups: ["/other"]}},
+    ].map(async (organization) => {
+      const identity = await identityFrom(verifier, await issueToken({
+        extraClaims: {organization},
+      }));
+      expect(await resolver.forIdentity(identity)).toEqual([]);
+    }));
+
+    const suspendedResolver = createKeycloakOrganizationMembershipResolver(async (slug) =>
+      slug === "acme" ? {...record, status: "suspended"} : null
+    );
+    expect(await suspendedResolver.forIdentity(validIdentity)).toEqual([]);
+
+    const serviceVerifier = new OidcMcpBearerVerifier({
+      audience: resource,
+      issuer,
+      jwksUri: `${issuer}/protocol/openid-connect/certs`,
+      serviceClients: ["tenant-cli"],
+    });
+    const serviceIdentity = await identityFrom(serviceVerifier, await issueToken({
+      extraClaims: {
+        azp: "tenant-cli",
+        organization: validOrganization,
+        preferred_username: "service-account-tenant-cli",
+      },
+      profile: false,
+    }));
+    expect(serviceIdentity.organizations).toBeUndefined();
+    expect(await resolver.forIdentity(serviceIdentity)).toEqual([]);
+
+    const emailServiceIdentity = await identityFrom(serviceVerifier, await issueToken({
+      extraClaims: {
+        azp: "tenant-cli",
+        email: "service-account@tenant.test",
+        organization: validOrganization,
+        preferred_username: "service-account-tenant-cli",
+      },
+      profile: false,
+    }));
+    expect(emailServiceIdentity.organizations).toBeUndefined();
+    expect(await resolver.forIdentity(emailServiceIdentity)).toEqual([]);
   });
 
   test("memoizes the org-rebound verifier and its JWKS set", async () => {
@@ -1134,6 +1273,7 @@ interface ProviderBoundary {
   close(): Promise<void>;
   setKeysStatus(status: number): void;
   setUserInfoGroups(groups: readonly string[] | null): void;
+  setUserInfoOrganizations(organizations: JWTPayload["organization"]): void;
   setUserInfoStatus(status: number): void;
   keySetRequests(): number;
   userInfoRequests(): number;
@@ -1144,6 +1284,7 @@ async function startProviderBoundary(options: {
 }): Promise<ProviderBoundary> {
   let keysStatus = 200;
   let userInfoGroups: readonly string[] | null = null;
+  let userInfoOrganizations: JWTPayload["organization"] = undefined;
   let keySetRequestCount = 0;
   let userInfoRequestCount = 0;
   let userInfoStatus = 200;
@@ -1191,6 +1332,7 @@ async function startProviderBoundary(options: {
         sub: subject,
       };
       if (userInfoGroups !== null) profile["groups"] = userInfoGroups;
+      if (userInfoOrganizations !== undefined) profile["organization"] = userInfoOrganizations;
       response.end(JSON.stringify(profile));
       return;
     }
@@ -1211,6 +1353,9 @@ async function startProviderBoundary(options: {
     },
     setUserInfoGroups: (groups) => {
       userInfoGroups = groups;
+    },
+    setUserInfoOrganizations: (organizations) => {
+      userInfoOrganizations = organizations;
     },
     setUserInfoStatus: (status) => {
       userInfoStatus = status;

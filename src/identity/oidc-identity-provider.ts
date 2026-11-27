@@ -10,7 +10,7 @@ import type {
 import {IdentityProviderFailure} from "../core/errors.js";
 import type {ExternalIdentity} from "../core/installation-identity.js";
 import {membershipRoles} from "../core/identity.js";
-import {parseKeycloakOrganizationClaims} from "./oidc-organization-claim.js";
+import {keycloakOrganizationsRecord, parseKeycloakOrganizationClaims} from "./oidc-organization-claim.js";
 import {type OidcGroupRoles, readOidcGroupsClaim} from "./oidc-groups-claim.js";
 import {
   isLocalOidcIssuer,
@@ -243,7 +243,7 @@ export class OidcIdentityProvider implements InteractiveIdentityProvider {
         parsedIdentityProviderClaim?.data,
       );
       if (!parsed.ok) return yield* providerFailure();
-      const organizations = Object.fromEntries(parsed.value.organizations.map(({alias, groups: organizationGroups, id}) => [alias, {groups: organizationGroups, id}]));
+      const organizations = keycloakOrganizationsRecord(parsed.value.organizations);
       const identityProvider = parsed.value.identityProvider;
       if (this.#organization !== null) {
         const selected = parsed.value.organizations.find((entry) =>

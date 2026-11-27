@@ -20,7 +20,7 @@ import {
 import type {ExternalIdentity} from "../core/installation-identity.js";
 import {membershipRoles} from "../core/identity.js";
 import {readOidcGroupsClaim} from "./oidc-groups-claim.js";
-import {parseKeycloakOrganizationClaims} from "./oidc-organization-claim.js";
+import {keycloakOrganizationsRecord, parseKeycloakOrganizationClaims} from "./oidc-organization-claim.js";
 import {requireOidcIssuer} from "./oidc-issuer.js";
 
 const defaultAlgorithms = ["RS256", "ES256"];
@@ -209,6 +209,10 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
       const clientId = claims.azp ?? claims.client_id;
       const provisioner = clientId !== undefined &&
         this.#provisionerClients.has(clientId);
+      const serviceAccount = this.#isConfiguredServiceAccount(
+        clientId,
+        claims.preferred_username,
+      );
       if (provisioner && clientId !== undefined) {
         if (email !== null) {
           return yield* invalidToken(
@@ -239,6 +243,9 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
       }
       if (email !== null) {
         const identity = this.#identityOf(claims, email, groups);
+        if (!serviceAccount) {
+          Object.assign(identity, {organizations: this.#organizationsOf(claims)});
+        }
         if (organizationMembership !== null) {
           Object.assign(identity, {
             organizationMembership: organizationMembership.membership,
@@ -247,10 +254,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
         }
         return identity;
       }
-      if (
-        clientId !== undefined && this.#serviceClients.has(clientId) &&
-        claims.preferred_username === `service-account-${clientId}`
-      ) {
+      if (serviceAccount && clientId !== undefined) {
         return {
           displayName: clientId,
           email: null,
@@ -265,6 +269,7 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
         };
       }
       const identity = yield* this.#userInfoIdentity(credential, claims.sub, groups);
+      Object.assign(identity, {organizations: this.#organizationsOf(claims)});
       if (organizationMembership !== null) {
         Object.assign(identity, {
           organizationMembership: organizationMembership.membership,
@@ -274,6 +279,14 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
       return identity;
     },
   );
+
+  #isConfiguredServiceAccount(
+    clientId: string | undefined,
+    preferredUsername: string | undefined,
+  ): boolean {
+    return clientId !== undefined && this.#serviceClients.has(clientId) &&
+      preferredUsername === `service-account-${clientId}`;
+  }
 
   #readOrganizationMembership(claims: AccessTokenClaims): Effect.Effect<{
     readonly identityProvider: string | null;
@@ -304,6 +317,16 @@ export class OidcMcpBearerVerifier implements ExternalMcpBearerVerifier {
           : membershipRoles.viewer,
       },
     });
+  }
+
+  #organizationsOf(
+    claims: AccessTokenClaims,
+  ): NonNullable<ExternalIdentity["organizations"]> {
+    const parsed = parseKeycloakOrganizationClaims(
+      claims.organization,
+      claims.identity_provider,
+    );
+    return parsed.ok ? keycloakOrganizationsRecord(parsed.value.organizations) : {};
   }
 
   /** Verify signature, issuer, audience, and expiry, then read the claims. */

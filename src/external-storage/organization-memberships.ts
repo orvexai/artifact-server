@@ -72,6 +72,7 @@ export function createKeycloakOrganizationMembershipResolver(
 ): OrganizationMembershipResolver {
   return {
     forIdentity: async (identity) => {
+      if (identity.serviceAccount === true) return [];
       const claim = identity.organizations ?? {};
       const results = await Promise.all(Object.entries(claim).map(async ([slug, membership]) => {
         if (slug === "orvex") return null;
