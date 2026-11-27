@@ -5,16 +5,18 @@ import {AuthorizationService} from "./authorization.js";
 import {InstallationAccessService} from "./installation-access.js";
 
 /**
- * List the copied directory groups. Anyone who may list artifacts may see
- * group names, so a project can be shared with a group by someone who is not
- * an administrator.
+ * Members and above may see groups for the project sharing picker. Guests and
+ * viewers never enumerate groups; viewers can still share by full path.
  */
 export const listDirectoryGroups = Effect.fn("listDirectoryGroups")(function*(
   principal: Principal,
 ) {
-  if (principal.kind === "human" && principal.membershipRole === "guest") return [];
+  if (principal.kind === "human" &&
+    (principal.membershipRole === "guest" || principal.membershipRole === "viewer")) return [];
   yield* AuthorizationService.use((authorization) =>
     authorization.requireArtifactListing(principal)
   );
-  return yield* InstallationAccessService.use((access) => access.listDirectoryGroups());
+  return yield* InstallationAccessService.use((access) =>
+    access.directoryGroupScope().kind === "none" ? Effect.succeed([]) : access.listDirectoryGroups()
+  );
 });

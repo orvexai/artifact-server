@@ -8,9 +8,10 @@ import type {
 import type {InteractiveIdentityProvider} from "../application/interactive-login.js";
 import type {ExternalIdentity} from "../core/installation-identity.js";
 import type {OrganizationMembershipResolver} from "./organization-memberships.js";
-import type {OrganizationAdmissionPolicy} from "./organization-registry.js";
+import {OrganizationRegistry, type OrganizationAdmissionPolicy} from "./organization-registry.js";
 import {expandOrganizationStaffGroups, organizationSlugPlaceholder} from "./organization-staff-groups.js";
 import {emptyTenantStaffDefinition, type TenantStaffDefinition} from "../core/tenant-staff.js";
+import type {DirectoryGroupScope} from "../core/directory-group-scope.js";
 import type {Clock} from "../core/ports.js";
 import type {BrowserAccess} from "../core/browser-access.js";
 import type {
@@ -124,6 +125,7 @@ export interface ExternalStorageRuntimeConfig {
   readonly groupRolePolicy?: GroupRolePolicy | null;
   /** Maintenance runtimes only: apply Orvex tenant-group protection as the org-tenancy router does for Orvex. */
   readonly orvexTenantGroupProtection?: boolean;
+  readonly directoryGroupScope?: DirectoryGroupScope;
   /**
    * Platform-wide Orvex staff groups (ARTIFACT_SERVER_ORG_STAFF_GROUPS):
    * exact group paths masked as staff in every non-Orvex organization.
@@ -239,6 +241,17 @@ export async function createOrgRuntime(
 ): Promise<ExternalStorageRuntime> {
   const runtimeClock = config.clock ?? new SystemClock();
   const isOrvex = orgConfig.slug === undefined || orgConfig.slug === "orvex";
+  const organizations = await new OrganizationRegistry(database).list();
+  const directoryGroupScope: DirectoryGroupScope = config.directoryGroupScope ?? (isOrvex
+    ? {
+      kind: "orvex",
+      excludeTenantPaths: orgConfig.orvexTenantGroupProtection === true ||
+        organizations.some((organization) => organization.slug !== "orvex"),
+      organizationStaffGroups: config.organizationStaffGroups ?? [],
+    }
+    : orgConfig.admissionPolicy === undefined || orgConfig.admissionPolicy === null
+    ? {kind: "none"}
+    : {kind: "roots", roots: orgConfig.admissionPolicy.groupRoots ?? []});
   const mayUseHostedOAuth = isOrvex || (
     orgConfig.keycloakOrganizationId !== undefined && orgConfig.keycloakOrganizationId !== null ||
     (orgConfig.admissionPolicy !== undefined && orgConfig.admissionPolicy !== null)
@@ -357,6 +370,7 @@ export async function createOrgRuntime(
         ? scopedOAuthVerifier(config.externalMcpOAuthVerifier)
         : null,
       groupRolePolicy,
+      directoryGroupScope,
       orvexTenantGroupProtection: orgConfig.orvexTenantGroupProtection === true,
       organizationStaffGroups: config.organizationStaffGroups ?? [],
       ids,
@@ -451,6 +465,7 @@ export async function createOrgRuntime(
         config.completedRequestLogSampleRate ??
           defaultCompletedRequestLogSampleRate,
       contentDomain: config.contentDomain,
+      directoryGroups: directoryGroupScope.kind !== "none",
       embedBindingSecret: config.embedBindingSecret,
       embedBindingPreviousSecret: config.embedBindingPreviousSecret,
       publicLinkKey: config.publicLinkKey,

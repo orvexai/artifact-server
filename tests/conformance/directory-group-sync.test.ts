@@ -1,12 +1,18 @@
 import path from "node:path";
+import {randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 
-import {Redacted} from "effect";
+import {Effect, Redacted} from "effect";
 import {afterEach, beforeEach, describe, expect, test} from "vitest";
 import {z} from "zod";
 
 import type {DirectoryGroupSyncReport} from
   "../../src/application/directory-sync.js";
+import type {DirectoryGroupScope} from "../../src/core/directory-group-scope.js";
+import type {ExternalMcpBearerVerifier} from "../../src/application/authentication.js";
+import type {InteractiveIdentityProvider} from "../../src/application/interactive-login.js";
+import type {ExternalIdentity} from "../../src/core/installation-identity.js";
+import {AuthenticationRequired, IdentityProviderFailure} from "../../src/core/errors.js";
 import {
   browserLoginKinds,
   privateTeamBrowserAccess,
@@ -22,6 +28,7 @@ import {
   createTestInstallation,
   removeTestInstallation,
   type TestInstallation,
+  loginHandshakeCookie,
 } from "../support/runtime-harness.js";
 import {
   keycloakUser,
@@ -92,6 +99,266 @@ describe("Keycloak directory group sync", () => {
       groups: 4,
       membershipsReplaced: 4,
     }));
+  });
+
+  test("AUTH-032-B, directory group sync keeps only in-scope groups", async () => {
+    keycloak.groups.set("Engineering", [keycloakUser("ada")]);
+    keycloak.groups.set("Guests", []);
+    keycloak.groups.set("acme", [keycloakUser("legacy-guest")]);
+    keycloak.nestGroup("acme", "Guests");
+
+    // Seed a stored legacy tenant group with its actual Keycloak id, then add
+    // an unstored tenant group that must not have its members read.
+    await syncGroups();
+    const database = new DatabaseSync(path.join(installation.dataDirectory, "artifact-server.db"));
+    const now = new Date().toISOString();
+    const installationId = "local";
+    let legacyGroupId = "";
+    try {
+      legacyGroupId = z.object({id: z.string()}).parse(database.prepare(
+        "SELECT id FROM directory_groups WHERE path = ?",
+      ).get("/Guests/acme")).id;
+      database.prepare(`INSERT INTO directory_group_roles (
+        installation_id, group_id, role, assigned_at, assigned_by_principal_id
+      ) VALUES (?, ?, 'guest', ?, 'test')`)
+        .run(installationId, legacyGroupId, now);
+      database.prepare(`INSERT INTO installation_members (
+        id, installation_id, email, display_name, role, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'guest', 'active', ?, ?)`)
+        .run("legacy-acme-guest-member", installationId, "legacy-guest@example.test", "Legacy guest", now, now);
+    } finally {
+      database.close();
+    }
+
+    keycloak.groups.set("TenantWorkspaces", []);
+    keycloak.groups.set("workspace", []);
+    keycloak.groups.set("workspace-staff", [keycloakUser("staff")]);
+    keycloak.nestGroup("workspace", "TenantWorkspaces");
+    keycloak.nestGroup("workspace-staff", "workspace");
+    await syncGroups();
+    const staffDatabase = new DatabaseSync(path.join(installation.dataDirectory, "artifact-server.db"));
+    try {
+      const staffId = z.object({id: z.string()}).parse(staffDatabase.prepare(
+        "SELECT id FROM directory_groups WHERE path = ?",
+      ).get("/TenantWorkspaces/workspace/workspace-staff")).id;
+      staffDatabase.prepare(`INSERT INTO directory_group_roles (
+        installation_id, group_id, role, assigned_at, assigned_by_principal_id
+      ) VALUES (?, ?, 'member', ?, 'test')`)
+        .run(installationId, staffId, now);
+    } finally {
+      staffDatabase.close();
+    }
+    keycloak.groups.set("other", [keycloakUser("blocked")]);
+    keycloak.nestGroup("other", "workspace");
+    keycloak.failGroupMembers("other");
+    const storedGroupIdsBeforeSync = groups().map(({id}) => id);
+    const requestStart = keycloak.adminRequests().length;
+
+    await expect(syncGroups("2026-10-24T00:00:00.000Z", {
+      kind: "orvex",
+      excludeTenantPaths: true,
+      organizationStaffGroups: ["/TenantWorkspaces/{slug}/{slug}-staff"],
+    })).resolves.toMatchObject({groups: storedGroupIdsBeforeSync.length, deleted: 4});
+    expect(groups().map((group) => group.path)).toEqual([
+      "/Engineering",
+      "/TenantWorkspaces/workspace/workspace-staff",
+      "/artifact-admins",
+      "/artifact-users",
+    ]);
+    expect(groupMembers().map((member) => member.path)).toEqual([
+      "/Engineering",
+      "/TenantWorkspaces/workspace/workspace-staff",
+      "/artifact-admins",
+      "/artifact-users",
+    ]);
+    const staffGroupId = groups().find(({path: groupPath}) =>
+      groupPath === "/TenantWorkspaces/workspace/workspace-staff"
+    )?.id;
+    if (staffGroupId === undefined) throw new Error("The configured Orvex staff group was not retained.");
+    const memberRequestIds = keycloak.adminRequests().slice(requestStart)
+      .filter(({path: requestPath}) => requestPath.endsWith("/members"))
+      .map(({path: requestPath}) => /^\/groups\/([^/]+)\/members$/u.exec(requestPath)?.[1])
+      .filter((id) => id !== undefined);
+    expect(memberRequestIds.toSorted()).toEqual(storedGroupIdsBeforeSync.toSorted());
+    expect(memberRequestIds.filter((id) => id === legacyGroupId)).toHaveLength(1);
+    expect(groups().some(({path: groupPath}) => groupPath.startsWith("/Guests") ||
+      groupPath === "/TenantWorkspaces" || groupPath === "/TenantWorkspaces/workspace" ||
+      groupPath === "/TenantWorkspaces/workspace/other")).toBe(false);
+    const afterSync = new DatabaseSync(path.join(installation.dataDirectory, "artifact-server.db"), {
+      readOnly: true,
+    });
+    try {
+      expect(afterSync.prepare(`SELECT status FROM installation_members WHERE id = ?`)
+        .get("legacy-acme-guest-member")).toEqual({status: "inactive"});
+      expect(afterSync.prepare(`SELECT role FROM directory_group_roles WHERE group_id = ?`)
+        .get(staffGroupId)).toEqual({role: "member"});
+    } finally {
+      afterSync.close();
+    }
+
+    const authInstallation = await createTestInstallation();
+    const guestPath = "/TenantWorkspaces/acme/acme-guest";
+    const staffPath = "/TenantWorkspaces/acme/acme-staff";
+    const authPolicy: OidcGroupRoles = {
+      claim: "groups",
+      seed: [
+        {role: "member", selector: guestPath},
+        {role: "member", selector: staffPath},
+      ],
+    };
+    const authScope: DirectoryGroupScope = {
+      kind: "orvex",
+      excludeTenantPaths: true,
+      organizationStaffGroups: ["/TenantWorkspaces/{slug}/{slug}-staff"],
+    };
+    const loginStatus = async (identity: ExternalIdentity, scope: DirectoryGroupScope) => {
+      const state = randomUUID();
+      const code = randomUUID();
+      const provider: InteractiveIdentityProvider = {
+        name: identity.provider,
+        start: () => Effect.succeed({
+          authorizationUrl: "https://identity.example/authorize",
+          codeVerifier: randomUUID(),
+          nonce: null,
+          state,
+        }),
+        complete: (receivedCode) => receivedCode === code
+          ? Effect.succeed(identity)
+          : Effect.fail(new IdentityProviderFailure({message: "Invalid test code."})),
+      };
+      const runtime = await createLocalRuntime({
+        apiToken: authInstallation.apiToken,
+        browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
+        contentDomain: "localhost",
+        dataDirectory: authInstallation.dataDirectory,
+        directoryGroupScope: scope,
+        groupRolePolicy: authPolicy,
+        interactiveIdentityProvider: provider,
+        orvexTenantGroupProtection: false,
+      });
+      try {
+        const login = await runtime.app.request("http://localhost/auth/login");
+        const callback = new URL("http://localhost/auth/callback");
+        callback.searchParams.set("code", code);
+        callback.searchParams.set("state", state);
+        const response = await runtime.app.request(callback, {
+          headers: {Cookie: loginHandshakeCookie(login)},
+        });
+        return response.status;
+      } finally {
+        await runtime.close();
+      }
+    };
+    const serviceStatus = async (scope: DirectoryGroupScope) => {
+      const verifier: ExternalMcpBearerVerifier = {
+        verify: (credential) => Redacted.value(credential) === "directory-scope-service"
+          ? Effect.succeed({
+            clientId: "directory-scope-service",
+            expiresAt: Math.floor(Date.now() / 1_000) + 60,
+            provider: "directory-scope-test",
+            scopes: ["api"],
+            subject: "directory-scope-service",
+          })
+          : Effect.fail(new AuthenticationRequired({message: "Invalid test credential."})),
+        resolveIdentity: () => Effect.succeed({
+          displayName: "Directory scope service",
+          email: null,
+          emailVerified: false,
+          groups: [guestPath],
+          provider: "directory-scope-test",
+          serviceAccount: true,
+          serviceAccountClientId: "directory-scope-service",
+          subject: "directory-scope-service",
+        }),
+      };
+      const runtime = await createLocalRuntime({
+        apiToken: authInstallation.apiToken,
+        browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
+        contentDomain: "localhost",
+        dataDirectory: authInstallation.dataDirectory,
+        directoryGroupScope: scope,
+        externalApiOAuthVerifier: verifier,
+        groupRolePolicy: authPolicy,
+        orvexTenantGroupProtection: false,
+      });
+      try {
+        const response = await runtime.app.request("http://localhost/api/v1/artifacts/missing/responses", {
+          headers: {Authorization: "Bearer directory-scope-service"},
+        });
+        return response.status;
+      } finally {
+        await runtime.close();
+      }
+    };
+    const guestIdentity = (subject: string): ExternalIdentity => ({
+      displayName: subject,
+      email: `${subject}@example.test`,
+      emailVerified: true,
+      groups: [guestPath],
+      provider: "directory-scope-test",
+      subject,
+    });
+    const staffIdentity: ExternalIdentity = {
+      displayName: "Staff principal",
+      email: "staff@example.test",
+      emailVerified: true,
+      groups: [staffPath],
+      provider: "directory-scope-test",
+      subject: "directory-scope-staff",
+    };
+    try {
+      expect(await loginStatus(guestIdentity("configured-guest"), authScope)).toBe(403);
+      expect(await serviceStatus(authScope)).toBe(403);
+      expect(await loginStatus(staffIdentity, authScope)).toBe(303);
+
+      const authDatabase = new DatabaseSync(path.join(authInstallation.dataDirectory, "artifact-server.db"));
+      try {
+        const authNow = new Date().toISOString();
+        const authGroups: Array<[string, string]> = [
+          ["auth-acme-guest", guestPath],
+          ["auth-acme-staff", staffPath],
+        ];
+        for (const [id, pathValue] of authGroups) {
+          authDatabase.prepare(`INSERT INTO directory_groups
+            (installation_id, id, name, path, first_path, synced_at)
+            VALUES ('local', ?, ?, ?, ?, ?)`)
+            .run(id, pathValue.slice(pathValue.lastIndexOf("/") + 1), pathValue, pathValue, authNow);
+          authDatabase.prepare(`INSERT INTO directory_group_roles
+            (installation_id, group_id, role, assigned_at, assigned_by_principal_id)
+            VALUES ('local', ?, 'member', ?, 'test')`).run(id, authNow);
+        }
+        authDatabase.prepare(`INSERT INTO directory_group_role_seeds (installation_id, seeded_at)
+          VALUES ('local', ?)`)
+          .run(authNow);
+      } finally {
+        authDatabase.close();
+      }
+
+      expect(await loginStatus(guestIdentity("stored-guest"), authScope)).toBe(403);
+      expect(await serviceStatus(authScope)).toBe(403);
+      expect(await loginStatus(guestIdentity("all-scope-guest"), {kind: "all"})).toBe(303);
+      expect(await serviceStatus({kind: "all"})).toBe(404);
+    } finally {
+      await removeTestInstallation(authInstallation);
+    }
+  });
+
+  test("Keycloak-managed tenant sync refuses before directory access", async () => {
+    keycloak.groups.set("Control", [keycloakUser("control")]);
+    keycloak.groups.set("Included", [keycloakUser("included")]);
+    keycloak.nestGroup("Included", "Control");
+    await expect(syncGroups("2026-10-24T00:00:00.000Z", {kind: "none"})).rejects.toThrow(
+      "Directory groups are not synced for an organization whose membership is managed by Keycloak Organizations; nothing was changed.",
+    );
+    expect(keycloak.tokenRequests()).toBe(0);
+    expect(groups()).toEqual([]);
+
+    const successfulControl = await syncGroups("2026-10-24T00:00:00.000Z", {
+      kind: "roots",
+      roots: ["/Control"],
+    });
+    expect(successfulControl.groups).toBe(1);
+    expect(keycloak.tokenRequests()).toBe(1);
   });
 
   test("a rename keeps the group id, and a group gone from Keycloak is deleted", async () => {
@@ -201,20 +468,22 @@ describe("Keycloak directory group sync", () => {
     expect({groups: groups(), members: groupMembers()}).toEqual(before);
   });
 
-  function openRuntime() {
+  function openRuntime(directoryGroupScope: DirectoryGroupScope = {kind: "all"}) {
     return createLocalRuntime({
       apiToken: installation.apiToken,
       browserAccess: privateTeamBrowserAccess(browserLoginKinds.oidc),
       contentDomain: "localhost",
       dataDirectory: installation.dataDirectory,
+      directoryGroupScope,
       groupRolePolicy: groupRoles,
     });
   }
 
   async function syncGroups(
     syncedAt = "2026-10-24T00:00:00.000Z",
+    directoryGroupScope: DirectoryGroupScope = {kind: "all"},
   ): Promise<DirectoryGroupSyncReport> {
-    const runtime = await openRuntime();
+    const runtime = await openRuntime(directoryGroupScope);
     try {
       const adminBaseUrl = keycloakAdminBaseUrl(keycloak.issuer);
       if (adminBaseUrl === null) throw new Error("The stub issuer is not a realm.");

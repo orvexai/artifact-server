@@ -4,6 +4,7 @@ import type {
   DirectoryGroupObservation,
   DirectoryGroupRecord,
 } from "../core/directory-groups.js";
+import {filterDirectoryGroups} from "../core/directory-group-scope.js";
 import {membershipRolePrecedence} from "../core/group-role-policy.js";
 import {
   emptyTenantStaffDefinition,
@@ -328,12 +329,29 @@ export const syncDirectoryGroups = Effect.fn("syncDirectoryGroups")(function*(
   maxDeactivations = 5,
   recomputeRoles = true,
 ) {
-  const listed = yield* directory.listAllGroups();
+  const scope = yield* InstallationAccessService.use((access) =>
+    Effect.succeed(access.directoryGroupScope())
+  );
+  if (scope.kind === "none") {
+    return yield* new DirectoryUnavailable({
+      message: "Directory groups are not synced for an organization whose membership is managed by Keycloak Organizations; nothing was changed.",
+    });
+  }
+  const allGroups = yield* directory.listAllGroups();
+  const listed = filterDirectoryGroups(scope, allGroups);
   if (listed.length === 0) {
     return yield* Effect.fail(new DirectoryUnavailable({message: "Refusing an empty directory group snapshot."}));
   }
+  const storedOutOfScopeGroups = yield* InstallationAccessService.use((access) =>
+    access.listStoredOutOfScopeGroups()
+  );
+  const storedOutOfScopeIds = new Set(storedOutOfScopeGroups.map(({id}) => id));
+  const listedIds = new Set(listed.map(({id}) => id));
+  const groupsToRead = allGroups.filter(({id}) =>
+    listedIds.has(id) || storedOutOfScopeIds.has(id)
+  );
   const groups: DirectoryGroupObservation[] = [];
-  for (const group of listed) {
+  for (const group of groupsToRead) {
     const users = yield* directory.listGroupMembers(group);
     groups.push({
       ...group,

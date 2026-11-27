@@ -7,6 +7,7 @@ import {ReviewSettings, settingsLandingDestination, visibleSettingsPages} from "
 
 const pages = (role: "administrator" | "member" | "owner" | "viewer") => visibleSettingsPages({
   canManageProjects: true,
+  directoryGroups: true,
   directHuman: true,
   organizationKind: "tenant",
   role,
@@ -18,12 +19,12 @@ describe("tenant settings navigation", () => {
     ["member", "tenant", ["mcp", "projects"]],
     ["owner", "tenant", ["apiKeys", "members", "mcp", "projects", "publicLinks", "webmcp"]],
     ["administrator", "tenant", ["apiKeys", "members", "mcp", "projects", "publicLinks", "webmcp"]],
-    ["viewer", "installation", ["groups", "mcp", "projects", "webmcp"]],
+    ["viewer", "installation", ["mcp", "projects", "webmcp"]],
     ["member", "installation", ["groups", "mcp", "projects", "webmcp"]],
     ["owner", "installation", ["apiKeys", "groups", "members", "mcp", "projects", "publicLinks", "webmcp"]],
     ["administrator", "installation", ["apiKeys", "groups", "members", "mcp", "projects", "publicLinks", "webmcp"]],
   ] as const)("role %s in %s sees exactly its settings pages", (role, organizationKind, expected) => {
-    const actual = visibleSettingsPages({canManageProjects: true, directHuman: true, organizationKind, role});
+    const actual = visibleSettingsPages({canManageProjects: true, directoryGroups: true, directHuman: true, organizationKind, role});
     expect([...actual].toSorted()).toEqual([...expected].toSorted());
   });
 
@@ -49,7 +50,7 @@ describe("tenant settings navigation", () => {
     });
     const session = {
       authenticationMethod: "session",
-      capabilities: {gitHistory: {limits: {fileCopyBytes: 0, logicalCopiedBytes: 0, logicalReservedBytes: 0, storageBudgetBytes: null, versionCopyBytes: 0}, provider: null, providerState: "disabled"}, linkedArtifacts: false},
+      capabilities: {directoryGroups: true, gitHistory: {limits: {fileCopyBytes: 0, logicalCopiedBytes: 0, logicalReservedBytes: 0, storageBudgetBytes: null, versionCopyBytes: 0}, provider: null, providerState: "disabled"}, linkedArtifacts: false},
       principal: {authorizedByPrincipalId: null, capabilities: [], displayName: "Acme viewer", id: "viewer", installationId: "installation-acme", kind: "human", membershipRole: "viewer"},
     } satisfies Session;
     const html = renderToStaticMarkup(createElement(ReviewSettings, {
@@ -68,7 +69,7 @@ describe("tenant settings navigation", () => {
     });
     const session = {
       authenticationMethod: "session",
-      capabilities: {gitHistory: {limits: {fileCopyBytes: 0, logicalCopiedBytes: 0, logicalReservedBytes: 0, storageBudgetBytes: null, versionCopyBytes: 0}, provider: null, providerState: "disabled"}, linkedArtifacts: false},
+      capabilities: {directoryGroups: true, gitHistory: {limits: {fileCopyBytes: 0, logicalCopiedBytes: 0, logicalReservedBytes: 0, storageBudgetBytes: null, versionCopyBytes: 0}, provider: null, providerState: "disabled"}, linkedArtifacts: false},
       principal: {authorizedByPrincipalId: null, capabilities: [], displayName: "Acme member", id: "member", installationId: "installation-acme", kind: "human", membershipRole: "member"},
     } satisfies Session;
     const render = (canManage: boolean) => renderToStaticMarkup(createElement(ReviewSettings, {
@@ -96,6 +97,7 @@ describe("tenant settings navigation", () => {
     const session = {
       authenticationMethod: "session",
       capabilities: {
+        directoryGroups: true,
         gitHistory: {
           limits: {
             fileCopyBytes: 0,
@@ -131,5 +133,24 @@ describe("tenant settings navigation", () => {
 
     expect(hrefs.length).toBeGreaterThan(0);
     expect(hrefs.every((href) => href?.startsWith(`${basePath}/`))).toBe(true);
+  });
+
+  test("hides the Groups link and route when directory groups are unavailable", () => {
+    vi.stubGlobal("document", {querySelector: () => ({content: "/o/acme"})});
+    vi.stubGlobal("window", {
+      location: {origin: "https://artifact.example.test", pathname: "/o/acme/review/settings/groups"},
+      sessionStorage: {getItem: () => null},
+    });
+    const session = {
+      authenticationMethod: "session",
+      capabilities: {directoryGroups: false, gitHistory: {limits: {fileCopyBytes: 0, logicalCopiedBytes: 0, logicalReservedBytes: 0, storageBudgetBytes: null, versionCopyBytes: 0}, provider: null, providerState: "disabled"}, linkedArtifacts: false},
+      principal: {authorizedByPrincipalId: null, capabilities: [], displayName: "Acme member", id: "member", installationId: "installation-acme", kind: "human", membershipRole: "member"},
+    } satisfies Session;
+    const html = renderToStaticMarkup(createElement(ReviewSettings, {
+      onProjectsChanged: async () => [], onThemeChange: () => undefined, projects: [], session, theme: "moon",
+    }));
+
+    expect(html).not.toContain("href=\"/o/acme/review/settings/groups\"");
+    expect(html).toContain("Page not found");
   });
 });

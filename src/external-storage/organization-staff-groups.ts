@@ -1,3 +1,5 @@
+import type {DirectoryGroupScope} from "../core/directory-group-scope.js";
+
 /** Environment variable naming the platform-wide Orvex staff groups. */
 export const organizationStaffGroupsVariable = "ARTIFACT_SERVER_ORG_STAFF_GROUPS";
 
@@ -21,6 +23,27 @@ export function maintenanceTenantGroupScope(
       parseOrganizationStaffGroups(env[organizationStaffGroupsVariable]),
     ),
   };
+}
+
+/** Resolve the directory-group boundary from one registered installation. */
+export function directoryGroupScopeForOrganization(
+  organization: {
+    readonly admissionPolicy: {readonly groupRoots: readonly string[]} | null;
+    readonly slug: string;
+  },
+  excludeOrvexTenantPaths: boolean,
+  organizationStaffGroups: readonly string[] = [],
+): DirectoryGroupScope {
+  if (organization.slug === "orvex") {
+    return {
+      kind: "orvex",
+      excludeTenantPaths: excludeOrvexTenantPaths,
+      organizationStaffGroups,
+    };
+  }
+  return organization.admissionPolicy === null
+    ? {kind: "none"}
+    : {kind: "roots", roots: organization.admissionPolicy.groupRoots};
 }
 
 /**

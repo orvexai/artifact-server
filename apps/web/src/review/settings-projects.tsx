@@ -203,6 +203,7 @@ export function SettingsProjects({
 export function SettingsProject({
   administrator,
   canManage,
+  directoryGroups,
   gitHistory,
   onProjectsChanged,
   projectId,
@@ -210,6 +211,7 @@ export function SettingsProject({
 }: ProjectSettingsSharedProps & {
   /** Installation administrators may change who sees any project. */
   readonly administrator: boolean;
+  readonly directoryGroups: boolean;
   readonly projectId: string;
 }) {
   const project = projects.find((candidate) => candidate.id === projectId) ?? null;
@@ -365,7 +367,7 @@ export function SettingsProject({
         </dl>
       </section>
 
-      <ProjectSharingSection administrator={administrator} projectId={project.id} />
+      <ProjectSharingSection administrator={administrator} directoryGroups={directoryGroups} projectId={project.id} />
 
       {gitHistory.provider === null ? null : (
         <section className="grid gap-5 border p-5 sm:p-6" aria-labelledby="project-git-heading">

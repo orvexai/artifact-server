@@ -11,6 +11,7 @@ import {
   AuthorizationDenied,
   DirectoryGroupNotFound,
   type IdentityRepositoryFailure,
+  IdentityConflict,
   InvalidProjectName,
   ProjectArchived,
   type ProjectConflict,
@@ -34,6 +35,7 @@ import {
   projectRoleAtLeast,
 } from "../core/project-access.js";
 import type {StoredDirectoryGroup} from "../core/directory-groups.js";
+import type {DirectoryGroupScope} from "../core/directory-group-scope.js";
 import type {ProjectAuditEvent, ProjectProvisionerAuditEvent, ProjectRecord} from "../core/model.js";
 import type {
   CreateProject,
@@ -154,6 +156,7 @@ export interface ProjectManagementDependencies {
   readonly clock: ApplicationClock;
   readonly ids: IdGenerator;
   readonly installationId: string;
+  readonly directoryGroupScope: DirectoryGroupScope;
   readonly orvexTenantGroupProtection?: boolean;
   readonly repository: ProjectManagementRepository;
 }
@@ -163,6 +166,7 @@ export type ProjectManagementFailure =
   | ArtifactRepositoryFailure
   | AuthorizationDenied
   | DirectoryGroupNotFound
+  | IdentityConflict
   | IdentityRepositoryFailure
   | InvalidProjectName
   | ProjectArchived
@@ -555,6 +559,9 @@ function makeProjectManagementService(
       yield* requireProjectCreation(command.principal);
       const name = yield* parseProjectName(command.name);
       const shares = command.shareWith ?? [];
+      if (shares.length > 0 && dependencies.directoryGroupScope.kind === "none") {
+        return yield* new IdentityConflict({message: "Groups are managed by your identity provider."});
+      }
       // Resolve every group before anything is written.
       const directory = shares.length === 0 ? [] : yield* access.listDirectoryGroups();
       const grants: {readonly groupId: string; readonly role: ProjectGrantRole}[] = [];
@@ -733,6 +740,9 @@ function makeProjectManagementService(
         return yield* new AuthorizationDenied({message: "Provisioners may grant at most the editor role."});
       }
       const project = yield* requireManagedProject(command.principal, command.projectId);
+      if (dependencies.directoryGroupScope.kind === "none") {
+        return yield* new IdentityConflict({message: "Groups are managed by your identity provider."});
+      }
       const group = yield* resolveGroup(command.group, yield* access.listDirectoryGroups());
       if (dependencies.orvexTenantGroupProtection === true && isOrvexTenantGroupPath(group.path)) {
         return yield* new AuthorizationDenied({message: "Tenant groups cannot be shared with Orvex projects."});

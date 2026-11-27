@@ -71,6 +71,7 @@ import {createS3ObjectStorageProviderFactory} from
 import {PostgresDatabase} from "../../src/storage/postgres-database.js";
 import {PostgresArtifactRepository} from "../../src/storage/postgres-artifact-repository.js";
 import {PostgresIdentityRepository} from "../../src/storage/postgres-identity-repository.js";
+import {runPostgresMigrations} from "../../src/storage/postgres-migrations.js";
 import {houstonServerPageStyles} from "../../src/shared/houston-server-pages.js";
 
 const region = "us-east-1";
@@ -191,7 +192,7 @@ const pendingCrossOrgCases = [
   {identifier: "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId/file", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
   {identifier: "hono:GET /api/v1/artifacts/:artifactId/versions/:versionId/media", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
   {identifier: "hono:GET /api/v1/embed/artifacts/:artifactId/bootstrap", group: "static and shell routes", justification: "This shell, static asset, or health response contains no cross-installation artifact data; artifact access is separately tested through scoped APIs and content capabilities."},
-  {identifier: "hono:GET /api/v1/groups", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:GET /api/v1/groups", group: "admin routes", justification: "AUTH-032 scopes directory groups to the selected organization and returns none for Keycloak-managed tenants."},
   {identifier: "hono:GET /api/v1/members", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
   {identifier: "hono:GET /api/v1/projects", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
   {identifier: "hono:GET /api/v1/projects/:projectId/audit", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
@@ -302,7 +303,7 @@ const pendingCrossOrgCases = [
   {identifier: "hono:POST /auth/local-owner", group: "authentication routes", justification: "Local bootstrap login is an installation-local authentication flow and carries no foreign artifact identifier; org-specific OAuth handshake and callback isolation are tested separately."},
   {identifier: "hono:PUT /api/v1/artifacts/:artifactId/source", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
   {identifier: "hono:PUT /api/v1/artifacts/:artifactId/state/:key", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
-  {identifier: "hono:PUT /api/v1/groups/:groupId/role", group: "admin routes", justification: "The endpoint reads or changes installation-owned membership or credentials; the selected runtime\u2019s verifier and repository prevent foreign installation records from being addressed."},
+  {identifier: "hono:PUT /api/v1/groups/:groupId/role", group: "admin routes", justification: "AUTH-032 denies group-role mutation for Keycloak-managed tenants and groups outside the selected organization\u2019s directory scope."},
   {identifier: "hono:PUT /api/v1/mcp-uploads/:uploadId/files/:storageToken", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
   {identifier: "hono:PUT /api/v1/projects/:projectId/access", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
   {identifier: "hono:PUT /api/v1/projects/:projectId/git-history", group: "resource-id routes", justification: "The handler resolves identifiers through the selected installation\u2019s repositories; resource IDs belonging to another installation return the same not-found response."},
@@ -394,6 +395,7 @@ describe.sequential("organization tenancy security boundary", () => {
   const installationId = `org-tenancy-${randomUUID()}`;
   const apiTokenA = managedTestKey("org-tenancy-a");
   const apiTokenB = managedTestKey("org-tenancy-b");
+  const orvexOwnerOAuthToken = "orvex-owner-directory-groups-token";
   let database: PostgresDatabase;
   let s3: S3Client;
   let oidc: Awaited<ReturnType<typeof startStubOidcProvider>>;
@@ -516,12 +518,13 @@ describe.sequential("organization tenancy security boundary", () => {
         const token = Redacted.value(credential);
         if (token === "invalid") return Effect.fail(new AuthenticationRequired({message: "Invalid test bearer."}));
         const staffMailbox = token === "tenant-staff-mailbox-token";
+        const orvexOwner = token === orvexOwnerOAuthToken;
         return Effect.succeed({
-          clientId: staffMailbox ? "tenant-staff-mailbox" : "orgvex-service",
+          clientId: staffMailbox ? "tenant-staff-mailbox" : orvexOwner ? "orvex-directory-owner" : "orgvex-service",
           expiresAt: Math.floor(Date.now() / 1_000) + 60,
-          provider: staffMailbox ? oidc.issuer : "test-oidc",
+          provider: staffMailbox || orvexOwner ? oidc.issuer : "test-oidc",
           scopes: [],
-          subject: staffMailbox ? "tenant-staff-mailbox-subject" : "service-account",
+          subject: staffMailbox ? "tenant-staff-mailbox-subject" : orvexOwner ? "orvex-directory-owner-subject" : "service-account",
         });
       },
       resolveIdentity: (verified) => verified.subject === "tenant-staff-mailbox-subject"
@@ -533,6 +536,16 @@ describe.sequential("organization tenancy security boundary", () => {
           provider: oidc.issuer,
           serviceAccount: false,
           subject: "tenant-staff-mailbox-subject",
+        })
+        : verified.subject === "orvex-directory-owner-subject"
+        ? Effect.succeed({
+          displayName: "Orvex directory owner",
+          email: "orvex-directory-owner@example.test",
+          emailVerified: true,
+          groups: ["/orvex/owner"],
+          provider: oidc.issuer,
+          serviceAccount: false,
+          subject: "orvex-directory-owner-subject",
         })
         : Effect.succeed({
           displayName: "service account",
@@ -892,6 +905,230 @@ describe.sequential("organization tenancy security boundary", () => {
       assertCrossOrgMatrixComplete(registeredRoutes, await mcpToolNames(toolsResponse));
     } finally {
       await runtime.close();
+    }
+  });
+
+  test("AUTH-032-F: Keycloak-managed tenants refuse every directory group surface", async () => {
+    const tenantToken = managedTestKey("auth-032-keycloak-tenant");
+    const tenantRuntime = await createOrgRuntime(orgC.id, {
+      admissionPolicy: null,
+      applicationOrigin: `${applicationOrigin}/o/${orgC.slug}`,
+      bootstrapApiToken: Redacted.make(tenantToken),
+      cookieRouteId: orgC.routeId,
+      keycloakOrganizationId: randomUUID(),
+      slug: orgC.slug,
+    }, withoutGitHistory(config), database);
+    const orvexGroupId = `auth-032-orvex-${randomUUID()}`;
+    const orvexOwnerGroupRoles = {
+      claim: "groups",
+      seed: [{role: "owner" as const, selector: "/orvex/owner"}],
+    };
+    const orvexRuntime = await createOrgRuntime(installationId, {
+      applicationOrigin,
+      bootstrapApiToken: Redacted.make(apiTokenA),
+      cookieRouteId: "",
+    }, {...config, groupRolePolicy: orvexOwnerGroupRoles}, database);
+    const tenantStrayGroupId = `auth-032-stray-${randomUUID()}`;
+    const syncedAt = new Date().toISOString();
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      yield* sql`INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
+        VALUES (${orgC.id}, ${tenantStrayGroupId}, 'stray', '/TenantWorkspaces/stray', ${syncedAt})`;
+      yield* sql`INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
+        VALUES (${installationId}, ${orvexGroupId}, 'support', '/orvex/support', ${syncedAt})`;
+      yield* sql`INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
+        VALUES (${installationId}, ${`auth-032-owner-${randomUUID()}`}, 'owner', '/orvex/owner', ${syncedAt})`;
+    }));
+
+    const parseMcpPayload = async (response: Response) => {
+      const body = await response.text();
+      const payload = response.headers.get("content-type")?.includes("text/event-stream")
+        ? body.split("\n").find((line) => line.startsWith("data: "))?.slice(6) ?? "{}"
+        : body;
+      return z.object({result: z.object({
+        isError: z.boolean().optional(),
+        structuredContent: z.unknown().optional(),
+      }).passthrough()}).passthrough().parse(JSON.parse(payload)).result;
+    };
+    const mcpCall = async (
+      app: typeof tenantRuntime.app,
+      token: string,
+      name: string,
+      argumentsValue: JsonObject,
+    ) => {
+      const response = await app.fetch(appRequest("/mcp", token, "POST", {
+        id: `auth-032-${randomUUID()}`,
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          _meta: {
+            [CLIENT_CAPABILITIES_META_KEY]: {},
+            [CLIENT_INFO_META_KEY]: {name: "artifact-server-auth-032-test", version: "1"},
+            [PROTOCOL_VERSION_META_KEY]: "2026-07-28",
+          },
+          arguments: argumentsValue,
+          name,
+        },
+      }, {
+        Accept: "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": name,
+        Origin: applicationOrigin,
+      }));
+      expect(response.status).toBe(200);
+      return parseMcpPayload(response);
+    };
+    const messageForHttp = async (response: Response) =>
+      z.object({error: z.object({message: z.string()}).passthrough()}).parse(await response.json()).error.message;
+    const messageForMcp = (result: Awaited<ReturnType<typeof mcpCall>>) =>
+      z.object({error: z.object({message: z.string()}).passthrough()})
+        .parse(result.structuredContent).error.message;
+    const identityProviderMessage = "Groups are managed by your identity provider.";
+    const noGroupId = `auth-032-missing-${randomUUID()}`;
+    try {
+      const tenantSession = await tenantRuntime.app.fetch(appRequest("/api/v1/session", tenantToken, "GET"));
+      expect(tenantSession.status).toBe(200);
+      expect(z.object({capabilities: z.object({directoryGroups: z.boolean()})})
+        .parse(await tenantSession.json()).capabilities.directoryGroups).toBe(false);
+
+      const tenantGroups = await tenantRuntime.app.fetch(appRequest("/api/v1/groups", tenantToken, "GET"));
+      expect(tenantGroups.status).toBe(200);
+      expect(z.object({groups: z.array(z.unknown())}).parse(await tenantGroups.json()).groups).toEqual([]);
+      const tenantMcpGroups = await mcpCall(tenantRuntime.app, tenantToken, "group_list", {});
+      expect(z.object({groups: z.array(z.unknown())})
+        .parse(tenantMcpGroups.structuredContent).groups).toEqual([]);
+
+      const tenantProjectResponse = await tenantRuntime.app.fetch(appRequest(
+        "/api/v1/projects", tenantToken, "POST", {name: `AUTH-032 existing ${randomUUID()}`},
+      ));
+      expect(tenantProjectResponse.status).toBe(201);
+      const tenantProjectId = z.object({project: z.object({id: z.string()})})
+        .parse(await tenantProjectResponse.json()).project.id;
+      const tenantCountsBeforeDenied = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        const projectRows = yield* sql`SELECT count(*)::integer AS count FROM projects WHERE installation_id = ${orgC.id}`;
+        const grantRows = yield* sql`SELECT count(*)::integer AS count FROM project_group_grants WHERE installation_id = ${orgC.id}`;
+        return {
+          grants: z.object({count: z.number()}).parse(grantRows[0]).count,
+          projects: z.object({count: z.number()}).parse(projectRows[0]).count,
+        };
+      }));
+
+      const expectDirectoryGroupRefused = async (groupId: string) => {
+        const roleResponse = await tenantRuntime.app.fetch(appRequest(
+          `/api/v1/groups/${groupId}/role`, tenantToken, "PUT", {role: "member"},
+        ));
+        expect(roleResponse.status).toBe(409);
+        expect(await messageForHttp(roleResponse)).toBe(identityProviderMessage);
+        const roleMcp = await mcpCall(tenantRuntime.app, tenantToken, "group_set_role", {
+          groupId,
+          role: "operator",
+        });
+        expect(roleMcp.isError).toBe(true);
+        expect(messageForMcp(roleMcp)).toBe(identityProviderMessage);
+
+        const createResponse = await tenantRuntime.app.fetch(appRequest(
+          "/api/v1/projects", tenantToken, "POST", {
+            name: `AUTH-032 refused ${randomUUID()}`,
+            shareWith: [{group: groupId, role: "viewer"}],
+          },
+        ));
+        expect(createResponse.status).toBe(409);
+        expect(await messageForHttp(createResponse)).toBe(identityProviderMessage);
+        const createMcp = await mcpCall(tenantRuntime.app, tenantToken, "project_create", {
+          name: `AUTH-032 refused MCP ${randomUUID()}`,
+          shareWith: [{group: groupId, role: "viewer"}],
+        });
+        expect(createMcp.isError).toBe(true);
+        expect(messageForMcp(createMcp)).toBe(identityProviderMessage);
+
+        const shareResponse = await tenantRuntime.app.fetch(appRequest(
+          `/api/v1/projects/${tenantProjectId}/groups/${groupId}`, tenantToken, "PUT", {role: "viewer"},
+        ));
+        expect(shareResponse.status).toBe(409);
+        expect(await messageForHttp(shareResponse)).toBe(identityProviderMessage);
+        const shareMcp = await mcpCall(tenantRuntime.app, tenantToken, "project_share", {
+          group: groupId,
+          projectId: tenantProjectId,
+          role: "viewer",
+        });
+        expect(shareMcp.isError).toBe(true);
+        expect(messageForMcp(shareMcp)).toBe(identityProviderMessage);
+      };
+      await expectDirectoryGroupRefused(tenantStrayGroupId);
+      await expectDirectoryGroupRefused(noGroupId);
+
+      const tenantCountsAfterDenied = await database.run(Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        const projectRows = yield* sql`SELECT count(*)::integer AS count FROM projects WHERE installation_id = ${orgC.id}`;
+        const grantRows = yield* sql`SELECT count(*)::integer AS count FROM project_group_grants WHERE installation_id = ${orgC.id}`;
+        return {
+          grants: z.object({count: z.number()}).parse(grantRows[0]).count,
+          projects: z.object({count: z.number()}).parse(projectRows[0]).count,
+        };
+      }));
+      expect(tenantCountsAfterDenied).toEqual(tenantCountsBeforeDenied);
+
+      const ownerApi = orvexRuntime.app;
+      const ownerGroups = await ownerApi.fetch(appRequest("/api/v1/groups", orvexOwnerOAuthToken, "GET"));
+      expect(ownerGroups.status).toBe(200);
+      expect(z.object({groups: z.array(z.object({id: z.string()}))})
+        .parse(await ownerGroups.json()).groups.some(({id}) => id === orvexGroupId)).toBe(true);
+      const ownerMcpGroups = await mcpCall(ownerApi, orvexOwnerOAuthToken, "group_list", {});
+      expect(z.object({groups: z.array(z.object({id: z.string()}))})
+        .parse(ownerMcpGroups.structuredContent).groups.some(({id}) => id === orvexGroupId)).toBe(true);
+
+      const ownerRoleResponse = await ownerApi.fetch(appRequest(
+        `/api/v1/groups/${orvexGroupId}/role`, orvexOwnerOAuthToken, "PUT", {role: "member"},
+      ));
+      expect(ownerRoleResponse.status).toBe(204);
+      const ownerRoleMcp = await mcpCall(ownerApi, orvexOwnerOAuthToken, "group_set_role", {
+        groupId: orvexGroupId,
+        role: "operator",
+      });
+      expect(ownerRoleMcp.isError).not.toBe(true);
+
+      const ownerCreate = await ownerApi.fetch(appRequest("/api/v1/projects", orvexOwnerOAuthToken, "POST", {
+        name: `AUTH-032 Orvex shared ${randomUUID()}`,
+        shareWith: [{group: orvexGroupId, role: "viewer"}],
+      }));
+      expect(ownerCreate.status).toBe(201);
+      const ownerProjectId = z.object({project: z.object({id: z.string()})})
+        .parse(await ownerCreate.json()).project.id;
+      const shareProject = await ownerApi.fetch(appRequest("/api/v1/projects", orvexOwnerOAuthToken, "POST", {
+        name: `AUTH-032 Orvex project ${randomUUID()}`,
+      }));
+      expect(shareProject.status).toBe(201);
+      const secondProjectId = z.object({project: z.object({id: z.string()})})
+        .parse(await shareProject.json()).project.id;
+      const ownerShare = await ownerApi.fetch(appRequest(
+        `/api/v1/projects/${secondProjectId}/groups/${orvexGroupId}`,
+        orvexOwnerOAuthToken,
+        "PUT",
+        {role: "viewer"},
+      ));
+      expect(ownerShare.status).toBe(200);
+      expect(z.object({sharing: z.object({groups: z.array(z.unknown())})})
+        .parse(await ownerShare.json()).sharing.groups).toHaveLength(1);
+
+      const ownerCreateMcp = await mcpCall(ownerApi, orvexOwnerOAuthToken, "project_create", {
+        name: `AUTH-032 Orvex MCP shared ${randomUUID()}`,
+        shareWith: [{group: orvexGroupId, role: "viewer"}],
+      });
+      expect(ownerCreateMcp.isError).not.toBe(true);
+      const mcpProjectId = z.object({project: z.object({id: z.string()})})
+        .parse(ownerCreateMcp.structuredContent).project.id;
+      const ownerShareMcp = await mcpCall(ownerApi, orvexOwnerOAuthToken, "project_share", {
+        group: orvexGroupId,
+        projectId: mcpProjectId,
+        role: "editor",
+      });
+      expect(ownerShareMcp.isError).not.toBe(true);
+      expect(ownerProjectId).toBeTruthy();
+    } finally {
+      await tenantRuntime.close();
+      await orvexRuntime.close();
     }
   });
 
@@ -3668,6 +3905,215 @@ describe.sequential("organization tenancy security boundary", () => {
     } finally {
       await Promise.all([runtimeA.close(), runtimeB.close()]);
     }
+  }, 60_000);
+
+  test("migration 0036 removes out-of-scope groups and preserves Orvex staff", async () => {
+    const policyRoot = `/teams/contained-${randomUUID().slice(0, 8)}/`;
+    const policyTenant = await new OrganizationRegistry(database).create(
+      `contained-${randomUUID().slice(0, 8)}`,
+      "Contained fixture",
+      {groupRoots: [policyRoot], seed: []},
+    );
+    const seededGroups = [
+      {id: "scope-guests-root", installationId, path: "/Guests"},
+      {id: "scope-guests-tenant", installationId, path: "/Guests/acme"},
+      {id: "scope-tenant-root", installationId, path: "/TenantWorkspaces"},
+      {id: "scope-tenant-guest", installationId, path: "/TenantWorkspaces/acme/acme-guest"},
+      {id: "scope-tenant-staff", installationId, path: "/TenantWorkspaces/acme/acme-staff"},
+      {id: "scope-tenant-root-path", installationId: orgB.id, path: `/teams/${orgB.slug}`},
+      {id: "scope-tenant-included", installationId: orgB.id, path: `/teams/${orgB.slug}/support`},
+      {id: "scope-tenant-sibling", installationId: orgB.id, path: `/teams/${orgB.slug}-old/support`},
+      {id: "scope-policy-contained-group", installationId: policyTenant.id, path: `${policyRoot}fixture`},
+      {id: "scope-tenant-outside", installationId: orgB.id, path: "/Guests/acme"},
+      {id: "scope-no-policy", installationId: orgC.id, path: "/teams/no-policy/viewers"},
+    ];
+    const orvexTenantGroups = [
+      {id: "fixture-guests-root", path: "/Guests", installationId},
+      ...Array.from({length: 11}, (_, index) => ({
+        id: `fixture-guest-${index + 1}`,
+        path: `/Guests/fixture-${index + 1}`,
+        installationId,
+      })),
+      {id: "fixture-workspaces-root", path: "/TenantWorkspaces", installationId},
+      ...Array.from({length: 5}, (_, index) => ({
+        id: `fixture-staff-${index + 1}`,
+        path: `/TenantWorkspaces/staff-${index + 1}/staff-${index + 1}-staff`,
+        installationId,
+      })),
+      ...Array.from({length: 4}, (_, index) => ({
+        id: `fixture-workspace-guest-${index + 1}`,
+        path: `/TenantWorkspaces/workspace-${index + 1}/workspace-${index + 1}-guest`,
+        installationId,
+      })),
+    ];
+    const orvexNonTenantGroups = Array.from({length: 3}, (_, index) => ({
+      id: `fixture-internal-${index + 1}`,
+      installationId,
+      path: `/Internal/fixture-${index + 1}`,
+    }));
+    const orvexTenantRoleGroupIds = orvexTenantGroups
+      .filter(({id}) => id.startsWith("fixture-guest-") || id === "fixture-workspace-guest-1")
+      .map(({id}) => id);
+    const orvexTenantGrantGroupIds = [
+      "fixture-staff-1", "fixture-staff-2", "fixture-staff-3",
+      "fixture-guest-1", "fixture-guest-2", "fixture-workspace-guest-1", "fixture-workspace-guest-2",
+    ];
+    const orvexFixtureGroups = [...orvexTenantGroups, ...orvexNonTenantGroups];
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      for (const group of seededGroups) {
+        yield* sql`INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
+          VALUES (${group.installationId}, ${group.id}, ${group.id}, ${group.path}, '2026-11-27T00:00:00.000Z')`;
+        yield* sql`INSERT INTO directory_group_roles
+          (installation_id, group_id, role, assigned_at, assigned_by_principal_id)
+          VALUES (${group.installationId}, ${group.id}, 'member', '2026-11-27T00:00:00.000Z', 'migration-test')`;
+        yield* sql`INSERT INTO directory_group_members
+          (installation_id, group_id, subject, email, provider)
+          VALUES (${group.installationId}, ${group.id}, ${`subject-${group.id}`}, ${`${group.id}@example.test`}, 'test-provider')`;
+        yield* sql`INSERT INTO project_group_grants
+          (installation_id, project_id, group_id, role, granted_at, granted_by_principal_id)
+          VALUES (${group.installationId}, 'prj_default', ${group.id}, 'viewer', '2026-11-27T00:00:00.000Z', 'migration-test')`;
+      }
+      for (const group of orvexFixtureGroups) {
+        yield* sql`INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
+          VALUES (${group.installationId}, ${group.id}, ${group.id}, ${group.path}, '2026-11-27T00:00:00.000Z')`;
+        if (orvexTenantRoleGroupIds.includes(group.id) || group.id === "fixture-internal-1") {
+          yield* sql`INSERT INTO directory_group_roles
+            (installation_id, group_id, role, assigned_at, assigned_by_principal_id)
+            VALUES (${group.installationId}, ${group.id}, 'member', '2026-11-27T00:00:00.000Z', 'migration-test')`;
+        }
+        if (orvexTenantGrantGroupIds.includes(group.id) || group.id === "fixture-internal-1") {
+          yield* sql`INSERT INTO project_group_grants
+            (installation_id, project_id, group_id, role, granted_at, granted_by_principal_id)
+            VALUES (${group.installationId}, 'prj_default', ${group.id}, 'viewer', '2026-11-27T00:00:00.000Z', 'migration-test')`;
+        }
+      }
+      for (const id of [installationId, orgB.id, orgC.id, policyTenant.id]) {
+        yield* sql`INSERT INTO directory_group_role_seeds (installation_id, seeded_at)
+          VALUES (${id}, '2026-11-27T00:00:00.000Z')`;
+        yield* sql`INSERT INTO directory_group_role_rule_backfills (installation_id, backfilled_at)
+          VALUES (${id}, '2026-11-27T00:00:00.000Z')`;
+      }
+    }));
+    const projectsBefore = await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql`SELECT installation_id, id FROM projects
+        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id, id`;
+    }));
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      yield* sql`DELETE FROM artifact_server_postgres_migrations WHERE migration_id = 36`;
+    }));
+    await database.run(runPostgresMigrations);
+
+    const afterFirstRun = await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const groups = yield* sql`SELECT installation_id, id, path FROM directory_groups
+        WHERE id LIKE 'scope-%' ORDER BY installation_id, id`;
+      const roles = yield* sql`SELECT installation_id, group_id FROM directory_group_roles
+        WHERE group_id LIKE 'scope-%' ORDER BY installation_id, group_id`;
+      const members = yield* sql`SELECT installation_id, group_id FROM directory_group_members
+        WHERE group_id LIKE 'scope-%' ORDER BY installation_id, group_id`;
+      const grants = yield* sql`SELECT installation_id, group_id FROM project_group_grants
+        WHERE group_id LIKE 'scope-%' ORDER BY installation_id, group_id`;
+      const seeds = yield* sql`SELECT installation_id FROM directory_group_role_seeds
+        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id`;
+      const backfills = yield* sql`SELECT installation_id FROM directory_group_role_rule_backfills
+        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id`;
+      const projects = yield* sql`SELECT installation_id, id FROM projects
+        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id, id`;
+      const fixtureGroups = yield* sql`SELECT id, path FROM directory_groups WHERE id LIKE 'fixture-%' ORDER BY id`;
+      const fixtureRoles = yield* sql`SELECT group_id FROM directory_group_roles WHERE group_id LIKE 'fixture-%' ORDER BY group_id`;
+      const fixtureGrants = yield* sql`SELECT group_id FROM project_group_grants WHERE group_id LIKE 'fixture-%' ORDER BY group_id`;
+      const tenantGroups = yield* sql`SELECT id FROM directory_groups WHERE installation_id = ${installationId}
+        AND (path = '/Guests' OR path LIKE '/Guests/%' OR path = '/TenantWorkspaces' OR path LIKE '/TenantWorkspaces/%')
+        ORDER BY id`;
+      return {backfills, groups, grants, members, projects, roles, seeds, fixtureGroups, fixtureRoles, fixtureGrants, tenantGroups};
+    }));
+    expect(afterFirstRun.groups).toEqual([
+      expect.objectContaining({id: "scope-tenant-staff", path: "/TenantWorkspaces/acme/acme-staff"}),
+      expect.objectContaining({id: "scope-tenant-included", path: `/teams/${orgB.slug}/support`}),
+      expect.objectContaining({id: "scope-policy-contained-group", path: `${policyRoot}fixture`}),
+    ]);
+    expect(afterFirstRun.roles.map(({group_id}) => group_id)).toEqual([
+      "scope-tenant-staff", "scope-tenant-included", "scope-policy-contained-group",
+    ]);
+    expect(afterFirstRun.members.map(({group_id}) => group_id)).toEqual([
+      "scope-tenant-staff", "scope-tenant-included", "scope-policy-contained-group",
+    ]);
+    expect(afterFirstRun.grants.map(({group_id}) => group_id)).toEqual([
+      "scope-tenant-staff", "scope-tenant-included", "scope-policy-contained-group",
+    ]);
+    expect(afterFirstRun.seeds.map(({installation_id}) => installation_id)).toEqual(
+      [installationId, orgB.id, policyTenant.id].toSorted(),
+    );
+    expect(afterFirstRun.backfills.map(({installation_id}) => installation_id)).toEqual(
+      [installationId, orgB.id, policyTenant.id].toSorted(),
+    );
+    expect(afterFirstRun.projects).toEqual(projectsBefore);
+    expect(afterFirstRun.groups).toEqual(expect.arrayContaining([
+      expect.objectContaining({id: "scope-tenant-included", path: `/teams/${orgB.slug}/support`}),
+      expect.objectContaining({id: "scope-policy-contained-group", path: `${policyRoot}fixture`}),
+    ]));
+    expect(afterFirstRun.groups.some(({id}) => id === "scope-tenant-sibling")).toBe(false);
+    expect(afterFirstRun.groups.some(({id}) => id === "scope-tenant-root-path")).toBe(false);
+    expect(afterFirstRun.groups.some(({id}) => id === "scope-tenant-outside")).toBe(false);
+    const staffGroupIds = orvexTenantGroups.filter(({id}) => id.startsWith("fixture-staff-")).map(({id}) => id);
+    const nonTenantGroupIds = orvexNonTenantGroups.map(({id}) => id);
+    expect(orvexTenantGroups).toHaveLength(22);
+    expect(afterFirstRun.fixtureGroups).toHaveLength(8);
+    expect(afterFirstRun.tenantGroups.map(({id}) => id)).toEqual(staffGroupIds);
+    expect(afterFirstRun.fixtureGroups.map(({id}) => id)).toEqual([
+      ...nonTenantGroupIds,
+      ...staffGroupIds,
+    ].toSorted());
+    expect(orvexTenantRoleGroupIds).toHaveLength(12);
+    expect(afterFirstRun.fixtureRoles.map(({group_id}) => group_id)).toEqual(["fixture-internal-1"]);
+    expect(orvexTenantGrantGroupIds).toHaveLength(7);
+    expect(afterFirstRun.fixtureGrants.map(({group_id}) => group_id)).toEqual([
+      "fixture-internal-1", "fixture-staff-1", "fixture-staff-2", "fixture-staff-3",
+    ]);
+    expect(afterFirstRun.groups.filter(({id}) => id === "scope-policy-contained-group")).toHaveLength(1);
+
+    await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      yield* sql`DELETE FROM artifact_server_postgres_migrations WHERE migration_id = 36`;
+    }));
+    await database.run(runPostgresMigrations);
+    const afterSecondRun = await database.run(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      const groups = yield* sql`SELECT installation_id, id, path FROM directory_groups
+        WHERE id LIKE 'scope-%' ORDER BY installation_id, id`;
+      const roles = yield* sql`SELECT installation_id, group_id FROM directory_group_roles
+        WHERE group_id LIKE 'scope-%' ORDER BY installation_id, group_id`;
+      const members = yield* sql`SELECT installation_id, group_id FROM directory_group_members
+        WHERE group_id LIKE 'scope-%' ORDER BY installation_id, group_id`;
+      const grants = yield* sql`SELECT installation_id, group_id FROM project_group_grants
+        WHERE group_id LIKE 'scope-%' ORDER BY installation_id, group_id`;
+      const seeds = yield* sql`SELECT installation_id FROM directory_group_role_seeds
+        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id`;
+      const backfills = yield* sql`SELECT installation_id FROM directory_group_role_rule_backfills
+        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id`;
+      const fixtureGroups = yield* sql`SELECT id, path FROM directory_groups WHERE id LIKE 'fixture-%' ORDER BY id`;
+      const fixtureRoles = yield* sql`SELECT group_id FROM directory_group_roles WHERE group_id LIKE 'fixture-%' ORDER BY group_id`;
+      const fixtureGrants = yield* sql`SELECT group_id FROM project_group_grants WHERE group_id LIKE 'fixture-%' ORDER BY group_id`;
+      const tenantGroups = yield* sql`SELECT id FROM directory_groups WHERE installation_id = ${installationId}
+        AND (path = '/Guests' OR path LIKE '/Guests/%' OR path = '/TenantWorkspaces' OR path LIKE '/TenantWorkspaces/%')
+        ORDER BY id`;
+      return {backfills, groups, grants, members, roles, seeds, fixtureGroups, fixtureRoles, fixtureGrants, tenantGroups};
+    }));
+    expect(afterSecondRun).toEqual({
+      backfills: afterFirstRun.backfills,
+      groups: afterFirstRun.groups,
+      grants: afterFirstRun.grants,
+      members: afterFirstRun.members,
+      roles: afterFirstRun.roles,
+      seeds: afterFirstRun.seeds,
+      fixtureGroups: afterFirstRun.fixtureGroups,
+      fixtureRoles: afterFirstRun.fixtureRoles,
+      fixtureGrants: afterFirstRun.fixtureGrants,
+      tenantGroups: afterFirstRun.tenantGroups,
+    });
   }, 60_000);
 });
 

@@ -63,10 +63,12 @@ import {
 } from "../external-storage/organization-registry.js";
 import {
   maintenanceTenantGroupScope,
+  directoryGroupScopeForOrganization,
   organizationStaffGroupsVariable,
   parseOrganizationStaffGroups,
   requireOrganizationStaffGroups,
 } from "../external-storage/organization-staff-groups.js";
+import type {DirectoryGroupScope} from "../core/directory-group-scope.js";
 import {runCliEffect} from "./run-cli-effect.js";
 import {waitForProcessSignal} from "./wait-for-process-signal.js";
 import {
@@ -197,6 +199,29 @@ function configureMaintenance(program: Command): void {
         throw new Error("Keycloak organization sync requires external-storage mode.");
       }
       const tenantScope = maintenanceTenantGroupScope(process.env, organizationTenancy);
+      let directoryGroupScope: DirectoryGroupScope = {kind: "all"};
+      if (configuration.deploymentMode === "external-storage") {
+        const database = await openExternalStorageDatabase(externalMaintenanceConfig(configuration));
+        try {
+          const organizations = await new OrganizationRegistry(database).list();
+          const organization = organizations.find(({id}) =>
+            id === configuration.installationId
+          );
+          if (organization === undefined) {
+            throw new Error("maintenance sync-directory cannot find the configured installation in the organization registry.");
+          }
+          directoryGroupScope = directoryGroupScopeForOrganization(
+            organization,
+            organizationTenancy || organizations.some(({slug}) => slug !== "orvex"),
+            tenantScope.organizationStaffGroups,
+          );
+        } finally {
+          await database.close();
+        }
+        if (directoryGroupScope.kind === "none") {
+          throw new Error("Directory groups are not synced for an organization whose membership is managed by Keycloak Organizations; nothing was changed.");
+        }
+      }
       assertAtMostOneBrowserLoginProvider(process.env);
       const oidc = await loadOidcConfiguration({
         ...process.env,
@@ -229,6 +254,7 @@ function configureMaintenance(program: Command): void {
         })
         : await createExternalStorageRuntime({
           ...externalMaintenanceConfig(configuration),
+          directoryGroupScope,
           groupRolePolicy: groupRoles,
           ...tenantScope,
         });
