@@ -108,7 +108,7 @@ export async function createOrganizationRouter(
     const registry = new OrganizationRegistry(database);
     // Orvex is chosen by its normal issuer-group admission, previewed here
     // without admitting anyone; Keycloak orgs use the verified claim.
-    const orvexIdentities = new PostgresIdentityRepository(database, config.installationId);
+    const orvexIdentities = new PostgresIdentityRepository(database.forInstallation(config.installationId));
     const orvexAdmissionRole = createOrvexAdmissionRole({
       bootstrapAdministratorEmail: config.bootstrapAdministratorEmail,
       findActiveMemberByEmail: (email) => orvexIdentities.findActiveMemberByEmail(config.installationId, email),
@@ -128,7 +128,7 @@ export async function createOrganizationRouter(
     });
     const organizationMemberships = config.organizationMemberships ?? createKeycloakOrganizationMembershipResolver(
           (slug) => registry.find(slug),
-          async (organization, identity) => database.run(Effect.gen(function*() {
+          async (organization, identity) => database.runInInstallation(organization.id, Effect.gen(function*() {
             const sql = yield* SqlClient;
             const rows = yield* sql`SELECT EXISTS (
               SELECT 1 FROM external_identities identity

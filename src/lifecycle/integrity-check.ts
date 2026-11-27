@@ -176,7 +176,7 @@ export async function checkExternalStorageIntegrity(
     });
   }
   try {
-    const catalog = await database.health().then(() => database.run(
+    const catalog = await database.health().then(() => database.runInInstallation(configuration.installationId,
       readExternalCatalog(configuration.installationId),
     )).catch((error) => {
       throw new IntegrityCheckError({

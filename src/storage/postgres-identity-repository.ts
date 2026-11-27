@@ -49,7 +49,7 @@ import {
   guestGroupRulePrincipalId,
   groupRoleSeedPrincipalId,
 } from "../core/group-role-policy.js";
-import type {PostgresDatabase} from "./postgres-database.js";
+import type {InstallationDatabase} from "./postgres-database.js";
 
 const membershipRoleSchema = z.enum(Object.values(membershipRoles));
 const groupRoleRowSchema = z.object({
@@ -172,12 +172,12 @@ const storedDirectoryGroupRowSchema = z.object({
 
 /** Installation-scoped Postgres persistence for membership and credentials. */
 export class PostgresIdentityRepository implements BootstrapManagedApiKeyRepository {
-  readonly #database: PostgresDatabase;
+  readonly #database: InstallationDatabase;
   readonly #installationId: string;
 
-  constructor(database: PostgresDatabase, installationId: string) {
+  constructor(database: InstallationDatabase) {
     this.#database = database;
-    this.#installationId = installationId;
+    this.#installationId = database.installationId;
   }
 
   async hasMembers(installationId: string): Promise<boolean> {

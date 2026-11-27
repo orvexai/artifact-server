@@ -29,11 +29,18 @@ import {checkExternalStorageIntegrity} from
 import {createS3ObjectStorageProviderFactory} from
   "../../src/storage/s3-object-storage.js";
 import {PostgresDatabase} from "../../src/storage/postgres-database.js";
-import {requiredPostgresSchemaVersion} from
+import {
+  initialPostgresSchemaForMigrationFixture,
+  requiredPostgresSchemaVersion,
+} from
   "../../src/storage/postgres-migrations.js";
+import {createInstallationObjectKeyspace} from
+  "../../src/storage/cloud-object-storage.js";
 import {PostgresArtifactRepository} from "../../src/storage/postgres-artifact-repository.js";
 import {PostgresIdentityRepository} from "../../src/storage/postgres-identity-repository.js";
 import {defaultProjectId} from "../../src/core/model.js";
+import {principalCapabilities} from "../../src/core/identity.js";
+import {createManifest} from "../../src/manifest/create-manifest.js";
 import type {NodeGitHistoryConfiguration} from
   "../../src/git-history/node-git-history-configuration.js";
 import type {GitHistoryProviderHealthProbe} from
@@ -55,6 +62,7 @@ import {
   keycloakUser,
   startStubKeycloak,
 } from "../support/stub-keycloak-directory.js";
+import {withMigrationFixtureConnection} from "../support/postgres-rls.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const externalStorageCli = path.join(repositoryRoot, "dist/cli/main.js");
@@ -254,6 +262,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
   beforeAll(async () => {
     environment = readIntegrationEnvironment();
     oidcProvider = await startStubOidcProvider({
+      codeChallengeMethods: ["S256"],
       clientId: "external-storage-integration",
     });
     s3Client = new S3Client({
@@ -306,7 +315,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       url: Redacted.make(environment.databaseUrl, {label: "test-database-url"}),
     });
     try {
-      await database.run(Effect.gen(function*() {
+      await withMigrationFixtureConnection(Effect.gen(function*() {
         const sql = yield* SqlClient;
         yield* sql`
           UPDATE artifact_server_postgres_migrations
@@ -322,7 +331,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       expect(divergent.output).toContain("divergent");
       expect(divergent.output).not.toContain(environment.databaseUrl);
     } finally {
-      await database.run(Effect.gen(function*() {
+      await withMigrationFixtureConnection(Effect.gen(function*() {
         const sql = yield* SqlClient;
         yield* sql`
           UPDATE artifact_server_postgres_migrations
@@ -428,7 +437,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       url: Redacted.make(environment.databaseUrl),
     });
     try {
-      const rows = await database.run(Effect.gen(function*() {
+      const rows = await database.runInInstallation(identity.installationId,Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql<{
           readonly account_id: string;
@@ -445,7 +454,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         namespace: "postgres-history-one",
         provider: "cloudflare-artifacts",
       }]);
-      const settings = await database.run(Effect.gen(function*() {
+      const settings = await database.runInInstallation(identity.installationId,Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql<{
           readonly enabled: boolean;
@@ -476,83 +485,122 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       apiToken: managedTestKey("postgres-project-migration"),
       installationId: "postgres-project-migration-installation",
     };
-    const applied = await runExternalCli(["migrate", "apply"], {
-      ARTIFACT_SERVER_DATABASE_URL: migrationEnvironment.databaseUrl,
-      ARTIFACT_SERVER_INSTALLATION_ID: identity.installationId,
+    const bootstrapKeyId = managedApiKeyCredentialPattern.exec(identity.apiToken)?.[1];
+    if (bootstrapKeyId === undefined) throw new Error("The migration fixture key is malformed.");
+    const artifactId = "postgres-project-migration-artifact";
+    const versionId = "postgres-project-migration-version";
+    const content = "<!doctype html><title>Postgres project migration</title>";
+    const contentBytes = Buffer.from(content);
+    const contentDigest = createHash("sha256").update(contentBytes).digest("hex");
+    const manifest = createManifest({
+      entryPath: "index.html",
+      files: [{
+        mediaType: "text/html",
+        path: "index.html",
+        sha256: contentDigest,
+        size: contentBytes.byteLength,
+      }],
+      routingMode: "static",
     });
-    expect(applied.exitCode).toBe(0);
-
-    const source = await startExternalStorageProcess(migrationEnvironment, identity);
-    const published = await publishNew(source.baseUrl, identity.apiToken, {
-      content: "<!doctype html><title>Postgres project migration</title>",
-      idempotencyKey: "postgres-project-migration-publish",
-      name: "Postgres project migration",
-    });
-    await source.stop();
-
-    const database = await PostgresDatabase.inspect({
-      applicationName: "artifact-server-project-migration-fixture",
-      maxConnections: 1,
-      url: Redacted.make(migrationEnvironment.databaseUrl),
-    });
-    try {
-      await database.run(Effect.gen(function*() {
-        const sql = yield* SqlClient;
-        const statements = [
-          `ALTER TABLE actions
-            DROP CONSTRAINT actions_action_check,
-            ADD CONSTRAINT actions_action_check
-              CHECK (action IN ('publish', 'restore', 'change_access', 'change_tags', 'delete'))`,
-          `ALTER TABLE idempotency_records
-            DROP CONSTRAINT idempotency_records_operation_check,
-            ADD CONSTRAINT idempotency_records_operation_check
-              CHECK (operation IN ('publish', 'restore', 'change_access', 'change_tags', 'delete'))`,
-          `ALTER TABLE versions
-            DROP CONSTRAINT versions_routing_mode_check,
-            ADD CONSTRAINT versions_routing_mode_check
-              CHECK (routing_mode = 'static')`,
-          `ALTER TABLE staged_uploads
-            DROP CONSTRAINT staged_uploads_routing_mode_check,
-            ADD CONSTRAINT staged_uploads_routing_mode_check
-              CHECK (routing_mode = 'static')`,
-          "ALTER TABLE content_sessions DROP COLUMN project_id CASCADE",
-          "ALTER TABLE content_bootstraps DROP COLUMN project_id CASCADE",
-          "ALTER TABLE staged_uploads DROP COLUMN project_id CASCADE",
-          "ALTER TABLE actions DROP COLUMN project_id CASCADE",
-          "ALTER TABLE idempotency_records DROP COLUMN project_id CASCADE",
-          "ALTER TABLE versions DROP COLUMN project_id CASCADE",
-          "ALTER TABLE artifacts DROP COLUMN search_name",
-          "ALTER TABLE artifacts DROP COLUMN project_id CASCADE",
-          "ALTER TABLE login_attempts DROP COLUMN nonce",
-          "DROP TABLE comment_replies",
-          "DROP TABLE comment_threads",
-          "DROP TABLE agent_dispatches",
-          "DROP TABLE registered_agents",
-          "DROP TABLE git_history_budget_reservations",
-          "DROP TABLE git_history_mappings",
-          "DROP TABLE git_history_jobs",
-          "DROP TABLE git_history_repositories",
-          "DROP TABLE git_history_provider_identity",
-          "DROP TABLE git_history_project_settings",
-          "DROP TABLE projects",
-          `ALTER TABLE artifacts ADD CONSTRAINT artifacts_current_version_fk
-            FOREIGN KEY (installation_id, current_version_id)
-            REFERENCES versions(installation_id, id)
-            DEFERRABLE INITIALLY DEFERRED`,
-          "ALTER TABLE idempotency_records ADD CONSTRAINT idempotency_records_pkey PRIMARY KEY (installation_id, idempotency_key)",
-          "ALTER TABLE actions ADD CONSTRAINT actions_installation_id_idempotency_key_key UNIQUE (installation_id, idempotency_key)",
-          "CREATE INDEX versions_artifact_id ON versions (installation_id, artifact_id, number)",
-          "CREATE INDEX artifacts_active_created ON artifacts (installation_id, deleted_at, created_at DESC, id DESC)",
-          "CREATE INDEX actions_artifact_created ON actions (installation_id, artifact_id, created_at DESC, id DESC)",
-          "DELETE FROM artifact_server_postgres_migrations WHERE migration_id >= 2",
-        ] as const;
-        for (const statement of statements) {
-          yield* sql.unsafe(statement);
-        }
-      }));
-    } finally {
-      await database.close();
-    }
+    const manifestEntry = manifest.entries.find((entry) => entry.path === "index.html");
+    if (manifestEntry === undefined) throw new Error("The migration fixture manifest entry is missing.");
+    const objectKey = createInstallationObjectKeyspace(identity.installationId)
+      .blob(contentDigest);
+    const contentToken = "postgres-project-migration-content-token";
+    const memberId = "postgres-project-migration-member";
+    const memberEmail = "migration@example.test";
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    await s3Client.send(new PutObjectCommand({
+      Body: contentBytes,
+      Bucket: bucket,
+      Key: objectKey,
+      Metadata: {
+        "artifact-kind": "blob",
+        "artifact-sha256": contentDigest,
+      },
+    }));
+    await withMigrationFixtureConnection(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      yield* initialPostgresSchemaForMigrationFixture;
+      yield* sql.unsafe(`CREATE TABLE artifact_server_postgres_migrations (
+        migration_id INTEGER PRIMARY KEY,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+        name TEXT NOT NULL
+      )`);
+      yield* sql`
+        INSERT INTO artifact_server_postgres_migrations (migration_id, name)
+        VALUES (1, 'initial_shared_schema')
+      `;
+      yield* sql`
+        INSERT INTO artifact_installations (id, created_at)
+        VALUES (${identity.installationId}, ${createdAt})
+      `;
+      yield* sql`
+        INSERT INTO installation_members (
+          installation_id, id, email, display_name, role, status, created_at, updated_at
+        ) VALUES (
+          ${identity.installationId}, ${memberId}, ${memberEmail}, 'Migration Member',
+          'administrator', 'active', ${createdAt}, ${createdAt}
+        )
+      `;
+      yield* sql`
+        INSERT INTO external_identities (
+          installation_id, provider, subject, member_id, email, bound_at
+        ) VALUES (
+          ${identity.installationId}, 'migration-fixture', 'migration-subject',
+          ${memberId}, ${memberEmail}, ${createdAt}
+        )
+      `;
+      yield* sql`
+        INSERT INTO managed_api_keys (
+          installation_id, id, name, prefix, secret_digest, principal_id,
+          principal_kind, capabilities_json, authorized_by_principal_id,
+          created_at, expires_at, revoked_at, rotated_from_id
+        ) VALUES (
+          ${identity.installationId}, ${bootstrapKeyId}, 'Installation bootstrap key',
+          ${identity.apiToken.slice(0, Math.min(identity.apiToken.length, 32))},
+          ${createHash("sha256").update(identity.apiToken).digest("hex")},
+          ${`service:${bootstrapKeyId}`}, 'service',
+          ${JSON.stringify(Object.values(principalCapabilities)
+            .filter((capability) => capability !== principalCapabilities.provisionProjects)
+            .toSorted())},
+          'installation-bootstrap', ${createdAt}, '9999-12-31T23:59:59.999Z', NULL, NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO artifacts (
+          installation_id, id, name, access_setting, current_version_id, created_at
+        ) VALUES (
+          ${identity.installationId}, ${artifactId}, 'Postgres project migration',
+          'public_link', NULL, ${createdAt}
+        )
+      `;
+      yield* sql`
+        INSERT INTO versions (
+          installation_id, id, artifact_id, number, manifest_digest, entry_path,
+          routing_mode, content_token, publisher_principal_id, created_at
+        ) VALUES (
+          ${identity.installationId}, ${versionId}, ${artifactId}, 1, ${manifest.digest},
+          'index.html', 'static', ${contentToken}, ${memberId}, ${createdAt}
+        )
+      `;
+      yield* sql`
+        UPDATE artifacts SET current_version_id = ${versionId}
+        WHERE installation_id = ${identity.installationId} AND id = ${artifactId}
+      `;
+      yield* sql`
+        INSERT INTO manifest_entries (
+          installation_id, version_id, path, size, media_type, sha256, disposition
+        ) VALUES (
+          ${identity.installationId}, ${versionId}, 'index.html', ${contentBytes.byteLength},
+          'text/html', ${contentDigest}, ${manifestEntry.disposition}
+        )
+      `;
+      yield* sql`
+        INSERT INTO artifact_tags (installation_id, artifact_id, tag)
+        VALUES (${identity.installationId}, ${artifactId}, 'external-storage-runtime')
+      `;
+    }), migrationEnvironment.databaseUrl);
 
     const pending = await runExternalCli(["migrate", "status"], {
       ARTIFACT_SERVER_DATABASE_URL: migrationEnvironment.databaseUrl,
@@ -573,11 +621,30 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       currentVersion: requiredPostgresSchemaVersion,
     });
 
+    const preservedIdentity = await withMigrationFixtureConnection(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql<{
+        readonly email: string;
+        readonly memberId: string;
+        readonly subject: string;
+      }>`
+        SELECT identity.email, identity.member_id AS "memberId", identity.subject
+        FROM external_identities identity
+        WHERE identity.installation_id = ${identity.installationId}
+          AND identity.provider = 'migration-fixture'
+      `.withoutTransform;
+    }), migrationEnvironment.databaseUrl);
+    expect(preservedIdentity).toEqual([{
+      email: memberEmail,
+      memberId,
+      subject: "migration-subject",
+    }]);
+
     const restored = await startExternalStorageProcess(migrationEnvironment, identity);
     const detailsResponse = await authenticatedFetch(
       restored.baseUrl,
       identity.apiToken,
-      `/api/v1/artifacts/${published.body.artifact.id}`,
+      `/api/v1/artifacts/${artifactId}`,
     );
     expect(detailsResponse.status).toBe(200);
     const details = z.object({
@@ -594,13 +661,13 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
     }).parse(await detailsResponse.json());
     expect(details).toMatchObject({
       artifact: {
-        id: published.body.artifact.id,
+        id: artifactId,
         projectId: defaultProjectId,
         tags: ["external-storage-runtime"],
       },
       current: {
         version: {
-          id: published.body.version.id,
+          id: versionId,
           projectId: defaultProjectId,
         },
       },
@@ -610,9 +677,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       details.current.links.version,
     );
     expect(rendered.status).toBe(200);
-    expect(await rendered.text()).toBe(
-      "<!doctype html><title>Postgres project migration</title>",
-    );
+    expect(await rendered.text()).toBe(content);
     await restored.stop();
 
     const repeated = await runExternalCli(["migrate", "apply"], {
@@ -668,7 +733,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       url: Redacted.make(environment.databaseUrl),
     });
     try {
-      await expect(database.run(Effect.gen(function*() {
+      await expect(database.runInInstallation(identity.installationId,Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql.withTransaction(sql`
           UPDATE artifacts
@@ -899,10 +964,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       url: Redacted.make(environment.databaseUrl),
     }, "validate");
     try {
-      const repository = new PostgresIdentityRepository(
-        database,
-        "trusted-identity-installation",
-      );
+      const repository = new PostgresIdentityRepository(database.forInstallation("trusted-identity-installation"));
       await expect(repository.hasMembers("foreign-identity-installation"))
         .rejects.toMatchObject({_tag: "IdentityNotFound"});
       await expect(repository.hasMembers("trusted-identity-installation"))
@@ -919,11 +981,8 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
     }, "validate");
     const scopedInstallation = `login-attempt-nonce-${randomUUID()}`;
     try {
-      await PostgresArtifactRepository.open(database, scopedInstallation);
-      const repository = new PostgresIdentityRepository(
-        database,
-        scopedInstallation,
-      );
+      await PostgresArtifactRepository.open(database.forInstallation(scopedInstallation));
+      const repository = new PostgresIdentityRepository(database.forInstallation(scopedInstallation));
       await repository.createLoginAttempt({
         codeVerifier: "postgres-login-attempt-code-verifier",
         createdAt: "2026-08-18T12:00:00.000Z",
@@ -975,11 +1034,8 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
     }, "validate");
     const scopedInstallation = `administrator-race-${randomUUID()}`;
     try {
-      await PostgresArtifactRepository.open(database, scopedInstallation);
-      const repository = new PostgresIdentityRepository(
-        database,
-        scopedInstallation,
-      );
+      await PostgresArtifactRepository.open(database.forInstallation(scopedInstallation));
+      const repository = new PostgresIdentityRepository(database.forInstallation(scopedInstallation));
       const createdAt = "2026-08-13T15:00:00.000Z";
       await Promise.all([
         repository.admitMember({
@@ -1040,8 +1096,8 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
     const roleInstallation = `member-role-${randomUUID()}`;
     const syncInstallation = `directory-sync-${randomUUID()}`;
     try {
-      await PostgresArtifactRepository.open(database, roleInstallation);
-      const roles = new PostgresIdentityRepository(database, roleInstallation);
+      await PostgresArtifactRepository.open(database.forInstallation(roleInstallation));
+      const roles = new PostgresIdentityRepository(database.forInstallation(roleInstallation));
       await roles.admitMember({
         createdAt: "2026-10-12T10:00:00.000Z",
         displayName: "Manual Member",
@@ -1131,7 +1187,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         if (report === undefined) return {failure: result.output};
         return {report};
       };
-      const synced = new PostgresIdentityRepository(database, syncInstallation);
+      const synced = new PostgresIdentityRepository(database.forInstallation(syncInstallation));
       const members = async () =>
         (await synced.listMembers(syncInstallation))
           .map(({email, role, status}) => ({email, role, status}))
@@ -1209,7 +1265,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         memberId: g1?.id ?? "",
         tokenDigest: "tenant-g1-token",
       });
-      await database.run(Effect.gen(function*() {
+      await database.runInInstallation(syncInstallation,Effect.gen(function*() {
         const sql = yield* SqlClient;
         yield* sql`UPDATE installation_members SET status = 'inactive'
           WHERE installation_id = ${syncInstallation} AND id = ${g2?.id ?? ""}`;
@@ -1221,7 +1277,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       };
       const tenantSync = await sync(tenantsEnabled);
       expect(tenantSync).toMatchObject({report: {reactivated: 0}});
-      const orvexRow = await database.run(Effect.gen(function*() {
+      const orvexRow = await database.runInInstallation(syncInstallation,Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT slug, status, route_id FROM artifact_installations WHERE id = ${syncInstallation}`;
       }));
@@ -1233,7 +1289,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       expect(await members()).toContainEqual({
         email: "g2@example.test", role: "guest", status: "inactive",
       });
-      const revokedSession = await database.run(Effect.gen(function*() {
+      const revokedSession = await database.runInInstallation(syncInstallation,Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql.unsafe<object>(
           `SELECT revoked_at FROM application_sessions
@@ -1264,7 +1320,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       url: Redacted.make(environment.databaseUrl),
     }, "apply");
     const scopedInstallation = `guest-rule-backfill-${randomUUID()}`;
-    const repository = new PostgresIdentityRepository(database, scopedInstallation);
+    const repository = new PostgresIdentityRepository(database.forInstallation(scopedInstallation));
     const provider = "guest-rule-backfill-test";
     const firstSyncAt = "2026-11-11T23:00:00.000Z";
     const groups = [
@@ -1278,7 +1334,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       ]},
     ];
     try {
-      await PostgresArtifactRepository.open(database, scopedInstallation);
+      await PostgresArtifactRepository.open(database.forInstallation(scopedInstallation));
       await repository.applyDirectoryGroups(scopedInstallation, {
         groups,
         provider,
@@ -1341,7 +1397,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         .toEqual(["tenant-staff-member"]);
       expect(firstRuleSync.roleChanged).toBe(1);
 
-      const markerRows = await database.run(Effect.gen(function*() {
+      const markerRows = await database.runInInstallation(scopedInstallation,Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql.unsafe<object>(
           "SELECT installation_id FROM directory_group_role_rule_backfills WHERE installation_id = $1",
@@ -1837,18 +1893,16 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
     }, "validate");
     try {
       const repositoryA = await PostgresArtifactRepository.open(
-        database,
-        identityA.installationId,
+        database.forInstallation(identityA.installationId),
       );
       const repositoryB = await PostgresArtifactRepository.open(
-        database,
-        identityB.installationId,
+        database.forInstallation(identityB.installationId),
       );
       const seededLeaseIdentity = async (
         scopedInstallationId: string,
         versionId: string,
       ) => {
-        const rows = await database.run(Effect.gen(function*() {
+        const rows = await database.runInInstallation(scopedInstallationId,Effect.gen(function*() {
           const sql = yield* SqlClient;
           return yield* sql.unsafe<{
             readonly contentToken: string;
@@ -2099,10 +2153,41 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       ...environment,
       databaseUrl: databaseUrlFor(environment.databaseUrl, restoreDatabase),
     };
+    const restoredRegistryPrivileges = await withMigrationFixtureConnection(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql<{readonly canReadInstallationRegistry: boolean}>`
+        SELECT has_table_privilege(
+          'artifact_server_tenant', 'public.artifact_installations', 'SELECT'
+        ) AS "canReadInstallationRegistry"
+      `.withoutTransform;
+    }), restoredEnvironment.databaseUrl);
+    expect(restoredRegistryPrivileges).toEqual([{canReadInstallationRegistry: false}]);
     const restored = await startExternalStorageProcess(restoredEnvironment, {
       ...backupIdentity,
       storageBucket: restoreBucket,
     });
+    const restoredPrivileges = await withMigrationFixtureConnection(Effect.gen(function*() {
+      const sql = yield* SqlClient;
+      return yield* sql<{
+        readonly schemaUsage: boolean;
+        readonly tableSelect: boolean;
+        readonly sequenceUsage: boolean;
+      }>`
+        SELECT
+          has_schema_privilege('artifact_server_tenant', 'public', 'USAGE') AS "schemaUsage",
+          has_table_privilege(
+            'artifact_server_tenant', 'public.artifact_installations', 'SELECT'
+          ) AS "tableSelect",
+          has_sequence_privilege(
+            'artifact_server_tenant', 'public.installation_member_staff_audit_id_seq', 'USAGE'
+          ) AS "sequenceUsage"
+      `.withoutTransform;
+    }), restoredEnvironment.databaseUrl);
+    expect(restoredPrivileges).toEqual([{
+      schemaUsage: true,
+      tableSelect: true,
+      sequenceUsage: true,
+    }]);
     const restoredProjectResponse = await authenticatedFetch(
       restored.baseUrl,
       backupIdentity.apiToken,
@@ -2208,6 +2293,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
           latencyMilliseconds: expect.any(Number),
           status: "ready",
         },
+        identity: {latencyMilliseconds: 0, oauth: "enabled", status: "ready"},
         migrations: {
           latencyMilliseconds: expect.any(Number),
           status: "ready",
@@ -2231,6 +2317,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
           latencyMilliseconds: expect.any(Number),
           status: "ready",
         },
+        identity: {latencyMilliseconds: 0, oauth: "enabled", status: "ready"},
         migrations: {
           latencyMilliseconds: expect.any(Number),
           status: "ready",
@@ -2451,8 +2538,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
     }, "validate");
     try {
       const repository = await PostgresArtifactRepository.open(
-        database,
-        commentIdentity.installationId,
+        database.forInstallation(commentIdentity.installationId),
       );
       const sameInstant = "2026-08-18T09:15:00.000Z";
       const sameInstantEdit = (body: string) => repository.updateThread({
@@ -2536,7 +2622,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
       url: Redacted.make(environment.databaseUrl),
     }, "validate");
     try {
-      const repository = await PostgresArtifactRepository.open(database, identity.installationId);
+      const repository = await PostgresArtifactRepository.open(database.forInstallation(identity.installationId));
       const created = await repository.createResponse({
         artifactId,
         authorDisplayName: "Size test",
@@ -2622,8 +2708,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
     }, "validate");
     try {
       const repository = await PostgresArtifactRepository.open(
-        database,
-        dispatchIdentity.installationId,
+        database.forInstallation(dispatchIdentity.installationId),
       );
       const connectionKey = `dispatch-connection-${randomUUID()}`;
       const registration = {
@@ -2901,8 +2986,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
     }, "validate");
     try {
       const repository = await PostgresArtifactRepository.open(
-        database,
-        identity.installationId,
+        database.forInstallation(identity.installationId),
       );
       const agent = await repository.registerAgent({
         agentSessionId: "pi-session-dispatch-deletion",
@@ -3268,7 +3352,7 @@ function waitForExternalStorageProcess(
     }, 20_000);
     const receive = (chunk: Buffer) => {
       output += chunk.toString("utf8");
-      const match = /Artifact Server \(external-storage\): (http:\/\/127\.0\.0\.1:\d+)/u.exec(
+      const match = /Houston Artifacts \(external-storage\): (http:\/\/127\.0\.0\.1:\d+)/u.exec(
         output,
       );
       if (match?.[1] === undefined) return;

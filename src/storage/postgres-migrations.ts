@@ -6,7 +6,7 @@ import {normalizeArtifactSearchText} from "../application/artifact-tags.js";
 import {defaultGitHistoryMaximumCopiedFiles} from
   "../git-history/git-history-capability.js";
 
-const initialSchema = Effect.gen(function*() {
+export const initialPostgresSchemaForMigrationFixture = Effect.gen(function*() {
   const sql = yield* SqlClient;
   const statements = [
     `CREATE TABLE artifact_installations (
@@ -1166,8 +1166,191 @@ const addDirectoryGroupScope = Effect.gen(function*() {
     $$`);
 });
 
+/** Tables whose rows are bound to one installation by forced RLS. */
+export const ROW_SECURITY_TENANT_TABLES = [
+  "actions",
+  "agent_dispatches",
+  "application_sessions",
+  "artifact_responses",
+  "artifact_state_entries",
+  "artifact_tags",
+  "artifacts",
+  "comment_replies",
+  "comment_threads",
+  "content_bootstraps",
+  "content_sessions",
+  "directory_group_members",
+  "directory_group_role_rule_backfills",
+  "directory_group_role_seeds",
+  "directory_group_roles",
+  "directory_groups",
+  "external_identities",
+  "git_history_budget_reservations",
+  "git_history_jobs",
+  "git_history_mappings",
+  "git_history_project_settings",
+  "git_history_provider_identity",
+  "git_history_repositories",
+  "guest_review_invitations",
+  "guest_review_sessions",
+  "idempotency_records",
+  "installation_member_staff_audit",
+  "installation_members",
+  "login_attempts",
+  "managed_api_keys",
+  "manifest_entries",
+  "project_archive_events",
+  "project_group_grants",
+  "project_provisioner_audit_events",
+  "projects",
+  "registered_agents",
+  "staged_upload_files",
+  "staged_uploads",
+  "versions",
+] as const;
+
+const enforceRowLevelSecurity = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  for (const table of ROW_SECURITY_TENANT_TABLES) {
+    yield* sql.unsafe(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
+    yield* sql.unsafe(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY`);
+    yield* sql.unsafe(`DROP POLICY IF EXISTS tenant_isolation ON ${table}`);
+    yield* sql.unsafe(`CREATE POLICY tenant_isolation ON ${table}
+      FOR ALL
+      USING (installation_id = NULLIF(current_setting('app.installation_id', true), ''))
+      WITH CHECK (installation_id = NULLIF(current_setting('app.installation_id', true), ''))`);
+  }
+  for (const [table, expression] of [
+    ["artifact_platform_sessions", "current_setting('app.rls_mode', true) = 'platform'"],
+    ["artifact_installations", "current_setting('app.rls_mode', true) = 'platform' OR id = NULLIF(current_setting('app.installation_id', true), '')"],
+  ] as const) {
+    yield* sql.unsafe(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
+    yield* sql.unsafe(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY`);
+    yield* sql.unsafe(`DROP POLICY IF EXISTS platform_access ON ${table}`);
+    yield* sql.unsafe(`CREATE POLICY platform_access ON ${table}
+      FOR ALL USING (${expression}) WITH CHECK (${expression})`);
+  }
+  yield* sql.unsafe(`DO $artifact_server_tenant$
+  DECLARE
+    migrator_is_superuser boolean;
+    migrator_can_create_roles boolean;
+  BEGIN
+    SELECT rolsuper, rolcreaterole
+      INTO migrator_is_superuser, migrator_can_create_roles
+      FROM pg_roles WHERE rolname = current_user;
+    IF migrator_is_superuser OR migrator_can_create_roles THEN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'artifact_server_tenant') THEN
+        CREATE ROLE artifact_server_tenant NOLOGIN NOSUPERUSER NOBYPASSRLS;
+      END IF;
+      EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO artifact_server_tenant', current_user);
+      EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO artifact_server_tenant', current_user);
+      IF NOT migrator_is_superuser THEN
+        EXECUTE format('GRANT artifact_server_tenant TO %I', current_user);
+      END IF;
+    END IF;
+  END
+  $artifact_server_tenant$`);
+  yield* grantArtifactServerTenantObjectPrivileges;
+});
+
+/** Restore the RLS role's existing-schema grants after a privilege-free dump. */
+export const grantArtifactServerTenantObjectPrivileges = Effect.gen(function*() {
+  const sql = yield* SqlClient;
+  const roleRows = yield* sql<{readonly canGrant: boolean; readonly tenantRoleExists: boolean}>`
+    SELECT (rolsuper OR rolcreaterole) AS "canGrant",
+      EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'artifact_server_tenant') AS "tenantRoleExists"
+    FROM pg_roles WHERE rolname = session_user
+  `.withoutTransform;
+  const role = roleRows[0];
+  if (role?.canGrant !== true || !role.tenantRoleExists) return;
+
+  const tables = [
+    ...ROW_SECURITY_TENANT_TABLES,
+    "artifact_installations",
+    "artifact_platform_sessions",
+  ] as const;
+  const tableValues = tables.map((table) => `('${table}')`).join(", ");
+  const readPrivilegeState = () => Effect.gen(function*() {
+    const schemaRows = yield* sql<{readonly usage: boolean}>`
+      SELECT has_schema_privilege('artifact_server_tenant', 'public', 'USAGE') AS usage
+    `.withoutTransform;
+    const tableRows = yield* sql<{
+      readonly tableName: string;
+      readonly select: boolean;
+      readonly insert: boolean;
+      readonly update: boolean;
+      readonly delete: boolean;
+    }>`
+      SELECT table_name AS "tableName",
+        has_table_privilege('artifact_server_tenant', format('public.%I', table_name), 'SELECT') AS "select",
+        has_table_privilege('artifact_server_tenant', format('public.%I', table_name), 'INSERT') AS "insert",
+        has_table_privilege('artifact_server_tenant', format('public.%I', table_name), 'UPDATE') AS "update",
+        has_table_privilege('artifact_server_tenant', format('public.%I', table_name), 'DELETE') AS "delete"
+      FROM (VALUES ${sql.unsafe(tableValues)}) AS tenant_tables(table_name)
+    `.withoutTransform;
+    const sequenceRows = yield* sql<{
+      readonly name: string;
+      readonly usage: boolean;
+      readonly select: boolean;
+    }>`
+      SELECT sequence.relname AS name,
+        has_sequence_privilege('artifact_server_tenant', sequence.oid, 'USAGE') AS usage,
+        has_sequence_privilege('artifact_server_tenant', sequence.oid, 'SELECT') AS "select"
+      FROM pg_class sequence
+      JOIN pg_namespace schema ON schema.oid = sequence.relnamespace
+      WHERE schema.nspname = 'public' AND sequence.relkind = 'S'
+    `.withoutTransform;
+    return {
+      schemaUsage: schemaRows[0]?.usage === true,
+      tableRows,
+      sequenceRows,
+      complete: schemaRows[0]?.usage === true &&
+        tableRows.every((table) => table.select && table.insert && table.update && table.delete) &&
+        sequenceRows.every((sequence) => sequence.usage && sequence.select),
+    };
+  });
+
+  const initialState = yield* readPrivilegeState();
+  if (initialState.complete) return;
+
+  yield* sql.withTransaction(Effect.gen(function*() {
+    yield* sql`SELECT pg_advisory_xact_lock(
+      hashtextextended('artifact-server:rls-grants', 0)
+    )`;
+    const state = yield* readPrivilegeState();
+    if (state.complete) return;
+
+    if (!state.schemaUsage) {
+      yield* sql`GRANT USAGE ON SCHEMA public TO artifact_server_tenant`;
+    }
+    for (const table of state.tableRows) {
+      const knownTable = tables.find((candidate) => candidate === table.tableName);
+      if (knownTable === undefined) continue;
+      for (const [privilege, granted] of [
+        ["SELECT", table.select],
+        ["INSERT", table.insert],
+        ["UPDATE", table.update],
+        ["DELETE", table.delete],
+      ] as const) {
+        if (!granted) {
+          yield* sql.unsafe(`GRANT ${privilege} ON TABLE ${knownTable} TO artifact_server_tenant`);
+        }
+      }
+    }
+    for (const sequence of state.sequenceRows) {
+      const name = `"${sequence.name.replaceAll('"', '""')}"`;
+      if (!sequence.usage) {
+        yield* sql.unsafe(`GRANT USAGE ON SEQUENCE public.${name} TO artifact_server_tenant`);
+      }
+      if (!sequence.select) {
+        yield* sql.unsafe(`GRANT SELECT ON SEQUENCE public.${name} TO artifact_server_tenant`);
+      }
+    }
+  }));
+});
+
 const postgresMigrations = {
-  "0001_initial_shared_schema": initialSchema,
+  "0001_initial_shared_schema": initialPostgresSchemaForMigrationFixture,
   "0002_project_scoped_artifacts": addProjectScope,
   "0003_spa_routing": addSpaRouting,
   "0004_comment_threads": addCommentThreads,
@@ -1203,6 +1386,7 @@ const postgresMigrations = {
   "0034_organization_embed_origins": addOrganizationEmbedOrigins,
   "0035_public_link_permissions": addPublicLinkPermissions,
   "0036_directory_group_scope": addDirectoryGroupScope,
+  "0037_row_level_security": enforceRowLevelSecurity,
 };
 
 const migrationLoader = Migrator.fromRecord(postgresMigrations);

@@ -16,6 +16,7 @@ import {SqlClient} from "effect/unstable/sql/SqlClient";
 import {afterAll, beforeAll, describe, expect, test} from "vitest";
 import {z} from "zod";
 
+import {withMigrationFixtureConnection} from "../support/postgres-rls.js";
 import {
   createExternalStorageRuntime,
   createOrgRuntime,
@@ -660,7 +661,7 @@ describe.sequential("organization tenancy security boundary", () => {
         orgB.slug,
         "Org B reserved path files",
       );
-      const pathVersionRows = await database.run(Effect.gen(function*() {
+      const pathVersionRows = await database.runInInstallation(orgB.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT content_token AS "contentToken" FROM versions
           WHERE installation_id = ${orgB.id} AND artifact_id = ${pathArtifactId}`;
@@ -767,7 +768,7 @@ describe.sequential("organization tenancy security boundary", () => {
     const platformLogin = await fetch(`${baseUrl}/`, {redirect: "manual"});
     expect(platformLogin.headers.get("location")).toBe("/auth/platform/login?returnTo=%2F");
 
-    const beforeTenantRootLogin = await database.run(Effect.gen(function*() {
+    const beforeTenantRootLogin = await database.runInInstallation(installationId, Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`SELECT id, email, role, status, updated_at AS "updatedAt", manual_deactivation AS "manualDeactivation"
         FROM installation_members WHERE installation_id = ${installationId} ORDER BY id`;
@@ -816,7 +817,7 @@ describe.sequential("organization tenancy security boundary", () => {
     );
     expect(singleTenantLanding.status).toBe(302);
     expect(singleTenantLanding.headers.get("location")).toBe(`/o/${encodeURIComponent(orgB.slug)}/auth/login?returnTo=${encodeURIComponent(`/o/${encodeURIComponent(orgB.slug)}/`)}`);
-    const tenantRootRows = await database.run(Effect.gen(function*() {
+    const tenantRootRows = await database.runInInstallation(installationId, Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`SELECT id, email, role, status, updated_at AS "updatedAt", manual_deactivation AS "manualDeactivation"
         FROM installation_members WHERE installation_id = ${installationId} ORDER BY id`;
@@ -858,7 +859,7 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(noTenantHtml).toContain("No organization available");
     expect(noTenantHtml).toContain("Houston Artifacts");
     expect(noTenantHtml).toContain("Sign out");
-    const rowsAfterAllRootLogins = await database.run(Effect.gen(function*() {
+    const rowsAfterAllRootLogins = await database.runInInstallation(installationId, Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`SELECT id, email, role, status, updated_at AS "updatedAt", manual_deactivation AS "manualDeactivation"
         FROM installation_members WHERE installation_id = ${installationId} ORDER BY id`;
@@ -930,10 +931,13 @@ describe.sequential("organization tenancy security boundary", () => {
     }, {...config, groupRolePolicy: orvexOwnerGroupRoles}, database);
     const tenantStrayGroupId = `auth-032-stray-${randomUUID()}`;
     const syncedAt = new Date().toISOString();
-    await database.run(Effect.gen(function*() {
+    await database.runInInstallation(orgC.id, Effect.gen(function*() {
       const sql = yield* SqlClient;
       yield* sql`INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
         VALUES (${orgC.id}, ${tenantStrayGroupId}, 'stray', '/TenantWorkspaces/stray', ${syncedAt})`;
+    }));
+    await database.runInInstallation(installationId, Effect.gen(function*() {
+      const sql = yield* SqlClient;
       yield* sql`INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
         VALUES (${installationId}, ${orvexGroupId}, 'support', '/orvex/support', ${syncedAt})`;
       yield* sql`INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
@@ -1005,7 +1009,7 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(tenantProjectResponse.status).toBe(201);
       const tenantProjectId = z.object({project: z.object({id: z.string()})})
         .parse(await tenantProjectResponse.json()).project.id;
-      const tenantCountsBeforeDenied = await database.run(Effect.gen(function*() {
+      const tenantCountsBeforeDenied = await database.runInInstallation(orgC.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         const projectRows = yield* sql`SELECT count(*)::integer AS count FROM projects WHERE installation_id = ${orgC.id}`;
         const grantRows = yield* sql`SELECT count(*)::integer AS count FROM project_group_grants WHERE installation_id = ${orgC.id}`;
@@ -1059,7 +1063,7 @@ describe.sequential("organization tenancy security boundary", () => {
       await expectDirectoryGroupRefused(tenantStrayGroupId);
       await expectDirectoryGroupRefused(noGroupId);
 
-      const tenantCountsAfterDenied = await database.run(Effect.gen(function*() {
+      const tenantCountsAfterDenied = await database.runInInstallation(orgC.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         const projectRows = yield* sql`SELECT count(*)::integer AS count FROM projects WHERE installation_id = ${orgC.id}`;
         const grantRows = yield* sql`SELECT count(*)::integer AS count FROM project_group_grants WHERE installation_id = ${orgC.id}`;
@@ -1147,7 +1151,7 @@ describe.sequential("organization tenancy security boundary", () => {
     const artifactId = await publishOrgBArtifact(
       (request) => standalone.app.fetch(request), apiTokenA, projectId, "orvex",
     );
-    const versionRows = await database.run(Effect.gen(function*() {
+    const versionRows = await database.runInInstallation(installationId, Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`SELECT current_version_id AS "versionId" FROM artifacts WHERE id = ${artifactId}`;
     }));
@@ -1347,7 +1351,7 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(linkResponse.status).toBe(201);
       const linkUrl = z.object({url: z.url()}).parse(await linkResponse.json()).url;
       const secret = new URL(linkUrl).hash.slice("#link=".length);
-      const repository = await PostgresArtifactRepository.open(database, orgB.id);
+      const repository = await PostgresArtifactRepository.open(database.forInstallation(orgB.id));
       expect(await repository.findGuestInvitationByDigest(createHash("sha256").update(secret).digest("hex"))).not.toBeNull();
       const exchange = await fetchWithHost(`${baseUrl}/o/${orgB.slug}/api/v1/public/artifacts/${scopedArtifactId}/guest-session`, {
         body: JSON.stringify({displayName: "Prefixed visitor", secret}),
@@ -1598,7 +1602,7 @@ describe.sequential("organization tenancy security boundary", () => {
         (request) => admissionRuntime.app.fetch(request), staffCookieHeader, csrfToken,
         staffProjectId, orgB.slug, "Staff authored artifact",
       );
-      const artifactRows = await database.run(Effect.gen(function*() {
+      const artifactRows = await database.runInInstallation(orgB.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT current_version_id AS "versionId" FROM artifacts
           WHERE installation_id = ${orgB.id} AND id = ${staffArtifactId}`;
@@ -1609,7 +1613,7 @@ describe.sequential("organization tenancy security boundary", () => {
       await publishOrgBArtifactWithSession((request) => admissionRuntime.app.fetch(request),
         staffCookieHeader, csrfToken, staffProjectId, orgB.slug, "Staff authored second version",
         {artifactId: staffArtifact.id, expectedCurrentVersionId: firstVersionId});
-      const secondVersionRows = await database.run(Effect.gen(function*() {
+      const secondVersionRows = await database.runInInstallation(orgB.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT current_version_id AS "versionId" FROM artifacts
           WHERE installation_id = ${orgB.id} AND id = ${staffArtifact.id}`;
@@ -1701,7 +1705,7 @@ describe.sequential("organization tenancy security boundary", () => {
       const guestInvitationUrl = z.object({url: z.url()}).parse(await guestInvitationResponse.json()).url;
       const guestSecret = new URLSearchParams(new URL(guestInvitationUrl).hash.slice(1)).get("invite");
       if (guestSecret === null) throw new Error("The tenant guest invitation did not include a link secret.");
-      const guestRepository = await PostgresArtifactRepository.open(database, orgB.id);
+      const guestRepository = await PostgresArtifactRepository.open(database.forInstallation(orgB.id));
       expect(await guestRepository.findGuestInvitationByDigest(createHash("sha256").update(guestSecret).digest("hex"))).not.toBeNull();
       const reservedGuestResponse = await admissionRuntime.app.fetch(new Request(
         `https://artifacts.example.com/api/v1/public/artifacts/${staffArtifact.id}/guest-session`,
@@ -1717,7 +1721,7 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(tenantGuestSessions.status).toBe(200);
       expect(await tenantGuestSessions.text()).toContain("Houston Support (member)");
 
-      const staffMemberRows = await database.run(Effect.gen(function*() {
+      const staffMemberRows = await database.runInInstallation(orgB.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT id, email, display_name AS "displayName" FROM installation_members
           WHERE installation_id = ${orgB.id} AND email = 'tenant-support-user@example.test'`;
@@ -2214,7 +2218,7 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(ownerDeactivateBody).not.toContain(staffMember.displayName);
       expect(ownerDeactivateBody).not.toContain(staffMember.email);
       expect(ownerDeactivateBody).not.toContain(staffMember.id);
-      const deactivatedStaff = await database.run(Effect.gen(function*() {
+      const deactivatedStaff = await database.runInInstallation(orgB.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT staff, manual_deactivation FROM installation_members
           WHERE installation_id = ${orgB.id} AND id = ${staffMember.id}`;
@@ -2230,7 +2234,7 @@ describe.sequential("organization tenancy security boundary", () => {
         cwd: process.cwd(), encoding: "utf8", env: memberCliEnvironment,
       });
       expect(clearStaff.status).toBe(0);
-      const clearAudit = await database.run(Effect.gen(function*() {
+      const clearAudit = await database.runInInstallation(orgB.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         const members = yield* sql`SELECT staff FROM installation_members WHERE installation_id = ${orgB.id} AND id = ${staffMember.id}`;
         const audits = yield* sql`SELECT COUNT(*)::integer AS count FROM installation_member_staff_audit
@@ -2243,7 +2247,7 @@ describe.sequential("organization tenancy security boundary", () => {
         cwd: process.cwd(), encoding: "utf8", env: memberCliEnvironment,
       });
       expect(repeatedClearStaff.status).toBe(0);
-      const repeatedAudit = await database.run(Effect.gen(function*() {
+      const repeatedAudit = await database.runInInstallation(orgB.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_member_staff_audit
           WHERE installation_id = ${orgB.id} AND member_id = ${staffMember.id} AND action = 'clear_staff'`;
@@ -2269,7 +2273,7 @@ describe.sequential("organization tenancy security boundary", () => {
       "x-forwarded-proto": "https",
     };
     const registry = new OrganizationRegistry(database);
-    const [projectRows, artifactRows, versionRows] = await database.run(Effect.gen(function*() {
+    const [projectRows, artifactRows, versionRows] = await database.runInInstallation(orgB.id, Effect.gen(function*() {
       const sql = yield* SqlClient;
       const projects = yield* sql`SELECT id FROM projects
         WHERE installation_id = ${orgB.id} AND name = 'Org B project'`;
@@ -2308,7 +2312,7 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(isLiveContentToken(prefixedLiveToken ?? "", `${orgB.routeId}-`)).toBe(true);
     expect(isLiveContentToken(prefixedLiveToken ?? "", `${orgB.routeId.slice(0, 7)}-`)).toBe(false);
 
-    await database.run(Effect.gen(function*() {
+    await database.runInInstallation(orgB.id, Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`UPDATE artifact_installations
         SET embed_origins = ${JSON.stringify(["https://org-b-embed.example.test"])}::jsonb
@@ -2416,7 +2420,7 @@ describe.sequential("organization tenancy security boundary", () => {
         "orvex",
         "Orvex reserved path files",
       );
-      const legacyPathVersionRows = await database.run(Effect.gen(function*() {
+      const legacyPathVersionRows = await database.runInInstallation(installationId, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT content_token AS "contentToken" FROM versions
           WHERE installation_id = ${installationId} AND artifact_id = ${legacyPathsArtifactId}`;
@@ -2447,7 +2451,7 @@ describe.sequential("organization tenancy security boundary", () => {
         path: pathEntry.path,
         status: 200,
       })));
-      const legacyVersionRows = await database.run(Effect.gen(function*() {
+      const legacyVersionRows = await database.runInInstallation(legacyInstallationId, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT content_token AS "contentToken", id FROM versions
           WHERE installation_id = ${legacyInstallationId} AND artifact_id = ${legacyArtifactId}`;
@@ -2520,7 +2524,7 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(await orgBEmbed.text()).toContain('name="as-embed-parent" content="https://org-b-embed.example.test"');
     const orgBEmbedSignedIn = await fetch(`${baseUrl}/o/${orgB.slug}/embed/signed-in`, {headers: host});
     expect(orgBEmbedSignedIn.status).toBe(200);
-    await database.run(Effect.gen(function*() {
+    await database.runInInstallation(orgB.id, Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`UPDATE artifact_installations SET embed_origins = '[]'::jsonb
         WHERE id = ${orgB.id}`;
@@ -2534,7 +2538,7 @@ describe.sequential("organization tenancy security boundary", () => {
     const refreshedPolicyRoot = `/teams/${orgB.slug}/refreshed/`;
     const currentPolicy = orgB.admissionPolicy;
     if (currentPolicy === null) throw new Error("Org B admission policy is missing.");
-    await database.run(Effect.gen(function*() {
+    await database.runInInstallation(orgB.id, Effect.gen(function*() {
       const sql = yield* SqlClient;
       const updatedPolicy = {
         ...currentPolicy,
@@ -2634,7 +2638,7 @@ describe.sequential("organization tenancy security boundary", () => {
     const invitationUrl = z.object({url: z.url()}).parse(await invitation.json()).url;
     const invitationSecret = new URL(invitationUrl).hash.slice("#invite=".length);
     expect(new URL(invitationUrl).pathname).toBe(`/o/${orgB.slug}/review`);
-    const invitationDigestRows = await database.run(Effect.gen(function*() {
+    const invitationDigestRows = await database.runInInstallation(orgB.id, Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`SELECT token_digest AS "tokenDigest" FROM guest_review_invitations
         WHERE installation_id = ${orgB.id} AND artifact_id = ${artifactId}`;
@@ -2731,7 +2735,7 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(cookieOutsideRequests.map((response) => response.status)).toEqual([404, 404]);
 
     const invalidRegistryId = `invalid-org-${randomUUID()}`;
-    await database.run(Effect.gen(function*() {
+    await database.runInInstallation(invalidRegistryId, Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`INSERT INTO artifact_installations (
         id, created_at, slug, display_name, status, route_id, admission_policy, embed_origins
@@ -3115,7 +3119,7 @@ describe.sequential("organization tenancy security boundary", () => {
       }),
     }, database)).rejects.toThrow("cannot scope OAuth resources");
 
-    const suspended = await database.run(Effect.gen(function*() {
+    const suspended = await database.runInInstallation(orgB.id, Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`UPDATE artifact_installations SET status = 'suspended'
         WHERE id = ${orgB.id}`;
@@ -3172,7 +3176,7 @@ describe.sequential("organization tenancy security boundary", () => {
 
     // A failed lazy startup racing close must not publish its runtime after
     // closeResources has completed.
-    await database.run(Effect.gen(function*() {
+    await database.runInInstallation(orgB.id, Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`UPDATE artifact_installations SET status = 'active'
         WHERE id = ${orgB.id}`;
@@ -3295,7 +3299,7 @@ describe.sequential("organization tenancy security boundary", () => {
     const currentOrvex = await registry.find("orvex");
     if (currentOrvex === null) throw new Error("Orvex registry entry is missing before invalid-row probe.");
     const invalidOrvexOrigins = ["https://embed.example;invalid"];
-    await database.run(Effect.gen(function*() {
+    await database.runInInstallation(orgB.id, Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`UPDATE artifact_installations
         SET status = 'suspended', embed_origins = ${JSON.stringify(invalidOrvexOrigins)}::jsonb
@@ -3304,13 +3308,13 @@ describe.sequential("organization tenancy security boundary", () => {
     try {
       await expect(registry.ensureOrvex(installationId))
         .rejects.toThrow("The registered org slug 'orvex' has invalid registry data.");
-      const rawOrvexStatus = await database.run(Effect.gen(function*() {
+      const rawOrvexStatus = await database.runInInstallation(installationId, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT status FROM artifact_installations WHERE id = ${installationId}`;
       }));
       expect(rawOrvexStatus[0]).toMatchObject({status: "suspended"});
     } finally {
-      await database.run(Effect.gen(function*() {
+      await database.runInInstallation(installationId, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`UPDATE artifact_installations
           SET status = ${currentOrvex.status}, embed_origins = ${JSON.stringify(currentOrvex.embedOrigins)}::jsonb
@@ -3356,7 +3360,7 @@ describe.sequential("organization tenancy security boundary", () => {
       const report = await runtime.syncOrganizationMembers(directory, organization);
       expect("kind" in report).toBe(false);
       expect(staffLookups).toEqual(["/Developers", `${groupRoot}support`]);
-      const rows = await database.run(Effect.gen(function*() {
+      const rows = await database.runInInstallation(record.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT email, staff FROM installation_members
           WHERE installation_id = ${record.id} ORDER BY email`;
@@ -3368,7 +3372,7 @@ describe.sequential("organization tenancy security boundary", () => {
       // The marker is sticky: a later sync without the staff group keeps it.
       const stickyDirectory: OrganizationDirectory = {...directory, listGroupMemberIdsByPath: () => Effect.succeed([])};
       await runtime.syncOrganizationMembers(stickyDirectory, organization);
-      const sticky = await database.run(Effect.gen(function*() {
+      const sticky = await database.runInInstallation(record.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT staff FROM installation_members
           WHERE installation_id = ${record.id} AND email = ${`staff@${slug}.test`}`;
@@ -3402,7 +3406,7 @@ describe.sequential("organization tenancy security boundary", () => {
     }, withoutGitHistory(config), database);
     try {
       await runtime.syncOrganizationMembers(directory, organization);
-      const rows = await database.run(Effect.gen(function*() {
+      const rows = await database.runInInstallation(synced.organization.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT email, staff FROM installation_members
           WHERE installation_id = ${synced.organization.id} ORDER BY email`;
@@ -3494,7 +3498,7 @@ describe.sequential("organization tenancy security boundary", () => {
         "editor-a@example.test", "editor-a", ["/owner"],
       );
       expect(promotedLogin.status).toBe(303);
-      let editorRows = await database.run(Effect.gen(function*() {
+      let editorRows = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT role FROM installation_members
           WHERE installation_id = ${orgA.id} AND email = 'editor-a@example.test'`;
@@ -3504,7 +3508,7 @@ describe.sequential("organization tenancy security boundary", () => {
         "editor-a@example.test", "editor-a", ["/editor"],
       );
       expect(demotedLogin.status).toBe(303);
-      editorRows = await database.run(Effect.gen(function*() {
+      editorRows = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT role FROM installation_members
           WHERE installation_id = ${orgA.id} AND email = 'editor-a@example.test'`;
@@ -3519,49 +3523,55 @@ describe.sequential("organization tenancy security boundary", () => {
         throw new Error("Org A's non-empty snapshot was skipped.");
       }
       expect(removed.deactivated).toBe(1);
-      const rows = await database.run(Effect.gen(function*() {
+      const orgARows = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT installation_id, email, status FROM installation_members
-          WHERE email IN ('editor-a@example.test', 'editor-b@example.test')`;
+          WHERE installation_id = ${orgA.id} AND email = 'editor-a@example.test'`;
       }));
+      const orgBRows = await database.runInInstallation(orgBRecord.id, Effect.gen(function*() {
+        const sql = yield* SqlClient;
+        return yield* sql`SELECT installation_id, email, status FROM installation_members
+          WHERE installation_id = ${orgBRecord.id} AND email = 'editor-b@example.test'`;
+      }));
+      const rows = [...orgARows, ...orgBRows];
       expect(rows).toEqual(expect.arrayContaining([
         expect.objectContaining({installation_id: orgA.id, email: "editor-a@example.test", status: "inactive"}),
         expect.objectContaining({installation_id: orgBRecord.id, email: "editor-b@example.test", status: "active"}),
       ]));
-      const editorIdRows = await database.run(Effect.gen(function*() {
+      const editorIdRows = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT id FROM installation_members
           WHERE installation_id = ${orgA.id} AND email = 'editor-a@example.test'`;
       }));
       const editorId = z.string().parse(editorIdRows[0]?.["id"]);
-      await expect(new PostgresIdentityRepository(database, orgA.id).reactivateMember(orgA.id, editorId))
+      await expect(new PostgresIdentityRepository(database.forInstallation(orgA.id)).reactivateMember(orgA.id, editorId))
         .rejects.toThrow("Only a manually deactivated organization member");
       const reactivatedLogin = await roleLogin(
         "editor-a@example.test", "editor-a", ["/editor"],
       );
       expect(reactivatedLogin.status).toBe(303);
-      const reactivatedRows = await database.run(Effect.gen(function*() {
+      const reactivatedRows = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT status FROM installation_members
           WHERE installation_id = ${orgA.id} AND email = 'editor-a@example.test'`;
       }));
       expect(reactivatedRows[0]?.["status"]).toBe("active");
-      const memberRows = await database.run(Effect.gen(function*() {
+      const memberRows = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT id FROM installation_members
           WHERE installation_id = ${orgA.id}
             AND email IN ('owner-a@example.test', 'owner-a-two@example.test')`;
       }));
-      const ownerRepo = new PostgresIdentityRepository(database, orgA.id);
+      const ownerRepo = new PostgresIdentityRepository(database.forInstallation(orgA.id));
       const ownerIds = z.array(z.string()).parse(memberRows.map((row) => row["id"]));
       expect(ownerIds).toHaveLength(2);
-      const secondOwnerRows = await database.run(Effect.gen(function*() {
+      const secondOwnerRows = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT id FROM installation_members
           WHERE installation_id = ${orgA.id} AND email = 'owner-a-two@example.test'`;
       }));
       const secondOwnerId = z.string().parse(secondOwnerRows[0]?.["id"]);
-      await database.run(Effect.gen(function*() {
+      await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         yield* sql`UPDATE installation_members SET status = 'inactive',
           manual_deactivation = TRUE WHERE installation_id = ${orgA.id} AND id = ${secondOwnerId}`;
@@ -3571,13 +3581,13 @@ describe.sequential("organization tenancy security boundary", () => {
         {...secondOwnerA, role: "owner" as const},
       ];
       await runtimeA.syncOrganizationMembers(directory, organizationA);
-      const protectedOwner = await database.run(Effect.gen(function*() {
+      const protectedOwner = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT role FROM installation_members
           WHERE installation_id = ${orgA.id} AND email = 'owner-a@example.test'`;
       }));
       expect(protectedOwner[0]?.["role"]).toBe("owner");
-      await database.run(Effect.gen(function*() {
+      await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         yield* sql`UPDATE installation_members SET status = 'active',
           manual_deactivation = FALSE WHERE installation_id = ${orgA.id} AND id = ${secondOwnerId}`;
@@ -3586,13 +3596,13 @@ describe.sequential("organization tenancy security boundary", () => {
       await runtimeA.syncOrganizationMembers(directory, organizationA);
       await expect(ownerRepo.reactivateMember(orgA.id, secondOwnerId))
         .rejects.toThrow("Only a manually deactivated organization member");
-      const ownerAfterRejectedReactivation = await database.run(Effect.gen(function*() {
+      const ownerAfterRejectedReactivation = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT role, status FROM installation_members
           WHERE installation_id = ${orgA.id} AND id = ${secondOwnerId}`;
       }));
       expect(ownerAfterRejectedReactivation[0]).toMatchObject({role: "owner", status: "inactive"});
-      const activeOwnerCountAfterRejectedReactivation = await database.run(Effect.gen(function*() {
+      const activeOwnerCountAfterRejectedReactivation = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_members
           WHERE installation_id = ${orgA.id} AND status = 'active' AND role = 'owner'`;
@@ -3603,7 +3613,7 @@ describe.sequential("organization tenancy security boundary", () => {
       await Promise.all(ownerIds.map((memberId) => ownerRepo.setOrganizationMemberRole(
         orgA.id, memberId, "member", new Date().toISOString(),
       )));
-      const remainingOwners = await database.run(Effect.gen(function*() {
+      const remainingOwners = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_members
           WHERE installation_id = ${orgA.id} AND status = 'active' AND role = 'owner'`;
@@ -3639,7 +3649,7 @@ describe.sequential("organization tenancy security boundary", () => {
       );
       const csrfCookie = csrfPair?.slice(csrfPair.indexOf("=") + 1);
       if (csrfCookie === undefined) throw new Error("The org session has no CSRF cookie.");
-      const editorBIdRows = await database.run(Effect.gen(function*() {
+      const editorBIdRows = await database.runInInstallation(orgBRecord.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT id FROM installation_members
           WHERE installation_id = ${orgBRecord.id} AND email = 'editor-b@example.test'`;
@@ -3706,7 +3716,7 @@ describe.sequential("organization tenancy security boundary", () => {
         body: "{}",
       });
       expect(deactivated.status).toBe(200);
-      const manualRows = await database.run(Effect.gen(function*() {
+      const manualRows = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT status, manual_deactivation FROM installation_members
           WHERE installation_id = ${orgA.id} AND id = ${editorId}`;
@@ -3716,7 +3726,7 @@ describe.sequential("organization tenancy security boundary", () => {
         "editor-a@example.test", "editor-a", ["/owner"],
       );
       expect(manuallyDeactivatedLogin.status).toBe(403);
-      const activeManualSessions = await database.run(Effect.gen(function*() {
+      const activeManualSessions = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT COUNT(*)::integer AS count FROM application_sessions
           WHERE installation_id = ${orgA.id} AND member_id = ${editorId}
@@ -3724,7 +3734,7 @@ describe.sequential("organization tenancy security boundary", () => {
       }));
       expect(activeManualSessions[0]?.["count"]).toBe(0);
       await runtimeA.syncOrganizationMembers(directory, organizationA);
-      const stillManualRows = await database.run(Effect.gen(function*() {
+      const stillManualRows = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT status, manual_deactivation FROM installation_members
           WHERE installation_id = ${orgA.id} AND id = ${editorId}`;
@@ -3744,7 +3754,7 @@ describe.sequential("organization tenancy security boundary", () => {
         body: "{}",
       });
       expect(reactivated.status).toBe(200);
-      const reactivatedManualRows = await database.run(Effect.gen(function*() {
+      const reactivatedManualRows = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT status, manual_deactivation FROM installation_members
           WHERE installation_id = ${orgA.id} AND id = ${editorId}`;
@@ -3756,7 +3766,7 @@ describe.sequential("organization tenancy security boundary", () => {
         redirect: "manual",
       });
       expect(completedB.status).not.toBe(303);
-      const identityRows = await database.run(Effect.gen(function*() {
+      const identityRows = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT identity_provider FROM external_identities
           WHERE installation_id = ${orgA.id} AND email = 'owner-a@example.test'`;
@@ -3809,13 +3819,13 @@ describe.sequential("organization tenancy security boundary", () => {
       expect(await registry.suspend(aliasA)).toMatchObject({status: "suspended"});
       await expect(ownerRepo.reactivateMember(orgA.id, editorId))
         .rejects.toThrow("Only a manually deactivated organization member");
-      const suspendedRows = await database.run(Effect.gen(function*() {
+      const suspendedRows = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_members
           WHERE installation_id = ${orgA.id} AND suspended_by_org_at IS NOT NULL
             AND status = 'inactive' AND manual_deactivation = TRUE`;
       }));
-      const allOrgMembers = await database.run(Effect.gen(function*() {
+      const allOrgMembers = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT COUNT(*)::integer AS count FROM installation_members
           WHERE installation_id = ${orgA.id}`;
@@ -3825,7 +3835,7 @@ describe.sequential("organization tenancy security boundary", () => {
       await expect(runtimeA.syncOrganizationMembers(directory, organizationA))
         .rejects.toThrow("suspended organization installation");
       expect(await registry.resume(aliasA)).toMatchObject({status: "active"});
-      const resumedEditor = await database.run(Effect.gen(function*() {
+      const resumedEditor = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT status, manual_deactivation, suspended_by_org_at
           FROM installation_members WHERE installation_id = ${orgA.id} AND id = ${editorId}`;
@@ -3835,7 +3845,7 @@ describe.sequential("organization tenancy security boundary", () => {
       });
       const resumedSync = await runtimeA.syncOrganizationMembers(directory, organizationA);
       expect(resumedSync).toMatchObject({roleChanged: 1});
-      const resumedOwner = await database.run(Effect.gen(function*() {
+      const resumedOwner = await database.runInInstallation(orgA.id, Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`SELECT role, status FROM installation_members
           WHERE installation_id = ${orgA.id} AND id = ${secondOwnerId}`;
@@ -3861,7 +3871,7 @@ describe.sequential("organization tenancy security boundary", () => {
       );
       const staffOwnerCsrf = staffOwnerCsrfPair?.slice(staffOwnerCsrfPair.indexOf("=") + 1);
       if (staffOwnerCsrf === undefined) throw new Error("The staff owner session has no CSRF token.");
-      const staffMember = await new PostgresIdentityRepository(database, orgA.id).admitMember({
+      const staffMember = await new PostgresIdentityRepository(database.forInstallation(orgA.id)).admitMember({
         createdAt: new Date().toISOString(),
         displayName: "staff-a",
         email: "staff-a@example.test",
@@ -3927,7 +3937,7 @@ describe.sequential("organization tenancy security boundary", () => {
       {id: "scope-tenant-outside", installationId: orgB.id, path: "/Guests/acme"},
       {id: "scope-no-policy", installationId: orgC.id, path: "/teams/no-policy/viewers"},
     ];
-    await database.run(Effect.gen(function*() {
+    await withMigrationFixtureConnection(Effect.gen(function*() {
       const sql = yield* SqlClient;
       yield* sql`INSERT INTO projects (installation_id, id, name, created_at, archived_at)
         VALUES (${policyTenant.id}, 'prj_default', 'Default', '2026-11-27T00:00:00.000Z', NULL)`;
@@ -3951,18 +3961,18 @@ describe.sequential("organization tenancy security boundary", () => {
           VALUES (${id}, '2026-11-27T00:00:00.000Z')`;
       }
     }));
-    const projectsBefore = await database.run(Effect.gen(function*() {
+    const projectsBefore = await withMigrationFixtureConnection(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`SELECT installation_id, id FROM projects
         WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id, id`;
     }));
-    await database.run(Effect.gen(function*() {
+    await withMigrationFixtureConnection(Effect.gen(function*() {
       const sql = yield* SqlClient;
-      yield* sql`DELETE FROM artifact_server_postgres_migrations WHERE migration_id = 36`;
+      yield* sql`DELETE FROM artifact_server_postgres_migrations WHERE migration_id >= 36`;
     }));
-    await database.run(runPostgresMigrations);
+    await withMigrationFixtureConnection(runPostgresMigrations);
 
-    const afterFirstRun = await database.run(Effect.gen(function*() {
+    const afterFirstRun = await withMigrationFixtureConnection(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const groups = yield* sql`SELECT installation_id, id, path FROM directory_groups
         WHERE id LIKE 'scope-%' ORDER BY id COLLATE "C"`;
@@ -4010,12 +4020,12 @@ describe.sequential("organization tenancy security boundary", () => {
     expect(afterFirstRun.groups.some(({id}) => id === "scope-tenant-outside")).toBe(false);
     expect(afterFirstRun.groups.filter(({id}) => id === "scope-policy-contained-group")).toHaveLength(1);
 
-    await database.run(Effect.gen(function*() {
+    await withMigrationFixtureConnection(Effect.gen(function*() {
       const sql = yield* SqlClient;
-      yield* sql`DELETE FROM artifact_server_postgres_migrations WHERE migration_id = 36`;
+      yield* sql`DELETE FROM artifact_server_postgres_migrations WHERE migration_id >= 36`;
     }));
-    await database.run(runPostgresMigrations);
-    const afterSecondRun = await database.run(Effect.gen(function*() {
+    await withMigrationFixtureConnection(runPostgresMigrations);
+    const afterSecondRun = await withMigrationFixtureConnection(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const groups = yield* sql`SELECT installation_id, id, path FROM directory_groups
         WHERE id LIKE 'scope-%' ORDER BY id COLLATE "C"`;
@@ -4042,7 +4052,7 @@ describe.sequential("organization tenancy security boundary", () => {
   }, 60_000);
 
   test("migration 0036 removes the production-shaped Orvex tenant residue", async () => {
-    const rootGroups = await database.run(Effect.gen(function*() {
+    const rootGroups = await withMigrationFixtureConnection(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`SELECT id, path FROM directory_groups
         WHERE installation_id = ${installationId} AND path IN ('/Guests', '/TenantWorkspaces') ORDER BY path`;
@@ -4082,7 +4092,7 @@ describe.sequential("organization tenancy security boundary", () => {
     ];
     const orvexFixtureGroups = [...orvexTenantGroups, ...orvexNonTenantGroups];
 
-    await database.run(Effect.gen(function*() {
+    await withMigrationFixtureConnection(Effect.gen(function*() {
       const sql = yield* SqlClient;
       for (const group of orvexFixtureGroups) {
         yield* sql`INSERT INTO directory_groups (installation_id, id, name, path, synced_at)
@@ -4099,13 +4109,13 @@ describe.sequential("organization tenancy security boundary", () => {
         }
       }
     }));
-    await database.run(Effect.gen(function*() {
+    await withMigrationFixtureConnection(Effect.gen(function*() {
       const sql = yield* SqlClient;
-      yield* sql`DELETE FROM artifact_server_postgres_migrations WHERE migration_id = 36`;
+      yield* sql`DELETE FROM artifact_server_postgres_migrations WHERE migration_id >= 36`;
     }));
-    await database.run(runPostgresMigrations);
+    await withMigrationFixtureConnection(runPostgresMigrations);
 
-    const readFixtureRows = () => database.run(Effect.gen(function*() {
+    const readFixtureRows = () => withMigrationFixtureConnection(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const groups = yield* sql`SELECT id, path FROM directory_groups WHERE id LIKE 'fixture-%' ORDER BY id`;
       const roles = yield* sql`SELECT group_id FROM directory_group_roles WHERE group_id LIKE 'fixture-%' ORDER BY group_id`;
@@ -4133,11 +4143,11 @@ describe.sequential("organization tenancy security boundary", () => {
       "fixture-internal-1", "fixture-staff-1", "fixture-staff-2", "fixture-staff-3",
     ]);
 
-    await database.run(Effect.gen(function*() {
+    await withMigrationFixtureConnection(Effect.gen(function*() {
       const sql = yield* SqlClient;
-      yield* sql`DELETE FROM artifact_server_postgres_migrations WHERE migration_id = 36`;
+      yield* sql`DELETE FROM artifact_server_postgres_migrations WHERE migration_id >= 36`;
     }));
-    await database.run(runPostgresMigrations);
+    await withMigrationFixtureConnection(runPostgresMigrations);
     expect(await readFixtureRows()).toEqual(afterFirstRun);
   }, 60_000);
 });

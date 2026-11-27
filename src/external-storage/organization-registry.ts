@@ -4,7 +4,7 @@ import {Effect} from "effect";
 import {SqlClient} from "effect/unstable/sql/SqlClient";
 import {z} from "zod";
 
-import type {PostgresDatabase} from "../storage/postgres-database.js";
+import {withInstallationScope, type PostgresDatabase} from "../storage/postgres-database.js";
 import {validateEmbedOrigins} from "../http/embed-origins.js";
 
 const organizationGroupRootSchema = z.string().regex(/^\/(?:[^/\s]+\/)+$/u);
@@ -115,7 +115,7 @@ export class OrganizationRegistry {
   }
 
   async find(slug: string): Promise<OrganizationRecord | null> {
-    const row = await this.#database.run(Effect.gen(function*() {
+    const row = await this.#database.runAsPlatform(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const rows = yield* sql`SELECT id, slug, display_name AS "displayName",
         route_id AS "routeId", status, admission_policy AS "admissionPolicy",
@@ -135,7 +135,7 @@ export class OrganizationRegistry {
   }
 
   async findByKeycloakId(keycloakId: string): Promise<OrganizationRecord | null> {
-    const row = await this.#database.run(Effect.gen(function*() {
+    const row = await this.#database.runAsPlatform(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const rows = yield* sql`SELECT id, slug, display_name AS "displayName",
         route_id AS "routeId", status, admission_policy AS "admissionPolicy",
@@ -149,7 +149,7 @@ export class OrganizationRegistry {
   }
 
   async list(): Promise<readonly OrganizationRecord[]> {
-    const rows = await this.#database.run(Effect.gen(function*() {
+    const rows = await this.#database.runAsPlatform(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`SELECT id, slug, display_name AS "displayName",
         route_id AS "routeId", status, admission_policy AS "admissionPolicy",
@@ -174,7 +174,7 @@ export class OrganizationRegistry {
   }
 
   async findByRouteId(routeId: string): Promise<OrganizationRecord | null> {
-    const row = await this.#database.run(Effect.gen(function*() {
+    const row = await this.#database.runAsPlatform(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const rows = yield* sql`SELECT id, slug, display_name AS "displayName",
         route_id AS "routeId", status, admission_policy AS "admissionPolicy",
@@ -193,7 +193,7 @@ export class OrganizationRegistry {
   }
 
   async ensureOrvex(installationId: string): Promise<OrganizationRecord> {
-    const rawExisting = await this.#database.run(Effect.gen(function*() {
+    const rawExisting = await this.#database.runAsPlatform(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const rows = yield* sql`SELECT id FROM artifact_installations WHERE slug = 'orvex'`;
       return rows[0] ?? null;
@@ -209,7 +209,7 @@ export class OrganizationRegistry {
       return existing;
     }
     const routeId = randomRouteId();
-    const row = await this.#database.run(Effect.gen(function*() {
+    const row = await this.#database.runAsPlatform(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const rows = yield* sql`INSERT INTO artifact_installations (
         id, created_at, slug, display_name, status, route_id
@@ -248,7 +248,7 @@ export class OrganizationRegistry {
       : admissionPolicySchema.parse(admissionPolicyInput);
     const id = randomUUID();
     const routeId = randomRouteId();
-    const row = await this.#database.run(Effect.gen(function*() {
+    const row = await this.#database.runAsPlatform(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const rows = yield* sql`INSERT INTO artifact_installations (
         id, created_at, slug, display_name, status, route_id, admission_policy,
@@ -292,7 +292,7 @@ export class OrganizationRegistry {
       if (existing.displayName === displayName) {
         return {kind: "synced", organization: existing};
       }
-      const rows = await this.#database.run(Effect.gen(function*() {
+      const rows = await this.#database.runAsPlatform(Effect.gen(function*() {
         const sql = yield* SqlClient;
         return yield* sql`UPDATE artifact_installations
           SET display_name = ${displayName},
@@ -337,7 +337,7 @@ export class OrganizationRegistry {
     if (byId !== null && byId.id !== existing.id) {
       throw new Error(`Keycloak organization ${keycloakId} is already linked to '${byId.slug}'.`);
     }
-    const rows = await this.#database.run(Effect.gen(function*() {
+    const rows = await this.#database.runAsPlatform(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql`UPDATE artifact_installations
         SET keycloak_organization_id = ${keycloakId}
@@ -354,7 +354,7 @@ export class OrganizationRegistry {
     if (organization === null) throw new Error(`No organization '${slug}' is registered.`);
     if (organization.slug === "orvex") throw new Error("The Orvex installation cannot be suspended with this command.");
     const updatedAt = new Date().toISOString();
-    const rows = await this.#database.run(Effect.gen(function*() {
+    const rows = await this.#database.runAsPlatform(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql.withTransaction(Effect.gen(function*() {
         yield* sql`SELECT pg_advisory_xact_lock(
@@ -363,6 +363,7 @@ export class OrganizationRegistry {
         yield* sql`SELECT pg_advisory_xact_lock(
           hashtextextended(${`artifact-server:member-policy:${organization.id}`}, 0)
         )`;
+        yield* withInstallationScope(organization.id);
         const members = yield* sql`UPDATE installation_members SET
           suspended_by_org_at = COALESCE(suspended_by_org_at, ${updatedAt}),
           pre_suspend_status = COALESCE(pre_suspend_status, status),
@@ -395,7 +396,7 @@ export class OrganizationRegistry {
     if (organization === null) throw new Error(`No organization '${slug}' is registered.`);
     if (organization.slug === "orvex") throw new Error("The Orvex installation cannot be resumed with this command.");
     const updatedAt = new Date().toISOString();
-    const rows = await this.#database.run(Effect.gen(function*() {
+    const rows = await this.#database.runAsPlatform(Effect.gen(function*() {
       const sql = yield* SqlClient;
       return yield* sql.withTransaction(Effect.gen(function*() {
         yield* sql`SELECT pg_advisory_xact_lock(
@@ -404,6 +405,7 @@ export class OrganizationRegistry {
         yield* sql`SELECT pg_advisory_xact_lock(
           hashtextextended(${`artifact-server:member-policy:${organization.id}`}, 0)
         )`;
+        yield* withInstallationScope(organization.id);
         yield* sql`UPDATE installation_members SET
           status = COALESCE(pre_suspend_status, 'inactive'),
           manual_deactivation = COALESCE(pre_suspend_manual_deactivation, FALSE),

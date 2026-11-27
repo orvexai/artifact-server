@@ -52,7 +52,7 @@ import {
   startLocalServer,
   type LocalServerConfig,
 } from "../local/start-local-server.js";
-import {PostgresDatabase} from "../storage/postgres-database.js";
+import {PostgresDatabase, withInstallationScope} from "../storage/postgres-database.js";
 import {PostgresIdentityRepository} from "../storage/postgres-identity-repository.js";
 import {
   OrganizationRegistry,
@@ -458,12 +458,13 @@ function configureMembers(program: Command): void {
         url: configuration.databaseUrl,
       });
       try {
-        const result = await database.run(Effect.gen(function*() {
+        const result = await database.runAsPlatform(Effect.gen(function*() {
           const sql = yield* SqlClient;
           return yield* sql.withTransaction(Effect.gen(function*() {
             const organizations = yield* sql`SELECT id FROM artifact_installations WHERE slug = ${org}`;
             if (organizations.length !== 1) throw new Error("Organization does not exist.");
             const installationId = String(organizations[0]?.["id"]);
+            yield* withInstallationScope(installationId);
             const members = yield* sql`SELECT id, email FROM installation_members WHERE installation_id = ${installationId} AND lower(email) = lower(${email})`;
             if (members.length !== 1) throw new Error("Member does not exist or email is ambiguous.");
             const memberId = String(members[0]?.["id"]);
@@ -497,12 +498,13 @@ function configureMembers(program: Command): void {
         url: configuration.databaseUrl,
       });
       try {
-        const targetMember = await database.run(Effect.gen(function*() {
+        const targetMember = await database.runAsPlatform(Effect.gen(function*() {
           const sql = yield* SqlClient;
           return yield* sql.withTransaction(Effect.gen(function*() {
             const organizations = yield* sql`SELECT id FROM artifact_installations WHERE slug = ${org}`;
             if (organizations.length !== 1) throw new Error("Organization does not exist.");
             const installationId = String(organizations[0]?.["id"]);
+            yield* withInstallationScope(installationId);
             const members = yield* sql`SELECT id, email, status FROM installation_members WHERE installation_id = ${installationId} AND lower(email) = lower(${email})`;
             if (members.length !== 1) throw new Error("Member does not exist or email is ambiguous.");
             return {
@@ -513,7 +515,7 @@ function configureMembers(program: Command): void {
             };
           }));
         }));
-        const updated = await new PostgresIdentityRepository(database, targetMember.installationId)
+        const updated = await new PostgresIdentityRepository(database.forInstallation(targetMember.installationId))
           .deactivateMember(targetMember.installationId, targetMember.id, new Date().toISOString(), true);
         console.log(JSON.stringify({
           action: "deactivate",
