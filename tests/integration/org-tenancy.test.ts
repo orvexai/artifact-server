@@ -3965,34 +3965,34 @@ describe.sequential("organization tenancy security boundary", () => {
     const afterFirstRun = await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const groups = yield* sql`SELECT installation_id, id, path FROM directory_groups
-        WHERE id LIKE 'scope-%' ORDER BY installation_id, id`;
+        WHERE id LIKE 'scope-%' ORDER BY id COLLATE "C"`;
       const roles = yield* sql`SELECT installation_id, group_id FROM directory_group_roles
-        WHERE group_id LIKE 'scope-%' ORDER BY installation_id, group_id`;
+        WHERE group_id LIKE 'scope-%' ORDER BY group_id COLLATE "C"`;
       const members = yield* sql`SELECT installation_id, group_id FROM directory_group_members
-        WHERE group_id LIKE 'scope-%' ORDER BY installation_id, group_id`;
+        WHERE group_id LIKE 'scope-%' ORDER BY group_id COLLATE "C"`;
       const grants = yield* sql`SELECT installation_id, group_id FROM project_group_grants
-        WHERE group_id LIKE 'scope-%' ORDER BY installation_id, group_id`;
+        WHERE group_id LIKE 'scope-%' ORDER BY group_id COLLATE "C"`;
       const seeds = yield* sql`SELECT installation_id FROM directory_group_role_seeds
-        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id`;
+        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id COLLATE "C"`;
       const backfills = yield* sql`SELECT installation_id FROM directory_group_role_rule_backfills
-        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id`;
+        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id COLLATE "C"`;
       const projects = yield* sql`SELECT installation_id, id FROM projects
         WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id, id`;
       return {backfills, groups, grants, members, projects, roles, seeds};
     }));
     expect(afterFirstRun.groups).toEqual([
-      expect.objectContaining({id: "scope-tenant-staff", path: "/TenantWorkspaces/acme/acme-staff"}),
-      expect.objectContaining({id: "scope-tenant-included", path: `/teams/${orgB.slug}/support`}),
       expect.objectContaining({id: "scope-policy-contained-group", path: `${policyRoot}fixture`}),
+      expect.objectContaining({id: "scope-tenant-included", path: `/teams/${orgB.slug}/support`}),
+      expect.objectContaining({id: "scope-tenant-staff", path: "/TenantWorkspaces/acme/acme-staff"}),
     ]);
     expect(afterFirstRun.roles.map(({group_id}) => group_id)).toEqual([
-      "scope-tenant-staff", "scope-tenant-included", "scope-policy-contained-group",
+      "scope-policy-contained-group", "scope-tenant-included", "scope-tenant-staff",
     ]);
     expect(afterFirstRun.members.map(({group_id}) => group_id)).toEqual([
-      "scope-tenant-staff", "scope-tenant-included", "scope-policy-contained-group",
+      "scope-policy-contained-group", "scope-tenant-included", "scope-tenant-staff",
     ]);
     expect(afterFirstRun.grants.map(({group_id}) => group_id)).toEqual([
-      "scope-tenant-staff", "scope-tenant-included", "scope-policy-contained-group",
+      "scope-policy-contained-group", "scope-tenant-included", "scope-tenant-staff",
     ]);
     expect(afterFirstRun.seeds.map(({installation_id}) => installation_id)).toEqual(
       [installationId, orgB.id, policyTenant.id].toSorted(),
@@ -4018,17 +4018,17 @@ describe.sequential("organization tenancy security boundary", () => {
     const afterSecondRun = await database.run(Effect.gen(function*() {
       const sql = yield* SqlClient;
       const groups = yield* sql`SELECT installation_id, id, path FROM directory_groups
-        WHERE id LIKE 'scope-%' ORDER BY installation_id, id`;
+        WHERE id LIKE 'scope-%' ORDER BY id COLLATE "C"`;
       const roles = yield* sql`SELECT installation_id, group_id FROM directory_group_roles
-        WHERE group_id LIKE 'scope-%' ORDER BY installation_id, group_id`;
+        WHERE group_id LIKE 'scope-%' ORDER BY group_id COLLATE "C"`;
       const members = yield* sql`SELECT installation_id, group_id FROM directory_group_members
-        WHERE group_id LIKE 'scope-%' ORDER BY installation_id, group_id`;
+        WHERE group_id LIKE 'scope-%' ORDER BY group_id COLLATE "C"`;
       const grants = yield* sql`SELECT installation_id, group_id FROM project_group_grants
-        WHERE group_id LIKE 'scope-%' ORDER BY installation_id, group_id`;
+        WHERE group_id LIKE 'scope-%' ORDER BY group_id COLLATE "C"`;
       const seeds = yield* sql`SELECT installation_id FROM directory_group_role_seeds
-        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id`;
+        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id COLLATE "C"`;
       const backfills = yield* sql`SELECT installation_id FROM directory_group_role_rule_backfills
-        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id`;
+        WHERE installation_id IN (${installationId}, ${orgB.id}, ${orgC.id}, ${policyTenant.id}) ORDER BY installation_id COLLATE "C"`;
       return {backfills, groups, grants, members, roles, seeds};
     }));
     expect(afterSecondRun).toEqual({
