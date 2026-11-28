@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.35
+
+- Organizations now see only their own directory groups, with stronger database-level isolation between organizations.
+- Maintenance directory sync works on standalone installations without organizations and bootstraps the organization on its first run when tenancy is enabled.
+
 ## 0.1.34
 
 - Fixed: signing in to the command line tool at the root address now lists every organization you belong to, so a member of a single organization no longer sees 'belongs to no active organizations'.
