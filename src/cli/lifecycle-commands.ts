@@ -23,7 +23,12 @@ import {
 } from "../identity/oidc-hosted-authentication.js";
 import {createWorkOsHostedAuthentication} from
   "../identity/workos-hosted-authentication.js";
-import {KeycloakDirectory, type KeycloakDirectoryConfig} from "../identity/keycloak-directory.js";
+import {
+  isClusterServiceUrl,
+  KeycloakDirectory,
+  type KeycloakDirectoryConfig,
+} from "../identity/keycloak-directory.js";
+import {isLocalOidcIssuer, normalizeOidcEndpoint} from "../identity/oidc-issuer.js";
 import {
   checkCompactIntegrity,
   checkExternalStorageIntegrity,
@@ -199,29 +204,6 @@ function configureMaintenance(program: Command): void {
         throw new Error("Keycloak organization sync requires external-storage mode.");
       }
       const tenantScope = maintenanceTenantGroupScope(process.env, organizationTenancy);
-      let directoryGroupScope: DirectoryGroupScope = {kind: "all"};
-      if (configuration.deploymentMode === "external-storage") {
-        const database = await openExternalStorageDatabase(externalMaintenanceConfig(configuration));
-        try {
-          const organizations = await new OrganizationRegistry(database).list();
-          const organization = organizations.find(({id}) =>
-            id === configuration.installationId
-          );
-          if (organization === undefined) {
-            throw new Error("maintenance sync-directory cannot find the configured installation in the organization registry.");
-          }
-          directoryGroupScope = directoryGroupScopeForOrganization(
-            organization,
-            organizationTenancy || organizations.some(({slug}) => slug !== "orvex"),
-            tenantScope.organizationStaffGroups,
-          );
-        } finally {
-          await database.close();
-        }
-        if (directoryGroupScope.kind === "none") {
-          throw new Error("Directory groups are not synced for an organization whose membership is managed by Keycloak Organizations; nothing was changed.");
-        }
-      }
       assertAtMostOneBrowserLoginProvider(process.env);
       const oidc = await loadOidcConfiguration({
         ...process.env,
@@ -242,6 +224,63 @@ function configureMaintenance(program: Command): void {
         clientSecret: directorySettings.clientSecret,
         issuer: oidc.issuer,
       };
+      const allowLocalHttp = isLocalOidcIssuer(oidc.issuer);
+      if (
+        !isClusterServiceUrl(directoryConfig.adminBaseUrl) &&
+        normalizeOidcEndpoint(directoryConfig.adminBaseUrl, allowLocalHttp) === null
+      ) {
+        throw new Error("The Keycloak admin URL must be an HTTPS URL or an in-cluster service URL.");
+      }
+      if (
+        directorySettings.tokenEndpoint !== undefined &&
+        !isClusterServiceUrl(directorySettings.tokenEndpoint) &&
+        normalizeOidcEndpoint(directorySettings.tokenEndpoint, allowLocalHttp) === null
+      ) {
+        throw new Error("The Keycloak token URL must be an HTTPS URL or an in-cluster service URL.");
+      }
+      let directoryGroupScope: DirectoryGroupScope = {kind: "all"};
+      if (configuration.deploymentMode === "external-storage") {
+        const database = await openExternalStorageDatabase(externalMaintenanceConfig(configuration));
+        try {
+          const registry = new OrganizationRegistry(database);
+          const organizations = await registry.list();
+          const organization = organizations.find(({id}) =>
+            id === configuration.installationId
+          );
+          if (organization === undefined) {
+            const hasOtherTenant = organizations.some(({slug}) => slug !== "orvex");
+            if (organizationTenancy) {
+              const otherOrvex = organizations.some(({id, slug}) =>
+                slug === "orvex" && id !== configuration.installationId
+              );
+              if (otherOrvex || hasOtherTenant) {
+                throw new Error("maintenance sync-directory cannot find the configured installation in the organization registry.");
+              }
+              const bootstrappedOrganization = await registry.ensureOrvex(
+                configuration.installationId,
+              );
+              directoryGroupScope = directoryGroupScopeForOrganization(
+                bootstrappedOrganization,
+                true,
+                tenantScope.organizationStaffGroups,
+              );
+            } else if (hasOtherTenant) {
+              throw new Error("maintenance sync-directory cannot find the configured installation in the organization registry.");
+            }
+          } else {
+            directoryGroupScope = directoryGroupScopeForOrganization(
+              organization,
+              organizationTenancy || organizations.some(({slug}) => slug !== "orvex"),
+              tenantScope.organizationStaffGroups,
+            );
+          }
+        } finally {
+          await database.close();
+        }
+        if (directoryGroupScope.kind === "none") {
+          throw new Error("Directory groups are not synced for an organization whose membership is managed by Keycloak Organizations; nothing was changed.");
+        }
+      }
       const directory = new KeycloakDirectory(
         directorySettings.tokenEndpoint === undefined
           ? directoryConfig

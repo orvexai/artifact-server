@@ -38,6 +38,7 @@ import {createInstallationObjectKeyspace} from
   "../../src/storage/cloud-object-storage.js";
 import {PostgresArtifactRepository} from "../../src/storage/postgres-artifact-repository.js";
 import {PostgresIdentityRepository} from "../../src/storage/postgres-identity-repository.js";
+import {OrganizationRegistry} from "../../src/external-storage/organization-registry.js";
 import {defaultProjectId} from "../../src/core/model.js";
 import {principalCapabilities} from "../../src/core/identity.js";
 import {createManifest} from "../../src/manifest/create-manifest.js";
@@ -1157,6 +1158,7 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         ARTIFACT_SERVER_OIDC_GUEST_GROUP_PREFIXES: "/Guests/",
         ARTIFACT_SERVER_OIDC_ISSUER: keycloak.issuer,
         ARTIFACT_SERVER_OIDC_MEMBER_GROUPS: "artifact-users",
+        ARTIFACT_SERVER_ORG_TENANCY: "off",
         ARTIFACT_SERVER_ORIGIN: "https://artifacts.example.com",
         ARTIFACT_SERVER_S3_ACCESS_KEY_ID: environment.accessKey,
         ARTIFACT_SERVER_S3_BUCKET: bucket,
@@ -1198,6 +1200,8 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         keycloakUser("bob"),
         keycloakUser("carol", {emailVerified: false}),
       ]);
+      const registeredOrganizations = await new OrganizationRegistry(database).list();
+      expect(registeredOrganizations.some(({id}) => id === syncInstallation)).toBe(false);
       expect(await sync()).toEqual({report: {
         groups: 2,
         directoryUsers: 3,
@@ -1208,6 +1212,10 @@ describe.sequential("external-storage Postgres and S3 runtime", () => {
         unchanged: 0,
         skipped: 1,
       }});
+      expect(await members()).toEqual([
+        {email: "ada@example.test", role: "administrator", status: "active"},
+        {email: "bob@example.test", role: "member", status: "active"},
+      ]);
 
       keycloak.groups.set("artifact-admins", [keycloakUser("bob")]);
       keycloak.groups.set("artifact-users", [keycloakUser("ada")]);
